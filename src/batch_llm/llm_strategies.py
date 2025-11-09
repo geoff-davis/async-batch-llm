@@ -90,7 +90,21 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
         Clean up resources after all retry attempts complete.
 
         Called once per work item after processing finishes (success or failure).
-        Use this to delete caches, close clients, etc.
+
+        **Use this for:**
+        - Closing connections/sessions
+        - Releasing locks
+        - Logging final metrics
+        - Deleting temporary files
+
+        **Do NOT use this for:**
+        - Deleting caches intended for reuse across runs
+        - Destructive cleanup that prevents resource reuse
+
+        **Note on Caches (v0.2.0):**
+        For reusable resources like Gemini caches with TTLs, consider letting
+        them expire naturally to enable cost savings across multiple pipeline
+        runs. See `GeminiCachedStrategy` for an example.
 
         Default: no-op
         """
@@ -233,19 +247,24 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         response_parser: Callable[[Any], TOutput],
         cached_content: list["Content"],
         cache_ttl_seconds: int = 3600,
-        cache_refresh_threshold: float = 0.1,  # Refresh if <10% TTL remaining
+        cache_refresh_threshold: float = 0.1,  # Deprecated in favor of cache_renewal_buffer_seconds
+        cache_renewal_buffer_seconds: int = 300,  # v0.2.0: Renew 5min before expiration
+        auto_renew: bool = True,  # v0.2.0: Automatically renew expired caches
         config: "GenerateContentConfig | None" = None,
     ):
         """
-        Initialize Gemini cached strategy.
+        Initialize Gemini cached strategy with automatic cache renewal (v0.2.0).
 
         Args:
             model: Model name (e.g., "gemini-2.5-flash")
             client: Initialized Gemini client
             response_parser: Function to parse response into TOutput
             cached_content: Content to cache (system instructions, documents)
-            cache_ttl_seconds: Initial cache TTL in seconds
-            cache_refresh_threshold: Refresh cache when TTL falls below this fraction
+            cache_ttl_seconds: Cache TTL in seconds (default: 3600 = 1 hour)
+            cache_refresh_threshold: (Deprecated) Use cache_renewal_buffer_seconds instead
+            cache_renewal_buffer_seconds: Renew cache this many seconds before expiration
+                to avoid expiration errors (default: 300 = 5 minutes)
+            auto_renew: Automatically renew expired caches in execute() (default: True)
             config: Optional generation config
         """
         if genai is None:
@@ -259,45 +278,155 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         self.response_parser = response_parser
         self.cached_content = cached_content
         self.cache_ttl_seconds = cache_ttl_seconds
-        self.cache_refresh_threshold = cache_refresh_threshold
+        self.cache_refresh_threshold = cache_refresh_threshold  # Deprecated
+        self.cache_renewal_buffer_seconds = cache_renewal_buffer_seconds  # v0.2.0
+        self.auto_renew = auto_renew  # v0.2.0
         self.config = config
 
         self._cache: Any = None  # Type: CachedContent after prepare()
         self._cache_created_at: float | None = None
+        self._cache_lock: Any = None  # v0.2.0: asyncio.Lock, created in prepare()
+
+        # Detect API version (v0.2.0)
+        self._api_version = self._detect_google_genai_version()
+        logger.debug(f"Detected google-genai API version: {self._api_version}")
+
+    @staticmethod
+    def _detect_google_genai_version() -> str:
+        """
+        Detect which google-genai API version is installed.
+
+        Returns:
+            "v1.46+" if new API (with CreateCachedContentConfig)
+            "v1.45" if legacy API
+        """
+        try:
+            from google.genai.types import CreateCachedContentConfig  # noqa: F401
+
+            return "v1.46+"
+        except ImportError:
+            return "v1.45"
+
+    def _is_cache_expired(self) -> bool:
+        """
+        Check if cache has expired or is about to expire (v0.2.0).
+
+        Returns:
+            True if cache should be renewed, False if still valid
+        """
+        if self._cache is None or self._cache_created_at is None:
+            return True
+
+        cache_age = time.time() - self._cache_created_at
+        expires_in = self.cache_ttl_seconds - cache_age
+
+        return expires_in <= self.cache_renewal_buffer_seconds
+
+    async def _find_or_create_cache(self) -> None:
+        """
+        Find existing cache or create new one (v0.2.0).
+
+        Attempts to reuse existing caches with the same model to save costs.
+        If no suitable cache found, creates a new one.
+        """
+        import asyncio
+
+        # Initialize lock if not already done
+        if self._cache_lock is None:
+            self._cache_lock = asyncio.Lock()
+
+        # Try to find existing cache with same model
+        try:
+            caches = await self.client.aio.caches.list()
+
+            for cache in caches:
+                # Cache model is full path: "projects/.../models/gemini-..."
+                # Match by model name suffix
+                if cache.model.endswith(self.model):
+                    self._cache = cache
+
+                    # CRITICAL: Use cache's actual creation time, not current time
+                    # This prevents expiration detection bugs
+                    if hasattr(cache, "create_time") and cache.create_time:
+                        self._cache_created_at = cache.create_time.timestamp()
+                    else:
+                        # Fallback: assume old to trigger renewal check
+                        self._cache_created_at = time.time() - self.cache_ttl_seconds
+
+                    logger.info(
+                        f"Reusing existing Gemini cache: {self._cache.name} "
+                        f"(age: {time.time() - self._cache_created_at:.0f}s)"
+                    )
+                    return
+        except Exception as e:
+            logger.warning(f"Failed to list existing caches: {e}")
+
+        # No existing cache found, create new one
+        await self._create_new_cache()
+
+    async def _create_new_cache(self) -> None:
+        """Create a new Gemini cache (v0.2.0)."""
+        if self._api_version == "v1.46+":
+            # New API (google-genai v1.46+)
+            from google.genai.types import CreateCachedContentConfig
+
+            self._cache = await self.client.aio.caches.create(  # type: ignore[call-arg]
+                model=self.model,
+                config=CreateCachedContentConfig(
+                    contents=self.cached_content,
+                    ttl=f"{self.cache_ttl_seconds}s",
+                ),
+            )
+        else:
+            # Legacy API (google-genai v1.45 and earlier)
+            self._cache = await self.client.aio.caches.create(  # type: ignore[call-arg]
+                model=self.model,
+                contents=self.cached_content,
+                ttl=f"{self.cache_ttl_seconds}s",
+            )
+
+        self._cache_created_at = time.time()
+        logger.info(
+            f"Created new Gemini cache: {self._cache.name} "
+            f"(TTL: {self.cache_ttl_seconds}s, API: {self._api_version})"
+        )
 
     async def prepare(self) -> None:
-        """Create the Gemini cache."""
-        # Google genai API - type stubs may be incomplete
-        self._cache = await self.client.aio.caches.create(  # type: ignore[call-arg]
-            model=self.model,
-            contents=self.cached_content,
-            ttl=f"{self.cache_ttl_seconds}s",
-        )
-        self._cache_created_at = time.time()
+        """Find or create the Gemini cache (v0.2.0)."""
+        await self._find_or_create_cache()
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float
     ) -> tuple[TOutput, TokenUsage]:
-        """Execute Gemini API call with cache, refreshing TTL if needed.
+        """Execute Gemini API call with automatic cache renewal (v0.2.0).
 
         Note: timeout parameter is provided for information but timeout enforcement
         is handled by the framework wrapping this call in asyncio.wait_for().
         """
+        # Check and renew cache if expired (proactive renewal to avoid errors)
+        if self.auto_renew and self._is_cache_expired():
+            logger.info(
+                "Cache expired or about to expire, renewing before API call "
+                f"(age: {time.time() - (self._cache_created_at or 0):.0f}s, "
+                f"renewal buffer: {self.cache_renewal_buffer_seconds}s)"
+            )
+
+            # Use lock to prevent concurrent renewal
+            if self._cache_lock is None:
+                import asyncio
+
+                self._cache_lock = asyncio.Lock()
+
+            async with self._cache_lock:
+                # Double-check after acquiring lock
+                if self._is_cache_expired():
+                    # Clear cache reference to force creation of new cache
+                    self._cache = None
+                    self._cache_created_at = None
+                    await self._find_or_create_cache()
+
         if self._cache is None:
             raise RuntimeError("Cache not initialized - prepare() was not called")
-
-        # Check if cache is close to expiring and refresh if needed
-        if self._cache_created_at is None:
-            raise RuntimeError("Cache timestamp not set - prepare() was not called properly")
-        elapsed = time.time() - self._cache_created_at
-        remaining = self.cache_ttl_seconds - elapsed
-
-        if remaining < (self.cache_ttl_seconds * self.cache_refresh_threshold):
-            # Refresh cache TTL - Google genai API, type stubs may be incomplete
-            self._cache = await self.client.aio.caches.update(  # type: ignore[call-arg]
-                name=self._cache.name, ttl=f"{self.cache_ttl_seconds}s"
-            )
-            self._cache_created_at = time.time()
 
         # Make the call using the cache - Google genai API, type stubs may be incomplete
         response = await self.client.aio.models.generate_content(  # type: ignore[call-arg]
@@ -326,12 +455,50 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         return output, tokens
 
     async def cleanup(self) -> None:
-        """Delete the Gemini cache."""
+        """
+        Cleanup hook - preserves cache for reuse by default (v0.2.0).
+
+        By default, this method does NOT delete the cache. The cache remains
+        active until its TTL expires, allowing reuse across multiple runs
+        within the TTL window (e.g., 1 hour).
+
+        This enables significant cost savings when running multiple batches:
+        - First run: Creates cache, pays full cost
+        - Subsequent runs (within TTL): Reuse cache, 70-90% cost reduction
+
+        To delete the cache immediately (e.g., for cleanup in tests), call:
+            await strategy.delete_cache()
+
+        See docs/GEMINI_INTEGRATION.md for cache lifecycle best practices.
+        """
+        if self._cache:
+            logger.info(
+                f"Leaving cache active for reuse: {self._cache.name} "
+                f"(TTL: {self.cache_ttl_seconds}s, will expire naturally)"
+            )
+
+    async def delete_cache(self) -> None:
+        """
+        Explicitly delete the Gemini cache (v0.2.0).
+
+        Call this when you want to immediately delete the cache instead of
+        letting it expire naturally. Useful for:
+        - Test cleanup
+        - One-off batch jobs where reuse isn't needed
+        - Updating cached content (delete old, create new)
+
+        Example:
+            strategy = GeminiCachedStrategy(...)
+            # ... use strategy ...
+            await strategy.delete_cache()  # Explicit cleanup
+        """
         if self._cache:
             try:
                 await self.client.aio.caches.delete(name=self._cache.name)
+                logger.info(f"Deleted Gemini cache: {self._cache.name}")
+                self._cache = None
+                self._cache_created_at = None
             except Exception as e:
-                # Cache might already be expired/deleted - log but don't fail
                 logger.warning(
                     f"Failed to delete Gemini cache '{self._cache.name}': {e}. "
                     "Cache may have already expired or been deleted."

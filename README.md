@@ -33,6 +33,7 @@ with built-in error handling, retry logic, and observability.
   - [Rate Limiting](#-rate-limiting)
   - [Middleware & Observers](#-middleware--observers)
   - [Token Tracking](#-token-tracking)
+  - [Shared Strategies for Cost Optimization](#-shared-strategies-for-cost-optimization-v020)
 - [Automatic Retry on Validation Errors](#automatic-retry-on-validation-errors)
 - [Provider Examples](#provider-examples)
   - [OpenAI](#openai)
@@ -264,12 +265,59 @@ config = ProcessorConfig(
 
 ### 📊 Token Tracking
 
+Track token usage across all requests, including cached tokens:
+
 ```python
 result = await processor.process_all()
+
+# Basic token counts
 print(f"Input tokens: {result.total_input_tokens}")
 print(f"Output tokens: {result.total_output_tokens}")
-print(f"Total cost: ${estimate_cost(result)}")
+
+# Cache metrics (v0.2.0+)
+print(f"Cached tokens: {result.total_cached_tokens}")
+print(f"Cache hit rate: {result.cache_hit_rate():.1f}%")
+print(f"Effective cost: {result.effective_input_tokens()} tokens")
 ```
+
+**Example with Gemini Caching:**
+```
+Input tokens: 50,000
+Cached tokens: 45,000
+Cache hit rate: 90.0%
+Effective cost: 9,500 tokens  # 81% cost reduction!
+```
+
+### 💰 Shared Strategies for Cost Optimization (v0.2.0)
+
+Share a single strategy instance across all work items to maximize cache reuse:
+
+```python
+# Create one cached strategy
+strategy = GeminiCachedStrategy(
+    model="gemini-2.5-flash",
+    client=client,
+    cached_content=[...],  # Shared context
+    cache_ttl_seconds=3600,  # 1 hour
+    auto_renew=True,  # Automatic renewal for long pipelines
+)
+
+# Reuse the same strategy for all items
+for item in items:
+    work_item = LLMWorkItem(
+        item_id=item.id,
+        strategy=strategy,  # Shared instance
+        prompt=format_prompt(item),
+    )
+    await processor.add_work(work_item)
+```
+
+**Benefits:**
+- ✅ Framework calls `prepare()` only once (creates single cache)
+- ✅ All work items share the same cache
+- ✅ 70-90% cost reduction with Gemini prompt caching
+- ✅ Automatic cache renewal for pipelines longer than TTL
+- ✅ Cache preserved across runs (within TTL window)
 
 ---
 

@@ -5,6 +5,147 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2025-01-09
+
+This release addresses critical production issues identified from real-world usage, particularly around shared strategy instances for cost optimization with Gemini prompt caching.
+
+### ⚠️ Breaking Changes
+
+#### GeminiCachedStrategy cleanup() Behavior
+
+`cleanup()` now **preserves** caches for reuse by default (previously deleted them). This enables 70-90% cost savings when running multiple batches within the TTL window.
+
+**Before (v0.1):**
+```python
+await strategy.cleanup()  # Deleted cache
+```
+
+**After (v0.2):**
+```python
+await strategy.cleanup()  # Preserves cache for reuse
+
+# Explicitly delete if needed
+await strategy.delete_cache()
+```
+
+**Migration:** If you relied on automatic cache deletion, call `await strategy.delete_cache()` explicitly. For most production use cases, the new behavior is better (no code changes needed).
+
+See **[Migration Guide](docs/MIGRATION_V0_2.md)** for complete upgrade instructions.
+
+---
+
+### Added
+
+#### Core Features
+
+- **Shared strategy optimization** (#1)
+  - Framework now tracks unique strategy instances by `id()`
+  - `prepare()` called only once per unique strategy instance, even with concurrent workers
+  - Thread-safe via double-checked locking pattern
+  - Enables cost optimization: single cache shared across all work items
+  - New internal method: `_ensure_strategy_prepared()`
+
+- **Cached token tracking** (#4)
+  - `BatchResult.total_cached_tokens` - Sum of cached input tokens across all work items
+  - `BatchResult.cache_hit_rate()` - Calculate cache hit rate as percentage
+  - `BatchResult.effective_input_tokens()` - Calculate actual cost after caching discount (90% savings)
+  - `ProcessingStats.total_cached_tokens` - Track cached tokens in stats
+
+- **Automatic cache renewal** (#7)
+  - New parameter: `GeminiCachedStrategy.cache_renewal_buffer_seconds` (default: 300s)
+  - New parameter: `GeminiCachedStrategy.auto_renew` (default: True)
+  - Proactive cache expiration detection via `_is_cache_expired()`
+  - Automatic renewal before API calls to prevent expiration errors
+  - Critical bug fix: Reused caches now use actual creation time (not current time)
+
+- **Cache reuse across runs** (#5, #6)
+  - `GeminiCachedStrategy._find_or_create_cache()` - Find existing caches or create new ones
+  - Caches matched by model name suffix
+  - Preserves caches between pipeline runs (within TTL window)
+  - Enables 70-90% cost savings for recurring jobs
+
+- **`GeminiCachedStrategy.delete_cache()` method** (#5)
+  - Explicit cache deletion for tests and one-off jobs
+  - Separated from `cleanup()` hook for better lifecycle control
+
+#### API Compatibility
+
+- **google-genai v1.46+ support** (#2)
+  - Auto-detects API version via `_detect_google_genai_version()`
+  - Uses `CreateCachedContentConfig` for v1.46+
+  - Falls back to legacy API for v1.45 and earlier
+  - Both versions fully supported
+
+#### Documentation
+
+- **Enhanced `LLMCallStrategy.cleanup()` docstring**
+  - Clarified use cases (connections, locks, metrics)
+  - Documented what NOT to use it for (cache deletion)
+  - Added note on cache lifecycle best practices
+
+- **Updated README.md**
+  - New section: "Shared Strategies for Cost Optimization"
+  - Enhanced "Token Tracking" section with cache metrics examples
+  - Added cache hit rate and effective cost calculation examples
+
+- **New migration guide**: `docs/MIGRATION_V0_2.md`
+  - Complete v0.1 → v0.2 upgrade instructions
+  - Breaking changes with code examples
+  - New features with usage patterns
+  - Troubleshooting guide
+
+- **Implementation plan**: `docs/IMPLEMENTATION_PLAN_V0_2.md`
+  - Detailed technical specifications
+  - Issue analysis and solutions
+  - Test strategy and coverage goals
+
+### Changed
+
+- `GeminiCachedStrategy.prepare()` now calls `_find_or_create_cache()` (reuses existing caches)
+- `GeminiCachedStrategy.execute()` now includes automatic cache renewal logic
+- `GeminiCachedStrategy.cleanup()` preserves caches by default (breaking change)
+
+### Deprecated
+
+- `GeminiCachedStrategy.cache_refresh_threshold` - Use `cache_renewal_buffer_seconds` instead
+  - Percentage-based threshold less predictable than absolute time for long jobs
+  - Will be removed in v0.3.0
+
+### Fixed
+
+- **Multiple `prepare()` calls on shared strategies** (#1)
+  - Framework called `prepare()` once per work item, not once per unique strategy
+  - With concurrent workers, created multiple caches instead of one
+  - Fixed via `_ensure_strategy_prepared()` with double-checked locking
+
+- **Cache expiration errors in long pipelines** (#7)
+  - Pipelines longer than cache TTL failed with "cache expired" errors
+  - Fixed via proactive renewal with configurable buffer
+
+- **Cache reuse creation time bug** (#7)
+  - Reused caches incorrectly used current time instead of actual creation time
+  - Caused expiration detection to fail (thought cache was newer than it was)
+  - Fixed to use `cache.create_time.timestamp()` from Google's servers
+
+### Tests
+
+- **17 new tests added** (95 tests total, all passing)
+  - `test_shared_strategies.py` - 6 tests for shared strategy optimization
+  - `test_gemini_api_versions.py` - 3 tests for API version detection
+  - `test_token_tracking.py` - 8 tests for cached token tracking
+
+- **Updated existing tests**
+  - `test_gemini_cached_strategy_lifecycle` - Updated for new cleanup() behavior
+  - `test_gemini_cached_strategy_auto_renewal` - Renamed and updated for auto-renewal
+
+### Performance
+
+- **No performance regression** - All optimizations are additions
+- **Shared strategies reduce API calls** - One cache creation instead of multiple
+- **Token tracking is O(n)** - Simple sum over results
+
+---
+
 ## [0.1.0] - TBD
 
 ### ⚠️ Breaking Changes

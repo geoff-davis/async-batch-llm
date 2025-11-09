@@ -182,7 +182,7 @@ async def test_gemini_strategy_mock():
 
 @pytest.mark.asyncio
 async def test_gemini_cached_strategy_lifecycle():
-    """Test GeminiCachedStrategy prepare/execute/cleanup lifecycle."""
+    """Test GeminiCachedStrategy prepare/execute/cleanup lifecycle (v0.2.0)."""
 
     # Create mock cache
     mock_cache = MagicMock()
@@ -197,6 +197,7 @@ async def test_gemini_cached_strategy_lifecycle():
     # Create mock client
     mock_client = MagicMock()
     mock_client.aio.caches.create = AsyncMock(return_value=mock_cache)
+    mock_client.aio.caches.list = AsyncMock(return_value=[])  # No existing caches
     mock_client.aio.caches.update = AsyncMock(return_value=mock_cache)
     mock_client.aio.caches.delete = AsyncMock()
     mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
@@ -219,18 +220,25 @@ async def test_gemini_cached_strategy_lifecycle():
     assert output.text == "Cached response"
     assert tokens["total_tokens"] == 30
 
-    # Test cleanup
+    # Test cleanup (v0.2.0: preserves cache by default)
     await strategy.cleanup()
+    mock_client.aio.caches.delete.assert_not_called()  # Should NOT delete
+
+    # Test explicit deletion
+    await strategy.delete_cache()
     mock_client.aio.caches.delete.assert_called_once_with(name="test-cache")
 
 
 @pytest.mark.asyncio
-async def test_gemini_cached_strategy_ttl_refresh():
-    """Test that cache TTL is refreshed when close to expiring."""
+async def test_gemini_cached_strategy_auto_renewal():
+    """Test automatic cache renewal when close to expiring (v0.2.0)."""
 
-    # Create mock cache
-    mock_cache = MagicMock()
-    mock_cache.name = "test-cache"
+    # Create mock caches
+    mock_cache1 = MagicMock()
+    mock_cache1.name = "test-cache-1"
+
+    mock_cache2 = MagicMock()
+    mock_cache2.name = "test-cache-2"
 
     # Create mock response
     mock_response = MagicMock()
@@ -238,36 +246,38 @@ async def test_gemini_cached_strategy_ttl_refresh():
     mock_response.usage_metadata.candidates_token_count = 20
     mock_response.usage_metadata.total_token_count = 30
 
-    # Create mock client
+    # Create mock client - returns different caches on subsequent creates
     mock_client = MagicMock()
-    mock_client.aio.caches.create = AsyncMock(return_value=mock_cache)
-    mock_client.aio.caches.update = AsyncMock(return_value=mock_cache)
+    create_calls = [mock_cache1, mock_cache2]
+    mock_client.aio.caches.create = AsyncMock(side_effect=create_calls)
+    mock_client.aio.caches.list = AsyncMock(return_value=[])  # No existing caches
     mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-    # Create strategy with short TTL and high refresh threshold
+    # Create strategy with short TTL and renewal buffer
     strategy = GeminiCachedStrategy(
         model="gemini-test",
         client=mock_client,
         response_parser=lambda r: TestOutput(text="Cached response"),
         cached_content=[],
-        cache_ttl_seconds=1,  # 1 second TTL
-        cache_refresh_threshold=0.5,  # Refresh if <50% remaining
+        cache_ttl_seconds=2,  # 2 second TTL
+        cache_renewal_buffer_seconds=1,  # Renew when 1 second remains
+        auto_renew=True,
     )
 
     # Test prepare
     await strategy.prepare()
-    mock_client.aio.caches.create.assert_called_once()
+    assert mock_client.aio.caches.create.call_count == 1
 
-    # First execute - no refresh needed
+    # First execute - no renewal needed (just created, 2s remaining > 1s buffer)
     await strategy.execute("Test prompt 1", 1, 10.0)
-    assert mock_client.aio.caches.update.call_count == 0
+    assert mock_client.aio.caches.create.call_count == 1  # Still 1
 
-    # Wait until cache is close to expiring
-    await asyncio.sleep(0.6)  # More than 50% of TTL has elapsed
+    # Wait until within renewal buffer (>1s elapsed, <1s remaining)
+    await asyncio.sleep(1.2)
 
-    # Second execute - should refresh
+    # Second execute - should trigger auto-renewal (only 0.8s remaining < 1s buffer)
     await strategy.execute("Test prompt 2", 1, 10.0)
-    assert mock_client.aio.caches.update.call_count == 1
+    assert mock_client.aio.caches.create.call_count == 2  # New cache created
 
     # Cleanup
     await strategy.cleanup()

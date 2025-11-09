@@ -139,6 +139,11 @@ class ParallelBatchProcessor(
         self._stats_lock = asyncio.Lock()
         self._results_lock = asyncio.Lock()
 
+        # Strategy lifecycle management (v0.2.0)
+        # Track which strategy instances have been prepared to avoid duplicate prepare() calls
+        self._prepared_strategies: set[int] = set()  # Track by id()
+        self._strategy_lock = asyncio.Lock()  # Protect strategy initialization
+
         # Proactive rate limiting (prevents hitting rate limits)
         if config.max_requests_per_minute:
             from aiolimiter import AsyncLimiter
@@ -152,6 +157,40 @@ class ParallelBatchProcessor(
             )
         else:
             self._proactive_rate_limiter = None
+
+    async def _ensure_strategy_prepared(self, strategy: LLMCallStrategy[TOutput]) -> None:
+        """
+        Ensure strategy is prepared exactly once, even with concurrent calls.
+
+        When the same strategy instance is shared across multiple work items
+        (e.g., for caching cost optimization), this method ensures prepare()
+        is called only once per unique strategy instance.
+
+        Thread-safe via double-checked locking pattern.
+
+        Args:
+            strategy: The LLM call strategy to prepare
+        """
+        strategy_id = id(strategy)
+
+        # Fast path: already prepared (no lock needed for read)
+        if strategy_id in self._prepared_strategies:
+            return
+
+        # Slow path: acquire lock and prepare
+        async with self._strategy_lock:
+            # Double-check after acquiring lock (another worker may have prepared)
+            if strategy_id in self._prepared_strategies:
+                return
+
+            logger.debug(
+                f"Preparing strategy {strategy.__class__.__name__} (id={strategy_id})"
+            )
+            await strategy.prepare()
+            self._prepared_strategies.add(strategy_id)
+            logger.debug(
+                f"Strategy {strategy.__class__.__name__} prepared successfully (id={strategy_id})"
+            )
 
     async def get_stats(self) -> dict:
         """
@@ -577,9 +616,9 @@ class ParallelBatchProcessor(
         # Get the strategy
         strategy = self._get_strategy(work_item)
 
-        # Call prepare() once before any retries
+        # Ensure strategy is prepared (framework ensures this is called only once per unique strategy instance)
         try:
-            await strategy.prepare()
+            await self._ensure_strategy_prepared(strategy)
         except Exception as e:
             logger.error(f"✗ Strategy prepare() failed for {work_item.item_id}: {e}")
             raise

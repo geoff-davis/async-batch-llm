@@ -114,6 +114,7 @@ class BatchResult(Generic[TOutput, TContext]):
         failed: Number of failed items
         total_input_tokens: Sum of input tokens across all items
         total_output_tokens: Sum of output tokens across all items
+        total_cached_tokens: Sum of cached input tokens across all items (v0.2.0)
     """
 
     results: list[WorkItemResult[TOutput, TContext]]
@@ -122,6 +123,7 @@ class BatchResult(Generic[TOutput, TContext]):
     failed: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    total_cached_tokens: int = 0  # v0.2.0: Track cached tokens separately
 
     def __post_init__(self):
         """Calculate summary statistics from results."""
@@ -130,6 +132,34 @@ class BatchResult(Generic[TOutput, TContext]):
         self.failed = sum(1 for r in self.results if not r.success)
         self.total_input_tokens = sum(r.token_usage.get("input_tokens", 0) for r in self.results)
         self.total_output_tokens = sum(r.token_usage.get("output_tokens", 0) for r in self.results)
+        # v0.2.0: Aggregate cached tokens
+        self.total_cached_tokens = sum(
+            r.token_usage.get("cached_input_tokens", 0) for r in self.results
+        )
+
+    def cache_hit_rate(self) -> float:
+        """
+        Calculate cache hit rate as percentage of input tokens that were cached.
+
+        Returns:
+            Percentage (0.0 to 100.0) of input tokens served from cache
+        """
+        if self.total_input_tokens == 0:
+            return 0.0
+        return (self.total_cached_tokens / self.total_input_tokens) * 100.0
+
+    def effective_input_tokens(self) -> int:
+        """
+        Calculate effective input tokens (actual cost after caching).
+
+        Gemini charges 10% of the normal price for cached tokens.
+
+        Returns:
+            Effective number of input tokens billed
+        """
+        # Cached tokens cost 10% of normal, so discount is 90%
+        discount = int(self.total_cached_tokens * 0.9)
+        return self.total_input_tokens - discount
 
 
 # Type alias for post-processor function
@@ -154,7 +184,8 @@ class ProcessingStats:
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_tokens: int = 0
-    cached_input_tokens: int = 0  # Gemini context caching
+    cached_input_tokens: int = 0  # Gemini context caching (same as total_cached_tokens)
+    total_cached_tokens: int = 0  # v0.2.0: Alias for cached_input_tokens (preferred name)
 
     def copy(self) -> dict[str, Any]:
         """Return a dictionary copy of the stats for backwards compatibility."""
@@ -170,6 +201,7 @@ class ProcessingStats:
             "total_output_tokens": self.total_output_tokens,
             "total_tokens": self.total_tokens,
             "cached_input_tokens": self.cached_input_tokens,
+            "total_cached_tokens": self.total_cached_tokens,
         }
 
 
