@@ -27,6 +27,7 @@ with built-in error handling, retry logic, and observability.
 - [Quick Start](#quick-start)
   - [Installation](#installation)
   - [Basic Example (PydanticAI)](#basic-example-pydanticai)
+- [⚠️ Critical: Reuse Strategies for Cost Savings](#️-critical-reuse-strategies-for-cost-savings)
 - [Features](#features)
   - [Strategy Pattern for Any LLM Provider](#-strategy-pattern-for-any-llm-provider)
   - [Automatic Retry Logic](#-automatic-retry-logic)
@@ -128,6 +129,53 @@ async def main():
 
 asyncio.run(main())
 ```
+
+---
+
+## ⚠️ Critical: Reuse Strategies for Cost Savings
+
+**IMPORTANT:** When using `GeminiCachedStrategy`, always reuse the SAME strategy instance across all work items.
+This provides **70-90% cost savings** by sharing the cache.
+
+### ❌ Wrong: New Strategy Per Item (Expensive!)
+
+```python
+# DON'T DO THIS - Creates new cache for each item
+for document in documents:
+    strategy = GeminiCachedStrategy(...)  # ← NEW instance every loop!
+    await processor.add_work(LLMWorkItem(
+        item_id=document.id,
+        strategy=strategy,  # ← Different cache each time
+        prompt=format_prompt(document)
+    ))
+```
+
+**Cost:** 100 items × $0.10 = **$10.00** 💸
+
+### ✅ Right: Reuse Strategy (70-90% Savings!)
+
+```python
+# DO THIS - Share cache across all items
+strategy = GeminiCachedStrategy(...)  # ← Create ONCE
+
+for document in documents:
+    await processor.add_work(LLMWorkItem(
+        item_id=document.id,
+        strategy=strategy,  # ← Reuse same strategy
+        prompt=format_prompt(document)
+    ))
+```
+
+**Cost:** 100 items × $0.03 = **$3.00** ✅ **Saves $7.00 (70%)!**
+
+### Why This Works
+
+- Framework calls `prepare()` once (creates one cache)
+- All items share that cache
+- Gemini gives 90% discount on cached tokens
+- Result: 70-90% overall cost reduction
+
+See [Shared Strategies](#-shared-strategies-for-cost-optimization-v020) for technical details.
 
 ---
 

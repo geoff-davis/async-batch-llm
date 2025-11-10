@@ -117,4 +117,10 @@ __all__ = [
     "ParallelBatchProcessor",
 ]
 
-__version__ = "0.1.0"
+# Version is read from package metadata (single source of truth in pyproject.toml)
+try:
+    from importlib.metadata import version, PackageNotFoundError
+    __version__ = version("batch-llm")
+except PackageNotFoundError:
+    # Package not installed (e.g., running from source in development)
+    __version__ = "0.0.0+dev"
