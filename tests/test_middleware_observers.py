@@ -479,3 +479,128 @@ async def test_middleware_returns_none_original_item_id_preserved():
     assert result.failed == 1
     assert result.results[0].item_id == "filtered_item"
     assert result.results[0].error == "Skipped by middleware"
+
+
+@pytest.mark.asyncio
+async def test_metrics_observer_export_json():
+    """Test MetricsObserver export_json method."""
+    import json
+
+    from batch_llm.observers.metrics import MetricsObserver
+
+    observer = MetricsObserver()
+
+    # Simulate some events
+    await observer.on_event(
+        ProcessingEvent.ITEM_COMPLETED, {"item_id": "1", "duration": 1.5}
+    )
+    await observer.on_event(
+        ProcessingEvent.ITEM_COMPLETED, {"item_id": "2", "duration": 2.0}
+    )
+    await observer.on_event(ProcessingEvent.ITEM_FAILED, {"item_id": "3", "error_type": "ValueError"})
+    await observer.on_event(ProcessingEvent.RATE_LIMIT_HIT, {})
+    await observer.on_event(ProcessingEvent.COOLDOWN_ENDED, {"duration": 60.0})
+
+    # Export as JSON
+    json_str = await observer.export_json()
+    data = json.loads(json_str)
+
+    # Verify exported data
+    assert data["items_processed"] == 3
+    assert data["items_succeeded"] == 2
+    assert data["items_failed"] == 1
+    assert data["rate_limits_hit"] == 1
+    assert data["total_cooldown_time"] == 60.0
+    assert data["processing_times_count"] == 2
+    assert "processing_times" not in data  # Should be removed from export
+    assert data["avg_processing_time"] == 1.75
+    assert data["success_rate"] == pytest.approx(2.0 / 3.0)
+    assert "ValueError" in data["error_counts"]
+    assert data["error_counts"]["ValueError"] == 1
+
+
+@pytest.mark.asyncio
+async def test_metrics_observer_export_prometheus():
+    """Test MetricsObserver export_prometheus method."""
+    from batch_llm.observers.metrics import MetricsObserver
+
+    observer = MetricsObserver()
+
+    # Simulate some events
+    await observer.on_event(ProcessingEvent.ITEM_COMPLETED, {"duration": 1.0})
+    await observer.on_event(ProcessingEvent.ITEM_COMPLETED, {"duration": 2.0})
+    await observer.on_event(
+        ProcessingEvent.ITEM_FAILED, {"error_type": "ConnectionError"}
+    )
+    await observer.on_event(ProcessingEvent.RATE_LIMIT_HIT, {})
+    await observer.on_event(ProcessingEvent.COOLDOWN_ENDED, {"duration": 120.0})
+
+    # Export as Prometheus
+    prom_text = await observer.export_prometheus()
+
+    # Verify Prometheus format
+    assert "# HELP batch_llm_items_processed Total items processed" in prom_text
+    assert "# TYPE batch_llm_items_processed counter" in prom_text
+    assert "batch_llm_items_processed 3" in prom_text
+    assert "batch_llm_items_succeeded 2" in prom_text
+    assert "batch_llm_items_failed 1" in prom_text
+    assert "batch_llm_rate_limits_hit 1" in prom_text
+    assert "# HELP batch_llm_avg_processing_time" in prom_text
+    assert "# TYPE batch_llm_avg_processing_time gauge" in prom_text
+    assert "batch_llm_total_cooldown_time 120.0" in prom_text
+    assert 'batch_llm_errors_total{error_type="ConnectionError"} 1' in prom_text
+
+
+@pytest.mark.asyncio
+async def test_metrics_observer_export_dict():
+    """Test MetricsObserver export_dict method."""
+    from batch_llm.observers.metrics import MetricsObserver
+
+    observer = MetricsObserver()
+
+    # Simulate events
+    await observer.on_event(ProcessingEvent.ITEM_COMPLETED, {"duration": 3.0})
+    await observer.on_event(
+        ProcessingEvent.ITEM_FAILED, {"error_type": "TimeoutError"}
+    )
+
+    # Export as dict
+    data = await observer.export_dict()
+
+    # Verify it's a dictionary with all expected fields
+    assert isinstance(data, dict)
+    assert data["items_processed"] == 2
+    assert data["items_succeeded"] == 1
+    assert data["items_failed"] == 1
+    assert data["avg_processing_time"] == 3.0
+    assert data["success_rate"] == 0.5
+    assert "TimeoutError" in data["error_counts"]
+
+
+@pytest.mark.asyncio
+async def test_metrics_observer_reset():
+    """Test MetricsObserver reset method."""
+    from batch_llm.observers.metrics import MetricsObserver
+
+    observer = MetricsObserver()
+
+    # Add some metrics
+    await observer.on_event(ProcessingEvent.ITEM_COMPLETED, {"duration": 1.0})
+    await observer.on_event(ProcessingEvent.ITEM_FAILED, {"error_type": "TestError"})
+
+    # Verify metrics exist
+    metrics = await observer.get_metrics()
+    assert metrics["items_processed"] == 2
+
+    # Reset
+    observer.reset()
+
+    # Verify metrics are cleared
+    metrics_after = await observer.get_metrics()
+    assert metrics_after["items_processed"] == 0
+    assert metrics_after["items_succeeded"] == 0
+    assert metrics_after["items_failed"] == 0
+    assert metrics_after["rate_limits_hit"] == 0
+    assert metrics_after["total_cooldown_time"] == 0.0
+    assert len(metrics_after["processing_times"]) == 0
+    assert len(metrics_after["error_counts"]) == 0

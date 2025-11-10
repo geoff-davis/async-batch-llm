@@ -1,4 +1,4 @@
-.PHONY: help test lint typecheck format check-all clean
+.PHONY: help test coverage lint typecheck format check-all clean
 
 help:  ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -11,6 +11,14 @@ test-fast:  ## Run tests excluding slow tests (default)
 
 test-all:  ## Run all tests including slow ones
 	uv run pytest tests/ -v -m ''
+
+coverage:  ## Run tests with coverage report
+	uv run pytest --cov=batch_llm --cov-report=term-missing --cov-report=html
+
+coverage-report:  ## Generate and open HTML coverage report
+	uv run pytest --cov=batch_llm --cov-report=html
+	@echo "\n==> Opening coverage report..."
+	open htmlcov/index.html || xdg-open htmlcov/index.html || echo "Please open htmlcov/index.html manually"
 
 lint:  ## Run ruff linter
 	uv run ruff check src/ tests/ examples/
@@ -55,6 +63,8 @@ clean:  ## Clean up cache files
 	find . -type d -name ".pytest_cache" -exec rm -rf {} +
 	find . -type d -name ".mypy_cache" -exec rm -rf {} +
 	find . -type d -name ".ruff_cache" -exec rm -rf {} +
+	find . -type d -name "htmlcov" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
+	find . -type f -name ".coverage" -delete
 
 .DEFAULT_GOAL := help

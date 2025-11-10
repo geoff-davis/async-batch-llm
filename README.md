@@ -1500,6 +1500,46 @@ Contributions welcome! Areas of interest:
 - Performance optimizations
 - Documentation improvements
 
+### Development Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/geoff-davis/batch-llm.git
+cd batch-llm
+
+# Install dependencies (including dev dependencies)
+uv sync --all-extras
+
+# Run tests
+uv run pytest
+
+# Run tests with coverage
+make coverage
+
+# View coverage report (opens in browser)
+make coverage-report
+
+# Run linter
+make lint
+
+# Run type checker
+make typecheck
+
+# Run all checks (lint + typecheck + test + markdown-lint)
+make ci
+```
+
+### Code Quality
+
+The project maintains high code quality standards:
+
+- **Test Coverage**: 75%+ coverage required
+- **Linting**: Enforced via ruff (line length 100 chars)
+- **Type Checking**: Enforced via mypy
+- **Documentation**: All public APIs must be documented
+
+Run `make ci` before submitting pull requests to ensure all checks pass
+
 ---
 
 ## License
