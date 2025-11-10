@@ -587,11 +587,11 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         """Create a new Gemini cache (v0.2.0, enhanced v0.3.0 with tags)."""
         if self._api_version == "v1.46+":
             # New API (google-genai v1.46+)
+            # contents is passed at top level, config only contains ttl/metadata
             from google.genai.types import CreateCachedContentConfig
 
-            # v0.3.0: Try to include metadata/tags if API supports it
+            # Build config with ttl and optional metadata (v0.3.0)
             config_kwargs = {
-                "contents": self.cached_content,
                 "ttl": f"{self.cache_ttl_seconds}s",
             }
 
@@ -607,6 +607,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 
             self._cache = await self.client.aio.caches.create(  # type: ignore[call-arg]
                 model=self.model,
+                contents=self.cached_content,  # contents at top level
                 config=CreateCachedContentConfig(**config_kwargs),
             )
         else:
