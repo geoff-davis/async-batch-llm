@@ -149,7 +149,8 @@ class ProcessorConfig:
 
         if self.timeout_per_item < self.retry.initial_wait:
             logger.warning(
-                f"timeout_per_item ({self.timeout_per_item}s) is less than retry.initial_wait ({self.retry.initial_wait}s). "
+                f"timeout_per_item ({self.timeout_per_item}s) is less than "
+                f"retry.initial_wait ({self.retry.initial_wait}s). "
                 f"This means the timeout may occur before the first retry delay completes. "
                 f"Consider increasing timeout_per_item or decreasing retry.initial_wait."
             )
@@ -169,7 +170,8 @@ class ProcessorConfig:
             )
             logger.warning(
                 f"timeout_per_item ({self.timeout_per_item}s) may be too short for retry strategy. "
-                f"With {self.retry.max_attempts} attempts, retry delays could total up to {max_total_retry_wait:.1f}s{jitter_note}. "
+                f"With {self.retry.max_attempts} attempts, retry delays could total up to "
+                f"{max_total_retry_wait:.1f}s{jitter_note}. "
                 f"Consider increasing timeout_per_item to at least {max_total_retry_wait * 2:.1f}s."
             )
 
@@ -178,8 +180,10 @@ class ProcessorConfig:
             requests_per_second = self.max_requests_per_minute / 60.0
             if requests_per_second < self.max_workers:
                 logger.warning(
-                    f"max_requests_per_minute ({self.max_requests_per_minute}) is less than max_workers ({self.max_workers}). "
+                    f"max_requests_per_minute ({self.max_requests_per_minute}) is less than "
+                    f"max_workers ({self.max_workers}). "
                     f"At {requests_per_second:.2f} requests/second with {self.max_workers} workers, "
                     f"workers may frequently wait for rate limit tokens. "
-                    f"Consider reducing max_workers to {int(requests_per_second)} or increasing max_requests_per_minute."
+                    f"Consider reducing max_workers to {int(requests_per_second)} or increasing "
+                    f"max_requests_per_minute."
                 )

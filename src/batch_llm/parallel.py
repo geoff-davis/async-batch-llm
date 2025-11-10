@@ -414,8 +414,9 @@ class ParallelBatchProcessor(
 
             # Log completion
             status = "✓" if result.success else "✗"
+            outcome = 'success' if result.success else 'failed'
             logger.info(
-                f"{status} [Worker {worker_id}] Completed {work_item.item_id} ({'success' if result.success else 'failed'})"
+                f"{status} [Worker {worker_id}] Completed {work_item.item_id} ({outcome})"
             )
 
             # Log progress (thread-safe read of stats)
@@ -660,9 +661,11 @@ class ParallelBatchProcessor(
                         error_msg = str(e)
                         token_summary = ""
                         if cumulative_failed_tokens["total_tokens"] > 0:
-                            token_summary = f"\n  Total tokens consumed across all attempts: {cumulative_failed_tokens['total_tokens']}"
+                            total = cumulative_failed_tokens['total_tokens']
+                            token_summary = f"\n  Total tokens consumed across all attempts: {total}"
                         logger.error(
-                            f"✗ ALL {self.config.retry.max_attempts} ATTEMPTS EXHAUSTED for {work_item.item_id}:\n"
+                            f"✗ ALL {self.config.retry.max_attempts} ATTEMPTS EXHAUSTED "
+                            f"for {work_item.item_id}:\n"
                             f"  Final error type: {type(e).__name__}\n"
                             f"  Final error message: {error_msg[:500]}{token_summary}"
                         )
@@ -706,14 +709,17 @@ class ParallelBatchProcessor(
 
                     # Log retry attempt
                     error_snippet = str(e)[:150]
+                    error_type = type(e).__name__
                     if is_validation_error:
                         logger.warning(
-                            f"⚠️  Attempt {attempt}/{self.config.retry.max_attempts} failed for {work_item.item_id}: {type(e).__name__} - {error_snippet}. "
+                            f"⚠️  Attempt {attempt}/{self.config.retry.max_attempts} failed for "
+                            f"{work_item.item_id}: {error_type} - {error_snippet}. "
                             f"Retrying immediately..."
                         )
                     else:
                         logger.warning(
-                            f"⚠️  Attempt {attempt}/{self.config.retry.max_attempts} failed for {work_item.item_id}: {type(e).__name__} - {error_snippet}. "
+                            f"⚠️  Attempt {attempt}/{self.config.retry.max_attempts} failed for "
+                            f"{work_item.item_id}: {error_type} - {error_snippet}. "
                             f"Retrying in {wait_time:.1f}s..."
                         )
 
@@ -775,7 +781,8 @@ class ParallelBatchProcessor(
                     f"ℹ️  [Worker {worker_id}] Retry attempt {attempt_number} for {work_item.item_id}"
                 )
             logger.debug(
-                f"[STRATEGY] Starting strategy.execute() for {work_item.item_id} (attempt {attempt_number}, timeout={self.config.timeout_per_item}s)"
+                f"[STRATEGY] Starting strategy.execute() for {work_item.item_id} "
+                f"(attempt {attempt_number}, timeout={self.config.timeout_per_item}s)"
             )
             llm_start_time = time.time()
 
@@ -822,13 +829,16 @@ class ParallelBatchProcessor(
 
             llm_duration = time.time() - llm_start_time
             logger.debug(
-                f"[STRATEGY] Completed strategy.execute() for {work_item.item_id} in {llm_duration:.1f}s"
+                f"[STRATEGY] Completed strategy.execute() for {work_item.item_id} "
+                f"in {llm_duration:.1f}s"
             )
 
             # Log success after previous failures
             if attempt_number > 1:
+                failures = attempt_number - 1
                 logger.info(
-                    f"✓ SUCCESS on attempt {attempt_number} for {work_item.item_id} (after {attempt_number - 1} failure(s), took {llm_duration:.1f}s)"
+                    f"✓ SUCCESS on attempt {attempt_number} for {work_item.item_id} "
+                    f"(after {failures} failure(s), took {llm_duration:.1f}s)"
                 )
 
             # Log first few results for debugging
