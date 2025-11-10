@@ -599,9 +599,12 @@ class ParallelBatchProcessor(
                 if isinstance(failed_usage, dict):
                     return failed_usage
 
-        except Exception:
-            # Extraction failed - return empty dict
-            pass
+        except Exception as e:
+            # Extraction failed - log for debugging and return empty dict
+            logger.debug(
+                f"Failed to extract token usage from {type(exception).__name__}: {e}. "
+                "Returning 0 tokens. This is normal for non-LLM exceptions."
+            )
 
         return {
             "input_tokens": 0,
@@ -824,7 +827,10 @@ class ParallelBatchProcessor(
                 )
                 # Wrap in FrameworkTimeoutError to differentiate from API timeouts
                 raise FrameworkTimeoutError(
-                    f"Framework timeout after {elapsed:.1f}s (limit: {self.config.timeout_per_item}s)"
+                    f"Framework timeout after {elapsed:.1f}s (limit: {self.config.timeout_per_item}s)",
+                    item_id=work_item.item_id,
+                    elapsed=elapsed,
+                    timeout_limit=self.config.timeout_per_item,
                 ) from timeout_exc
 
             llm_duration = time.time() - llm_start_time

@@ -420,6 +420,26 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
                 "Install with: pip install 'batch-llm[gemini]'"
             )
 
+        # Validate cache parameters (v0.4.0)
+        if cache_renewal_buffer_seconds >= cache_ttl_seconds:
+            raise ValueError(
+                f"cache_renewal_buffer_seconds ({cache_renewal_buffer_seconds}) "
+                f"must be less than cache_ttl_seconds ({cache_ttl_seconds}). "
+                f"Typical value: 5-10 minutes (300-600 seconds). "
+                f"This prevents renewal from triggering before cache is created."
+            )
+
+        # Allow short TTLs for testing (< 10 seconds), warn for production values
+        if 10 <= cache_ttl_seconds < 60:
+            import warnings
+            warnings.warn(
+                f"cache_ttl_seconds ({cache_ttl_seconds}) is less than 60 seconds. "
+                f"Very short TTLs defeat the purpose of caching. "
+                f"Recommended minimum: 300 seconds (5 minutes).",
+                UserWarning,
+                stacklevel=2
+            )
+
         self.model = model
         self.client = client
         self.response_parser = response_parser

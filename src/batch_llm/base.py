@@ -74,17 +74,22 @@ class RetryState:
         """
         self.data[key] = value
 
-    def delete(self, key: str) -> None:
+    def delete(self, key: str, raise_if_missing: bool = False) -> None:
         """
         Delete a value from the state.
 
         Args:
             key: State key to delete
+            raise_if_missing: If True, raise KeyError if key doesn't exist.
+                             If False, silently ignore missing keys (default).
 
         Raises:
-            KeyError: If key doesn't exist
+            KeyError: If key doesn't exist and raise_if_missing=True
         """
-        del self.data[key]
+        if raise_if_missing:
+            del self.data[key]
+        else:
+            self.data.pop(key, None)
 
     def clear(self) -> None:
         """Clear all state data."""

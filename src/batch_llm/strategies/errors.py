@@ -15,9 +15,34 @@ class FrameworkTimeoutError(TimeoutError):
     This distinguishes framework-level timeouts from API-level timeouts.
     Framework timeouts indicate the configured timeout_per_item was exceeded,
     whereas API timeouts indicate the LLM provider returned a timeout error.
+
+    Attributes:
+        item_id: ID of the work item that timed out (if available)
+        elapsed: Actual time elapsed in seconds
+        timeout_limit: Configured timeout limit in seconds
     """
 
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        item_id: str | None = None,
+        elapsed: float | None = None,
+        timeout_limit: float | None = None,
+    ):
+        """
+        Initialize FrameworkTimeoutError with structured context (v0.4.0).
+
+        Args:
+            message: Human-readable error message
+            item_id: ID of the work item that timed out
+            elapsed: Actual time elapsed before timeout
+            timeout_limit: The timeout limit that was exceeded
+        """
+        super().__init__(message)
+        self.item_id = item_id
+        self.elapsed = elapsed
+        self.timeout_limit = timeout_limit
 
 
 @dataclass
