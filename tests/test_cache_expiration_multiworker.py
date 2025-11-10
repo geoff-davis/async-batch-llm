@@ -59,8 +59,9 @@ async def test_cache_expiration_only_one_new_cache_created():
     # Mock the generate_content call
     async def mock_generate(*args, **kwargs):
         """Mock content generation - track which cache was used."""
-        # Extract the cached_content parameter if present
-        cached_content = kwargs.get('cached_content')
+        # In google-genai v1.46+, cached_content is passed in the config dict
+        config = kwargs.get('config', {})
+        cached_content = config.get('cached_content') if isinstance(config, dict) else None
         if cached_content:
             cache_usage.append(cached_content)
 
