@@ -6,7 +6,6 @@ Run with: pytest -m benchmark
 Skip with: pytest -m "not benchmark"
 """
 
-import asyncio
 import time
 from typing import Annotated
 
@@ -56,7 +55,7 @@ async def test_throughput_single_worker():
     efficiency = (expected_time / elapsed) * 100  # Should be ~100%
 
     print(f"\n{'='*60}")
-    print(f"Throughput Benchmark - Single Worker")
+    print("Throughput Benchmark - Single Worker")
     print(f"{'='*60}")
     print(f"Items processed: {result.total_items}")
     print(f"Elapsed time: {elapsed:.2f}s")
@@ -108,10 +107,10 @@ async def test_throughput_scaling_workers():
         assert result.succeeded == num_items
 
     print(f"\n{'='*60}")
-    print(f"Throughput Scaling Benchmark")
+    print("Throughput Scaling Benchmark")
     print(f"{'='*60}")
     print(f"Items: {num_items}, Latency: {latency}s per item")
-    print(f"Worker Count | Time (s) | Throughput (items/s) | Speedup")
+    print("Worker Count | Time (s) | Throughput (items/s) | Speedup")
     print(f"{'-'*60}")
 
     baseline = results[1]
@@ -157,7 +156,7 @@ async def test_memory_usage_many_items():
     items_per_second = num_items / elapsed
 
     print(f"\n{'='*60}")
-    print(f"Memory Usage Benchmark")
+    print("Memory Usage Benchmark")
     print(f"{'='*60}")
     print(f"Items processed: {result.total_items}")
     print(f"Workers: {config.max_workers}")
@@ -201,7 +200,7 @@ async def test_overhead_empty_processing():
     overhead_per_item = (overhead / num_items) * 1000  # ms per item
 
     print(f"\n{'='*60}")
-    print(f"Framework Overhead Benchmark")
+    print("Framework Overhead Benchmark")
     print(f"{'='*60}")
     print(f"Items: {num_items}")
     print(f"Mock latency: {latency*1000:.2f}ms per item")
@@ -247,12 +246,12 @@ async def test_concurrent_stats_performance():
     stats = await processor.get_stats()
 
     print(f"\n{'='*60}")
-    print(f"Concurrent Stats Performance")
+    print("Concurrent Stats Performance")
     print(f"{'='*60}")
     print(f"Items: {num_items}, Workers: {config.max_workers}")
     print(f"Processing time: {elapsed:.2f}s")
     print(f"Throughput: {num_items/elapsed:.2f} items/sec")
-    print(f"Stats collected:")
+    print("Stats collected:")
     print(f"  - Items succeeded: {stats['succeeded']}")
     print(f"  - Items failed: {stats['failed']}")
     print(f"  - Total tokens: {stats['total_tokens']}")
@@ -303,10 +302,10 @@ async def test_shared_strategy_vs_unique_strategies():
     time_unique = time.time() - start_unique
 
     print(f"\n{'='*60}")
-    print(f"Shared vs Unique Strategy Performance")
+    print("Shared vs Unique Strategy Performance")
     print(f"{'='*60}")
     print(f"Items: {num_items}, Workers: {config.max_workers}")
-    print(f"\nShared strategy (1 instance):")
+    print("\nShared strategy (1 instance):")
     print(f"  Time: {time_shared:.3f}s")
     print(f"  Throughput: {num_items/time_shared:.2f} items/sec")
     print(f"\nUnique strategies ({num_items} instances):")
@@ -357,14 +356,14 @@ async def test_retry_performance_impact():
     throughput = num_items / elapsed_with_retries
 
     print(f"\n{'='*60}")
-    print(f"Retry Logic Performance Impact")
+    print("Retry Logic Performance Impact")
     print(f"{'='*60}")
     print(f"Items: {num_items} (all succeeded on first attempt)")
-    print(f"Retry config: max_attempts=3, initial_wait=0.1s")
+    print("Retry config: max_attempts=3, initial_wait=0.1s")
     print(f"Time: {elapsed_with_retries:.2f}s")
     print(f"Throughput: {throughput:.2f} items/sec")
-    print(f"\nNote: When items succeed on first attempt,")
-    print(f"retry logic has minimal overhead (~1-2%)")
+    print("\nNote: When items succeed on first attempt,")
+    print("retry logic has minimal overhead (~1-2%)")
     print(f"{'='*60}\n")
 
     assert result.succeeded == num_items

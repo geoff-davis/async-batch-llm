@@ -7,7 +7,6 @@ import pytest
 from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, RetryState
 from batch_llm.base import TokenUsage
 from batch_llm.llm_strategies import LLMCallStrategy
-from batch_llm.strategies.errors import DefaultErrorClassifier, ErrorInfo
 from batch_llm.strategies.rate_limit import FixedDelayStrategy
 
 

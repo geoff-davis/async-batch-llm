@@ -203,7 +203,7 @@ async def test_gemini_response_with_safety_ratings_real_api():
     assert isinstance(item_result.output.output, str), "Parsed output should be accessible"
     assert len(item_result.output.output) > 0, "Should have generated text"
 
-    print(f"✅ Gemini safety ratings test passed")
+    print("✅ Gemini safety ratings test passed")
     print(f"   Safety ratings: {item_result.output.safety_ratings}")
     print(f"   Finish reason: {item_result.output.finish_reason}")
 
@@ -215,7 +215,13 @@ async def test_retry_on_real_validation_error():
     """Integration test that triggers real validation error and retries."""
     from pydantic import BaseModel, Field
 
-    from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, PydanticAIStrategy, RetryConfig
+    from batch_llm import (
+        LLMWorkItem,
+        ParallelBatchProcessor,
+        ProcessorConfig,
+        PydanticAIStrategy,
+        RetryConfig,
+    )
 
     try:
         from pydantic_ai import Agent
@@ -258,7 +264,7 @@ async def test_retry_on_real_validation_error():
     assert result.total_items == 1
     # May succeed on first try or after retries
     if result.succeeded == 1:
-        print(f"✅ Validation test passed on attempt")
+        print("✅ Validation test passed on attempt")
     else:
         print(f"⚠️ Validation test failed after all retries: {result.results[0].error}")
 

@@ -12,8 +12,6 @@ from batch_llm import (
     RetryState,
 )
 from batch_llm.base import TokenUsage
-from batch_llm.classifiers.gemini import GeminiErrorClassifier
-from batch_llm.core.config import RetryConfig
 from batch_llm.llm_strategies import LLMCallStrategy
 
 
@@ -406,9 +404,10 @@ def test_cache_tags_isolation():
     # We're testing that the cache_tags parameter is properly stored and used
 
     try:
-        from batch_llm.llm_strategies import GeminiCachedStrategy
         import google.genai as genai
         from google.genai.types import Content
+
+        from batch_llm.llm_strategies import GeminiCachedStrategy
     except ImportError:
         pytest.skip("google-genai not installed")
 
@@ -448,9 +447,10 @@ def test_cache_tags_isolation():
 def test_cache_tags_none_default():
     """Test that cache_tags defaults to empty dict when not provided."""
     try:
-        from batch_llm.llm_strategies import GeminiCachedStrategy
         import google.genai as genai
         from google.genai.types import Content
+
+        from batch_llm.llm_strategies import GeminiCachedStrategy
     except ImportError:
         pytest.skip("google-genai not installed")
 
