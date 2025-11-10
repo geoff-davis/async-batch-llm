@@ -365,6 +365,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         auto_renew: bool = True,  # v0.2.0: Automatically renew expired caches
         config: "GenerateContentConfig | None" = None,
         include_metadata: bool = False,  # v0.3.0: Opt-in for safety ratings
+        cache_tags: dict[str, str] | None = None,  # v0.3.0: Tags for cache matching
     ):
         """
         Initialize Gemini cached strategy with automatic cache renewal (v0.2.0).
@@ -381,6 +382,9 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
             auto_renew: Automatically renew expired caches in execute() (default: True)
             config: Optional generation config
             include_metadata: If True, return GeminiResponse with safety ratings (v0.3.0)
+            cache_tags: Tags for precise cache matching (v0.3.0). If provided, will only
+                reuse caches with matching tags. Useful to prevent accidental cache reuse
+                when prompt/content changes.
         """
         if genai is None:
             raise ImportError(
@@ -398,6 +402,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         self.auto_renew = auto_renew  # v0.2.0
         self.config = config
         self.include_metadata = include_metadata  # v0.3.0
+        self.cache_tags = cache_tags or {}  # v0.3.0
 
         self._cache: Any = None  # Type: CachedContent after prepare()
         self._cache_created_at: float | None = None
@@ -466,10 +471,12 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 
     async def _find_or_create_cache(self) -> None:
         """
-        Find existing cache or create new one (v0.2.0).
+        Find existing cache or create new one (v0.2.0, enhanced v0.3.0).
 
-        Attempts to reuse existing caches with the same model to save costs.
+        Attempts to reuse existing caches with the same model (and matching tags if provided).
         If no suitable cache found, creates a new one.
+
+        v0.3.0: Added tag matching for precise cache identification.
         """
         import asyncio
 
@@ -477,29 +484,51 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         if self._cache_lock is None:
             self._cache_lock = asyncio.Lock()
 
-        # Try to find existing cache with same model
+        # Try to find existing cache with same model (and tags if provided)
         try:
             caches = await self.client.aio.caches.list()
 
             for cache in caches:
                 # Cache model is full path: "projects/.../models/gemini-..."
                 # Match by model name suffix
-                if cache.model.endswith(self.model):
-                    self._cache = cache
+                if not cache.model.endswith(self.model):
+                    continue
 
-                    # CRITICAL: Use cache's actual creation time, not current time
-                    # This prevents expiration detection bugs
-                    if hasattr(cache, "create_time") and cache.create_time:
-                        self._cache_created_at = cache.create_time.timestamp()
-                    else:
-                        # Fallback: assume old to trigger renewal check
-                        self._cache_created_at = time.time() - self.cache_ttl_seconds
+                # v0.3.0: Check tags if provided
+                if self.cache_tags:
+                    # Get cache metadata/tags if available
+                    cache_metadata = getattr(cache, "metadata", {}) or {}
 
-                    logger.info(
-                        f"Reusing existing Gemini cache: {self._cache.name} "
-                        f"(age: {time.time() - self._cache_created_at:.0f}s)"
+                    # Check if all our tags match the cache's tags
+                    tags_match = all(
+                        cache_metadata.get(k) == v
+                        for k, v in self.cache_tags.items()
                     )
-                    return
+
+                    if not tags_match:
+                        logger.debug(
+                            f"Skipping cache {cache.name}: tags don't match "
+                            f"(want {self.cache_tags}, has {cache_metadata})"
+                        )
+                        continue  # Tags don't match, skip this cache
+
+                # Found matching cache (model + tags)
+                self._cache = cache
+
+                # CRITICAL: Use cache's actual creation time, not current time
+                # This prevents expiration detection bugs
+                if hasattr(cache, "create_time") and cache.create_time:
+                    self._cache_created_at = cache.create_time.timestamp()
+                else:
+                    # Fallback: assume old to trigger renewal check
+                    self._cache_created_at = time.time() - self.cache_ttl_seconds
+
+                tag_info = f" with tags {self.cache_tags}" if self.cache_tags else ""
+                logger.info(
+                    f"Reusing existing Gemini cache: {self._cache.name}{tag_info} "
+                    f"(age: {time.time() - self._cache_created_at:.0f}s)"
+                )
+                return
         except Exception as e:
             logger.warning(f"Failed to list existing caches: {e}")
 
@@ -507,20 +536,39 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         await self._create_new_cache()
 
     async def _create_new_cache(self) -> None:
-        """Create a new Gemini cache (v0.2.0)."""
+        """Create a new Gemini cache (v0.2.0, enhanced v0.3.0 with tags)."""
         if self._api_version == "v1.46+":
             # New API (google-genai v1.46+)
             from google.genai.types import CreateCachedContentConfig
 
+            # v0.3.0: Try to include metadata/tags if API supports it
+            config_kwargs = {
+                "contents": self.cached_content,
+                "ttl": f"{self.cache_ttl_seconds}s",
+            }
+
+            # Add metadata if tags provided
+            if self.cache_tags:
+                try:
+                    config_kwargs["metadata"] = self.cache_tags
+                except TypeError:
+                    logger.warning(
+                        "Gemini API doesn't support metadata parameter, "
+                        "cache tags will not be stored (cache matching will be model-only)"
+                    )
+
             self._cache = await self.client.aio.caches.create(  # type: ignore[call-arg]
                 model=self.model,
-                config=CreateCachedContentConfig(
-                    contents=self.cached_content,
-                    ttl=f"{self.cache_ttl_seconds}s",
-                ),
+                config=CreateCachedContentConfig(**config_kwargs),
             )
         else:
-            # Legacy API (google-genai v1.45 and earlier)
+            # Legacy API (google-genai v1.45 and earlier) - no metadata support
+            if self.cache_tags:
+                logger.warning(
+                    "Cache tags not supported on legacy google-genai API (v1.45 and earlier). "
+                    "Upgrade to v1.46+ for tag support."
+                )
+
             self._cache = await self.client.aio.caches.create(  # type: ignore[call-arg]
                 model=self.model,
                 contents=self.cached_content,
@@ -528,8 +576,9 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
             )
 
         self._cache_created_at = time.time()
+        tag_info = f" with tags {self.cache_tags}" if self.cache_tags else ""
         logger.info(
-            f"Created new Gemini cache: {self._cache.name} "
+            f"Created new Gemini cache: {self._cache.name}{tag_info} "
             f"(TTL: {self.cache_ttl_seconds}s, API: {self._api_version})"
         )
 
