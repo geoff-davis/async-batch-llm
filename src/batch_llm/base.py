@@ -20,6 +20,84 @@ TContext = TypeVar("TContext")  # Optional context passed through
 # Module-level logger
 logger = logging.getLogger(__name__)
 
+
+@dataclass
+class RetryState:
+    """
+    Mutable state that persists across retry attempts for a single work item.
+
+    This allows strategies to maintain state between retry attempts, enabling
+    multi-stage retry patterns where each attempt can build on previous attempts.
+
+    Example use cases:
+    - Partial recovery: Save successfully parsed fields from failed attempts
+    - Progressive refinement: Track which parts of output need improvement
+    - Smart retry prompts: Build targeted prompts based on what failed
+    - Model escalation: Track validation errors vs network errors separately
+
+    Usage:
+        # In strategy's on_error():
+        if state:
+            state.set('last_error_type', type(exception).__name__)
+            state.set('validation_failures', state.get('validation_failures', 0) + 1)
+
+        # In strategy's execute():
+        if state and state.get('validation_failures', 0) > 1:
+            # Use smarter model or modified prompt
+            pass
+
+    Added in v0.3.0.
+    """
+
+    data: dict[str, Any] = field(default_factory=dict)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """
+        Get a value from the state.
+
+        Args:
+            key: State key to retrieve
+            default: Value to return if key doesn't exist
+
+        Returns:
+            Value associated with key, or default if not found
+        """
+        return self.data.get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        """
+        Set a value in the state.
+
+        Args:
+            key: State key to set
+            value: Value to store (can be any JSON-serializable type)
+        """
+        self.data[key] = value
+
+    def delete(self, key: str) -> None:
+        """
+        Delete a value from the state.
+
+        Args:
+            key: State key to delete
+
+        Raises:
+            KeyError: If key doesn't exist
+        """
+        del self.data[key]
+
+    def clear(self) -> None:
+        """Clear all state data."""
+        self.data.clear()
+
+    def __contains__(self, key: str) -> bool:
+        """Check if key exists in state."""
+        return key in self.data
+
+    def __repr__(self) -> str:
+        """String representation showing all state data."""
+        return f"RetryState({self.data!r})"
+
 # Timeout constants (seconds)
 WORKER_CANCELLATION_TIMEOUT = 2.0  # Time to wait for workers to cancel gracefully
 WORKER_SHUTDOWN_TIMEOUT = 30.0  # Time to wait for workers to finish after queue is done

@@ -2,7 +2,7 @@
 
 import pytest
 
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, RetryState
 from batch_llm.base import TokenUsage
 from batch_llm.llm_strategies import LLMCallStrategy
 
@@ -21,7 +21,7 @@ class CachedTokenStrategy(LLMCallStrategy[str]):
         self.cached_tokens = cached_tokens
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
     ) -> tuple[str, TokenUsage]:
         """Return mock response with cached token info."""
         return "Response", {
@@ -105,7 +105,7 @@ async def test_no_cached_tokens():
 
     class NonCachedStrategy(LLMCallStrategy[str]):
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[str, TokenUsage]:
             return "Response", {
                 "input_tokens": 100,
@@ -138,7 +138,7 @@ async def test_mixed_cached_and_noncached():
 
     class NonCachedStrategy(LLMCallStrategy[str]):
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[str, TokenUsage]:
             return "Response", {
                 "input_tokens": 100,
@@ -186,7 +186,7 @@ async def test_cache_hit_rate_with_zero_input_tokens():
 
     class ZeroTokenStrategy(LLMCallStrategy[str]):
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[str, TokenUsage]:
             return "Response", {
                 "input_tokens": 0,

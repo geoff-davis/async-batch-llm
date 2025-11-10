@@ -8,7 +8,8 @@
       "Bash(make:*)",
       "Bash(python3 -m mypy:*)",
       "Bash(git add:*)",
-      "Bash(npx markdownlint-cli2:*)"
+      "Bash(npx markdownlint-cli2:*)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []

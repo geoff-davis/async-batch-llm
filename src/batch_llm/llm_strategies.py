@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-from .base import TokenUsage
+from .base import RetryState, TokenUsage
 
 # Conditional imports for optional dependencies
 if TYPE_CHECKING:
@@ -65,7 +65,7 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
 
     @abstractmethod
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state: "RetryState | None" = None
     ) -> tuple[TOutput, TokenUsage]:
         """
         Execute an LLM call for the given attempt.
@@ -74,6 +74,7 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
             prompt: The prompt to send to the LLM
             attempt: Which retry attempt this is (1, 2, 3, ...)
             timeout: Maximum time to wait for response (seconds)
+            state: Optional retry state that persists across attempts (v0.3.0)
 
         Returns:
             Tuple of (output, token_usage)
@@ -82,6 +83,11 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
 
         Raises:
             Any exception to trigger retry (if retryable) or failure
+
+        Note (v0.3.0):
+            The state parameter allows strategies to maintain state across retry
+            attempts for multi-stage retry patterns. See RetryState documentation
+            for examples.
         """
         pass
 
@@ -110,7 +116,7 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
         """
         pass
 
-    async def on_error(self, exception: Exception, attempt: int) -> None:
+    async def on_error(self, exception: Exception, attempt: int, state: "RetryState | None" = None) -> None:
         """
         Handle errors that occur during execute().
 
@@ -124,10 +130,11 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
         Args:
             exception: The exception that was raised during execute()
             attempt: Which attempt number failed (1, 2, 3, ...)
+            state: Optional retry state that persists across attempts (v0.3.0)
 
         Default: no-op
 
-        Example:
+        Example (v0.2.0):
             async def on_error(self, exception: Exception, attempt: int) -> None:
                 # Store last error for smart retry logic
                 self.last_error = exception
@@ -135,6 +142,19 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
                 # Track validation errors vs network errors
                 if isinstance(exception, ValidationError):
                     self.should_escalate_model = True
+
+        Example (v0.3.0 with retry state):
+            async def on_error(
+                self, exception: Exception, attempt: int, state: RetryState | None = None
+            ) -> None:
+                if state:
+                    # Track validation errors separately from other errors
+                    if isinstance(exception, ValidationError):
+                        count = state.get('validation_failures', 0) + 1
+                        state.set('validation_failures', count)
+                        # Save partial results for recovery
+                        if hasattr(exception, 'partial_data'):
+                            state.set('partial_data', exception.partial_data)
         """
         pass
 
@@ -201,12 +221,18 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
         self.config = config
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
     ) -> tuple[TOutput, TokenUsage]:
         """Execute Gemini API call.
 
         Note: timeout parameter is provided for information but timeout enforcement
         is handled by the framework wrapping this call in asyncio.wait_for().
+
+        Args:
+            prompt: The prompt to send to the LLM
+            attempt: Which retry attempt this is (1, 2, 3, ...)
+            timeout: Maximum time to wait for response (seconds)
+            state: Optional retry state (v0.3.0, unused by this strategy)
         """
         # Make the call
         response = await self.client.aio.models.generate_content(
@@ -396,12 +422,18 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         await self._find_or_create_cache()
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
     ) -> tuple[TOutput, TokenUsage]:
         """Execute Gemini API call with automatic cache renewal (v0.2.0).
 
         Note: timeout parameter is provided for information but timeout enforcement
         is handled by the framework wrapping this call in asyncio.wait_for().
+
+        Args:
+            prompt: The prompt to send to the LLM
+            attempt: Which retry attempt this is (1, 2, 3, ...)
+            timeout: Maximum time to wait for response (seconds)
+            state: Optional retry state (v0.3.0, unused by this strategy)
         """
         # Check and renew cache if expired (proactive renewal to avoid errors)
         if self.auto_renew and self._is_cache_expired():
@@ -532,12 +564,18 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
         self.agent = agent
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
     ) -> tuple[TOutput, TokenUsage]:
         """Execute PydanticAI agent call.
 
         Note: timeout parameter is provided for information but timeout enforcement
         is handled by the framework wrapping this call in asyncio.wait_for().
+
+        Args:
+            prompt: The prompt to send to the LLM
+            attempt: Which retry attempt this is (1, 2, 3, ...)
+            timeout: Maximum time to wait for response (seconds)
+            state: Optional retry state (v0.3.0, unused by this strategy)
         """
         result = await self.agent.run(prompt)
 

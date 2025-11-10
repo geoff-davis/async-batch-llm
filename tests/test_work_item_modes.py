@@ -12,6 +12,7 @@ from batch_llm import (
     ParallelBatchProcessor,
     ProcessorConfig,
     PydanticAIStrategy,
+    RetryState,
 )
 from batch_llm.testing import MockAgent
 
@@ -63,7 +64,7 @@ async def test_custom_strategy_with_progressive_temperature():
             self.temps = [0.0, 0.25, 0.5]
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[TestOutput, dict[str, int]]:
             temp = self.temps[min(attempt - 1, len(self.temps) - 1)]
             call_log.append({"attempt": attempt, "temp": temp})
@@ -110,7 +111,7 @@ async def test_custom_strategy_with_simulated_api_call():
         """Strategy that simulates calling an API directly."""
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[TestOutput, dict[str, int]]:
             temps = [0.0, 0.25, 0.5]
             temp = temps[min(attempt - 1, len(temps) - 1)]
@@ -161,7 +162,7 @@ async def test_custom_strategy_with_retries():
         """Fail first attempt, succeed on second."""
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[TestOutput, dict[str, int]]:
             temps = [0.0, 0.25, 0.5]
             temp = temps[min(attempt - 1, len(temps) - 1)]
@@ -206,7 +207,7 @@ async def test_custom_strategy_timeout_handling():
         """Strategy that takes too long."""
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[TestOutput, dict[str, int]]:
             # Sleep longer than timeout to ensure it triggers
             await asyncio.sleep(1.0)  # 1 second sleep
@@ -277,7 +278,7 @@ async def test_strategy_lifecycle_prepare_and_cleanup():
             lifecycle_log.append("prepare")
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[TestOutput, dict[str, int]]:
             lifecycle_log.append("execute")
             return TestOutput(value="Success"), {

@@ -10,6 +10,7 @@ from .base import (
     LLMWorkItem,
     PostProcessorFunc,
     ProgressCallbackFunc,
+    RetryState,
     TContext,
     TInput,
     TOutput,
@@ -616,6 +617,10 @@ class ParallelBatchProcessor(
         # Get the strategy
         strategy = self._get_strategy(work_item)
 
+        # Create retry state for this work item (v0.3.0)
+        # This state persists across all retry attempts for multi-stage strategies
+        retry_state = RetryState()
+
         # Ensure strategy is prepared (framework ensures this is called only once per unique strategy instance)
         try:
             await self._ensure_strategy_prepared(strategy)
@@ -627,7 +632,7 @@ class ParallelBatchProcessor(
             for attempt in range(1, self.config.retry.max_attempts + 1):
                 try:
                     return await self._process_item(
-                        work_item, worker_id, attempt_number=attempt, strategy=strategy
+                        work_item, worker_id, attempt_number=attempt, strategy=strategy, retry_state=retry_state
                     )
                 except Exception as e:
                     # Try to extract token usage from this failed attempt using robust extraction
@@ -736,6 +741,7 @@ class ParallelBatchProcessor(
         worker_id: int,
         attempt_number: int = 1,
         strategy: LLMCallStrategy[TOutput] | None = None,
+        retry_state: RetryState | None = None,
     ) -> WorkItemResult[TOutput, TContext]:
         """Process a single work item using the provided strategy."""
         start_time = time.time()
@@ -792,11 +798,11 @@ class ParallelBatchProcessor(
                     # Delegate to strategy's dry_run method for mock output
                     output, token_usage = await strategy.dry_run(work_item.prompt)
                 else:
-                    # Call strategy.execute() with prompt, attempt number, and timeout
+                    # Call strategy.execute() with prompt, attempt number, timeout, and retry state (v0.3.0)
                     # Wrap in asyncio.wait_for to enforce timeout at framework level
                     output, token_usage = await asyncio.wait_for(
                         strategy.execute(
-                            work_item.prompt, attempt_number, self.config.timeout_per_item
+                            work_item.prompt, attempt_number, self.config.timeout_per_item, retry_state
                         ),
                         timeout=self.config.timeout_per_item,
                     )
@@ -859,10 +865,10 @@ class ParallelBatchProcessor(
 
         except Exception as e:
             # Notify strategy about the error before handling it
-            # This allows strategy to adjust behavior for next retry
+            # This allows strategy to adjust behavior for next retry (v0.3.0: now includes retry_state)
             if strategy is not None:  # Type guard for mypy
                 try:
-                    await strategy.on_error(e, attempt_number)
+                    await strategy.on_error(e, attempt_number, retry_state)
                 except Exception as callback_error:
                     # Log but don't fail if on_error callback has bugs
                     logger.warning(

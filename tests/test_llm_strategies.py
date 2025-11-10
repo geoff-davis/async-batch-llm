@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import BaseModel
 
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, RetryConfig
+from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, RetryConfig, RetryState
 from batch_llm.llm_strategies import (
     GeminiCachedStrategy,
     GeminiStrategy,
@@ -32,19 +32,23 @@ class MockStrategy(LLMCallStrategy[TestOutput]):
         self.prepare_called = False
         self.execute_calls = []
         self.cleanup_called = False
+        self.on_error_calls = []
 
     async def prepare(self):
         self.prepare_called = True
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
     ) -> tuple[TestOutput, dict[str, int]]:
-        self.execute_calls.append((prompt, attempt, timeout))
+        self.execute_calls.append((prompt, attempt, timeout, state))
         return TestOutput(text=f"Response for {prompt}"), {
             "input_tokens": 10,
             "output_tokens": 20,
             "total_tokens": 30,
         }
+
+    async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None) -> None:
+        self.on_error_calls.append((exception, attempt, state))
 
     async def cleanup(self):
         self.cleanup_called = False
@@ -86,7 +90,7 @@ async def test_strategy_with_retries():
             self.attempt_count = 0
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[TestOutput, dict[str, int]]:
             self.attempt_count += 1
             if self.attempt_count < self.fail_count:
@@ -289,7 +293,7 @@ async def test_strategy_error_handling():
 
     class ErrorStrategy(LLMCallStrategy[TestOutput]):
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[TestOutput, dict[str, int]]:
             raise ValueError("Strategy error")
 
@@ -338,12 +342,12 @@ async def test_on_error_callback_called():
             self.errors_received = []
             self.attempts_received = []
 
-        async def on_error(self, exception: Exception, attempt: int) -> None:
+        async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None) -> None:
             self.errors_received.append(exception)
             self.attempts_received.append(attempt)
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[TestOutput, dict[str, int]]:
             if attempt < 3:
                 raise Exception(f"Transient error on attempt {attempt}")
@@ -396,7 +400,7 @@ async def test_on_error_callback_with_state():
             self.network_errors = 0
             self.last_error = None
 
-        async def on_error(self, exception: Exception, attempt: int) -> None:
+        async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None) -> None:
             self.last_error = exception
             # Track different error types
             if "validation" in str(exception).lower():
@@ -405,7 +409,7 @@ async def test_on_error_callback_with_state():
                 self.network_errors += 1
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[TestOutput, dict[str, int]]:
             if attempt == 1:
                 raise Exception("Validation error")  # Generic exception (retryable)
@@ -452,12 +456,12 @@ async def test_on_error_callback_exception_handling():
         def __init__(self):
             self.execute_count = 0
 
-        async def on_error(self, exception: Exception, attempt: int) -> None:
+        async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None) -> None:
             # Intentionally buggy callback
             raise RuntimeError("Buggy on_error callback")
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[TestOutput, dict[str, int]]:
             self.execute_count += 1
             if attempt < 2:
@@ -497,11 +501,11 @@ async def test_on_error_not_called_on_success():
         def __init__(self):
             self.on_error_called = False
 
-        async def on_error(self, exception: Exception, attempt: int) -> None:
+        async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None) -> None:
             self.on_error_called = True
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[TestOutput, dict[str, int]]:
             # Always succeed
             return TestOutput(text="Success"), {

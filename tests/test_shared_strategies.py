@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, RetryState
 from batch_llm.base import TokenUsage
 from batch_llm.llm_strategies import LLMCallStrategy
 
@@ -25,7 +25,7 @@ class CountingStrategy(LLMCallStrategy[str]):
             await asyncio.sleep(0.1)
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
     ) -> tuple[str, TokenUsage]:
         """Track execute() calls."""
         self.execute_count += 1
@@ -150,7 +150,7 @@ async def test_prepare_failure_propagates():
             raise ValueError("Simulated prepare failure")
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[str, TokenUsage]:
             return "Should not reach here", {"input_tokens": 0}
 
@@ -183,7 +183,7 @@ async def test_mixed_shared_and_unique_strategies():
             self.prepare_count += 1
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[str, TokenUsage]:
             return f"{self.name}: {prompt}", {"input_tokens": 10}
 
@@ -248,7 +248,7 @@ async def test_strategy_prepare_idempotency():
             self.prepare_count += 1
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[str, TokenUsage]:
             return "Response", {"input_tokens": 10}
 

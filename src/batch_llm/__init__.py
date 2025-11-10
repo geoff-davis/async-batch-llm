@@ -34,6 +34,7 @@ from .base import (
     PostProcessorFunc,
     ProcessingStats,
     ProgressCallbackFunc,
+    RetryState,
     TokenUsage,
     WorkItemResult,
 )
@@ -80,6 +81,7 @@ __all__ = [
     "PostProcessorFunc",
     "ProcessingStats",
     "ProgressCallbackFunc",
+    "RetryState",
     "TokenUsage",
     "WorkItemResult",
     # Configuration
