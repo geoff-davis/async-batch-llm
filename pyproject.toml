@@ -56,11 +56,11 @@ pydantic-ai = [
     "pydantic-ai>=0.0.1",
 ]
 gemini = [
-    "google-genai>=0.1.0",
+    "google-genai>=1.46.0",
 ]
 all = [
     "pydantic-ai>=0.0.1",
-    "google-genai>=0.1.0",
+    "google-genai>=1.46.0",
 ]
 dev = [
     "pytest>=7.0.0",

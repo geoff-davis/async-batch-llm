@@ -678,12 +678,17 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         if self._cache is None:
             raise RuntimeError("Cache not initialized - prepare() was not called")
 
-        # Make the call using the cache - Google genai API, type stubs may be incomplete
-        response = await self.client.aio.models.generate_content(  # type: ignore[call-arg]
+        # Make the call using the cache
+        # In google-genai v1.46+, cached_content must be passed in the config dict
+        config_with_cache = {
+            **(self.config.__dict__ if hasattr(self.config, "__dict__") else {}),
+            "cached_content": self._cache.name,
+        }
+
+        response = await self.client.aio.models.generate_content(
             model=self.model,
             contents=prompt,
-            config=self.config,
-            cached_content=self._cache.name,
+            config=config_with_cache,
         )
 
         # Parse output
