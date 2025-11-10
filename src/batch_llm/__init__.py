@@ -119,7 +119,7 @@ __all__ = [
 
 # Version is read from package metadata (single source of truth in pyproject.toml)
 try:
-    from importlib.metadata import version, PackageNotFoundError
+    from importlib.metadata import PackageNotFoundError, version
     __version__ = version("batch-llm")
 except PackageNotFoundError:
     # Package not installed (e.g., running from source in development)
