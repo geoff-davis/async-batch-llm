@@ -491,14 +491,30 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         """
         Detect which google-genai API version is installed.
 
+        Google keeps changing the cache creation API:
+        - v1.45 and earlier: contents at top level
+        - v1.46-v1.48: contents at top level (CreateCachedContentConfig exists but doesn't accept contents)
+        - v1.49+: contents back in CreateCachedContentConfig
+
         Returns:
-            "v1.46+" if new API (with CreateCachedContentConfig)
-            "v1.45" if legacy API
+            "v1.49+" if CreateCachedContentConfig accepts contents parameter
+            "v1.46-v1.48" if CreateCachedContentConfig exists but doesn't accept contents
+            "v1.45" if legacy API without CreateCachedContentConfig
         """
         try:
-            from google.genai.types import CreateCachedContentConfig  # noqa: F401
+            import inspect
 
-            return "v1.46+"
+            from google.genai.types import CreateCachedContentConfig
+
+            # Check if CreateCachedContentConfig accepts 'contents' parameter
+            sig = inspect.signature(CreateCachedContentConfig.__init__)
+            params = sig.parameters
+
+            # v1.49+ has contents in the signature
+            if 'contents' in params or 'data' in params:
+                return "v1.49+"
+            else:
+                return "v1.46-v1.48"
         except ImportError:
             return "v1.45"
 
@@ -585,9 +601,32 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 
     async def _create_new_cache(self) -> None:
         """Create a new Gemini cache (v0.2.0, enhanced v0.3.0 with tags)."""
-        if self._api_version == "v1.46+":
-            # New API (google-genai v1.46+)
-            # contents is passed at top level, config only contains ttl/metadata
+        if self._api_version == "v1.49+":
+            # v1.49+ API: contents goes back inside CreateCachedContentConfig
+            from google.genai.types import CreateCachedContentConfig
+
+            # Build config with contents, ttl, and optional metadata
+            config_kwargs = {
+                "contents": self.cached_content,  # v1.49+: contents in config
+                "ttl": f"{self.cache_ttl_seconds}s",
+            }
+
+            # Add metadata if tags provided
+            if self.cache_tags:
+                try:
+                    config_kwargs["metadata"] = self.cache_tags
+                except TypeError:
+                    logger.warning(
+                        "Gemini API doesn't support metadata parameter, "
+                        "cache tags will not be stored (cache matching will be model-only)"
+                    )
+
+            self._cache = await self.client.aio.caches.create(  # type: ignore[call-arg]
+                model=self.model,
+                config=CreateCachedContentConfig(**config_kwargs),
+            )
+        elif self._api_version == "v1.46-v1.48":
+            # v1.46-v1.48 API: contents at top level, config only has ttl/metadata
             from google.genai.types import CreateCachedContentConfig
 
             # Build config with ttl and optional metadata (v0.3.0)
@@ -607,7 +646,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 
             self._cache = await self.client.aio.caches.create(  # type: ignore[call-arg]
                 model=self.model,
-                contents=self.cached_content,  # contents at top level
+                contents=self.cached_content,  # v1.46-v1.48: contents at top level
                 config=CreateCachedContentConfig(**config_kwargs),
             )
         else:

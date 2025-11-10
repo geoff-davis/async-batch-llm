@@ -116,7 +116,7 @@ wheels = [
 
 [[package]]
 name = "batch-llm"
-version = "0.3.0"
+version = "0.3.3"
 source = { editable = "." }
 dependencies = [
     { name = "aiolimiter" },
@@ -146,8 +146,8 @@ pydantic-ai = [
 [package.metadata]
 requires-dist = [
     { name = "aiolimiter", specifier = ">=1.2.1" },
-    { name = "google-genai", marker = "extra == 'all'", specifier = ">=0.1.0" },
-    { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=0.1.0" },
+    { name = "google-genai", marker = "extra == 'all'", specifier = ">=1.46.0" },
+    { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.46.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-ai", marker = "extra == 'all'", specifier = ">=0.0.1" },

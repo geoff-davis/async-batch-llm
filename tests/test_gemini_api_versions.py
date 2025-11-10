@@ -9,8 +9,8 @@ def test_api_version_detection():
 
     version = GeminiCachedStrategy._detect_google_genai_version()
 
-    # Should detect one of the two supported versions
-    assert version in ["v1.45", "v1.46+"], f"Unexpected API version: {version}"
+    # Should detect one of the three supported versions
+    assert version in ["v1.45", "v1.46-v1.48", "v1.49+"], f"Unexpected API version: {version}"
 
 
 def test_api_version_matches_installed_package():
@@ -23,14 +23,14 @@ def test_api_version_matches_installed_package():
     try:
         from google.genai.types import CreateCachedContentConfig  # noqa: F401
 
-        # If import succeeds, we should detect v1.46+
-        assert version == "v1.46+", (
-            "CreateCachedContentConfig is importable but version detection returned v1.45"
+        # If import succeeds, we should detect v1.46+ or v1.49+
+        assert version in ["v1.46-v1.48", "v1.49+"], (
+            f"CreateCachedContentConfig is importable but version detection returned {version}"
         )
     except ImportError:
         # If import fails, we should detect v1.45
         assert version == "v1.45", (
-            "CreateCachedContentConfig is not importable but version detection returned v1.46+"
+            f"CreateCachedContentConfig is not importable but version detection returned {version}"
         )
 
 
@@ -57,4 +57,4 @@ async def test_gemini_cached_strategy_initialization_includes_version():
 
     # Check that _api_version was set during init
     assert hasattr(strategy, "_api_version")
-    assert strategy._api_version in ["v1.45", "v1.46+"]
+    assert strategy._api_version in ["v1.45", "v1.46-v1.48", "v1.49+"]
