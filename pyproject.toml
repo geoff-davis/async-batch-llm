@@ -122,8 +122,10 @@ python_functions = ["test_*"]
 python_classes = ["Test*", "!TestOutput"]  # Ignore TestOutput (Pydantic models)
 markers = [
     "slow: marks tests as slow (deselected by default, run with -m slow)",
+    "integration: marks tests as integration tests that require API keys (deselected by default)",
+    "benchmark: marks tests as performance benchmarks (deselected by default)",
 ]
-addopts = "-m 'not slow'"  # Skip slow tests by default
+addopts = "-m 'not slow and not integration and not benchmark'"  # Skip slow, integration, and benchmark tests by default
 filterwarnings = [
     "ignore::pytest.PytestCollectionWarning",
 ]
