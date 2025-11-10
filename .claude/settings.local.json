@@ -9,7 +9,8 @@
       "Bash(python3 -m mypy:*)",
       "Bash(git add:*)",
       "Bash(npx markdownlint-cli2:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(jobs:*)"
     ],
     "deny": [],
     "ask": []
