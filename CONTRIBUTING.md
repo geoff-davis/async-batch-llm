@@ -29,7 +29,18 @@ uv sync --all-extras
 npm install --save-dev markdownlint-cli2
 ```
 
-5. **Run tests**
+5. **Install pre-commit hooks** (recommended)
+
+```bash
+make pre-commit-install
+# or manually:
+pip install pre-commit
+pre-commit install
+```
+
+This will automatically run linting and type checking before each commit.
+
+6. **Run tests**
 
 ```bash
 uv run pytest
@@ -57,18 +68,42 @@ uv run pytest -v
 
 We use several tools to maintain code quality:
 
+#### Automated Pre-commit Hooks (Recommended)
+
+```bash
+# Install hooks (one-time setup)
+make pre-commit-install
+
+# Run hooks manually on all files
+make pre-commit-run
+
+# Update hooks to latest versions
+make pre-commit-update
+```
+
+Pre-commit will automatically run these checks before each commit:
+- Ruff linting and formatting
+- Mypy type checking
+- Markdown linting
+- General file checks (trailing whitespace, merge conflicts, etc.)
+
+#### Manual Code Quality Checks
+
 ```bash
 # Format code
 uv run ruff format src/ tests/ examples/
 
 # Lint code
-uv run ruff check src/ tests/ examples/
+uv run ruff check src/ tests/ examples/ --fix
 
 # Type check
-uv run mypy src/batch_llm/
+uv run mypy src/batch_llm/ --ignore-missing-imports
 
 # Markdown lint (requires npm install first)
-npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md"
+npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md" --fix
+
+# Run all checks at once
+make ci
 ```
 
 ### Running Examples

@@ -1,4 +1,4 @@
-.PHONY: help test coverage lint typecheck format check-all clean
+.PHONY: help test coverage lint typecheck format check-all pre-commit clean
 
 help:  ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -57,6 +57,17 @@ ci:  ## Run CI checks (what GitHub Actions runs)
 	@echo "\n==> Running markdown linter..."
 	@$(MAKE) markdown-lint
 	@echo "\n==> CI checks passed! ✓"
+
+pre-commit-install:  ## Install pre-commit hooks
+	pip install pre-commit
+	pre-commit install
+	@echo "\n==> Pre-commit hooks installed! They will run automatically on 'git commit'"
+
+pre-commit-run:  ## Run pre-commit hooks on all files
+	pre-commit run --all-files
+
+pre-commit-update:  ## Update pre-commit hooks to latest versions
+	pre-commit autoupdate
 
 clean:  ## Clean up cache files
 	find . -type d -name "__pycache__" -exec rm -rf {} +
