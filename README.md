@@ -1792,7 +1792,7 @@ For validation errors specifically, see [`examples/example_gemini_smart_retry.py
 ## Documentation
 
 - **[API Reference](docs/API.md)** - Complete API documentation
-- **[Migration Guide](docs/MIGRATION_V3.md)** - Upgrading from v0.0.x
+- **[Migration Guides](docs/MIGRATION.md)** - Version upgrade guides (v0.1 → v0.2, v0.2 → v0.3, etc.)
 - **[Examples](examples/)** - Working examples for all providers
 
 ---
