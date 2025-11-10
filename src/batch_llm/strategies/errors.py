@@ -88,7 +88,7 @@ class DefaultErrorClassifier(ErrorClassifier):
         # Detect rate limit errors from message patterns (works for simple Exception mocks)
         if self._matches_rate_limit(error_str):
             return ErrorInfo(
-                is_retryable=False,
+                is_retryable=True,  # Rate limits are retryable - framework handles cooldown
                 is_rate_limit=True,
                 is_timeout=False,
                 error_category="rate_limit",

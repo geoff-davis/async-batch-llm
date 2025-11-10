@@ -138,7 +138,7 @@ async def test_rate_limit_requeue_completes_without_deadlock():
             message = str(exception).lower()
             if "resource_exhausted" in message or "429" in message:
                 return ErrorInfo(
-                    is_retryable=False,
+                    is_retryable=True,  # Rate limits must be retryable for retry loop to work
                     is_rate_limit=True,
                     is_timeout=False,
                     error_category="rate_limit",
@@ -426,7 +426,7 @@ async def test_slow_start_engages_after_rate_limit():
             message = str(exception).lower()
             if "resource_exhausted" in message or "429" in message:
                 return ErrorInfo(
-                    is_retryable=False,
+                    is_retryable=True,  # Rate limits must be retryable for retry loop to work
                     is_rate_limit=True,
                     is_timeout=False,
                     error_category="rate_limit",

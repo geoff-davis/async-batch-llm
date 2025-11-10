@@ -36,10 +36,6 @@ OBSERVER_CALLBACK_TIMEOUT = 5.0  # Observer events should complete quickly
 POST_PROCESSOR_TIMEOUT = 90.0  # Post-processors may do database/IO work
 
 
-class RateLimitException(Exception):
-    """Exception raised when rate limit is detected. Triggers cooldown and item re-queue."""
-
-    pass
 
 
 class ParallelBatchProcessor(
@@ -317,10 +313,6 @@ class ParallelBatchProcessor(
             # Process the item
             try:
                 result = await self._process_item_with_retries(work_item, worker_id)
-            except RateLimitException:
-                # Item was re-queued during rate limit handling
-                self._queue.task_done()
-                continue
             except Exception as e:
                 # All retries exhausted or unhandled exception
                 # Create a failed result so the item is recorded
@@ -551,6 +543,7 @@ class ParallelBatchProcessor(
         """Resume workers after cooldown and emit completion event."""
         actual_duration = max(0.0, time.time() - start_time)
 
+        # Reset state and resume all workers atomically
         async with self._rate_limit_lock:
             self._items_since_resume = 0
             self._in_cooldown = False
@@ -963,8 +956,6 @@ class ParallelBatchProcessor(
         # Check if it's a rate limit
         if error_info.is_rate_limit:
             # Update stats (thread-safe)
-            # Note: Don't increment 'total' for re-queued items as that inflates the count
-            # The item will be re-processed, so it stays in the original total
             async with self._stats_lock:
                 self._stats.rate_limit_count += 1
 
@@ -973,15 +964,12 @@ class ParallelBatchProcessor(
                 {"item_id": work_item.item_id, "worker_id": worker_id},
             )
 
-            # Re-queue the item
-            await self._queue.put(work_item)
-
-            # Handle rate limit (cooldown)
-            # The generation counter inside _handle_rate_limit ensures proper synchronization
+            # Handle rate limit (cooldown) - this will pause all workers
             await self._handle_rate_limit(worker_id)
 
-            # Signal to worker to not count this as processed
-            raise RateLimitException(str(exception)) from exception
+            # Re-raise the original exception to trigger retry logic
+            # The retry loop will increment attempt and try again after cooldown
+            raise
 
         # If error is retryable, re-raise to trigger retry in _process_item_with_retries
         # Note: Cache invalidation is automatic because retries use different temperatures,

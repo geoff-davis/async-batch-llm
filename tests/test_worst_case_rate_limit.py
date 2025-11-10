@@ -19,7 +19,6 @@ class FastRateLimitStrategy(FixedDelayStrategy):
         super().__init__(cooldown=1.0, delay_between_requests=0.1)
 
 
-@pytest.mark.skip(reason="Exposes deadlock in rate limit coordination when all workers hit rate limits simultaneously. Needs architectural changes to fix. See BATCH_LLM_FEEDBACK.md")
 @pytest.mark.asyncio
 async def test_all_workers_hit_rate_limit_simultaneously():
     """
@@ -92,7 +91,6 @@ async def test_all_workers_hit_rate_limit_simultaneously():
     assert stats["rate_limit_count"] >= 1, "Expected at least one rate limit cooldown"
 
 
-@pytest.mark.skip(reason="Exposes deadlock in rate limit coordination. See BATCH_LLM_FEEDBACK.md")
 @pytest.mark.asyncio
 async def test_cascading_rate_limits_under_high_load():
     """
@@ -164,7 +162,6 @@ async def test_cascading_rate_limits_under_high_load():
         assert count >= 3, f"Item {item_id} should need 3+ attempts, got {count}"
 
 
-@pytest.mark.skip(reason="Exposes deadlock in rate limit coordination. See BATCH_LLM_FEEDBACK.md")
 @pytest.mark.asyncio
 async def test_rate_limit_with_mixed_success_and_failures():
     """
@@ -222,5 +219,6 @@ async def test_rate_limit_with_mixed_success_and_failures():
 
     # Verify mixed outcomes
     assert rate_limited_items == 10, f"Expected 10 rate limited items, got {rate_limited_items}"
-    # Successful includes both immediate successes (10) and post-retry successes (10) = 30 total
-    assert successful_items == 30, f"Expected 30 successful executions, got {successful_items}"
+    # Successful includes both immediate successes (10) and post-retry successes (10) = 20 total
+    # Each item succeeds exactly once (on whichever attempt succeeds)
+    assert successful_items == 20, f"Expected 20 successful executions, got {successful_items}"
