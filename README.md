@@ -1209,9 +1209,10 @@ config = ProcessorConfig(
 
 **Worker Count:**
 
-- **CPU-bound tasks**: `max_workers = cpu_count()`
-- **I/O-bound (LLM calls)**: `max_workers = 5-10`
-- **Rate-limited APIs**: Start with `max_workers = 3-5`, increase gradually
+- **Rate-limited APIs** (OpenAI, Anthropic, Gemini): `max_workers = 5-10`
+- **Unlimited APIs** (local models): `max_workers = min(cpu_count() * 2, 20)`
+- **Testing/Debugging**: `max_workers = 2`
+- See [Choosing Worker Count](#choosing-worker-count) for detailed guidance
 
 **Timeout Settings:**
 
@@ -1243,18 +1244,73 @@ config = ProcessorConfig(
 
 ### Choosing Worker Count
 
+The optimal worker count depends on your use case and API constraints:
+
+#### 1. Rate-Limited APIs (OpenAI, Anthropic, Gemini)
+
+**Recommended: 5-10 workers**
+
 ```python
-import multiprocessing
-
-# For I/O-bound LLM calls (recommended starting point)
+# Start conservatively with 5 workers
 config = ProcessorConfig(max_workers=5)
-
-# For CPU-bound pre/post-processing
-config = ProcessorConfig(max_workers=multiprocessing.cpu_count())
-
-# For rate-limited APIs (start conservatively)
-config = ProcessorConfig(max_workers=3)
 ```
+
+**Why?** Too many workers will immediately hit rate limits. Start with 5, then increase gradually while monitoring `rate_limit_count` in your metrics.
+
+**With Proactive Rate Limiting:**
+
+```python
+config = ProcessorConfig(
+    max_workers=4,  # Conservative: 300 req/min ÷ 60 × 0.8 buffer ≈ 4
+    max_requests_per_minute=300,  # Set based on your API tier
+)
+```
+
+This prevents hitting rate limits by proactively limiting request rate.
+
+#### 2. Unlimited APIs (Local Models, Self-Hosted)
+
+**Recommended: `min(cpu_count() * 2, 20)`**
+
+```python
+import os
+
+config = ProcessorConfig(
+    max_workers=min(os.cpu_count() * 2, 20)
+)
+```
+
+**Why?** I/O-bound operations benefit from more workers (up to 2× CPU count). Cap at 20 to avoid diminishing returns from excessive context switching.
+
+#### 3. Testing and Debugging
+
+**Recommended: 2 workers**
+
+```python
+config = ProcessorConfig(max_workers=2)
+```
+
+**Why?** Less concurrency makes logs easier to follow and simplifies debugging race conditions.
+
+#### 4. Monitoring and Tuning
+
+Monitor these metrics to optimize worker count:
+
+```python
+result = await processor.process_all()
+stats = await processor.get_stats()
+
+print(f"Rate limits hit: {stats['rate_limit_count']}")
+print(f"Throughput: {result.total_items / stats['duration']:.2f} items/sec")
+
+# If rate_limit_count > 0: reduce max_workers
+# If rate_limit_count == 0 and throughput is low: increase max_workers
+```
+
+**Guidelines:**
+- `rate_limit_count > 5`: Reduce `max_workers` by 20-30%
+- `rate_limit_count == 0` and low throughput: Increase `max_workers` by 2-3
+- Optimal: `rate_limit_count ≤ 2` with maximum throughput
 
 ### Resource Management
 
