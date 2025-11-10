@@ -48,6 +48,7 @@ from .core import ProcessorConfig, RateLimitConfig, RetryConfig
 # LLM call strategies
 from .llm_strategies import (
     GeminiCachedStrategy,
+    GeminiResponse,
     GeminiStrategy,
     LLMCallStrategy,
     PydanticAIStrategy,
@@ -90,6 +91,7 @@ __all__ = [
     "RetryConfig",
     # LLM Strategies
     "GeminiCachedStrategy",
+    "GeminiResponse",
     "GeminiStrategy",
     "LLMCallStrategy",
     "PydanticAIStrategy",

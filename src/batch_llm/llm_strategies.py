@@ -8,6 +8,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from .base import RetryState, TokenUsage
@@ -35,6 +36,38 @@ else:
 logger = logging.getLogger(__name__)
 
 TOutput = TypeVar("TOutput")
+
+
+@dataclass
+class GeminiResponse(Generic[TOutput]):
+    """
+    Container for parsed output and raw Gemini response metadata.
+
+    This wrapper provides access to Gemini safety ratings, finish reasons, and
+    the raw response object, while still containing the parsed output.
+
+    Added in v0.3.0 for Issue #3.
+
+    Attributes:
+        output: The parsed output (result of response_parser)
+        safety_ratings: Safety ratings dict (category -> probability)
+        finish_reason: Why generation stopped (e.g., "STOP", "MAX_TOKENS")
+        token_usage: Token usage stats (already in result, duplicated for convenience)
+        raw_response: Full Gemini response object
+
+    Example:
+        >>> if isinstance(result.output, GeminiResponse):
+        ...     data = result.output.output  # Actual parsed data
+        ...     safety = result.output.safety_ratings
+        ...     if safety.get("HARM_CATEGORY_HATE_SPEECH") == "HIGH":
+        ...         logger.warning("High-risk content detected")
+    """
+
+    output: TOutput
+    safety_ratings: dict[str, str] | None
+    finish_reason: str | None
+    token_usage: dict[str, int]
+    raw_response: Any  # Full response object
 
 
 class LLMCallStrategy(ABC, Generic[TOutput]):
@@ -199,6 +232,7 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
         client: "genai.Client",
         response_parser: Callable[[Any], TOutput],
         config: "GenerateContentConfig | None" = None,
+        include_metadata: bool = False,  # v0.3.0: Opt-in for safety ratings
     ):
         """
         Initialize Gemini strategy.
@@ -208,6 +242,7 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
             client: Initialized Gemini client
             response_parser: Function to parse response into TOutput
             config: Optional generation config (temperature, etc.)
+            include_metadata: If True, return GeminiResponse with safety ratings (v0.3.0)
         """
         if genai is None:
             raise ImportError(
@@ -219,10 +254,37 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
         self.client = client
         self.response_parser = response_parser
         self.config = config
+        self.include_metadata = include_metadata
+
+    def _extract_safety_ratings(self, response: Any) -> dict[str, str]:
+        """
+        Extract safety ratings from Gemini response (v0.3.0).
+
+        Args:
+            response: Gemini API response object
+
+        Returns:
+            Dict mapping category to probability (e.g., {"HARM_CATEGORY_HATE_SPEECH": "LOW"})
+        """
+        ratings = {}
+        try:
+            if hasattr(response, "candidates") and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, "safety_ratings") and candidate.safety_ratings:
+                    for rating in candidate.safety_ratings:
+                        # Extract category and probability
+                        category = str(rating.category) if hasattr(rating, "category") else "UNKNOWN"
+                        probability = (
+                            str(rating.probability) if hasattr(rating, "probability") else "UNKNOWN"
+                        )
+                        ratings[category] = probability
+        except Exception as e:
+            logger.warning(f"Failed to extract safety ratings: {e}")
+        return ratings
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
-    ) -> tuple[TOutput, TokenUsage]:
+    ) -> tuple[TOutput | GeminiResponse[TOutput], TokenUsage]:
         """Execute Gemini API call.
 
         Note: timeout parameter is provided for information but timeout enforcement
@@ -233,6 +295,11 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
             attempt: Which retry attempt this is (1, 2, 3, ...)
             timeout: Maximum time to wait for response (seconds)
             state: Optional retry state (v0.3.0, unused by this strategy)
+
+        Returns:
+            Tuple of (output, token_usage) where output is either:
+            - TOutput if include_metadata=False (default)
+            - GeminiResponse[TOutput] if include_metadata=True (v0.3.0)
         """
         # Make the call
         response = await self.client.aio.models.generate_content(
@@ -251,6 +318,26 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
             "output_tokens": usage.candidates_token_count or 0 if usage else 0,
             "total_tokens": usage.total_token_count or 0 if usage else 0,
         }
+
+        # Return with metadata if requested (v0.3.0)
+        if self.include_metadata:
+            safety_ratings = self._extract_safety_ratings(response)
+            finish_reason = None
+            try:
+                if hasattr(response, "candidates") and response.candidates:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, "finish_reason"):
+                        finish_reason = str(candidate.finish_reason)
+            except Exception as e:
+                logger.warning(f"Failed to extract finish_reason: {e}")
+
+            return GeminiResponse(
+                output=output,
+                safety_ratings=safety_ratings,
+                finish_reason=finish_reason,
+                token_usage=tokens,
+                raw_response=response,
+            ), tokens
 
         return output, tokens
 
@@ -277,6 +364,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         cache_renewal_buffer_seconds: int = 300,  # v0.2.0: Renew 5min before expiration
         auto_renew: bool = True,  # v0.2.0: Automatically renew expired caches
         config: "GenerateContentConfig | None" = None,
+        include_metadata: bool = False,  # v0.3.0: Opt-in for safety ratings
     ):
         """
         Initialize Gemini cached strategy with automatic cache renewal (v0.2.0).
@@ -292,6 +380,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
                 to avoid expiration errors (default: 300 = 5 minutes)
             auto_renew: Automatically renew expired caches in execute() (default: True)
             config: Optional generation config
+            include_metadata: If True, return GeminiResponse with safety ratings (v0.3.0)
         """
         if genai is None:
             raise ImportError(
@@ -308,6 +397,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         self.cache_renewal_buffer_seconds = cache_renewal_buffer_seconds  # v0.2.0
         self.auto_renew = auto_renew  # v0.2.0
         self.config = config
+        self.include_metadata = include_metadata  # v0.3.0
 
         self._cache: Any = None  # Type: CachedContent after prepare()
         self._cache_created_at: float | None = None
@@ -316,6 +406,32 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         # Detect API version (v0.2.0)
         self._api_version = self._detect_google_genai_version()
         logger.debug(f"Detected google-genai API version: {self._api_version}")
+
+    def _extract_safety_ratings(self, response: Any) -> dict[str, str]:
+        """
+        Extract safety ratings from Gemini response (v0.3.0).
+
+        Args:
+            response: Gemini API response object
+
+        Returns:
+            Dict mapping category to probability (e.g., {"HARM_CATEGORY_HATE_SPEECH": "LOW"})
+        """
+        ratings = {}
+        try:
+            if hasattr(response, "candidates") and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, "safety_ratings") and candidate.safety_ratings:
+                    for rating in candidate.safety_ratings:
+                        # Extract category and probability
+                        category = str(rating.category) if hasattr(rating, "category") else "UNKNOWN"
+                        probability = (
+                            str(rating.probability) if hasattr(rating, "probability") else "UNKNOWN"
+                        )
+                        ratings[category] = probability
+        except Exception as e:
+            logger.warning(f"Failed to extract safety ratings: {e}")
+        return ratings
 
     @staticmethod
     def _detect_google_genai_version() -> str:
@@ -423,7 +539,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
-    ) -> tuple[TOutput, TokenUsage]:
+    ) -> tuple[TOutput | GeminiResponse[TOutput], TokenUsage]:
         """Execute Gemini API call with automatic cache renewal (v0.2.0).
 
         Note: timeout parameter is provided for information but timeout enforcement
@@ -434,6 +550,11 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
             attempt: Which retry attempt this is (1, 2, 3, ...)
             timeout: Maximum time to wait for response (seconds)
             state: Optional retry state (v0.3.0, unused by this strategy)
+
+        Returns:
+            Tuple of (output, token_usage) where output is either:
+            - TOutput if include_metadata=False (default)
+            - GeminiResponse[TOutput] if include_metadata=True (v0.3.0)
         """
         # Check and renew cache if expired (proactive renewal to avoid errors)
         if self.auto_renew and self._is_cache_expired():
@@ -483,6 +604,26 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
                 else 0
             ),
         }
+
+        # Return with metadata if requested (v0.3.0)
+        if self.include_metadata:
+            safety_ratings = self._extract_safety_ratings(response)
+            finish_reason = None
+            try:
+                if hasattr(response, "candidates") and response.candidates:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, "finish_reason"):
+                        finish_reason = str(candidate.finish_reason)
+            except Exception as e:
+                logger.warning(f"Failed to extract finish_reason: {e}")
+
+            return GeminiResponse(
+                output=output,
+                safety_ratings=safety_ratings,
+                finish_reason=finish_reason,
+                token_usage=tokens,
+                raw_response=response,
+            ), tokens
 
         return output, tokens
 
