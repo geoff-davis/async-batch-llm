@@ -5,6 +5,175 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2025-01-10
+
+This release adds advanced retry patterns for multi-stage LLM strategies, safety ratings access for content moderation, and precise cache tagging for production deployments.
+
+### ⚠️ Breaking Changes
+
+**None** - This release is 100% backward compatible. All new features are opt-in with default values that preserve existing behavior.
+
+---
+
+### Added
+
+#### Core Features
+
+- **RetryState for multi-stage strategies** (#8, HIGH priority)
+  - New `RetryState` class for per-work-item mutable state that persists across all retry attempts
+  - Enables advanced retry patterns like partial recovery and progressive prompting
+  - Dictionary-style API: `get()`, `set()`, `delete()`, `clear()`, `__contains__()`
+  - Automatically created by framework and passed to `execute()` and `on_error()`
+  - Each work item gets its own isolated `RetryState` instance
+  - Use cases:
+    - **Partial recovery**: Parse what succeeded, retry only failed parts (81% cost savings)
+    - **Multi-stage strategies**: Track state across validation/formatting/final output stages
+    - **Progressive prompting**: Build increasingly detailed prompts based on previous failures
+    - **Error tracking**: Count different error types per work item
+  - Example:
+
+    ```python
+    async def execute(self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None):
+        if state and attempt > 1:
+            # Use state from previous attempts
+            partial_results = state.get("partial_results", {})
+            # Retry with context from previous failures
+    ```
+
+- **GeminiResponse for safety ratings access** (#3, MEDIUM priority)
+  - New `GeminiResponse[TOutput]` generic wrapper class for Gemini API responses
+  - Access safety ratings, finish reasons, and raw response metadata
+  - Opt-in via `include_metadata=True` parameter on `GeminiStrategy` and `GeminiCachedStrategy`
+  - Fields:
+    - `output: TOutput` - The parsed output
+    - `safety_ratings: dict[str, str] | None` - Content safety ratings (HARM_CATEGORY_HATE_SPEECH, etc.)
+    - `finish_reason: str | None` - Why generation stopped (STOP, MAX_TOKENS, SAFETY, etc.)
+    - `token_usage: dict[str, int]` - Token counts
+    - `raw_response: Any` - Full Google API response object
+  - Use cases:
+    - Content moderation and filtering
+    - Safety rating logging for compliance
+    - Debugging generation issues (finish_reason)
+    - Accessing provider-specific metadata
+  - Example:
+
+    ```python
+    strategy = GeminiCachedStrategy(
+        model="gemini-2.0-flash",
+        client=client,
+        response_parser=parse_output,
+        cached_content=content,
+        include_metadata=True,  # Opt-in for safety ratings
+    )
+    result = await processor.process_all()
+    if isinstance(result.results[0].output, GeminiResponse):
+        ratings = result.results[0].output.safety_ratings
+        if ratings.get("HARM_CATEGORY_HATE_SPEECH") == "HIGH":
+            # Handle unsafe content
+    ```
+
+- **Cache tagging for precise cache matching** (#6, LOW priority)
+  - New `cache_tags` parameter for `GeminiCachedStrategy`
+  - Attach custom metadata tags to caches for precise identification
+  - Prevents accidental cache reuse across experiments/versions
+  - Tags are checked during cache matching in `_find_or_create_cache()`
+  - Version-aware: Falls back gracefully on older google-genai versions
+  - Use cases:
+    - Multi-tenant applications (tag by customer_id)
+    - A/B testing (tag by experiment variant)
+    - Version control (tag by schema version or prompt version)
+    - Environment isolation (tag by "production" vs "staging")
+  - Example:
+
+    ```python
+    strategy = GeminiCachedStrategy(
+        model="gemini-2.0-flash",
+        client=client,
+        response_parser=parse_output,
+        cached_content=content,
+        cache_tags={
+            "customer_id": "acme-corp",
+            "schema_version": "v2",
+            "experiment": "new-prompt-A"
+        }
+    )
+    ```
+
+#### API Changes (Backward Compatible)
+
+- **Updated `LLMCallStrategy` protocol**:
+  - `execute()` now accepts optional `state: RetryState | None = None` parameter
+  - `on_error()` now accepts optional `state: RetryState | None = None` parameter
+  - Default `None` ensures backward compatibility with existing strategies
+
+- **Updated `GeminiStrategy`**:
+  - New parameter: `include_metadata: bool = False`
+  - Return type: `TOutput | GeminiResponse[TOutput]`
+  - Helper method: `_extract_safety_ratings()` for parsing response metadata
+
+- **Updated `GeminiCachedStrategy`**:
+  - New parameter: `include_metadata: bool = False`
+  - New parameter: `cache_tags: dict[str, str] | None = None`
+  - Return type: `TOutput | GeminiResponse[TOutput]`
+  - Enhanced `_find_or_create_cache()` to check tags when matching caches
+  - Enhanced `_create_new_cache()` to include metadata/tags when creating caches
+
+#### Documentation
+
+- **New implementation plan**: `docs/IMPLEMENTATION_PLAN_V0_3.md`
+  - Detailed technical specifications for all three features
+  - Priority ranking and use case analysis
+  - Test requirements and success criteria
+  - Timeline estimates
+
+- **New migration guide**: `docs/MIGRATION_V0_3.md`
+  - Complete v0.2 → v0.3 upgrade instructions
+  - Emphasizes 100% backward compatibility
+  - Code examples for all new features
+  - Use case guides and best practices
+
+#### Testing
+
+- **12 new comprehensive tests** (141 tests total, all passing)
+  - `tests/test_v0_3_features.py` - Comprehensive test coverage for all v0.3.0 features
+  - **RetryState tests** (5 tests):
+    - `test_retry_state_persistence` - State persists across retry attempts
+    - `test_retry_state_isolation` - Each work item gets its own state
+    - `test_retry_state_operations` - Dictionary operations (get/set/delete/clear)
+    - `test_retry_state_none_backward_compatibility` - Works when state is None
+    - `test_on_error_receives_state` - on_error receives the same state as execute
+  - **GeminiResponse tests** (3 tests):
+    - `test_gemini_response_with_metadata` - Safety ratings extraction
+    - `test_gemini_response_without_metadata` - Backward compatibility (include_metadata=False)
+    - `test_gemini_response_generic_type` - Works with different output types
+  - **Cache tagging tests** (2 tests):
+    - `test_cache_tags_isolation` - Different tags stored correctly
+    - `test_cache_tags_none_default` - Tags default to empty dict
+  - **Integration tests** (2 tests):
+    - `test_retry_state_with_gemini_response` - Features work together
+    - `test_shared_strategy_with_retry_state` - Shared strategies with per-item state
+
+### Changed
+
+- **ParallelBatchProcessor** now creates `RetryState` instance per work item
+- **ParallelBatchProcessor** passes `retry_state` to `strategy.execute()` and `strategy.on_error()`
+- All built-in strategies updated to accept optional `state` parameter
+
+### Performance
+
+- **No performance regression** - All additions are opt-in
+- **RetryState is lightweight** - Simple dict wrapper, minimal memory overhead
+- **GeminiResponse is zero-cost when disabled** - Only overhead when `include_metadata=True`
+- **Cache tags are checked efficiently** - Simple dict comparison during cache matching
+
+### Test Coverage
+
+- **76% overall coverage** (meets requirement)
+- **141 tests total** (129 existing + 12 new)
+- **All tests passing** including edge cases and integration scenarios
+
+---
+
 ## [0.2.0] - 2025-01-09
 
 This release addresses critical production issues identified from real-world usage, particularly around shared strategy instances for cost optimization with Gemini prompt caching.
@@ -16,11 +185,13 @@ This release addresses critical production issues identified from real-world usa
 `cleanup()` now **preserves** caches for reuse by default (previously deleted them). This enables 70-90% cost savings when running multiple batches within the TTL window.
 
 **Before (v0.1):**
+
 ```python
 await strategy.cleanup()  # Deleted cache
 ```
 
 **After (v0.2):**
+
 ```python
 await strategy.cleanup()  # Preserves cache for reuse
 

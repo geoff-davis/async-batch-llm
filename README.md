@@ -48,6 +48,9 @@ with built-in error handling, retry logic, and observability.
   - [Progressive Temperature on Retries](#progressive-temperature-on-retries)
   - [Smart Retry with Validation Feedback](#smart-retry-with-validation-feedback)
   - [Model Escalation for Cost Optimization](#model-escalation-for-cost-optimization)
+  - [RetryState for Multi-Stage Strategies (v0.3.0)](#retrystate-for-multi-stage-strategies-v030)
+  - [Safety Ratings Access (v0.3.0)](#safety-ratings-access-v030)
+  - [Cache Tagging for Production (v0.3.0)](#cache-tagging-for-production-v030)
   - [Context and Post-Processing](#context-and-post-processing)
   - [Error Classification](#error-classification)
 - [Configuration Reference](#configuration-reference)
@@ -281,6 +284,7 @@ print(f"Effective cost: {result.effective_input_tokens()} tokens")
 ```
 
 **Example with Gemini Caching:**
+
 ```
 Input tokens: 50,000
 Cached tokens: 45,000
@@ -313,6 +317,7 @@ for item in items:
 ```
 
 **Benefits:**
+
 - ✅ Framework calls `prepare()` only once (creates single cache)
 - ✅ All work items share the same cache
 - ✅ 70-90% cost reduction with Gemini prompt caching
@@ -727,7 +732,329 @@ class SmartModelEscalationStrategy(LLMCallStrategy[Analysis]):
 
 You can also combine model escalation with temperature escalation for even better results.
 
-See [`examples/example_smart_model_escalation.py`](examples/example_smart_model_escalation.py) for complete implementation with cost comparisons.
+See [`examples/example_smart_model_escalation.py`](examples/example_smart_model_escalation.py) for complete
+implementation with cost comparisons.
+
+### RetryState for Multi-Stage Strategies (v0.3.0)
+
+**New in v0.3.0**: `RetryState` enables per-work-item mutable state that persists across all retry attempts,
+unlocking advanced retry patterns.
+
+#### Why RetryState?
+
+Without RetryState, each retry starts from scratch with no memory of previous attempts. RetryState solves this
+by providing a shared dictionary that persists across all retries for a single work item.
+
+**Use Cases:**
+
+1. **Partial Recovery** - Parse what succeeded, retry only failed parts (81% cost savings)
+2. **Multi-Stage Strategies** - Track progress across validation/formatting/output stages
+3. **Progressive Prompting** - Build detailed prompts based on previous failures
+4. **Error Tracking** - Count different error types per work item
+
+#### Example: Partial Recovery Pattern
+
+```python
+from batch_llm import LLMCallStrategy, RetryState, TokenUsage
+from pydantic import ValidationError
+import json
+
+class PartialRecoveryStrategy(LLMCallStrategy[dict]):
+    """Parse partial results and retry only failed fields."""
+
+    def __init__(self, client):
+        self.client = client
+        self.required_fields = ["name", "email", "phone", "address"]
+
+    async def execute(
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+    ) -> tuple[dict, TokenUsage]:
+        if state is None:
+            state = RetryState()  # Fallback for safety
+
+        # Check if we have partial results from previous attempt
+        partial_results = state.get("partial_results", {})
+        failed_fields = state.get("failed_fields", self.required_fields)
+
+        # Build prompt based on what we need
+        if attempt == 1:
+            # First attempt: Extract all fields
+            final_prompt = f"{prompt}\nExtract: {', '.join(self.required_fields)}"
+        else:
+            # Retry: Only extract failed fields, preserve what worked
+            final_prompt = (
+                f"{prompt}\nYou already got these right: {partial_results}"
+                f"\nNow extract only: {', '.join(failed_fields)}"
+            )
+
+        response = await self.client.generate(final_prompt)
+
+        try:
+            # Parse response
+            result = json.loads(response.text)
+
+            # Merge with partial results
+            if attempt > 1:
+                result = {**partial_results, **result}
+
+            # Validate all required fields present
+            missing = [f for f in self.required_fields if f not in result]
+            if missing:
+                # Save what we got and retry
+                state.set("partial_results", {k: v for k, v in result.items() if k in self.required_fields})
+                state.set("failed_fields", missing)
+                raise ValueError(f"Missing fields: {missing}")
+
+            # Success! Clear state
+            state.clear()
+            return result, {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
+
+        except (json.JSONDecodeError, KeyError) as e:
+            # Save any valid fields we found
+            if isinstance(e, KeyError):
+                valid_fields = {k: v for k, v in result.items() if k in self.required_fields}
+                state.set("partial_results", valid_fields)
+            raise
+
+    async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None) -> None:
+        """Track error types in state."""
+        if state:
+            error_types = state.get("error_types", [])
+            error_types.append(type(exception).__name__)
+            state.set("error_types", error_types)
+```
+
+**Cost savings example:**
+
+- Attempt 1: Extract 4 fields, get 3 correct (75% success)
+- Attempt 2: Extract only 1 missing field (25% of original cost)
+- **Result: 81% cost savings** vs. extracting all 4 fields again
+
+#### Example: Progressive Prompting
+
+```python
+class ProgressivePromptStrategy(LLMCallStrategy[str]):
+    """Build increasingly detailed prompts based on failures."""
+
+    async def execute(
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+    ) -> tuple[str, TokenUsage]:
+        if state is None:
+            state = RetryState()
+
+        # Track what we've tried
+        attempts = state.get("attempts", 0)
+        state.set("attempts", attempts + 1)
+
+        # Build progressively more detailed prompts
+        if attempt == 1:
+            final_prompt = prompt
+        elif attempt == 2:
+            final_prompt = f"{prompt}\n\nIMPORTANT: Please format as valid JSON."
+        else:
+            last_error = state.get("last_error", "")
+            final_prompt = (
+                f"{prompt}\n\nPrevious attempt failed with: {last_error}"
+                f"\nPlease fix this specific issue."
+            )
+
+        try:
+            response = await self.client.generate(final_prompt)
+            return response.text, {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
+        except Exception as e:
+            state.set("last_error", str(e))
+            raise
+
+    async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None) -> None:
+        """Store error details for next prompt."""
+        if state:
+            state.set("last_error", str(exception))
+```
+
+#### Key Features
+
+- **Automatic creation**: Framework creates one `RetryState` per work item
+- **Isolation**: Each work item has its own state (no cross-contamination)
+- **Shared with `on_error`**: Both `execute()` and `on_error()` receive the same state
+- **Dictionary API**: `get()`, `set()`, `delete()`, `clear()`, `in` operator
+- **Backward compatible**: Optional parameter (defaults to `None`)
+
+### Safety Ratings Access (v0.3.0)
+
+**New in v0.3.0**: Access Gemini safety ratings, finish reasons, and raw response metadata for content
+moderation.
+
+#### GeminiResponse Wrapper
+
+When you need access to safety ratings or other metadata, use `include_metadata=True`:
+
+```python
+from batch_llm import GeminiCachedStrategy, GeminiResponse
+
+strategy = GeminiCachedStrategy(
+    model="gemini-2.0-flash",
+    client=client,
+    response_parser=parse_output,
+    cached_content=content,
+    include_metadata=True,  # Opt-in for safety ratings
+)
+
+result = await processor.process_all()
+
+# Check if output is wrapped in GeminiResponse
+for work_result in result.results:
+    if isinstance(work_result.output, GeminiResponse):
+        # Access safety ratings
+        ratings = work_result.output.safety_ratings
+        if ratings:
+            hate_speech = ratings.get("HARM_CATEGORY_HATE_SPEECH", "UNKNOWN")
+            harassment = ratings.get("HARM_CATEGORY_HARASSMENT", "UNKNOWN")
+
+            if hate_speech in ["HIGH", "MEDIUM"]:
+                print(f"⚠️  Flagged content: {work_result.item_id}")
+
+        # Access finish reason
+        if work_result.output.finish_reason == "SAFETY":
+            print(f"Blocked by safety filters: {work_result.item_id}")
+
+        # Access the actual parsed output
+        actual_output = work_result.output.output
+```
+
+#### GeminiResponse Fields
+
+```python
+@dataclass
+class GeminiResponse[TOutput]:
+    output: TOutput                       # Your parsed output
+    safety_ratings: dict[str, str] | None # HARM_CATEGORY_* → NEGLIGIBLE/LOW/MEDIUM/HIGH
+    finish_reason: str | None             # STOP, MAX_TOKENS, SAFETY, etc.
+    token_usage: dict[str, int]           # Token counts
+    raw_response: Any                     # Full Google API response
+```
+
+#### Use Cases
+
+- **Content Moderation**: Filter/flag unsafe content
+- **Compliance Logging**: Record safety ratings for audit trails
+- **Debugging**: Check why generation stopped (finish_reason)
+- **Provider-Specific Features**: Access raw response for Gemini-specific data
+
+#### Backward Compatibility
+
+By default, `include_metadata=False` and you get the raw output directly:
+
+```python
+# Default behavior (v0.1, v0.2)
+strategy = GeminiCachedStrategy(...)  # include_metadata=False by default
+result = await processor.process_all()
+output = result.results[0].output  # Plain output, not wrapped
+```
+
+### Cache Tagging for Production (v0.3.0)
+
+**New in v0.3.0**: Attach custom metadata tags to caches for precise identification and isolation.
+
+#### Why Cache Tags?
+
+Without tags, caches are matched only by model name. This can cause accidental cache reuse across:
+
+- Different customers in multi-tenant apps
+- Different experiment variants in A/B testing
+- Different schema versions
+- Production vs. staging environments
+
+Cache tags solve this by adding custom metadata that must match for cache reuse.
+
+#### Example: Multi-Tenant Application
+
+```python
+from batch_llm import GeminiCachedStrategy
+
+# Customer A's cache
+strategy_a = GeminiCachedStrategy(
+    model="gemini-2.0-flash",
+    client=client,
+    response_parser=parse_output,
+    cached_content=customer_a_docs,
+    cache_tags={
+        "customer_id": "acme-corp",
+        "schema_version": "v2",
+    }
+)
+
+# Customer B's cache (won't reuse Customer A's cache)
+strategy_b = GeminiCachedStrategy(
+    model="gemini-2.0-flash",
+    client=client,
+    response_parser=parse_output,
+    cached_content=customer_b_docs,
+    cache_tags={
+        "customer_id": "globex-inc",
+        "schema_version": "v2",
+    }
+)
+```
+
+#### Example: A/B Testing
+
+```python
+# Experiment variant A
+strategy_variant_a = GeminiCachedStrategy(
+    model="gemini-2.0-flash",
+    client=client,
+    response_parser=parse_output,
+    cached_content=context,
+    cache_tags={
+        "experiment": "new-prompt-A",
+        "version": "v1",
+    }
+)
+
+# Experiment variant B (separate cache)
+strategy_variant_b = GeminiCachedStrategy(
+    model="gemini-2.0-flash",
+    client=client,
+    response_parser=parse_output,
+    cached_content=context,
+    cache_tags={
+        "experiment": "new-prompt-B",
+        "version": "v1",
+    }
+)
+```
+
+#### Example: Environment Isolation
+
+```python
+import os
+
+# Tag caches by environment
+strategy = GeminiCachedStrategy(
+    model="gemini-2.0-flash",
+    client=client,
+    response_parser=parse_output,
+    cached_content=context,
+    cache_tags={
+        "environment": os.getenv("ENV", "development"),
+        "deploy_version": os.getenv("VERSION", "unknown"),
+    }
+)
+```
+
+#### How It Works
+
+1. **Cache Creation**: Tags are stored in cache metadata
+2. **Cache Matching**: Framework checks if existing cache tags match requested tags
+3. **Tag Mismatch**: Creates new cache instead of reusing mismatched one
+4. **API Version Aware**: Falls back gracefully on older google-genai versions
+
+#### Key Features
+
+- **Precise matching**: All tags must match for cache reuse
+- **Optional**: Defaults to empty dict (no tags)
+- **Version-aware**: Works with google-genai v1.46+ (falls back gracefully on older versions)
+- **Multiple tags**: Use as many tags as needed
 
 ### Context and Post-Processing
 
