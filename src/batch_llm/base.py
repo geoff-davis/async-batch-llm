@@ -176,7 +176,7 @@ class WorkItemResult(Generic[TOutput, TContext]):
     output: TOutput | None = None
     error: str | None = None
     context: TContext | None = None
-    token_usage: TokenUsage = field(default_factory=dict)  # type: ignore[assignment]
+    token_usage: TokenUsage = field(default_factory=lambda: {})  # TokenUsage is a TypedDict
     gemini_safety_ratings: dict[str, str] | None = None
 
 

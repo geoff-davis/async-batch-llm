@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from typing import Generic
+from typing import Generic, cast
 
 from .base import (
     BatchProcessor,
@@ -13,6 +13,7 @@ from .base import (
     RetryState,
     TContext,
     TInput,
+    TokenUsage,
     TOutput,
     WorkItemResult,
 )
@@ -349,7 +350,7 @@ class ParallelBatchProcessor(
                         success=False,
                         error=f"{type(e).__name__}: {str(e)[:200]}",
                         context=work_item.context,
-                        token_usage=failed_tokens,  # type: ignore[arg-type]
+                        token_usage=cast(TokenUsage, failed_tokens),
                     )
                 # Fall through to store result and call task_done()
 
@@ -622,13 +623,14 @@ class ParallelBatchProcessor(
         retry_state = RetryState()
 
         # Ensure strategy is prepared (framework ensures this is called only once per unique strategy instance)
+        # Wrap entire process (including prepare) in try-finally to ensure cleanup is called even if prepare fails
         try:
-            await self._ensure_strategy_prepared(strategy)
-        except Exception as e:
-            logger.error(f"✗ Strategy prepare() failed for {work_item.item_id}: {e}")
-            raise
+            try:
+                await self._ensure_strategy_prepared(strategy)
+            except Exception as e:
+                logger.error(f"✗ Strategy prepare() failed for {work_item.item_id}: {e}")
+                raise
 
-        try:
             for attempt in range(1, self.config.retry.max_attempts + 1):
                 try:
                     return await self._process_item(
@@ -975,7 +977,7 @@ class ParallelBatchProcessor(
             success=False,
             error=f"{error_name}: {error_msg[:500]}",
             context=work_item.context,
-            token_usage=failed_token_usage,  # type: ignore[arg-type]
+            token_usage=cast(TokenUsage, failed_token_usage),
         )
 
     def _log_retryable_error(
@@ -1081,7 +1083,7 @@ class ParallelBatchProcessor(
             from pydantic import ValidationError
 
             if underlying_validation_error or isinstance(exception, ValidationError):
-                validation_err: ValidationError = underlying_validation_error or exception  # type: ignore[assignment]
+                validation_err = cast(ValidationError, underlying_validation_error or exception)
                 error_details = []
                 for err in validation_err.errors():
                     field_path = " -> ".join(str(loc) for loc in err["loc"])
