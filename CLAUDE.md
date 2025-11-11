@@ -421,6 +421,32 @@ make markdown-lint-fix
 make ci
 ```
 
+### Pre-Commit Checklist
+
+**IMPORTANT:** Always run these checks before ANY commit (not just before tagging):
+
+```bash
+# 1. Run all tests
+uv run pytest
+
+# 2. Run linter and auto-fix issues
+uv run ruff check src/ tests/ --fix
+
+# 3. Verify linter passes with no errors
+uv run ruff check src/ tests/
+
+# 4. Run type checker
+uv run mypy src/batch_llm/ --ignore-missing-imports
+
+# 5. Lint markdown documentation
+npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md"
+
+# Or run all checks at once
+make ci
+```
+
+**Only proceed with commit if all checks pass.**
+
 ### Building and Publishing
 
 ```bash
@@ -749,10 +775,13 @@ See `examples/example_smart_model_escalation.py` for complete implementation wit
 
 ### Code Quality and Linting
 
-1. **Always run linters after code changes:**
-   - Python: `uv run ruff check src/ tests/ --fix`
-   - Markdown: `markdownlint-cli2 "README.md" "docs/*.md" --fix`
-   - Both should pass with 0 errors before committing
+1. **CRITICAL: Always run quality checks before ANY commit:**
+   - Run tests: `uv run pytest`
+   - Run linter: `uv run ruff check src/ tests/ --fix`
+   - Run type checker: `uv run mypy src/batch_llm/ --ignore-missing-imports`
+   - Lint markdown: `npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md"`
+   - Or run all at once: `make ci`
+   - **All checks must pass with 0 errors before committing**
 
 2. **Common ruff issues to watch for:**
    - Mutable default arguments: Use `None` and initialize in function body
@@ -760,7 +789,12 @@ See `examples/example_smart_model_escalation.py` for complete implementation wit
    - Unnecessary f-strings: Remove `f` prefix if no placeholders
    - Import sorting: Let ruff auto-fix this
 
-3. **Markdown linting config:**
+3. **Common mypy issues to watch for:**
+   - Dynamic base classes like `class Foo(type(e))` are not supported
+   - Use static base classes like `class Foo(Exception)` instead
+   - Wrap exceptions with `str(e)` instead of `*e.args` if needed
+
+4. **Markdown linting config:**
    - Created `.markdownlint.json` with line-length: 120
    - Code blocks need language specifiers (use `text` for error messages)
    - Blank lines required around lists and code fences
