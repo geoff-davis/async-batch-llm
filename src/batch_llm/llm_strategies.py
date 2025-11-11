@@ -325,12 +325,12 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
             # Store in __dict__ to avoid AttributeError on immutable exceptions
             if not hasattr(e, "__dict__"):
                 # For built-in exceptions without __dict__, wrap in custom exception
-                class TokenTrackingError(type(e)):
+                class TokenTrackingError(Exception):
                     """Wrapper that adds token tracking to exception."""
 
                     pass
 
-                wrapped = TokenTrackingError(*e.args)
+                wrapped = TokenTrackingError(str(e))
                 wrapped.__cause__ = e
                 wrapped.__dict__["_failed_token_usage"] = tokens
                 raise wrapped from e
@@ -772,12 +772,12 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
             # Store in __dict__ to avoid AttributeError on immutable exceptions
             if not hasattr(e, "__dict__"):
                 # For built-in exceptions without __dict__, wrap in custom exception
-                class TokenTrackingError(type(e)):
+                class TokenTrackingError(Exception):
                     """Wrapper that adds token tracking to exception."""
 
                     pass
 
-                wrapped = TokenTrackingError(*e.args)
+                wrapped = TokenTrackingError(str(e))
                 wrapped.__cause__ = e
                 wrapped.__dict__["_failed_token_usage"] = tokens
                 raise wrapped from e
@@ -916,12 +916,12 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
             # Store in __dict__ to avoid AttributeError on immutable exceptions
             if not hasattr(e, "__dict__"):
                 # For built-in exceptions without __dict__, wrap in custom exception
-                class TokenTrackingError(type(e)):
+                class TokenTrackingError(Exception):
                     """Wrapper that adds token tracking to exception."""
 
                     pass
 
-                wrapped = TokenTrackingError(*e.args)
+                wrapped = TokenTrackingError(str(e))
                 wrapped.__cause__ = e
                 wrapped.__dict__["_failed_token_usage"] = tokens
                 raise wrapped from e

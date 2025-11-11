@@ -46,12 +46,12 @@ async def test_tokens_tracked_on_validation_failure():
                 # Attach token usage to exception so framework can track it
                 if not hasattr(e, "__dict__"):
                     # For built-in exceptions without __dict__, wrap in custom exception
-                    class TokenTrackingError(type(e)):
+                    class TokenTrackingError(Exception):
                         """Wrapper that adds token tracking to exception."""
 
                         pass
 
-                    wrapped = TokenTrackingError(*e.args)
+                    wrapped = TokenTrackingError(str(e))
                     wrapped.__cause__ = e
                     wrapped.__dict__["_failed_token_usage"] = tokens
                     raise wrapped from e
