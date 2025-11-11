@@ -51,6 +51,7 @@ class MockAgent(Generic[TOutput]):
         failure_rate: float = 0.0,
         rate_limit_on_call: int | None = None,
         timeout_on_call: int | None = None,
+        tokens_per_call: dict[str, int] | None = None,
     ):
         """
         Initialize mock agent.
@@ -61,12 +62,18 @@ class MockAgent(Generic[TOutput]):
             failure_rate: Probability of random failures (0.0 to 1.0)
             rate_limit_on_call: Call number to simulate rate limit (1-indexed, only triggers once)
             timeout_on_call: Call number to simulate timeout (1-indexed, only triggers once)
+            tokens_per_call: Token usage to report per call (default: 10 input, 20 output, 30 total)
         """
         self.response_factory: Callable[[str], TOutput] = response_factory or self._default_response  # type: ignore[assignment,unused-ignore]
         self.latency = latency
         self.failure_rate = failure_rate
         self.rate_limit_on_call = rate_limit_on_call
         self.timeout_on_call = timeout_on_call
+        self.tokens_per_call = tokens_per_call or {
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "total_tokens": 30,
+        }
         self.call_count = 0
         self._rate_limit_triggered = False
         self._timeout_triggered = False
@@ -129,4 +136,11 @@ class MockAgent(Generic[TOutput]):
 
         # Generate response
         output = self.response_factory(prompt)
-        return MockResult(output)
+
+        # Create usage info from tokens_per_call
+        usage_info = MockUsage(
+            request_tokens=self.tokens_per_call.get("input_tokens", 10),
+            response_tokens=self.tokens_per_call.get("output_tokens", 20),
+        )
+
+        return MockResult(output, usage_info=usage_info)

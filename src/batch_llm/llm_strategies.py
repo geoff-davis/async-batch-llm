@@ -308,16 +308,35 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
             config=self.config,
         )
 
-        # Parse output
-        output = self.response_parser(response)
-
-        # Extract token usage
+        # Extract token usage FIRST (before parsing/validation that might fail)
+        # This ensures we track tokens even when validation errors occur
         usage = response.usage_metadata
         tokens: TokenUsage = {
             "input_tokens": usage.prompt_token_count or 0 if usage else 0,
             "output_tokens": usage.candidates_token_count or 0 if usage else 0,
             "total_tokens": usage.total_token_count or 0 if usage else 0,
         }
+
+        # Parse output (may raise validation errors)
+        try:
+            output = self.response_parser(response)
+        except Exception as e:
+            # Attach token usage to exception so framework can track it
+            # Store in __dict__ to avoid AttributeError on immutable exceptions
+            if not hasattr(e, "__dict__"):
+                # For built-in exceptions without __dict__, wrap in custom exception
+                class TokenTrackingError(type(e)):
+                    """Wrapper that adds token tracking to exception."""
+
+                    pass
+
+                wrapped = TokenTrackingError(*e.args)
+                wrapped.__cause__ = e
+                wrapped.__dict__["_failed_token_usage"] = tokens
+                raise wrapped from e
+            else:
+                e.__dict__["_failed_token_usage"] = tokens
+                raise
 
         # Return with metadata if requested (v0.3.0)
         if self.include_metadata:
@@ -731,10 +750,8 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
             config=config_with_cache,
         )
 
-        # Parse output
-        output = self.response_parser(response)
-
-        # Extract token usage (cached tokens counted separately)
+        # Extract token usage FIRST (before parsing/validation that might fail)
+        # This ensures we track tokens even when validation errors occur
         usage = response.usage_metadata
         tokens: TokenUsage = {
             "input_tokens": usage.prompt_token_count or 0 if usage else 0,
@@ -746,6 +763,27 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
                 else 0
             ),
         }
+
+        # Parse output (may raise validation errors)
+        try:
+            output = self.response_parser(response)
+        except Exception as e:
+            # Attach token usage to exception so framework can track it
+            # Store in __dict__ to avoid AttributeError on immutable exceptions
+            if not hasattr(e, "__dict__"):
+                # For built-in exceptions without __dict__, wrap in custom exception
+                class TokenTrackingError(type(e)):
+                    """Wrapper that adds token tracking to exception."""
+
+                    pass
+
+                wrapped = TokenTrackingError(*e.args)
+                wrapped.__cause__ = e
+                wrapped.__dict__["_failed_token_usage"] = tokens
+                raise wrapped from e
+            else:
+                e.__dict__["_failed_token_usage"] = tokens
+                raise
 
         # Return with metadata if requested (v0.3.0)
         if self.include_metadata:
@@ -862,7 +900,7 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
         """
         result = await self.agent.run(prompt)
 
-        # Extract token usage
+        # Extract token usage FIRST (before accessing result.output which may fail validation)
         usage = result.usage()
         tokens: TokenUsage = {
             "input_tokens": usage.request_tokens if usage else 0,
@@ -870,7 +908,28 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
             "total_tokens": usage.total_tokens if usage else 0,
         }
 
-        return result.output, tokens
+        # Access result.output (may raise validation errors)
+        try:
+            output = result.output
+        except Exception as e:
+            # Attach token usage to exception so framework can track it
+            # Store in __dict__ to avoid AttributeError on immutable exceptions
+            if not hasattr(e, "__dict__"):
+                # For built-in exceptions without __dict__, wrap in custom exception
+                class TokenTrackingError(type(e)):
+                    """Wrapper that adds token tracking to exception."""
+
+                    pass
+
+                wrapped = TokenTrackingError(*e.args)
+                wrapped.__cause__ = e
+                wrapped.__dict__["_failed_token_usage"] = tokens
+                raise wrapped from e
+            else:
+                e.__dict__["_failed_token_usage"] = tokens
+                raise
+
+        return output, tokens
 
     async def dry_run(self, prompt: str) -> tuple[TOutput, TokenUsage]:
         """Return mock output based on agent's result_type for dry-run mode."""
