@@ -1,14 +1,14 @@
 """Tests for cache tag matching logic (v0.3.0 feature)."""
 
+import importlib.util
+
 import pytest
 
 
 @pytest.mark.asyncio
 async def test_cache_tags_exact_match():
     """Test that cache with exact matching tags is reused."""
-    try:
-        from batch_llm.llm_strategies import GeminiCachedStrategy
-    except ImportError:
+    if importlib.util.find_spec("google.genai") is None:
         pytest.skip("google-genai not installed")
 
     # Mock cache with metadata
@@ -36,9 +36,7 @@ async def test_cache_tags_exact_match():
 @pytest.mark.asyncio
 async def test_cache_tags_subset_match():
     """Test that cache with superset of tags is reused (strategy tags are subset)."""
-    try:
-        from batch_llm.llm_strategies import GeminiCachedStrategy
-    except ImportError:
+    if importlib.util.find_spec("google.genai") is None:
         pytest.skip("google-genai not installed")
 
     # Mock cache with metadata
@@ -69,9 +67,7 @@ async def test_cache_tags_subset_match():
 @pytest.mark.asyncio
 async def test_cache_tags_mismatch_value():
     """Test that cache with different tag value is NOT reused."""
-    try:
-        from batch_llm.llm_strategies import GeminiCachedStrategy
-    except ImportError:
+    if importlib.util.find_spec("google.genai") is None:
         pytest.skip("google-genai not installed")
 
     # Mock cache with metadata
@@ -99,9 +95,7 @@ async def test_cache_tags_mismatch_value():
 @pytest.mark.asyncio
 async def test_cache_tags_missing_key():
     """Test that cache missing required tag key is NOT reused."""
-    try:
-        from batch_llm.llm_strategies import GeminiCachedStrategy
-    except ImportError:
+    if importlib.util.find_spec("google.genai") is None:
         pytest.skip("google-genai not installed")
 
     # Mock cache with metadata
@@ -129,9 +123,7 @@ async def test_cache_tags_missing_key():
 @pytest.mark.asyncio
 async def test_cache_tags_empty_metadata():
     """Test that cache with no metadata doesn't match strategy with tags."""
-    try:
-        from batch_llm.llm_strategies import GeminiCachedStrategy
-    except ImportError:
+    if importlib.util.find_spec("google.genai") is None:
         pytest.skip("google-genai not installed")
 
     # Mock cache with metadata
@@ -159,9 +151,7 @@ async def test_cache_tags_empty_metadata():
 @pytest.mark.asyncio
 async def test_cache_no_tags_matches_any():
     """Test that strategy with no tags matches any cache (legacy behavior)."""
-    try:
-        from batch_llm.llm_strategies import GeminiCachedStrategy
-    except ImportError:
+    if importlib.util.find_spec("google.genai") is None:
         pytest.skip("google-genai not installed")
 
     # Mock cache with metadata
@@ -189,9 +179,7 @@ async def test_cache_no_tags_matches_any():
 @pytest.mark.asyncio
 async def test_cache_tags_case_sensitive():
     """Test that tag matching is case-sensitive."""
-    try:
-        from batch_llm.llm_strategies import GeminiCachedStrategy
-    except ImportError:
+    if importlib.util.find_spec("google.genai") is None:
         pytest.skip("google-genai not installed")
 
     # Mock cache with metadata
@@ -219,9 +207,7 @@ async def test_cache_tags_case_sensitive():
 @pytest.mark.asyncio
 async def test_cache_tags_type_sensitivity():
     """Test that tag matching is type-sensitive (string vs int)."""
-    try:
-        from batch_llm.llm_strategies import GeminiCachedStrategy
-    except ImportError:
+    if importlib.util.find_spec("google.genai") is None:
         pytest.skip("google-genai not installed")
 
     # Mock cache with metadata
@@ -249,9 +235,7 @@ async def test_cache_tags_type_sensitivity():
 @pytest.mark.asyncio
 async def test_cache_tags_multiple_caches_filtering():
     """Test that tag matching correctly filters among multiple caches."""
-    try:
-        from batch_llm.llm_strategies import GeminiCachedStrategy
-    except ImportError:
+    if importlib.util.find_spec("google.genai") is None:
         pytest.skip("google-genai not installed")
 
     # Mock cache with metadata
@@ -289,9 +273,7 @@ async def test_cache_tags_multiple_caches_filtering():
 @pytest.mark.asyncio
 async def test_cache_tags_special_characters():
     """Test that tags can contain special characters."""
-    try:
-        from batch_llm.llm_strategies import GeminiCachedStrategy
-    except ImportError:
+    if importlib.util.find_spec("google.genai") is None:
         pytest.skip("google-genai not installed")
 
     # Mock cache with metadata
