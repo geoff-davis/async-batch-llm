@@ -331,7 +331,8 @@ Execute an LLM call.
 **Returns:** Tuple of `(output, token_usage)`
 
 - `output` (TOutput): The LLM response
-- `token_usage` ([TokenUsage](#tokenusage)): Token usage dict with optional keys: `input_tokens`, `output_tokens`, `total_tokens`, `cached_input_tokens`
+- `token_usage` ([TokenUsage](#tokenusage)): Token usage dict with optional keys: `input_tokens`,
+  `output_tokens`, `total_tokens`, `cached_input_tokens`
 
 **Raises:** Any exception to trigger retry (if retryable) or failure
 
@@ -388,61 +389,62 @@ Called by the framework when `execute()` raises an exception, before deciding wh
 
 **Use Cases:**
 
-1. **Smart Model Escalation** - Only escalate to expensive models on validation errors, not network errors:
+1. **Smart Model Escalation** - Only escalate to expensive models on validation errors, not
+   network errors:
 
-```python
-class SmartModelEscalationStrategy(LLMCallStrategy[Output]):
-    def __init__(self):
-        self.validation_failures = 0
+   ```python
+   class SmartModelEscalationStrategy(LLMCallStrategy[Output]):
+       def __init__(self):
+           self.validation_failures = 0
 
-    async def on_error(self, exception: Exception, attempt: int) -> None:
-        if isinstance(exception, ValidationError):
-            self.validation_failures += 1
+       async def on_error(self, exception: Exception, attempt: int) -> None:
+           if isinstance(exception, ValidationError):
+               self.validation_failures += 1
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
-        # Only escalate model on validation errors
-        model_index = min(self.validation_failures, len(MODELS) - 1)
-        model = MODELS[model_index]
-        # Make call with appropriate model...
-```
+       async def execute(self, prompt: str, attempt: int, timeout: float):
+           # Only escalate model on validation errors
+           model_index = min(self.validation_failures, len(MODELS) - 1)
+           model = MODELS[model_index]
+           # Make call with appropriate model...
+   ```
 
-2. **Smart Retry with Partial Parsing** - Build better retry prompts based on what failed:
+1. **Smart Retry with Partial Parsing** - Build better retry prompts based on what failed:
 
-```python
-class SmartRetryStrategy(LLMCallStrategy[Output]):
-    def __init__(self):
-        self.last_error = None
-        self.last_response = None
+   ```python
+   class SmartRetryStrategy(LLMCallStrategy[Output]):
+       def __init__(self):
+           self.last_error = None
+           self.last_response = None
 
-    async def on_error(self, exception: Exception, attempt: int) -> None:
-        if isinstance(exception, ValidationError):
-            self.last_error = exception
-            # last_response set in execute() before raising
+       async def on_error(self, exception: Exception, attempt: int) -> None:
+           if isinstance(exception, ValidationError):
+               self.last_error = exception
+               # last_response set in execute() before raising
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
-        if attempt > 1 and self.last_error:
-            # Build smart retry prompt with partial parsing feedback
-            prompt = self._create_retry_prompt_with_partial_data(prompt)
-        # Make call with improved prompt...
-```
+       async def execute(self, prompt: str, attempt: int, timeout: float):
+           if attempt > 1 and self.last_error:
+               # Build smart retry prompt with partial parsing feedback
+               prompt = self._create_retry_prompt_with_partial_data(prompt)
+           # Make call with improved prompt...
+   ```
 
-3. **Error Type Tracking** - Distinguish between different error types:
+1. **Error Type Tracking** - Distinguish between different error types:
 
-```python
-class ErrorTrackingStrategy(LLMCallStrategy[Output]):
-    def __init__(self):
-        self.validation_errors = 0
-        self.network_errors = 0
-        self.rate_limit_errors = 0
+   ```python
+   class ErrorTrackingStrategy(LLMCallStrategy[Output]):
+       def __init__(self):
+           self.validation_errors = 0
+           self.network_errors = 0
+           self.rate_limit_errors = 0
 
-    async def on_error(self, exception: Exception, attempt: int) -> None:
-        if isinstance(exception, ValidationError):
-            self.validation_errors += 1
-        elif isinstance(exception, ConnectionError):
-            self.network_errors += 1
-        elif "429" in str(exception):
-            self.rate_limit_errors += 1
-```
+       async def on_error(self, exception: Exception, attempt: int) -> None:
+           if isinstance(exception, ValidationError):
+               self.validation_errors += 1
+           elif isinstance(exception, ConnectionError):
+               self.network_errors += 1
+           elif "429" in str(exception):
+               self.rate_limit_errors += 1
+   ```
 
 **Important Notes:**
 
@@ -453,8 +455,10 @@ class ErrorTrackingStrategy(LLMCallStrategy[Output]):
 
 **See Also:**
 
-- [examples/example_smart_model_escalation.py](../examples/example_smart_model_escalation.py) - Complete smart model escalation example
-- [examples/example_gemini_smart_retry.py](../examples/example_gemini_smart_retry.py) - Smart retry with partial parsing
+- [examples/example_smart_model_escalation.py](../examples/example_smart_model_escalation.py) - Complete
+  smart model escalation example
+- [examples/example_gemini_smart_retry.py](../examples/example_gemini_smart_retry.py) - Smart retry with
+  partial parsing
 
 #### `async def cleanup() -> None`
 
@@ -671,7 +675,8 @@ class ProcessorConfig:
 - `retry` ([RetryConfig](#retryconfig)): Retry configuration
 - `rate_limit` ([RateLimitConfig](#ratelimitconfig)): Rate limit handling configuration
 - `progress_interval` (int): Log progress every N items. Default: 10
-- `progress_callback_timeout` (float | None): Max seconds to wait for progress callback. Default: 5.0. Set to `None` for no timeout.
+- `progress_callback_timeout` (float | None): Max seconds to wait for progress callback. Default: 5.0.
+  Set to `None` for no timeout.
 - `enable_detailed_logging` (bool): Enable detailed debug logging. Default: False
 - `max_queue_size` (int): Max queue size (0 = unlimited). Default: 0
 - `dry_run` (bool): Skip actual API calls, use mock data from `strategy.dry_run()`. Default: False

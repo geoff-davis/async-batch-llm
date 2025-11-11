@@ -231,7 +231,8 @@ config = ProcessorConfig(
 )
 ```
 
-When any worker hits a rate limit (429 error), **all workers pause** during cooldown, then gradually resume with slow start to prevent immediate re-limiting.
+When any worker hits a rate limit (429 error), **all workers pause** during cooldown, then gradually resume with
+slow start to prevent immediate re-limiting.
 
 ### 🔌 Middleware & Observers
 
@@ -333,7 +334,7 @@ print(f"Effective cost: {result.effective_input_tokens()} tokens")
 
 **Example with Gemini Caching:**
 
-```
+```text
 Input tokens: 50,000
 Cached tokens: 45,000
 Cache hit rate: 90.0%
@@ -680,7 +681,8 @@ class ProgressiveTempStrategy(LLMCallStrategy[str]):
 
 ### Smart Retry with Validation Feedback
 
-When validation fails, use the `on_error` callback to create smarter retry prompts that tell the LLM exactly which fields succeeded and which failed:
+When validation fails, use the `on_error` callback to create smarter retry prompts that tell the LLM exactly
+which fields succeeded and which failed:
 
 ```python
 from pydantic import ValidationError
@@ -736,7 +738,8 @@ implementation with automatic error parsing.
 
 ### Model Escalation for Cost Optimization
 
-Start with cheap models and escalate to expensive ones **only on validation errors** (not network/rate limit errors). Use the `on_error` callback to distinguish error types:
+Start with cheap models and escalate to expensive ones **only on validation errors** (not network/rate limit
+errors). Use the `on_error` callback to distinguish error types:
 
 ```python
 from pydantic import ValidationError
@@ -1248,14 +1251,15 @@ The optimal worker count depends on your use case and API constraints:
 
 #### 1. Rate-Limited APIs (OpenAI, Anthropic, Gemini)
 
-**Recommended: 5-10 workers**
+##### Recommended: 5-10 workers
 
 ```python
 # Start conservatively with 5 workers
 config = ProcessorConfig(max_workers=5)
 ```
 
-**Why?** Too many workers will immediately hit rate limits. Start with 5, then increase gradually while monitoring `rate_limit_count` in your metrics.
+**Why?** Too many workers will immediately hit rate limits. Start with 5, then increase gradually while
+monitoring `rate_limit_count` in your metrics.
 
 **With Proactive Rate Limiting:**
 
@@ -1280,11 +1284,12 @@ config = ProcessorConfig(
 )
 ```
 
-**Why?** I/O-bound operations benefit from more workers (up to 2× CPU count). Cap at 20 to avoid diminishing returns from excessive context switching.
+**Why?** I/O-bound operations benefit from more workers (up to 2× CPU count). Cap at 20 to avoid diminishing
+returns from excessive context switching.
 
 #### 3. Testing and Debugging
 
-**Recommended: 2 workers**
+##### Recommended: 2 workers
 
 ```python
 config = ProcessorConfig(max_workers=2)
@@ -1308,6 +1313,7 @@ print(f"Throughput: {result.total_items / stats['duration']:.2f} items/sec")
 ```
 
 **Guidelines:**
+
 - `rate_limit_count > 5`: Reduce `max_workers` by 20-30%
 - `rate_limit_count == 0` and low throughput: Increase `max_workers` by 2-3
 - Optimal: `rate_limit_count ≤ 2` with maximum throughput
@@ -1783,9 +1789,11 @@ class AdaptivePromptStrategy(LLMCallStrategy[Output]):
         return await self.call_llm(prompt)
 ```
 
-The `on_error` callback is called automatically by the framework when `execute()` raises an exception, making it cleaner than try/except in `execute()`.
+The `on_error` callback is called automatically by the framework when `execute()` raises an exception, making
+it cleaner than try/except in `execute()`.
 
-For validation errors specifically, see [`examples/example_gemini_smart_retry.py`](examples/example_gemini_smart_retry.py) for a complete example that parses which fields succeeded vs. failed and creates targeted retry prompts.
+For validation errors specifically, see [`examples/example_gemini_smart_retry.py`](examples/example_gemini_smart_retry.py)
+for a complete example that parses which fields succeeded vs. failed and creates targeted retry prompts.
 
 ---
 
@@ -1801,7 +1809,7 @@ For validation errors specifically, see [`examples/example_gemini_smart_retry.py
 
 ### Three Testing Approaches
 
-**1. Dry-Run Mode (Recommended for Quick Tests)**
+#### 1. Dry-Run Mode (Recommended for Quick Tests)
 
 Test your workflow without making any API calls:
 
@@ -1825,7 +1833,7 @@ async with ParallelBatchProcessor(config=config) as processor:
 # Useful for testing configuration, error handling, post-processors, etc.
 ```
 
-**2. Mock Strategies (For Unit Tests)**
+#### 2. Mock Strategies (For Unit Tests)
 
 Use `MockAgent` for fast, controlled testing:
 
@@ -1854,7 +1862,7 @@ await processor.add_work(LLMWorkItem(
 ))
 ```
 
-**3. Integration Tests with Small Batches**
+#### 3. Integration Tests with Small Batches
 
 Test with real API but limit scope:
 
@@ -1912,11 +1920,15 @@ pytest
 
 These are ideas being considered, not committed features:
 
-- **Cost tracking and budgeting** - Automatic cost calculation per provider/model, budget enforcement, cost estimation before processing
-- **Prometheus/StatsD metrics** - Export metrics for monitoring dashboards (throughput, latency, success rates, token usage)
+- **Cost tracking and budgeting** - Automatic cost calculation per provider/model, budget enforcement, cost
+  estimation before processing
+- **Prometheus/StatsD metrics** - Export metrics for monitoring dashboards (throughput, latency, success rates,
+  token usage)
 - **CLI tool** - Command-line interface for processing files without writing Python code
-- **Streaming support** - Real-time token streaming for long-running tasks (would require significant architectural changes)
-- **Batch API integration** - Support for provider batch APIs (50% cost savings, 24hr latency) - this might be better as a separate tool given the fundamentally different async model
+- **Streaming support** - Real-time token streaming for long-running tasks (would require significant
+  architectural changes)
+- **Batch API integration** - Support for provider batch APIs (50% cost savings, 24hr latency) - this might be
+  better as a separate tool given the fundamentally different async model
 
 Contributions and feedback welcome!
 
@@ -1988,9 +2000,11 @@ Check out the [`examples/`](examples/) directory:
 - [`example_anthropic.py`](examples/example_anthropic.py) - Anthropic Claude
 - [`example_langchain.py`](examples/example_langchain.py) - LangChain & RAG
 - [`example_gemini_direct.py`](examples/example_gemini_direct.py) - Direct Gemini API
-- [`example_gemini_smart_retry.py`](examples/example_gemini_smart_retry.py) - Smart retry with validation feedback using `on_error`
+- [`example_gemini_smart_retry.py`](examples/example_gemini_smart_retry.py) - Smart retry with validation
+  feedback using `on_error`
 - [`example_model_escalation.py`](examples/example_model_escalation.py) - Basic model escalation
-- [`example_smart_model_escalation.py`](examples/example_smart_model_escalation.py) - Smart model escalation (validation errors only) using `on_error`
+- [`example_smart_model_escalation.py`](examples/example_smart_model_escalation.py) - Smart model escalation
+  (validation errors only) using `on_error`
 - [`example_context_manager.py`](examples/example_context_manager.py) - Resource management
 
 ---

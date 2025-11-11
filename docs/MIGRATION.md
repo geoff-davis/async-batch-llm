@@ -17,11 +17,13 @@ This directory contains migration guides for upgrading between major versions of
 **Release Date:** 2025-01-10
 
 **Key Features:**
+
 - RetryState for multi-stage retry patterns
 - GeminiResponse for safety ratings access
 - Cache tagging for precise cache matching
 
 **Who should read this:**
+
 - Everyone upgrading from v0.2.x to v0.3.0
 - Users wanting to adopt new retry state features
 - Users needing content moderation with safety ratings
@@ -38,11 +40,13 @@ This directory contains migration guides for upgrading between major versions of
 **Release Date:** 2024-10-22
 
 **Key Features:**
+
 - Shared strategy lifecycle (70-90% cost savings)
 - Automatic cache renewal for GeminiCachedStrategy
 - Enhanced cache management and reuse
 
 **Who should read this:**
+
 - Users upgrading from v0.1.x to v0.2.0
 - Users of GeminiCachedStrategy wanting cost optimization
 - Anyone using multiple work items with the same strategy
@@ -58,12 +62,14 @@ This directory contains migration guides for upgrading between major versions of
 **Release Date:** 2024-10-15
 
 **Key Changes:**
+
 - Replaced `agent=`, `agent_factory=`, `direct_call=` with unified `strategy=` parameter
 - Introduced `LLMCallStrategy` abstract base class
 - Framework-level timeout enforcement with `asyncio.wait_for()`
 - Built-in strategies: `PydanticAIStrategy`, `GeminiStrategy`, `GeminiCachedStrategy`
 
 **Who should read this:**
+
 - Users upgrading from v0.0.x to v0.1.0+
 - Anyone using the old agent-based API
 - Users migrating from PydanticAI agent parameters
@@ -123,6 +129,7 @@ batch-llm follows semantic versioning:
 - **Major releases (x.0.0):** May remove deprecated features, may have breaking changes
 
 **Deprecation timeline:**
+
 1. Feature marked as deprecated in minor release (with warning)
 2. Documented in CHANGELOG and migration guide
 3. Removed in next major release (minimum 6 months notice)
@@ -132,6 +139,7 @@ batch-llm follows semantic versioning:
 ## Backward Compatibility Guarantee
 
 **v0.1.0+**: We maintain backward compatibility across minor versions:
+
 - v0.1.x → v0.2.0: ✅ No breaking changes
 - v0.2.x → v0.3.0: ✅ No breaking changes
 - v0.3.x → v0.4.0: ✅ No breaking changes expected
@@ -142,7 +150,7 @@ batch-llm follows semantic versioning:
 
 ## Getting Help
 
-### If you encounter migration issues:
+### If you encounter migration issues
 
 1. **Check the migration guide** for your version in this directory
 2. **Search GitHub Issues**: <https://github.com/anthropics/batch-llm/issues>
@@ -156,19 +164,23 @@ batch-llm follows semantic versioning:
 
 **Q: Do I need to migrate immediately after a new release?**
 
-A: No. Minor releases (0.x.0) are backward compatible. You can upgrade at your own pace. Only major releases (x.0.0) may require migration.
+A: No. Minor releases (0.x.0) are backward compatible. You can upgrade at your own pace. Only major releases
+(x.0.0) may require migration.
 
 **Q: Can I skip versions when upgrading?**
 
-A: Yes, if there are no breaking changes. However, we recommend reading all migration guides between your version and the target version to learn about new features.
+A: Yes, if there are no breaking changes. However, we recommend reading all migration guides between your
+version and the target version to learn about new features.
 
 **Q: What if I'm using a deprecated feature?**
 
-A: Deprecated features will show warnings but continue to work until the next major release. Plan to migrate during the deprecation period.
+A: Deprecated features will show warnings but continue to work until the next major release. Plan to migrate
+during the deprecation period.
 
 **Q: How do I know if a release has breaking changes?**
 
-A: Check the CHANGELOG.md file. Breaking changes are clearly marked with ⚠️ at the top of each release section.
+A: Check the CHANGELOG.md file. Breaking changes are clearly marked with a warning symbol at the top of each
+release section.
 
 ---
 
@@ -192,6 +204,7 @@ When releasing a new version with changes that affect users:
 6. Include links to relevant issues and documentation
 
 **Template structure:**
+
 - Overview and key changes
 - Breaking changes (if any)
 - Step-by-step migration instructions
@@ -202,4 +215,4 @@ When releasing a new version with changes that affect users:
 
 ---
 
-*Last updated: 2025-01-10*
+**Note:** Last updated: 2025-01-10

@@ -9,7 +9,9 @@
 
 ## Overview
 
-This document outlines a prioritized plan for improving the batch-llm package based on a comprehensive review that identified 27 opportunities for improvement across code quality, testing, documentation, performance, and user experience.
+This document outlines a prioritized plan for improving the batch-llm package based on a comprehensive review
+that identified 27 opportunities for improvement across code quality, testing, documentation, performance, and
+user experience.
 
 **Current Status:** Production-ready (8/10 score)
 **Goal:** Increase to 9/10 with focused improvements
@@ -28,6 +30,7 @@ This document outlines a prioritized plan for improving the batch-llm package ba
 **Owner:** TBD
 
 **Problem:**
+
 - `pyproject.toml` declares `version = "0.2.0"`
 - `src/batch_llm/__init__.py` declares `__version__ = "0.1.0"`
 - Users checking `batch_llm.__version__` get wrong information
@@ -35,35 +38,39 @@ This document outlines a prioritized plan for improving the batch-llm package ba
 **Implementation:**
 
 1. Update `src/batch_llm/__init__.py`:
-```python
-# Remove hardcoded version
-# OLD: __version__ = "0.1.0"
 
-# NEW: Use importlib.metadata
-from importlib.metadata import version, PackageNotFoundError
+   ```python
+   # Remove hardcoded version
+   # OLD: __version__ = "0.1.0"
 
-try:
-    __version__ = version("batch-llm")
-except PackageNotFoundError:
-    # Package not installed (e.g., running from source)
-    __version__ = "0.0.0+dev"
-```
+   # NEW: Use importlib.metadata
+   from importlib.metadata import version, PackageNotFoundError
 
-2. Update `pyproject.toml` to correct version:
-```toml
-version = "0.3.0"  # Match actual release
-```
+   try:
+       __version__ = version("batch-llm")
+   except PackageNotFoundError:
+       # Package not installed (e.g., running from source)
+       __version__ = "0.0.0+dev"
+   ```
 
-3. Add test:
-```python
-def test_version_matches_package():
-    """Verify __version__ matches package metadata."""
-    from batch_llm import __version__
-    from importlib.metadata import version
-    assert __version__ == version("batch-llm")
-```
+1. Update `pyproject.toml` to correct version:
+
+   ```toml
+   version = "0.3.0"  # Match actual release
+   ```
+
+1. Add test:
+
+   ```python
+   def test_version_matches_package():
+       """Verify __version__ matches package metadata."""
+       from batch_llm import __version__
+       from importlib.metadata import version
+       assert __version__ == version("batch-llm")
+   ```
 
 **Validation:**
+
 - Run `python -c "import batch_llm; print(batch_llm.__version__)"`
 - Should print "0.3.0"
 - Test passes in CI
@@ -80,6 +87,7 @@ def test_version_matches_package():
 **Owner:** TBD
 
 **Problem:**
+
 - v0.2.0 shared strategy optimization (70-90% cost savings) has no tests
 - Critical feature could break silently
 - `_ensure_strategy_prepared()` logic at `parallel.py:162-194` untested
@@ -220,6 +228,7 @@ async def test_different_strategies_prepare_separately():
 ```
 
 **Validation:**
+
 - All tests pass with 100% success rate
 - Run with `pytest tests/test_shared_strategy_lifecycle.py -v`
 - Add to CI pipeline
@@ -236,6 +245,7 @@ async def test_different_strategies_prepare_separately():
 **Owner:** TBD
 
 **Problem:**
+
 - Users might create new strategy instances per item
 - Miss 70-90% cost savings with Gemini caching
 - Not prominently documented in README
@@ -289,12 +299,16 @@ for document in documents:
 ### How It Works
 
 When you reuse a strategy:
+
 1. Framework calls `prepare()` **once** (creates one cache)
 2. All work items share that cache
 3. Cached tokens get 90% discount from Gemini
 4. Overall cost reduction: 70-90%
 
-See [Shared Strategies documentation](#shared-strategies-for-cost-optimization-v020) for details.
+See the Shared Strategies documentation for details.
+
+```text
+(end of markdown code block)
 ```
 
 #### 1.3.2 Update GeminiCachedStrategy Docstring
@@ -360,10 +374,14 @@ for item in items:
     await processor.add_work(LLMWorkItem(strategy=strategy, ...))  # REUSE
 ```
 
-See [Cost Optimization](#-critical-shared-strategies-for-cost-optimization) for details.
+See the Cost Optimization section for details.
+
+```text
+(end of markdown code block)
 ```
 
 **Validation:**
+
 - README section is visible and prominent
 - Docstring shows up in IDE hover
 - FAQ addresses common mistake
@@ -571,9 +589,11 @@ The optimal worker count depends on your use case:
 config = ProcessorConfig(max_workers=5)
 ```
 
-**Why:** Too many workers hit rate limits immediately. Start with 5, increase gradually while monitoring `rate_limit_count` in metrics.
+**Why:** Too many workers hit rate limits immediately. Start with 5, increase gradually while monitoring
+`rate_limit_count` in metrics.
 
 **With proactive rate limiting:**
+
 ```python
 config = ProcessorConfig(
     max_workers=4,  # Conservative: 300 req/min ÷ 60 × 0.8 buffer
@@ -605,6 +625,7 @@ config = ProcessorConfig(max_workers=2)
 #### 4. Monitoring and Tuning
 
 Monitor these metrics to optimize:
+
 ```python
 result = await processor.process_all()
 stats = await processor.get_stats()
@@ -616,6 +637,9 @@ print(f"Items/sec: {result.total_items / stats['duration']:.2f}")
 - **If rate_limit_count > 0:** Reduce workers or enable proactive rate limiting
 - **If items/sec is low:** Check if workers are idle (increase count)
 - **If errors spike:** Check logs for timeout or validation issues
+
+```text
+(end of markdown code block)
 ```
 
 **Validation:** User feedback on clarity
@@ -745,6 +769,7 @@ class ParallelBatchProcessor:
 ```
 
 **Validation:**
+
 - Benchmark with 20 workers, 1000 items
 - Measure lock contention reduction
 
@@ -889,6 +914,7 @@ def delete(self, key: str, raise_if_missing: bool = False) -> None:
 **Files:** Multiple
 
 **Completion Notes:**
+
 - Added docstrings to all missing methods identified by `pydocstyle`
 - Methods documented: `MetricsObserver.reset()`, `ProcessorConfig.validate()`, `RetryState.__contains__()`
 
@@ -901,6 +927,7 @@ def delete(self, key: str, raise_if_missing: bool = False) -> None:
 **Effort:** 2-3 hours
 
 **Completion Notes:**
+
 - Created `docs/MIGRATION.md` as comprehensive migration guide index
 - Links all existing migration guides: v0.0→v0.1, v0.1→v0.2, v0.2→v0.3
 - Added "Migration Path Finder" for users upgrading from any version
@@ -918,6 +945,7 @@ def delete(self, key: str, raise_if_missing: bool = False) -> None:
 **Files:** `examples/*.py`
 
 **Completion Notes:**
+
 - Added API key checks to all example files
 - Examples now provide helpful error messages when API keys are missing
 - Includes links to where users can get API keys
@@ -933,6 +961,7 @@ def delete(self, key: str, raise_if_missing: bool = False) -> None:
 **File:** `tests/test_integration.py`
 
 **Completion Notes:**
+
 - Created 7 integration tests with real API calls
 - Tests for: Gemini basic generation, cached strategy, safety ratings, validation retries
 - Tests automatically skip when API keys are not present
@@ -951,6 +980,7 @@ def delete(self, key: str, raise_if_missing: bool = False) -> None:
 **File:** `tests/test_performance.py`
 
 **Completion Notes:**
+
 - Created 8 performance benchmark tests
 - Benchmarks: throughput (single/scaling), memory usage, framework overhead, stats performance
 - Tests compare shared vs unique strategy performance
@@ -969,6 +999,7 @@ def delete(self, key: str, raise_if_missing: bool = False) -> None:
 **File:** `tests/test_worst_case_rate_limit.py`
 
 **Completion Notes:**
+
 - Created comprehensive worst-case rate limit tests
 - Tests all workers hitting rate limit simultaneously using barriers
 - Verifies coordination and no deadlocks occur
@@ -1062,6 +1093,7 @@ error = f"{type(e).__name__}: {str(e)[:ERROR_MESSAGE_MAX_LENGTH]}"
 **Effort:** 1 hour
 
 Add comments documenting thread-safety assumptions in:
+
 - `_is_cache_expired()`
 - `_progress_tasks` cleanup
 
@@ -1072,11 +1104,13 @@ Add comments documenting thread-safety assumptions in:
 ### Success Criteria
 
 **Phase 1 (Critical):**
+
 - ✅ Version mismatch fixed
 - ✅ Shared strategy tests added (3+ tests)
 - ✅ Cost optimization documented prominently
 
 **Phase 2 (High Impact):**
+
 - ✅ Type ignores reduced to <10
 - ✅ Line length violations: 0
 - ✅ Resource cleanup added
@@ -1084,6 +1118,7 @@ Add comments documenting thread-safety assumptions in:
 - ✅ Cache tag tests added
 
 **Phase 3 (Performance):**
+
 - ✅ Slow-start optimized (5-10% improvement)
 - ✅ Debug logging added
 - ✅ Parameter validation added
@@ -1091,6 +1126,7 @@ Add comments documenting thread-safety assumptions in:
 ### Progress Tracking
 
 Track progress in GitHub Issues:
+
 - Tag issues with phase labels: `phase-1-critical`, `phase-2-high-impact`, etc.
 - Tag issues with type labels: `bug`, `enhancement`, `documentation`, `testing`
 - Use milestones: `v0.3.1`, `v0.4.0`, etc.
@@ -1108,6 +1144,7 @@ Track progress in GitHub Issues:
 ### By Priority
 
 **P0 - Critical (3 issues):**
+
 1. Fix version mismatch
 2. Add shared strategy tests
 3. Document cost optimization

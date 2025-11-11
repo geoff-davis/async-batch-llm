@@ -2,7 +2,8 @@
 
 ## Executive Summary
 
-This document outlines a comprehensive plan to address issues identified in real-world production usage of batch-llm v0.1.0, specifically around shared strategy instances for cost optimization with Gemini prompt caching.
+This document outlines a comprehensive plan to address issues identified in real-world production usage of
+batch-llm v0.1.0, specifically around shared strategy instances for cost optimization with Gemini prompt caching.
 
 **Target Version:** v0.2.0
 **Estimated Scope:** 3-5 days of development + testing
@@ -51,7 +52,9 @@ This document covers **Phase 1 (v0.2.0)** only.
 
 #### Problem
 
-Framework calls `strategy.prepare()` once per work item. When the same strategy instance is shared across multiple work items (for caching cost optimization), `prepare()` is called multiple times concurrently, creating multiple caches.
+Framework calls `strategy.prepare()` once per work item. When the same strategy instance is shared across multiple
+work items (for caching cost optimization), `prepare()` is called multiple times concurrently, creating multiple
+caches.
 
 #### Solution
 
@@ -222,11 +225,16 @@ for item in items:
 ```
 
 **Benefits:**
+
 - Single cache created and shared across all work items
 - 70-90% cost reduction with Gemini prompt caching
 - Framework ensures `prepare()` is called only once
 
-**Note:** The framework automatically handles idempotency - `prepare()` is called once per unique strategy instance, even with concurrent workers.
+**Note:** The framework automatically handles idempotency - `prepare()` is called once per unique strategy
+instance, even with concurrent workers.
+
+```text
+(end of markdown code block)
 ```
 
 ---
@@ -375,6 +383,9 @@ pip install 'batch-llm[gemini]' 'google-genai<1.46'
 ```
 
 Note: google-genai v1.45 and earlier are deprecated and may be removed in batch-llm v0.3.0.
+
+```text
+(end of note)
 ```
 
 ---
@@ -383,7 +394,8 @@ Note: google-genai v1.45 and earlier are deprecated and may be removed in batch-
 
 #### Problem
 
-`BatchResult` aggregates `total_input_tokens` and `total_output_tokens` but not `cached_input_tokens`, making it impossible to measure cache effectiveness.
+`BatchResult` aggregates `total_input_tokens` and `total_output_tokens` but not `cached_input_tokens`, making
+it impossible to measure cache effectiveness.
 
 #### Solution
 
@@ -539,12 +551,16 @@ print(f"Effective cost: {result.effective_input_tokens()} tokens")
 ```
 
 **Example output:**
-```
+
+```text
 Total input tokens: 50000
 Cached tokens: 45000
 Cache hit rate: 90.0%
 Effective cost: 9500 tokens  # 81% cost reduction!
 ```
+
+```text
+(end of section)
 ```
 
 ---
@@ -650,9 +666,12 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 
 #### Breaking Changes
 
-**Behavioral change (non-breaking):** `GeminiCachedStrategy.cleanup()` no longer deletes the cache by default. This is technically a behavioral change, but it's opt-in (cleanup is only called if you call it), and the new behavior is more sensible for production use.
+**Behavioral change (non-breaking):** `GeminiCachedStrategy.cleanup()` no longer deletes the cache by default.
+This is technically a behavioral change, but it's opt-in (cleanup is only called if you call it), and the new
+behavior is more sensible for production use.
 
-Migration: If you were relying on `cleanup()` to delete caches, call `await strategy.delete_cache()` explicitly instead.
+Migration: If you were relying on `cleanup()` to delete caches, call `await strategy.delete_cache()` explicitly
+instead.
 
 #### Tests
 
@@ -716,17 +735,23 @@ await strategy.delete_cache()
 ### Best Practices
 
 **Production pipelines (multiple runs):**
+
 - Let caches expire naturally (don't call `delete_cache()`)
 - Set TTL to cover expected run frequency (e.g., 1 hour for hourly jobs)
 - Monitor cache reuse via `result.cache_hit_rate()`
 
 **Tests and one-off jobs:**
+
 - Call `delete_cache()` for cleanup
 - Or use short TTL (60s) to auto-expire quickly
 
 **Updating prompts:**
+
 - Delete old cache before creating new one with updated content
 - Or use cache tagging/metadata to identify versions (v0.3.0 feature)
+
+```text
+(end of section)
 ```
 
 ---
@@ -735,7 +760,8 @@ await strategy.delete_cache()
 
 #### Problem
 
-Long-running pipelines (>1 hour) hit cache expiration errors when Google expires the cache on their servers. No built-in detection or recovery.
+Long-running pipelines (>1 hour) hit cache expiration errors when Google expires the cache on their servers.
+No built-in detection or recovery.
 
 #### Solution
 
@@ -967,6 +993,7 @@ strategy = GeminiCachedStrategy(
 ```
 
 **How it works:**
+
 1. Before each API call, checks if cache will expire in <5 minutes
 2. If yes, creates new cache or finds existing one
 3. API call uses fresh cache
@@ -990,11 +1017,15 @@ if strategy._is_cache_expired():
 ### Cost Implications
 
 **Automatic renewal:**
+
 - ✅ Zero downtime (no expiration errors)
 - ✅ Optimal cache reuse (always uses fresh cache)
 - ⚠️  May create new cache if old one expired
 
 **Best practice:** Set TTL to slightly longer than expected run time to maximize reuse.
+
+```text
+(end of section)
 ```
 
 ---
@@ -1024,6 +1055,7 @@ async with ParallelBatchProcessor(...) as processor:
 ```
 
 **After (v0.2):**
+
 ```python
 strategy = GeminiCachedStrategy(...)
 async with ParallelBatchProcessor(...) as processor:
@@ -1103,6 +1135,9 @@ pip install 'batch-llm[gemini]' 'google-genai<1.46'
 ## Support
 
 See docs/GEMINI_INTEGRATION.md for detailed examples and best practices.
+
+```text
+(end of document)
 ```
 
 ---

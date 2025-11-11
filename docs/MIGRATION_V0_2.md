@@ -2,9 +2,11 @@
 
 ## Overview
 
-Version 0.2.0 adds critical fixes for production usage, particularly around shared strategies and Gemini caching. Most changes are backward compatible with minimal breaking changes.
+Version 0.2.0 adds critical fixes for production usage, particularly around shared strategies and Gemini
+caching. Most changes are backward compatible with minimal breaking changes.
 
 **Key improvements:**
+
 - Shared strategy instances (prepare() called only once)
 - Cached token tracking in BatchResult
 - Automatic cache renewal for long pipelines
@@ -18,6 +20,7 @@ Version 0.2.0 adds critical fixes for production usage, particularly around shar
 ### 1. GeminiCachedStrategy cleanup() Behavior
 
 **Before (v0.1):**
+
 ```python
 strategy = GeminiCachedStrategy(...)
 async with ParallelBatchProcessor(...) as processor:
@@ -27,6 +30,7 @@ async with ParallelBatchProcessor(...) as processor:
 ```
 
 **After (v0.2):**
+
 ```python
 strategy = GeminiCachedStrategy(...)
 async with ParallelBatchProcessor(...) as processor:
@@ -41,6 +45,7 @@ await strategy.delete_cache()
 **Why:** Preserving caches between runs enables 70-90% cost savings when running multiple batches within the TTL window.
 
 **Migration:**
+
 - If you relied on automatic cache deletion, call `await strategy.delete_cache()` explicitly
 - For most production use cases, the new behavior is better (no code changes needed)
 
@@ -66,6 +71,7 @@ for item in items:
 ```
 
 **Benefits:**
+
 - Single cache created and shared across all work items
 - 70-90% cost reduction with Gemini prompt caching
 - Framework ensures thread-safe initialization
@@ -82,6 +88,7 @@ print(f"Effective cost: {result.effective_input_tokens()} tokens")
 ```
 
 **New fields:**
+
 - `BatchResult.total_cached_tokens` - Sum of cached input tokens
 - `BatchResult.cache_hit_rate()` - Percentage of input tokens cached
 - `BatchResult.effective_input_tokens()` - Actual cost after caching discount
@@ -99,12 +106,14 @@ strategy = GeminiCachedStrategy(
 ```
 
 **How it works:**
+
 1. Before each API call, checks if cache will expire soon
 2. If yes, creates new cache or finds existing one
 3. API call uses fresh cache
 4. No expiration errors!
 
 **Benefits:**
+
 - Pipelines > 1 hour don't fail with cache expiration errors
 - Automatic renewal with configurable buffer
 - Proactive renewal prevents downtime
@@ -127,6 +136,7 @@ async with ParallelBatchProcessor(...) as processor:
 ```
 
 **Best practices:**
+
 - Set TTL to slightly longer than expected run frequency
 - Monitor cache reuse via `result.cache_hit_rate()`
 - For hourly jobs, use TTL of 3600s (1 hour)
@@ -156,6 +166,7 @@ The framework auto-detects which version you have and uses the appropriate API.
 ### For All Users
 
 1. **Update to v0.2.0:**
+
    ```bash
    pip install --upgrade batch-llm
    ```
@@ -165,6 +176,7 @@ The framework auto-detects which version you have and uses the appropriate API.
    - For most users, no changes needed (new behavior is better)
 
 3. **Enable shared strategies for caching:**
+
    ```python
    # Before: New strategy per item (creates multiple caches)
    for item in items:
@@ -178,6 +190,7 @@ The framework auto-detects which version you have and uses the appropriate API.
    ```
 
 4. **Monitor cache metrics:**
+
    ```python
    result = await processor.process_all()
    print(f"Cache hit rate: {result.cache_hit_rate():.1f}%")
@@ -186,11 +199,13 @@ The framework auto-detects which version you have and uses the appropriate API.
 ### For Gemini Users
 
 1. **Update google-genai to v1.46+:**
+
    ```bash
    pip install --upgrade 'google-genai>=1.46'
    ```
 
 2. **Enable auto-renewal for long pipelines:**
+
    ```python
    strategy = GeminiCachedStrategy(
        cache_ttl_seconds=3600,
@@ -213,6 +228,7 @@ The framework auto-detects which version you have and uses the appropriate API.
 - `GeminiCachedStrategy.cache_refresh_threshold` - Use `cache_renewal_buffer_seconds` instead
 
 **Before (v0.1):**
+
 ```python
 strategy = GeminiCachedStrategy(
     cache_refresh_threshold=0.1,  # Deprecated: Refresh if <10% TTL remaining
@@ -220,6 +236,7 @@ strategy = GeminiCachedStrategy(
 ```
 
 **After (v0.2):**
+
 ```python
 strategy = GeminiCachedStrategy(
     cache_renewal_buffer_seconds=300,  # Renew 5min before expiration
@@ -235,6 +252,7 @@ strategy = GeminiCachedStrategy(
 ### Pattern 1: Test Cleanup
 
 **Before:**
+
 ```python
 async def test_something():
     strategy = GeminiCachedStrategy(...)
@@ -245,6 +263,7 @@ async def test_something():
 ```
 
 **After:**
+
 ```python
 async def test_something():
     strategy = GeminiCachedStrategy(...)
@@ -258,6 +277,7 @@ async def test_something():
 ### Pattern 2: One-Off Jobs
 
 **Before:**
+
 ```python
 # One-off job - cache deleted automatically
 async with ParallelBatchProcessor(...) as processor:
@@ -266,6 +286,7 @@ async with ParallelBatchProcessor(...) as processor:
 ```
 
 **After:**
+
 ```python
 # One-off job - explicitly delete if cache won't be reused
 strategy = GeminiCachedStrategy(...)
@@ -279,6 +300,7 @@ await strategy.delete_cache()  # Clean up
 ### Pattern 3: Recurring Jobs
 
 **Before:**
+
 ```python
 # Recurring job - paid full cost every time
 async with ParallelBatchProcessor(...) as processor:
@@ -288,6 +310,7 @@ async with ParallelBatchProcessor(...) as processor:
 ```
 
 **After:**
+
 ```python
 # Recurring job - reuses cache between runs
 async with ParallelBatchProcessor(...) as processor:
@@ -305,6 +328,7 @@ async with ParallelBatchProcessor(...) as processor:
 **Symptom:** `cache_hit_rate()` is 0% on subsequent runs
 
 **Solutions:**
+
 1. Check that cache hasn't expired between runs
 2. Verify you're using the same model name
 3. Check logs for "Reusing existing Gemini cache" message
@@ -315,6 +339,7 @@ async with ParallelBatchProcessor(...) as processor:
 **Symptom:** Multiple caches created when you expect one
 
 **Solution:** Share the same strategy instance:
+
 ```python
 # Wrong: Creates new strategy (and cache) per item
 for item in items:
@@ -332,6 +357,7 @@ for item in items:
 **Symptom:** "Cache content XXX is expired" errors in long pipelines
 
 **Solution:** Enable auto-renewal:
+
 ```python
 strategy = GeminiCachedStrategy(
     auto_renew=True,  # Enable automatic renewal
@@ -358,7 +384,7 @@ strategy = GeminiCachedStrategy(
 
 ### Getting Help
 
-- GitHub Issues: https://github.com/yourusername/batch-llm/issues
+- GitHub Issues: <https://github.com/yourusername/batch-llm/issues>
 - Check logs for debug information
 - Enable debug logging: `logging.basicConfig(level=logging.DEBUG)`
 

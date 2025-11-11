@@ -2,7 +2,8 @@
 
 ## Overview
 
-Version 0.3.0 focuses on remaining production feedback items from BATCH_LLM_FEEDBACK.md that were deferred from v0.2.0, plus additional enhancements based on user needs.
+Version 0.3.0 focuses on remaining production feedback items from BATCH_LLM_FEEDBACK.md that were deferred
+from v0.2.0, plus additional enhancements based on user needs.
 
 **Target Date:** TBD
 **Status:** Planning
@@ -28,6 +29,7 @@ Version 0.3.0 focuses on remaining production feedback items from BATCH_LLM_FEED
 **Breaking:** No (opt-in feature)
 
 **Problem:**
+
 - Users cannot access Gemini safety ratings (harassment, hate speech, etc.)
 - Current `response_parser` only gets parsed response, not raw response object
 - Critical for content filtering use cases
@@ -130,6 +132,7 @@ if isinstance(result.output, GeminiResponse):
 **Breaking:** No (enhancement)
 
 **Problem:**
+
 - Current cache matching only checks model name (`.endswith()`)
 - Will reuse cache even if prompt/content changed
 - Can lead to inconsistent LLM instructions
@@ -237,6 +240,7 @@ strategy = GeminiCachedStrategy(
 **Breaking:** No (additive API change)
 
 **Problem:**
+
 - Cannot implement sophisticated multi-stage retry strategies
 - No way to persist state between retry attempts for same work item
 - Shared strategies mean instance variables cause state collision
@@ -244,12 +248,14 @@ strategy = GeminiCachedStrategy(
 **Use Case:**
 
 Multi-stage validation recovery:
+
 1. Stage 1: Full prompt at temp 0.0
 2. Stage 2: Partial recovery at temp 0.0 (fix only failed fields - 81% cheaper)
 3. Stage 3: Full prompt at temp 0.25
 4. Stage 4: Partial recovery at temp 0.25
 
 Different errors need different handling:
+
 - ValidationError → advance to next stage
 - Network error → retry same stage
 - Limit total prompts to prevent runaway costs
@@ -458,7 +464,8 @@ class MultiStageStrategy(LLMCallStrategy[Output]):
 **Breaking:** No
 
 **Rationale:**
-While v0.2.0 fixed framework-level prepare() tracking, users writing custom strategies still need to implement idempotency manually. A mixin makes this easier.
+While v0.2.0 fixed framework-level prepare() tracking, users writing custom strategies still need to implement
+idempotency manually. A mixin makes this easier.
 
 **Proposed Solution:**
 
@@ -509,6 +516,7 @@ class MyCustomStrategy(PrepareOnceMixin, LLMCallStrategy[Output]):
 ```
 
 **Note:** With v0.2.0's framework-level tracking, this mixin is less critical but still useful for:
+
 - Documentation/clarity of intent
 - Extra safety layer
 - Use outside of ParallelBatchProcessor
@@ -593,6 +601,7 @@ class MyCachedClassifier(GeminiErrorClassifier):
 ```
 
 **Implementation:**
+
 - Add to `strategies/errors.py`
 - Update `GeminiErrorClassifier` and `DefaultErrorClassifier` to use pattern
 - Add documentation example

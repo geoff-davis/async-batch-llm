@@ -2,9 +2,11 @@
 
 ## Overview
 
-Version 0.3.0 adds advanced retry strategies, safety ratings access, and cache tagging based on production feedback. **All changes are backward compatible** - existing code will continue to work without modification.
+Version 0.3.0 adds advanced retry strategies, safety ratings access, and cache tagging based on production
+feedback. **All changes are backward compatible** - existing code will continue to work without modification.
 
 **Key improvements:**
+
 - Per-work-item retry state for sophisticated multi-stage strategies
 - Access to Gemini safety ratings and response metadata
 - Cache tagging for precise cache matching
@@ -17,6 +19,7 @@ Version 0.3.0 adds advanced retry strategies, safety ratings access, and cache t
 **None.** Version 0.3.0 is fully backward compatible with v0.2.x.
 
 All new features are opt-in:
+
 - Retry state is optional (strategies without `state` parameter work unchanged)
 - Metadata access requires `include_metadata=True`
 - Cache tags are optional
@@ -54,7 +57,7 @@ class MultiStageStrategy(LLMCallStrategy[Output]):
         # ... rest of execute logic ...
 ```
 
-**Advanced Example: Multi-Stage Validation Recovery**
+#### Advanced Example: Multi-Stage Validation Recovery
 
 Implement cost-optimized retry strategy with different stages:
 
@@ -139,6 +142,7 @@ class SmartRetryStrategy(LLMCallStrategy[BookMetadata]):
 ```
 
 **Benefits:**
+
 - ✅ Partial recovery stages are **81% cheaper** than full retries
 - ✅ Network errors don't waste progress (retry same stage)
 - ✅ Total prompt limit prevents runaway costs
@@ -167,6 +171,7 @@ state = RetryState.from_dict(state_dict)
 ```
 
 **See Also:**
+
 - `examples/example_multi_stage_retry.py` - Complete multi-stage example
 - `examples/example_partial_recovery.py` - Partial recovery pattern
 
@@ -234,6 +239,7 @@ class GeminiResponse(Generic[TOutput]):
 **Safety Rating Categories:**
 
 Common Gemini safety categories:
+
 - `HARM_CATEGORY_HATE_SPEECH`
 - `HARM_CATEGORY_HARASSMENT`
 - `HARM_CATEGORY_SEXUALLY_EXPLICIT`
@@ -284,6 +290,7 @@ result.output.output  # Your parsed type
 ```
 
 **See Also:**
+
 - `examples/example_gemini_safety_ratings.py` - Complete safety ratings example
 - `docs/GEMINI_INTEGRATION.md` - Gemini-specific features
 
@@ -375,11 +382,13 @@ cache_tags = {
 **Graceful Degradation:**
 
 If google-genai doesn't support cache metadata:
+
 - Framework logs warning: `"Cache tags requested but not supported by API"`
 - Falls back to model-name-only matching
 - No errors, continues working
 
 **See Also:**
+
 - `examples/example_gemini_cache_tags.py` - Complete cache tagging example
 - `docs/GEMINI_INTEGRATION.md` - Cache management strategies
 
@@ -425,7 +434,7 @@ class MyCustomStrategy(PrepareOnceMixin, LLMCallStrategy[Output]):
 
 **No code changes required!** But you may want to adopt new features:
 
-#### Consider Retry State If:
+#### Consider Retry State If
 
 - [ ] You have multi-stage retry logic
 - [ ] You want partial recovery to reduce costs
@@ -434,7 +443,7 @@ class MyCustomStrategy(PrepareOnceMixin, LLMCallStrategy[Output]):
 
 **Action:** Review `examples/example_multi_stage_retry.py` and implement if beneficial.
 
-#### Consider Safety Ratings If:
+#### Consider Safety Ratings If
 
 - [ ] You process user-generated content
 - [ ] You need content moderation
@@ -443,7 +452,7 @@ class MyCustomStrategy(PrepareOnceMixin, LLMCallStrategy[Output]):
 
 **Action:** Set `include_metadata=True` and add post-processor for filtering.
 
-#### Consider Cache Tagging If:
+#### Consider Cache Tagging If
 
 - [ ] You frequently change prompts
 - [ ] You run multiple different pipelines
@@ -545,6 +554,7 @@ async def execute(self, prompt, attempt, timeout, state=None):
 **Solutions:**
 
 1. Ensure `include_metadata=True`:
+
    ```python
    strategy = GeminiCachedStrategy(
        response_parser=parser,
@@ -553,6 +563,7 @@ async def execute(self, prompt, attempt, timeout, state=None):
    ```
 
 2. Check that response is actually `GeminiResponse`:
+
    ```python
    if isinstance(result.output, GeminiResponse):
        ratings = result.output.safety_ratings
@@ -567,6 +578,7 @@ async def execute(self, prompt, attempt, timeout, state=None):
 **Solutions:**
 
 1. **Verify tags are identical:**
+
    ```python
    # All tags must match exactly
    cache_tags = {"version": "v1", "dataset": "books"}
@@ -575,12 +587,14 @@ async def execute(self, prompt, attempt, timeout, state=None):
    ```
 
 2. **Check for API support:**
+
    ```python
    # Look for warning in logs:
    # "Cache tags requested but not supported by API"
    ```
 
 3. **Use model name matching as fallback:**
+
    ```python
    # If tags not supported, ensure model names match exactly
    model = "gemini-2.5-flash"  # Use consistent model names
@@ -593,12 +607,14 @@ async def execute(self, prompt, attempt, timeout, state=None):
 ### Retry State
 
 **DO:**
+
 - ✅ Use for multi-stage strategies
 - ✅ Enforce total prompt limits to prevent runaway costs
 - ✅ Log state before clearing for debugging
 - ✅ Store minimal state (only what's needed)
 
 **DON'T:**
+
 - ❌ Store large objects in state (keep it lightweight)
 - ❌ Assume state is always provided (check for None)
 - ❌ Modify state in `on_error()` unless needed
@@ -606,12 +622,14 @@ async def execute(self, prompt, attempt, timeout, state=None):
 ### Safety Ratings
 
 **DO:**
+
 - ✅ Use for user-generated content
 - ✅ Log safety events for audit trails
 - ✅ Have fallback behavior if ratings unavailable
 - ✅ Consider cultural/regional differences in thresholds
 
 **DON'T:**
+
 - ❌ Rely solely on safety ratings (defense in depth)
 - ❌ Block all content with MEDIUM ratings (may be overly strict)
 - ❌ Assume ratings are always provided
@@ -619,12 +637,14 @@ async def execute(self, prompt, attempt, timeout, state=None):
 ### Cache Tagging
 
 **DO:**
+
 - ✅ Version your prompts explicitly
 - ✅ Use semantic tags (purpose, dataset, version)
 - ✅ Handle graceful degradation (API may not support tags)
 - ✅ Document your tagging schema
 
 **DON'T:**
+
 - ❌ Use too many tags (harder to match)
 - ❌ Include dynamic values (timestamps, UUIDs)
 - ❌ Rely on tags for security (they're for matching only)
@@ -670,7 +690,7 @@ All features have complete working examples in `examples/` directory.
 
 ### Getting Help
 
-- GitHub Issues: https://github.com/geoff-davis/batch-llm/issues
+- GitHub Issues: <https://github.com/geoff-davis/batch-llm/issues>
 - Check logs for debug information
 - Enable debug logging: `logging.basicConfig(level=logging.DEBUG)`
 
