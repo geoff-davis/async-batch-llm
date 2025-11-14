@@ -602,5 +602,24 @@ async def test_metrics_observer_reset():
     assert metrics_after["items_failed"] == 0
     assert metrics_after["rate_limits_hit"] == 0
     assert metrics_after["total_cooldown_time"] == 0.0
-    assert len(metrics_after["processing_times"]) == 0
+    assert metrics_after["processing_times_count"] == 0
     assert len(metrics_after["error_counts"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_metrics_observer_processing_times_bounded():
+    """Processing time storage should remain bounded to avoid unbounded memory."""
+    from batch_llm.observers.metrics import MetricsObserver
+
+    observer = MetricsObserver(max_processing_samples=32)
+
+    # Simulate many ITEM_COMPLETED events
+    for i in range(250):
+        await observer.on_event(ProcessingEvent.ITEM_COMPLETED, {"duration": float(i)})
+
+    metrics = await observer.get_metrics()
+
+    assert len(metrics["processing_times"]) <= 32
+    assert metrics["processing_times_count"] == 250
+    assert metrics["items_processed"] == 250
+    assert metrics["avg_processing_time"] >= 0
