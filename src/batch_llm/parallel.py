@@ -220,6 +220,8 @@ class ParallelBatchProcessor(
                     observer.on_event(event, event_data),
                     timeout=OBSERVER_CALLBACK_TIMEOUT,
                 )
+            except asyncio.CancelledError:
+                raise
             except TimeoutError:
                 logger.warning(
                     f"⚠️  Observer callback timed out after {OBSERVER_CALLBACK_TIMEOUT}s for event {event.name}"
@@ -238,6 +240,8 @@ class ParallelBatchProcessor(
                 if result is None:
                     return None  # Skip this item
                 current_item = result
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.warning(f"⚠️  Middleware before_process error for {work_item.item_id}: {e}")
         return current_item
@@ -251,6 +255,8 @@ class ParallelBatchProcessor(
         for middleware in reversed(self.middlewares):
             try:
                 current_result = await middleware.after_process(current_result)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.warning(f"⚠️  Middleware after_process error for {result.item_id}: {e}")
         return current_result
@@ -264,6 +270,8 @@ class ParallelBatchProcessor(
                 result = await middleware.on_error(work_item, error)
                 if result is not None:
                     return result  # Middleware handled the error
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.warning(f"⚠️  Middleware on_error error for {work_item.item_id}: {e}")
         return None
@@ -313,6 +321,8 @@ class ParallelBatchProcessor(
             # Process the item
             try:
                 result = await self._process_item_with_retries(work_item, worker_id)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 # All retries exhausted or unhandled exception
                 # Create a failed result so the item is recorded
@@ -489,6 +499,8 @@ class ParallelBatchProcessor(
 
         try:
             cooldown = await self.rate_limit_strategy.on_rate_limit(worker_id, consecutive)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             cooldown_error = exc
             cooldown = 0.0
@@ -618,6 +630,8 @@ class ParallelBatchProcessor(
                 if isinstance(failed_usage, dict):
                     return failed_usage
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             # Extraction failed - log for debugging and return empty dict
             logger.debug(
@@ -650,6 +664,8 @@ class ParallelBatchProcessor(
         try:
             try:
                 await self._ensure_strategy_prepared(strategy)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.error(f"✗ Strategy prepare() failed for {work_item.item_id}: {e}")
                 raise
@@ -659,6 +675,8 @@ class ParallelBatchProcessor(
                     return await self._process_item(
                         work_item, worker_id, attempt_number=attempt, strategy=strategy, retry_state=retry_state
                     )
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
                     # Try to extract token usage from this failed attempt using robust extraction
                     attempt_tokens = self._extract_token_usage(e)
@@ -756,6 +774,8 @@ class ParallelBatchProcessor(
             # Call cleanup() once after all retries complete (success or failure)
             try:
                 await strategy.cleanup()
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.warning(f"⚠️  Strategy cleanup() failed for {work_item.item_id}: {e}")
 
@@ -900,12 +920,16 @@ class ParallelBatchProcessor(
 
             return work_result
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             # Notify strategy about the error before handling it
             # This allows strategy to adjust behavior for next retry (v0.3.0: now includes retry_state)
             if strategy is not None:  # Type guard for mypy
                 try:
                     await strategy.on_error(e, attempt_number, retry_state)
+                except asyncio.CancelledError:
+                    raise
                 except Exception as callback_error:
                     # Log but don't fail if on_error callback has bugs
                     logger.warning(

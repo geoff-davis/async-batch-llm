@@ -5,6 +5,7 @@ and doesn't have race conditions.
 """
 
 import asyncio
+import contextlib
 import threading
 import time
 from typing import Annotated
@@ -13,11 +14,13 @@ import pytest
 from pydantic import BaseModel, Field
 
 from batch_llm import (
+    LLMCallStrategy,
     LLMWorkItem,
     MetricsObserver,
     ParallelBatchProcessor,
     ProcessorConfig,
     PydanticAIStrategy,
+    RetryState,
 )
 from batch_llm.strategies import ExponentialBackoffStrategy, RateLimitStrategy
 from batch_llm.strategies.errors import ErrorInfo
@@ -192,6 +195,39 @@ async def test_rate_limit_requeue_completes_without_deadlock():
 
     assert result.succeeded == 3
     assert result.failed == 0
+
+
+@pytest.mark.asyncio
+async def test_process_item_retries_propagate_cancellation():
+    """Cancelling a running work item should raise CancelledError instead of retrying."""
+
+    start_event = asyncio.Event()
+
+    class HangingStrategy(LLMCallStrategy[str]):
+        async def execute(
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+        ) -> tuple[str, dict[str, int]]:
+            start_event.set()
+            await asyncio.sleep(10)
+            return "unreachable", {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    config = ProcessorConfig(max_workers=1, timeout_per_item=30.0)
+    processor = ParallelBatchProcessor[str, str, None](config=config)
+
+    work_item = LLMWorkItem(item_id="cancel_test", strategy=HangingStrategy(), prompt="wait")
+
+    task = asyncio.create_task(processor._process_item_with_retries(work_item, worker_id=0))
+
+    try:
+        await asyncio.wait_for(start_event.wait(), timeout=1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1.0)
+    finally:
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        await processor.cleanup()
 
 
 @pytest.mark.asyncio
