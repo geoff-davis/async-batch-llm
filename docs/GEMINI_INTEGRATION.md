@@ -143,8 +143,9 @@ strategy = GeminiCachedStrategy(
     client=client,
     response_parser=parse_response,
     cached_content=cached_content,
-    cache_ttl_seconds=3600,  # Cache for 1 hour
-    cache_refresh_threshold=0.1,  # Refresh when <10% TTL remaining
+    cache_ttl_seconds=3600,             # Cache for 1 hour
+    cache_renewal_buffer_seconds=300,   # Renew 5 min before expiry (v0.2+)
+    auto_renew=True,
 )
 
 # Use in processor
@@ -168,10 +169,10 @@ async with ParallelBatchProcessor[str, str, None](config=config) as processor:
 
     result = await processor.process_all()
 
-# Cache is automatically:
+# Cache lifecycle:
 # - Created on first use
-# - Refreshed when TTL is low
-# - Deleted on cleanup
+# - Renewed automatically when nearing expiry (auto_renew)
+# - Left active after processing (call delete_cache() to force removal)
 ```
 
 ## Advanced Features

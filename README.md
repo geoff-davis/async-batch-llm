@@ -38,7 +38,13 @@ pip install 'batch-llm[gemini]'
 
 # With everything
 pip install 'batch-llm[all]'
+
+# Alternatively, using the uv workflow from this repo's Makefile:
+uv venv && uv sync
 ```
+
+Once dependencies are installed, run the pinned tooling via `npx` (e.g., `npx make check-all`)
+so the local Ruff/mypy versions match CI.
 
 ### Basic Example
 
@@ -213,9 +219,10 @@ async with ParallelBatchProcessor(config=config) as processor:
 
     result = await processor.process_all()
 
-# Framework calls prepare() once (creates cache)
+# Framework calls prepare() once per shared strategy (creates cache)
 # All items share the cache (90% discount on cached tokens)
-# Framework calls cleanup() once (deletes cache)
+# Framework calls cleanup() after each work item completes
+# (GeminiCachedStrategy keeps caches alive unless delete_cache() is called)
 ```
 
 **Cost Example:**
