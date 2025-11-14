@@ -108,3 +108,203 @@ Found 12 mypy type errors in `src/batch_llm/llm_strategies.py`:
 - Type ignore comment issues
 
 These should be addressed but are not blocking - the code runs correctly despite the type errors. Recommend fixing as part of general code quality improvements.
+
+## Strategy Lifecycle Management (Target: v0.4.0)
+
+### Problem Statement
+
+Currently, `ParallelBatchProcessor` doesn't call `prepare()` or `cleanup()` on strategy instances,
+leaving lifecycle management entirely to users. This creates ambiguity:
+
+1. When should `prepare()` be called? Before first use? Once per unique strategy instance?
+2. When should `cleanup()` be called? After each item? After all items? At processor shutdown?
+3. How should strategies be shared? Users create shared instances for efficiency
+   (e.g., cached prompts), but the framework provides no lifecycle support.
+
+This leads to:
+
+- Resource leaks: Strategies with expensive resources aren't cleaned up reliably
+- Inefficient workarounds: Users manually manage prepare/cleanup outside framework
+- Inconsistent behavior: Different users implement different patterns
+
+### Proposed Solution: Context Manager Lifecycle (Hybrid Approach)
+
+Implement per-processor lifecycle management using Python's context manager pattern:
+
+```python
+# Recommended pattern (with automatic cleanup)
+async with ParallelBatchProcessor(...) as processor:
+    await processor.add_work(LLMWorkItem(strategy=shared_strategy, ...))
+    await processor.add_work(LLMWorkItem(strategy=shared_strategy, ...))
+    result = await processor.process_all()
+    # Strategies automatically cleaned up on exit
+
+# Backward compatible pattern (no cleanup)
+processor = ParallelBatchProcessor(...)
+await processor.add_work(...)
+result = await processor.process_all()
+# No cleanup (preserves existing behavior)
+```
+
+### Key Design Points
+
+1. **Track strategies** in `add_work()` (no prepare yet, just tracking)
+2. **Prepare all strategies** in first `process_all()` call (has all strategies, no race conditions)
+3. **Cleanup all strategies** in `__aexit__()` only (when using context manager)
+4. **Backward compatible** - non-context-manager usage doesn't cleanup
+5. **Prevent mid-processing changes** - raise RuntimeError if add_work() called after
+   process_all() starts
+
+### Implementation Sketch
+
+```python
+class ParallelBatchProcessor:
+    def __init__(self, ...):
+        self._unique_strategies: dict[int, LLMCallStrategy] = {}
+        self._prepared_strategy_ids: set[int] = set()
+        self._processing_started = False
+
+    async def add_work(self, work_item: LLMWorkItem):
+        if self._processing_started:
+            raise RuntimeError(
+                "Cannot add work after process_all() has started"
+            )
+
+        strategy_id = id(work_item.strategy)
+        if strategy_id not in self._unique_strategies:
+            self._unique_strategies[strategy_id] = work_item.strategy
+
+        await self._queue.put(work_item)
+        self._stats.total += 1
+
+    async def _prepare_all_strategies(self):
+        """Idempotent - safe to call multiple times."""
+        for strategy_id, strategy in self._unique_strategies.items():
+            if strategy_id in self._prepared_strategy_ids:
+                continue
+
+            if hasattr(strategy, 'prepare'):
+                await strategy.prepare()
+                self._prepared_strategy_ids.add(strategy_id)
+
+    async def process_all(self) -> BatchResult:
+        self._processing_started = True
+        await self._prepare_all_strategies()
+
+        try:
+            result = await self._process_items()
+            return result
+        finally:
+            pass  # Cleanup in __aexit__
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        for strategy in self._unique_strategies.values():
+            if hasattr(strategy, 'cleanup'):
+                try:
+                    await strategy.cleanup()
+                except Exception as e:
+                    logger.warning(f"Cleanup failed: {e}")
+        return False
+```
+
+### Benefits
+
+1. ✅ **Clear lifecycle**: prepare on first use, cleanup on exit
+2. ✅ **No race conditions**: prepare happens atomically before processing
+3. ✅ **Backward compatible**: existing code works unchanged
+4. ✅ **Pythonic**: follows standard context manager pattern
+5. ✅ **Supports sharing**: shared strategies prepared once, cleaned up once
+6. ✅ **Fail-fast**: prepare errors happen before processing starts
+
+### Strategy Contract
+
+```python
+class LLMCallStrategy(ABC):
+    async def prepare(self) -> None:
+        """
+        Called once per processor instance before first use.
+
+        MUST be idempotent - may be called multiple times if strategy
+        is used across multiple processors.
+
+        Use cases:
+        - Create expensive resources (caches, connections)
+        - One-time initialization
+        """
+        pass
+
+    async def cleanup(self) -> None:
+        """
+        Called once per processor instance after all work completes.
+
+        For long-lived resources intended to be reused across batches
+        (like production caches), make this a no-op.
+
+        Only called when using context manager.
+        """
+        pass
+```
+
+### Testing Strategy
+
+Key tests needed:
+
+- Shared strategy prepared once, cleaned up once
+- Multiple unique strategies each get prepare/cleanup
+- Cleanup happens even on processing error
+- Cleanup error doesn't fail batch (logged)
+- Backward compatibility (no context manager = no cleanup)
+- Cannot add_work() after process_all() starts
+
+### Migration Guide
+
+**For Users**: Just wrap in `async with`:
+
+```python
+# Before
+processor = ParallelBatchProcessor(...)
+await processor.add_work(...)
+result = await processor.process_all()
+
+# After (recommended)
+async with ParallelBatchProcessor(...) as processor:
+    await processor.add_work(...)
+    result = await processor.process_all()
+```
+
+**For Strategy Authors**: If your strategy needs cleanup, implement `cleanup()`. For production
+caches that should persist, make cleanup a no-op.
+
+### Open Questions
+
+1. Should we support multiple `process_all()` calls?
+   - **Proposed**: No (raises RuntimeError)
+   - **Rationale**: Simpler semantics, encourages new processor for new batch
+
+2. Should cleanup errors fail the batch?
+   - **Proposed**: No (log warnings only)
+   - **Rationale**: Cleanup failures shouldn't invalidate successful work
+
+3. Should we add per-item `on_item_complete()` hook?
+   - **Proposed**: Wait for user demand (YAGNI)
+   - **Rationale**: Easier to add later than remove
+
+### Implementation Checklist
+
+- [ ] Add tracking fields to `__init__`
+- [ ] Track strategies in `add_work()` with RuntimeError check
+- [ ] Add `_prepare_all_strategies()` helper (idempotent)
+- [ ] Call prepare in `process_all()`
+- [ ] Implement `__aenter__` and `__aexit__`
+- [ ] Add comprehensive tests
+- [ ] Document strategy contract
+- [ ] Update all examples to use context manager
+- [ ] Add migration guide
+- [ ] Update CLAUDE.md
+
+### Status
+
+**Design phase** - Feedback collected, ready for implementation in v0.4.0
