@@ -1,6 +1,6 @@
 # batch-llm API Reference
 
-Complete API documentation for batch-llm v0.1.
+Complete API documentation for batch-llm v0.4.0.
 
 ## Table of Contents
 

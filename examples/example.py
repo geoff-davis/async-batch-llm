@@ -111,31 +111,30 @@ async def example_simple():
         timeout_per_item=30.0,
     )
 
-    processor = ParallelBatchProcessor[str, BookSummary, None](
+    async with ParallelBatchProcessor[str, BookSummary, None](
         config=config,
         error_classifier=GeminiErrorClassifier(),
-    )
+    ) as processor:
+        # Add work items
+        books = [
+            ("Pride and Prejudice", "Summarize Pride and Prejudice by Jane Austen"),
+            ("1984", "Summarize 1984 by George Orwell"),
+            ("The Hobbit", "Summarize The Hobbit by J.R.R. Tolkien"),
+            ("Dune", "Summarize Dune by Frank Herbert"),
+            ("Foundation", "Summarize Foundation by Isaac Asimov"),
+        ]
 
-    # Add work items
-    books = [
-        ("Pride and Prejudice", "Summarize Pride and Prejudice by Jane Austen"),
-        ("1984", "Summarize 1984 by George Orwell"),
-        ("The Hobbit", "Summarize The Hobbit by J.R.R. Tolkien"),
-        ("Dune", "Summarize Dune by Frank Herbert"),
-        ("Foundation", "Summarize Foundation by Isaac Asimov"),
-    ]
+        for book_id, prompt in books:
+            work_item = LLMWorkItem(
+                item_id=book_id,
+                strategy=strategy,
+                prompt=prompt,
+                context=None,
+            )
+            await processor.add_work(work_item)
 
-    for book_id, prompt in books:
-        work_item = LLMWorkItem(
-            item_id=book_id,
-            strategy=strategy,
-            prompt=prompt,
-            context=None,
-        )
-        await processor.add_work(work_item)
-
-    # Process all
-    result = await processor.process_all()
+        # Process all
+        result = await processor.process_all()
 
     # Show results
     logging.info(f"\nProcessed {result.total_items} items:")
@@ -186,48 +185,47 @@ async def example_with_context_and_postprocessor():
     metrics = MetricsObserver()
 
     # Create processor with middleware and observers
-    processor = ParallelBatchProcessor[str, BookSummary, EnrichmentContext](
+    async with ParallelBatchProcessor[str, BookSummary, EnrichmentContext](
         config=config,
         post_processor=example_post_processor,  # Called after each success
         error_classifier=GeminiErrorClassifier(),
         middlewares=[logging_middleware],
         observers=[metrics],
-    )
+    ) as processor:
+        # Add work items with context
+        books = [
+            {
+                "work_key": "/works/OL123W",
+                "original_title": "Pride and Prejudice",
+                "prompt": "Summarize Pride and Prejudice by Jane Austen",
+            },
+            {
+                "work_key": "/works/OL456W",
+                "original_title": "1984",
+                "prompt": "Summarize 1984 by George Orwell",
+            },
+            {
+                "work_key": "/works/OL789W",
+                "original_title": "The Hobbit",
+                "prompt": "Summarize The Hobbit by J.R.R. Tolkien",
+            },
+        ]
 
-    # Add work items with context
-    books = [
-        {
-            "work_key": "/works/OL123W",
-            "original_title": "Pride and Prejudice",
-            "prompt": "Summarize Pride and Prejudice by Jane Austen",
-        },
-        {
-            "work_key": "/works/OL456W",
-            "original_title": "1984",
-            "prompt": "Summarize 1984 by George Orwell",
-        },
-        {
-            "work_key": "/works/OL789W",
-            "original_title": "The Hobbit",
-            "prompt": "Summarize The Hobbit by J.R.R. Tolkien",
-        },
-    ]
+        for book in books:
+            context = EnrichmentContext(
+                work_key=book["work_key"],
+                original_title=book["original_title"],
+            )
+            work_item = LLMWorkItem(
+                item_id=book["work_key"],
+                strategy=strategy,
+                prompt=book["prompt"],
+                context=context,
+            )
+            await processor.add_work(work_item)
 
-    for book in books:
-        context = EnrichmentContext(
-            work_key=book["work_key"],
-            original_title=book["original_title"],
-        )
-        work_item = LLMWorkItem(
-            item_id=book["work_key"],
-            strategy=strategy,
-            prompt=book["prompt"],
-            context=context,
-        )
-        await processor.add_work(work_item)
-
-    # Process all
-    result = await processor.process_all()
+        # Process all
+        result = await processor.process_all()
 
     # Show results with context
     logging.info(f"\nProcessed {result.total_items} items:")
@@ -275,24 +273,23 @@ async def example_error_handling():
 
     metrics = MetricsObserver()
 
-    processor = ParallelBatchProcessor[str, BookSummary, None](
+    async with ParallelBatchProcessor[str, BookSummary, None](
         config=config,
         error_classifier=GeminiErrorClassifier(),
         observers=[metrics],
-    )
+    ) as processor:
+        # Add work items
+        for i in range(5):
+            work_item = LLMWorkItem(
+                item_id=f"book_{i}",
+                strategy=strategy,
+                prompt="Summarize a book (this will likely timeout)",
+                context=None,
+            )
+            await processor.add_work(work_item)
 
-    # Add work items
-    for i in range(5):
-        work_item = LLMWorkItem(
-            item_id=f"book_{i}",
-            strategy=strategy,
-            prompt="Summarize a book (this will likely timeout)",
-            context=None,
-        )
-        await processor.add_work(work_item)
-
-    # Process all
-    result = await processor.process_all()
+        # Process all
+        result = await processor.process_all()
 
     # Show results
     logging.info(f"\nProcessed {result.total_items} items:")
@@ -356,25 +353,24 @@ async def example_testing_with_mocks():
 
     metrics = MetricsObserver()
 
-    processor = ParallelBatchProcessor[str, BookSummary, None](
+    async with ParallelBatchProcessor[str, BookSummary, None](
         config=config,
         error_classifier=GeminiErrorClassifier(),
         observers=[metrics],
-    )
+    ) as processor:
+        # Add work items
+        books = ["Book 1", "Book 2", "Book 3", "Book 4", "Book 5"]
+        for book_id in books:
+            work_item = LLMWorkItem(
+                item_id=book_id,
+                strategy=strategy,
+                prompt=f"Summarize {book_id}",
+                context=None,
+            )
+            await processor.add_work(work_item)
 
-    # Add work items
-    books = ["Book 1", "Book 2", "Book 3", "Book 4", "Book 5"]
-    for book_id in books:
-        work_item = LLMWorkItem(
-            item_id=book_id,
-            strategy=strategy,
-            prompt=f"Summarize {book_id}",
-            context=None,
-        )
-        await processor.add_work(work_item)
-
-    # Process all
-    result = await processor.process_all()
+        # Process all
+        result = await processor.process_all()
 
     # Show results
     logging.info(f"\nProcessed {result.total_items} items with MockAgent:")
