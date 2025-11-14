@@ -171,9 +171,9 @@ uv run mypy src/batch_llm/
 
 (For maintainers)
 
-1. Update version in `src/batch_llm/__init__.py`
-2. Update CHANGELOG.md with release notes
-3. Create a git tag: `git tag v2.0.1`
+1. Update version in `pyproject.toml`
+2. Update `CHANGELOG.md` with release notes
+3. Create a git tag: `git tag vX.Y.Z` (matching the version in `pyproject.toml`)
 4. Build: `uv build`
 5. Publish to PyPI: `uv publish`
 

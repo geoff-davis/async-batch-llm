@@ -94,7 +94,7 @@ Includes:
 - pytest, pytest-asyncio
 - ruff, mypy
 
-## Usage Patterns (v3.0)
+## Usage Patterns (v0.4.x)
 
 ### Pattern 1: PydanticAI Strategy (requires `pydantic-ai`)
 
@@ -230,48 +230,48 @@ pip install batch-llm langchain langchain-openai
 python examples/example_langchain.py
 ```
 
-## Migration from v2.x
+## Migration from pre-0.4.0
 
-### From v2.0.x with PydanticAI
+### From pre-0.4.0 with PydanticAI
 
-If you were using `agent=` parameter in v2.x:
+If you were using `agent=` parameter before v0.4.0:
 
 ```python
-# v2.x
+# Legacy (<0.4.0)
 work_item = LLMWorkItem(
     item_id="item_1",
-    agent=agent,  # ❌ Removed in v3.0
+    agent=agent,  # ❌ Removed in v0.4.0
     prompt="...",
 )
 
-# v3.0
+# v0.4.0+
 from batch_llm import PydanticAIStrategy
 
 strategy = PydanticAIStrategy(agent=agent)
 work_item = LLMWorkItem(
     item_id="item_1",
-    strategy=strategy,  # ✅ v3.0 API
+    strategy=strategy,  # ✅ v0.4.0+ API
     prompt="...",
 )
 ```
 
 **Migration**: Install `batch-llm[pydantic-ai]` and wrap agents in `PydanticAIStrategy`
 
-### From v2.0.x with direct_call
+### From pre-0.4.0 with direct_call
 
-If you were using `direct_call=` parameter in v2.x:
+If you were using `direct_call=` parameter before v0.4.0:
 
 ```python
-# v2.x
+# Legacy (<0.4.0)
 async def my_call(attempt: int, timeout: float):
     ...
 
 work_item = LLMWorkItem(
     item_id="item_1",
-    direct_call=my_call,  # ❌ Removed in v3.0
+    direct_call=my_call,  # ❌ Removed in v0.4.0
 )
 
-# v3.0
+# v0.4.0+
 from batch_llm.llm_strategies import LLMCallStrategy
 
 class MyStrategy(LLMCallStrategy[OutputType]):
@@ -282,7 +282,7 @@ class MyStrategy(LLMCallStrategy[OutputType]):
 strategy = MyStrategy()
 work_item = LLMWorkItem(
     item_id="item_1",
-    strategy=strategy,  # ✅ v3.0 API
+    strategy=strategy,  # ✅ v0.4.0+ API
     prompt="...",
 )
 ```
