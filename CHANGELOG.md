@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cancellation propagation** - Added regression test and explicit `asyncio.CancelledError`
+  handling so `ParallelBatchProcessor` no longer swallows cancellations inside retries,
+  middlewares, or rate-limit coordination. Ensures shutdown behaves correctly on Python 3.10+.
+
 ## [0.3.6] - 2025-01-13
 
 Minor release fixing mypy compatibility and improving code quality standards.
