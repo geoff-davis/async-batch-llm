@@ -1334,6 +1334,7 @@ if __name__ == "__main__":
 ## See Also
 
 - [README.md](../README.md) - Getting started guide
-- [MIGRATION_V3.md](./MIGRATION_V3.md) - Migration guide from v0.0.x
+- [MIGRATION_V0_1.md](./MIGRATION_V0_1.md) - Migration guide from v0.0.x (strategy pattern)
+- [MIGRATION_V0_4.md](./MIGRATION_V0_4.md) - Migration guide to v0.4.0 (context managers)
 - [GEMINI_INTEGRATION.md](./GEMINI_INTEGRATION.md) - Detailed Gemini integration guide
 - [CHANGELOG.md](../CHANGELOG.md) - Version history

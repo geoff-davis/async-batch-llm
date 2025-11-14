@@ -87,7 +87,7 @@ strategy = PydanticAIStrategy(agent=agent)
 work_item = LLMWorkItem(item_id="1", strategy=strategy, prompt="...")
 ```
 
-See `docs/MIGRATION_V3.md` for complete migration guide (note: file still uses v3 naming for clarity).
+See `docs/MIGRATION_V0_1.md` for complete migration guide 
 
 ### 2. Rate Limiting Strategy
 
@@ -889,7 +889,7 @@ See `examples/example_smart_model_escalation.py` for complete implementation wit
 
 4. **Versioning:**
    - Major version (v0.1+) for breaking API changes
-   - Document breaking changes in `docs/MIGRATION_V3.md`
+   - Document breaking changes in `docs/MIGRATION_V0_1.md`
    - Update version history in `CLAUDE.md`
 
 ---
