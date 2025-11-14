@@ -10,6 +10,7 @@ This enables 70-90% cost savings with Gemini prompt caching.
 """
 
 import asyncio
+import gc
 
 import pytest
 
@@ -311,3 +312,41 @@ async def test_shared_strategy_with_retries():
     # Verify we saw both attempt 1 and attempt 2
     assert 1 in attempt_numbers, "Should have seen attempt 1"
     assert 2 in attempt_numbers, "Should have seen attempt 2"
+
+
+@pytest.mark.asyncio
+async def test_prepared_strategy_entries_released_after_gc():
+    """Weak references should drop prepared strategies after garbage collection."""
+
+    prepare_count = 0
+
+    class TemporaryStrategy(LLMCallStrategy[str]):
+        async def prepare(self):
+            nonlocal prepare_count
+            prepare_count += 1
+
+        async def execute(
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+        ) -> tuple[str, TokenUsage]:
+            return "ok", {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+
+    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+
+    async with ParallelBatchProcessor[str, str, None](config=config) as processor:
+        strategy = TemporaryStrategy()
+        await processor.add_work(
+            LLMWorkItem(item_id="temp_strategy", strategy=strategy, prompt="Test")
+        )
+        result = await processor.process_all()
+
+        assert result.succeeded == 1
+        assert len(processor._prepared_strategies) == 1
+
+        # Drop last strong reference and force GC; WeakSet should shrink automatically
+        del strategy
+        gc.collect()
+
+        assert len(processor._prepared_strategies) == 0, (
+            "Prepared strategy cache should release entries once strategies are garbage collected"
+        )
+        assert prepare_count == 1

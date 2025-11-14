@@ -3,7 +3,8 @@
 import asyncio
 import logging
 import time
-from typing import Generic, cast
+import weakref
+from typing import Any, Generic, cast
 
 from .base import (
     BatchProcessor,
@@ -140,7 +141,7 @@ class ParallelBatchProcessor(
 
         # Strategy lifecycle management (v0.2.0)
         # Track which strategy instances have been prepared to avoid duplicate prepare() calls
-        self._prepared_strategies: set[int] = set()  # Track by id()
+        self._prepared_strategies: weakref.WeakSet[LLMCallStrategy[Any]] = weakref.WeakSet()
         self._strategy_lock = asyncio.Lock()  # Protect strategy initialization
 
         # Proactive rate limiting (prevents hitting rate limits)
@@ -170,23 +171,22 @@ class ParallelBatchProcessor(
         Args:
             strategy: The LLM call strategy to prepare
         """
-        strategy_id = id(strategy)
-
         # Fast path: already prepared (no lock needed for read)
-        if strategy_id in self._prepared_strategies:
+        if strategy in self._prepared_strategies:
             return
 
         # Slow path: acquire lock and prepare
         async with self._strategy_lock:
             # Double-check after acquiring lock (another worker may have prepared)
-            if strategy_id in self._prepared_strategies:
+            if strategy in self._prepared_strategies:
                 return
 
+            strategy_id = id(strategy)
             logger.debug(
                 f"Preparing strategy {strategy.__class__.__name__} (id={strategy_id})"
             )
             await strategy.prepare()
-            self._prepared_strategies.add(strategy_id)
+            self._prepared_strategies.add(strategy)
             logger.debug(
                 f"Strategy {strategy.__class__.__name__} prepared successfully (id={strategy_id})"
             )
