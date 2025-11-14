@@ -289,7 +289,7 @@ work_item = LLMWorkItem(
 
 **Migration**: Create a custom strategy class
 
-See [docs/MIGRATION_V0_1.md](docs/MIGRATION_V0_1.md) for complete migration guide.
+See [docs/archive/MIGRATION_V0_1.md](docs/archive/MIGRATION_V0_1.md) for complete migration guide.
 
 ## Benefits of Optional Dependencies
 

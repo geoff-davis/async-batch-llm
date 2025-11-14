@@ -484,7 +484,7 @@ work_item = LLMWorkItem(
 )
 ```
 
-See **[Migration Guide](docs/MIGRATION_V0_1.md)** for complete upgrade instructions.
+See **[Migration Guide](docs/archive/MIGRATION_V0_1.md)** for complete upgrade instructions.
 
 ---
 
@@ -540,7 +540,7 @@ See **[Migration Guide](docs/MIGRATION_V0_1.md)** for complete upgrade instructi
   - Updated `ErrorInfo` field documentation (error_category, is_timeout)
   - Added missing `ProcessorConfig.progress_callback_timeout` field
   - Updated all code examples to use `TokenUsage`
-- **`docs/MIGRATION_V0_1.md`** - Comprehensive v0.0.x → v0.1 migration guide
+- **`docs/archive/MIGRATION_V0_1.md`** - Comprehensive v0.0.x → v0.1 migration guide
 - **`README.md`** - Comprehensive improvements
   - Added complete table of contents with 40+ section links
   - Added **Configuration Reference** section (200+ lines)
@@ -638,7 +638,7 @@ See **[Migration Guide](docs/MIGRATION_V0_1.md)** for complete upgrade instructi
 
 **Upgrading from v0.0.x?** Follow these steps:
 
-1. **Read the Migration Guide**: `docs/MIGRATION_V0_1.md`
+1. **Read the Migration Guide**: `docs/archive/MIGRATION_V0_1.md`
 2. **Update imports**: Add `PydanticAIStrategy`, `GeminiStrategy`, or `GeminiCachedStrategy`
 3. **Wrap your agents/clients**: Create strategy instances
 4. **Update LLMWorkItem**: Replace `agent=` or `client=` with `strategy=`
