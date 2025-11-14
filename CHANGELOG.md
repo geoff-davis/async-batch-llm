@@ -5,13 +5,112 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.3.6] - 2025-01-13
+
+Minor release fixing mypy compatibility and improving code quality standards.
+
+### Fixed
+
+- **Mypy compatibility** - Changed `TokenTrackingError` from dynamic base class `type(e)` to static `Exception`
+  base (mypy doesn't support dynamic base classes)
+- **Linter warnings** - Replaced try/import/except pattern with `importlib.util.find_spec()` for optional
+  dependency checks in test_cache_tag_matching.py
+- **Documentation linting** - Fixed all 173 markdown linting issues across README.md and docs/
+  - Line length violations (wrapped at 120 chars)
+  - Missing code block language specifiers
+  - Ordered list numbering consistency
+  - Bold text used as headings
+  - Broken internal links
+
+### Changed
+
+- **Pre-commit checklist** - Added to CLAUDE.md emphasizing quality checks (tests, linter, mypy, markdown-lint)
+  before ANY commit
+- **Development workflow** - Updated with common mypy issues and solutions
+
+## [0.3.5] - 2025-01-13
+
+Critical bug fix for token tracking when items fail validation.
+
+### Fixed
+
+- **Token tracking for failed items** - Fixed critical bug where failed items showed 0 tokens consumed
+  - Previously caused 20-30% cost underestimation when failure rates were high
+  - Now correctly tracks tokens even when validation fails
+  - Applies to all three built-in strategies: GeminiStrategy, GeminiCachedStrategy, PydanticAIStrategy
+  - Exceptions now carry `_failed_token_usage` in `__dict__` for framework to aggregate
+  - Critical for accurate production cost tracking and budget planning
+
+### Changed
+
+- **Token extraction timing** - All strategies now extract token usage BEFORE parsing/validation
+- **Exception handling** - Enhanced to preserve token usage through exception chain
+
+### Added
+
+- **Test coverage** - Added `test_token_tracking_on_failure.py` to verify fix works correctly
+- **MockAgent enhancement** - Added `tokens_per_call` parameter for token tracking tests
+
+## [0.3.4] - 2025-01-12
+
+Compatibility release for google-genai v1.49.0+.
+
+### Fixed
+
+- **google-genai v1.49.0+ compatibility** - Updated GeminiCachedStrategy to handle API changes
+  - Detection of three API versions: v1.45, v1.46-v1.48, v1.49+
+  - Proper handling of `CreateCachedContentConfig` vs `CachedContent` parameter types
+  - Automatic version detection during strategy initialization
+
+### Added
+
+- **API version tests** - Added `test_gemini_api_versions.py` to verify version detection works correctly
+
+## [0.3.3] - 2025-01-11
+
+Bug fix release for proactive rate limiting.
+
+### Fixed
+
+- **Proactive rate limiting** - Fixed bug where `check_rate_limit_proactively()` wasn't being called
+  - Now properly prevents hitting API limits by checking before each batch
+  - Reduces wasted API calls and improves throughput
+
+### Added
+
+- **Default error classifier** - Added rate limit detection to default classifier (not just Gemini-specific)
+
+## [0.3.2] - 2025-01-11
+
+Bug fix release for error classification.
+
+### Fixed
+
+- **Error classifiers** - Fixed classifiers to prevent wasting retries on logic bugs
+  - ValidationError, TypeError, AttributeError, KeyError now marked as non-retryable
+  - Saves API costs by not retrying programmer errors
+
+## [0.3.1] - 2025-01-11
+
+Bug fix release for process_all() state contamination.
+
+### Fixed
+
+- **State contamination** - Fixed bug where reusing processor with process_all() contaminated state
+  - Each process_all() call now gets fresh state
+  - Safe to call process_all() multiple times on same processor instance
+
 ## [0.3.0] - 2025-01-10
 
-This release adds advanced retry patterns for multi-stage LLM strategies, safety ratings access for content moderation, and precise cache tagging for production deployments.
+This release adds advanced retry patterns for multi-stage LLM strategies,
+safety ratings access for content moderation, and precise cache tagging for production deployments.
 
 ### ⚠️ Breaking Changes
 
-**None** - This release is 100% backward compatible. All new features are opt-in with default values that preserve existing behavior.
+**None** - This release is 100% backward compatible. All new features are opt-in with default values that
+preserve existing behavior.
 
 ---
 
@@ -176,13 +275,15 @@ This release adds advanced retry patterns for multi-stage LLM strategies, safety
 
 ## [0.2.0] - 2025-01-09
 
-This release addresses critical production issues identified from real-world usage, particularly around shared strategy instances for cost optimization with Gemini prompt caching.
+This release addresses critical production issues identified from real-world usage,
+particularly around shared strategy instances for cost optimization with Gemini prompt caching.
 
 ### ⚠️ Breaking Changes
 
 #### GeminiCachedStrategy cleanup() Behavior
 
-`cleanup()` now **preserves** caches for reuse by default (previously deleted them). This enables 70-90% cost savings when running multiple batches within the TTL window.
+`cleanup()` now **preserves** caches for reuse by default (previously deleted them).
+This enables 70-90% cost savings when running multiple batches within the TTL window.
 
 **Before (v0.1):**
 
@@ -199,7 +300,8 @@ await strategy.cleanup()  # Preserves cache for reuse
 await strategy.delete_cache()
 ```
 
-**Migration:** If you relied on automatic cache deletion, call `await strategy.delete_cache()` explicitly. For most production use cases, the new behavior is better (no code changes needed).
+**Migration:** If you relied on automatic cache deletion, call `await strategy.delete_cache()` explicitly.
+For most production use cases, the new behavior is better (no code changes needed).
 
 See **[Migration Guide](docs/MIGRATION_V0_2.md)** for complete upgrade instructions.
 
@@ -321,7 +423,8 @@ See **[Migration Guide](docs/MIGRATION_V0_2.md)** for complete upgrade instructi
 
 ### ⚠️ Breaking Changes
 
-This major release introduces the **LLM Call Strategy Pattern**, providing a flexible, provider-agnostic architecture for batch LLM processing.
+This major release introduces the **LLM Call Strategy Pattern**,
+providing a flexible, provider-agnostic architecture for batch LLM processing.
 
 #### Removed Parameters
 
@@ -488,8 +591,10 @@ See **[Migration Guide](docs/MIGRATION_V3.md)** for complete upgrade instruction
   - Previously, custom strategies could ignore timeout parameter
   - All 61 tests now pass (was 60 passing, 1 skipped)
 - **Test coverage** - Fixed `test_custom_strategy_timeout_handling` (previously skipped)
-- **Error classification logic bug handling** - Error classifiers now properly distinguish logic bugs from transient failures
-  - `DefaultErrorClassifier` and `GeminiErrorClassifier` now explicitly check for logic bug exceptions (`ValueError`, `TypeError`, `AttributeError`, etc.)
+- **Error classification logic bug handling** - Error classifiers now properly distinguish logic bugs from
+  transient failures
+  - `DefaultErrorClassifier` and `GeminiErrorClassifier` now explicitly check for logic bug exceptions
+    (`ValueError`, `TypeError`, `AttributeError`, etc.)
   - Logic bugs are marked as non-retryable to avoid wasting retry attempts and tokens on deterministic failures
   - Pydantic `ValidationError` is explicitly marked as retryable (LLM might generate valid output on retry)
   - Generic `Exception` instances remain retryable (allows custom transient errors and test mocks)
