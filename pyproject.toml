@@ -69,6 +69,7 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0.0",
     "pydantic-ai>=0.0.1",  # Required for tests
+    "google-genai>=1.46.0",  # Required for Gemini tests
 ]
 
 [project.urls]
