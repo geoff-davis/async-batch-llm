@@ -519,8 +519,9 @@ async def test_max_queue_size_zero_is_unlimited():
     )
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
-    # Add many items without blocking (reduced from 100 to 20)
-    for i in range(20):
+    # Add many items without blocking (reduced from 100 to 20 for speed)
+    total_items = 20
+    for i in range(total_items):
         await processor.add_work(
             LLMWorkItem(
                 item_id=f"item_{i}",
@@ -532,8 +533,8 @@ async def test_max_queue_size_zero_is_unlimited():
 
     result = await processor.process_all()
 
-    assert result.total_items == 100
-    assert result.succeeded == 100
+    assert result.total_items == total_items
+    assert result.succeeded == total_items
 
 
 @pytest.mark.asyncio

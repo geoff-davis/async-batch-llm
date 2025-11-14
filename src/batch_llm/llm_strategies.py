@@ -310,11 +310,18 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
 
         # Extract token usage FIRST (before parsing/validation that might fail)
         # This ensures we track tokens even when validation errors occur
-        usage = response.usage_metadata
+        usage_metadata = getattr(response, "usage_metadata", None)
+        if usage_metadata is not None:
+            input_tokens = getattr(usage_metadata, "prompt_token_count", 0) or 0
+            output_tokens = getattr(usage_metadata, "candidates_token_count", 0) or 0
+            total_tokens = getattr(usage_metadata, "total_token_count", 0) or 0
+        else:
+            input_tokens = output_tokens = total_tokens = 0
+
         tokens: TokenUsage = {
-            "input_tokens": usage.prompt_token_count or 0 if usage else 0,
-            "output_tokens": usage.candidates_token_count or 0 if usage else 0,
-            "total_tokens": usage.total_token_count or 0 if usage else 0,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
         }
 
         # Parse output (may raise validation errors)
@@ -752,16 +759,24 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 
         # Extract token usage FIRST (before parsing/validation that might fail)
         # This ensures we track tokens even when validation errors occur
-        usage = response.usage_metadata
-        tokens: TokenUsage = {
-            "input_tokens": usage.prompt_token_count or 0 if usage else 0,
-            "output_tokens": usage.candidates_token_count or 0 if usage else 0,
-            "total_tokens": usage.total_token_count or 0 if usage else 0,
-            "cached_input_tokens": (
-                usage.cached_content_token_count or 0
-                if usage and hasattr(usage, "cached_content_token_count")
+        usage_metadata = getattr(response, "usage_metadata", None)
+        if usage_metadata is not None:
+            input_tokens = getattr(usage_metadata, "prompt_token_count", 0) or 0
+            output_tokens = getattr(usage_metadata, "candidates_token_count", 0) or 0
+            total_tokens = getattr(usage_metadata, "total_token_count", 0) or 0
+            cached_tokens = (
+                getattr(usage_metadata, "cached_content_token_count", 0) or 0
+                if hasattr(usage_metadata, "cached_content_token_count")
                 else 0
-            ),
+            )
+        else:
+            input_tokens = output_tokens = total_tokens = cached_tokens = 0
+
+        tokens: TokenUsage = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "cached_input_tokens": cached_tokens,
         }
 
         # Parse output (may raise validation errors)
