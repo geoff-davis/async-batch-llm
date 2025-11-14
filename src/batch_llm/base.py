@@ -337,8 +337,6 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._is_processing = False
         self._progress_tasks: set[asyncio.Task[Any]] = set()
 
-        # Strategy lifecycle management (v0.4.0)
-        self._unique_strategies: dict[int, Any] = {}  # id(strategy) -> strategy instance
         self._processing_started = False  # Prevent add_work() after process_all() starts
 
     async def __aenter__(self):
@@ -410,11 +408,6 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 "Cannot add work after process_all() has started. "
                 "Create a new processor instance for additional batches."
             )
-
-        # Track unique strategy instances for lifecycle management (v0.4.0)
-        strategy_id = id(work_item.strategy)
-        if strategy_id not in self._unique_strategies:
-            self._unique_strategies[strategy_id] = work_item.strategy
 
         await self._queue.put(work_item)
         self._stats.total += 1

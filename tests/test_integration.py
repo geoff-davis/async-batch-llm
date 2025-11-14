@@ -289,9 +289,9 @@ async def test_integration_suite_summary():
     missing_keys = []
 
     if GOOGLE_API_KEY:
-        available_tests.append("✅ Gemini API tests")
+        available_tests.append("✅ Google Gemini API tests (GOOGLE_API_KEY detected)")
     else:
-        missing_keys.append("❌ GOOGLE_API_KEY (or GEMINI_API_KEY) not set")
+        missing_keys.append("❌ GOOGLE_API_KEY (or legacy GEMINI_API_KEY) not set")
 
     if OPENAI_API_KEY:
         available_tests.append("✅ OpenAI API tests (not yet implemented)")
