@@ -144,6 +144,7 @@ class BatchResult(Generic[TOutput, TContext]):
     failed: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    total_cached_tokens: int = 0
 ```
 
 **Fields:**
@@ -154,6 +155,7 @@ class BatchResult(Generic[TOutput, TContext]):
 - `failed` (int): Number of failed items
 - `total_input_tokens` (int): Sum of input tokens across all items
 - `total_output_tokens` (int): Sum of output tokens across all items
+- `total_cached_tokens` (int): Sum of cached input tokens from Gemini context caching
 
 **Note:** Summary statistics are calculated automatically in `__post_init__`.
 
@@ -291,10 +293,19 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
 
     @abstractmethod
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self,
+        prompt: str,
+        attempt: int,
+        timeout: float,
+        state: RetryState | None = None,
     ) -> tuple[TOutput, TokenUsage]: ...
 
-    async def on_error(self, exception: Exception, attempt: int) -> None: ...
+    async def on_error(
+        self,
+        exception: Exception,
+        attempt: int,
+        state: RetryState | None = None,
+    ) -> None: ...
 
     async def cleanup(self) -> None: ...
 
@@ -317,7 +328,7 @@ Initialize resources before making LLM calls (e.g., create caches, initialize cl
 
 **Default:** No-op
 
-#### `async def execute(prompt: str, attempt: int, timeout: float) -> tuple[TOutput, TokenUsage]`
+#### `async def execute(prompt: str, attempt: int, timeout: float, state: RetryState | None = None) -> tuple[TOutput, TokenUsage]`
 
 Execute an LLM call.
 
@@ -327,6 +338,8 @@ Execute an LLM call.
 - `attempt` (int): Which retry attempt this is (1, 2, 3, ...)
 - `timeout` (float): Maximum time to wait for response (seconds)
   - Note: Timeout enforcement is handled by the framework wrapping this call in `asyncio.wait_for()`
+- `state` (RetryState | None): Mutable per-work-item state provided by the framework
+  so strategies can track partial progress across retries
 
 **Returns:** Tuple of `(output, token_usage)`
 
@@ -539,6 +552,7 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
         client: genai.Client,
         response_parser: Callable[[Any], TOutput],
         config: GenerateContentConfig | None = None,
+        include_metadata: bool = False,
     )
 ```
 
@@ -548,6 +562,8 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
 - `client` (genai.Client): Initialized Gemini client
 - `response_parser` (Callable): Function to parse response into TOutput
 - `config` (GenerateContentConfig | None): Optional generation config (temperature, etc.)
+- `include_metadata` (bool): If True, `execute()` returns `GeminiResponse[TOutput]`
+  so you can access safety ratings, finish reasons, and raw responses
 
 **Requires:** `pip install 'batch-llm[gemini]'`
 
@@ -591,6 +607,10 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         cached_content: list[Content],
         cache_ttl_seconds: int = 3600,
         cache_refresh_threshold: float = 0.1,
+        cache_renewal_buffer_seconds: int = 300,
+        auto_renew: bool = True,
+        include_metadata: bool = False,
+        cache_tags: dict[str, str] | None = None,
         config: GenerateContentConfig | None = None,
     )
 ```
@@ -602,14 +622,19 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 - `response_parser` (Callable): Function to parse response
 - `cached_content` (list[Content]): Content to cache (system instructions, documents)
 - `cache_ttl_seconds` (int): Cache TTL in seconds. Default: 3600 (1 hour)
-- `cache_refresh_threshold` (float): Refresh cache when TTL falls below this fraction. Default: 0.1 (10%)
+- `cache_refresh_threshold` (float): Legacy refresh fraction parameter (kept for compatibility)
+- `cache_renewal_buffer_seconds` (int): Renew caches this many seconds before expiry (default 300)
+- `auto_renew` (bool): Automatically renew caches when they near expiry. Default: True
+- `include_metadata` (bool): Wrap outputs in `GeminiResponse[TOutput]` when True
+- `cache_tags` (dict[str, str] | None): Optional metadata for cache matching/versioning
 - `config` (GenerateContentConfig | None): Optional generation config
 
 **Lifecycle:**
 
-- `prepare()`: Creates the Gemini cache
-- `execute()`: Uses cache, automatically refreshes TTL if needed
-- `cleanup()`: Deletes the cache
+- `prepare()`: Finds or creates the Gemini cache
+- `execute()`: Uses the cache and auto-renews when enabled
+- `cleanup()`: Runs once when the processor exits; by default caches are left alive so
+  future batches can reuse them (call `delete_cache()` to remove immediately)
 
 **Requires:** `pip install 'batch-llm[gemini]'`
 
@@ -665,6 +690,7 @@ class ProcessorConfig:
     progress_callback_timeout: float | None = 5.0
     enable_detailed_logging: bool = False
     max_queue_size: int = 0
+    max_requests_per_minute: float | None = None
     dry_run: bool = False
 ```
 
@@ -679,6 +705,8 @@ class ProcessorConfig:
   Set to `None` for no timeout.
 - `enable_detailed_logging` (bool): Enable detailed debug logging. Default: False
 - `max_queue_size` (int): Max queue size (0 = unlimited). Default: 0
+- `max_requests_per_minute` (float | None): Optional proactive rate limiter that throttles
+  requests before hitting provider limits
 - `dry_run` (bool): Skip actual API calls, use mock data from `strategy.dry_run()`. Default: False
 
 **Example:**
@@ -1044,6 +1072,87 @@ gemini_tokens: TokenUsage = {
     "cached_input_tokens": 1000,  # Tokens served from cache
 }
 ```
+
+---
+
+### RetryState
+
+Mutable per-work-item state that persists across retries. The framework creates a `RetryState`
+instance for each `LLMWorkItem` and passes it to both `strategy.execute(...)` and
+`strategy.on_error(...)` via the `state` parameter.
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class RetryState:
+    data: dict[str, Any] = field(default_factory=dict)
+
+    def get(self, key: str, default: Any = None) -> Any: ...
+    def set(self, key: str, value: Any) -> None: ...
+    def delete(self, key: str, raise_if_missing: bool = False) -> None: ...
+    def clear(self) -> None: ...
+```
+
+**Typical uses:**
+
+- Track validation failures to escalate models only when schema validation fails
+- Store partial results so retries request only the missing fields
+- Record which advanced retry prompt should be used next
+
+**Example:**
+
+```python
+async def execute(
+    self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+):
+    state = state or RetryState()
+    missing = state.get("missing_fields", ["name", "email"])
+    response = await self.client.generate(prompt, focus=missing)
+    result = parse(response)
+
+    missing = [f for f in ALL_FIELDS if f not in result]
+    if missing:
+        state.set("missing_fields", missing)
+        raise ValidationError("Still missing fields", result)
+    state.delete("missing_fields", raise_if_missing=False)
+    return result, extract_tokens(response)
+```
+
+Because the same `RetryState` instance is reused across attempts, each retry can build on the previous
+attempt’s context without relying on global variables.
+
+---
+
+### GeminiResponse
+
+Container object returned when `include_metadata=True` on `GeminiStrategy` or `GeminiCachedStrategy`.
+It lets you access Gemini-specific metadata while still receiving the parsed output.
+
+```python
+@dataclass
+class GeminiResponse(Generic[TOutput]):
+    output: TOutput
+    safety_ratings: dict[str, str] | None
+    finish_reason: str | None
+    token_usage: dict[str, int]
+    raw_response: Any  # google-genai response object
+```
+
+**Usage:**
+
+```python
+result = await processor.process_all()
+first = result.results[0]
+if isinstance(first.output, GeminiResponse):
+    parsed = first.output.output
+    ratings = first.output.safety_ratings
+    if ratings and ratings.get("HARM_CATEGORY_HATE_SPEECH") == "HIGH":
+        log_flagged_content(parsed)
+```
+
+If you do not opt into metadata (`include_metadata=False`), the strategies return the plain
+`TOutput` to avoid type checking overhead.
 
 ---
 

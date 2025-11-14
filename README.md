@@ -43,8 +43,8 @@ pip install 'batch-llm[all]'
 uv venv && uv sync
 ```
 
-Once dependencies are installed, run the pinned tooling via `npx` (e.g., `npx make check-all`)
-so the local Ruff/mypy versions match CI.
+Once dependencies are installed, run the pinned tooling via `make check-all` so your local Ruff/mypy
+versions match CI (all Makefile targets call `uv run` to use the synced environment).
 
 ### Basic Example
 
@@ -221,8 +221,8 @@ async with ParallelBatchProcessor(config=config) as processor:
 
 # Framework calls prepare() once per shared strategy (creates cache)
 # All items share the cache (90% discount on cached tokens)
-# Framework calls cleanup() after each work item completes
-# (GeminiCachedStrategy keeps caches alive unless delete_cache() is called)
+# Cleanup now runs once when the processor context exits, so the Gemini cache
+# stays alive (unless you call delete_cache()) across the whole batch
 ```
 
 **Cost Example:**
@@ -438,18 +438,26 @@ Increase creativity on retries to get past validation errors:
 from batch_llm.llm_strategies import LLMCallStrategy
 
 class ProgressiveTempStrategy(LLMCallStrategy[str]):
-    """Increase temperature with each retry attempt."""
+    """Increase temperature only when validation keeps failing."""
 
     def __init__(self, client, temps=None):
         self.client = client
         self.temps = temps if temps is not None else [0.0, 0.5, 1.0]
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
-        # Use higher temperature for retries
-        temp = self.temps[min(attempt - 1, len(self.temps) - 1)]
+    async def execute(
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+    ):
+        state = state or RetryState()
+        failures = state.get("validation_failures", 0)
+        temp = self.temps[min(failures, len(self.temps) - 1)]
         response = await self.client.generate(prompt, temperature=temp)
-
         return response.text, extract_tokens(response)
+
+    async def on_error(
+        self, exception: Exception, attempt: int, state: RetryState | None = None
+    ):
+        if state and isinstance(exception, ValidationError):
+            state.set("validation_failures", state.get("validation_failures", 0) + 1)
 ```
 
 ### Smart Model Escalation
@@ -470,21 +478,24 @@ class SmartModelEscalationStrategy(LLMCallStrategy[Output]):
 
     def __init__(self, client):
         self.client = client
-        self.validation_failures = 0
 
-    async def on_error(self, exception: Exception, attempt: int):
+    async def on_error(
+        self, exception: Exception, attempt: int, state: RetryState | None = None
+    ):
         """Only count validation errors for escalation."""
+        if state is None:
+            return
         if isinstance(exception, ValidationError):
-            self.validation_failures += 1
+            state.set("validation_failures", state.get("validation_failures", 0) + 1)
         # Network/rate limit errors don't trigger escalation
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
-        # Select model based on validation failures
-        model_idx = min(self.validation_failures, len(self.MODELS) - 1)
+    async def execute(
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+    ):
+        state = state or RetryState()
+        failures = state.get("validation_failures", 0)
+        model_idx = min(failures, len(self.MODELS) - 1)
         model = self.MODELS[model_idx]
-
-        # Network error on attempt 2? Retry with same cheap model
-        # Validation error on attempt 2? Escalate to better model
         response = await self.client.generate(prompt, model=model)
         return parse_output(response), extract_tokens(response)
 ```
