@@ -191,6 +191,39 @@ class ParallelBatchProcessor(
                 f"Strategy {strategy.__class__.__name__} prepared successfully (id={strategy_id})"
             )
 
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """
+        Context manager exit - ensures cleanup of strategies and resources.
+
+        Calls cleanup() on all prepared strategies, then delegates to parent cleanup.
+
+        Args:
+            exc_type: Exception type (if any exception occurred)
+            exc_val: Exception value (if any exception occurred)
+            exc_tb: Exception traceback (if any exception occurred)
+
+        Returns:
+            False to indicate exceptions should not be suppressed
+        """
+        # Clean up all prepared strategies (v0.4.0)
+        # Iterate over copy of set since cleanup may modify it
+        for strategy in list(self._prepared_strategies):
+            if hasattr(strategy, "cleanup") and callable(strategy.cleanup):
+                try:
+                    logger.debug(
+                        f"Cleaning up strategy {strategy.__class__.__name__} (id={id(strategy)})"
+                    )
+                    await strategy.cleanup()
+                except Exception as e:
+                    # Log but don't fail the batch - cleanup failures shouldn't invalidate work
+                    logger.warning(
+                        f"⚠️  Strategy cleanup failed for {strategy.__class__.__name__}: {e}"
+                    )
+
+        # Call parent cleanup to handle workers and queue
+        await self.cleanup()
+        return False  # Don't suppress exceptions
+
     async def get_stats(self) -> dict:
         """
         Get processor statistics (thread-safe).
@@ -660,124 +693,115 @@ class ParallelBatchProcessor(
         retry_state = RetryState()
 
         # Ensure strategy is prepared (framework ensures this is called only once per unique strategy instance)
-        # Wrap entire process (including prepare) in try-finally to ensure cleanup is called even if prepare fails
+        # (v0.4.0: cleanup now happens in __aexit__, not per-item)
         try:
+            await self._ensure_strategy_prepared(strategy)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"✗ Strategy prepare() failed for {work_item.item_id}: {e}")
+            raise
+
+        for attempt in range(1, self.config.retry.max_attempts + 1):
             try:
-                await self._ensure_strategy_prepared(strategy)
+                return await self._process_item(
+                    work_item, worker_id, attempt_number=attempt, strategy=strategy, retry_state=retry_state
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.error(f"✗ Strategy prepare() failed for {work_item.item_id}: {e}")
-                raise
-
-            for attempt in range(1, self.config.retry.max_attempts + 1):
-                try:
-                    return await self._process_item(
-                        work_item, worker_id, attempt_number=attempt, strategy=strategy, retry_state=retry_state
+                # Try to extract token usage from this failed attempt using robust extraction
+                attempt_tokens = self._extract_token_usage(e)
+                if attempt_tokens:
+                    cumulative_failed_tokens["input_tokens"] += attempt_tokens.get(
+                        "input_tokens", 0
                     )
-                except asyncio.CancelledError:
+                    cumulative_failed_tokens["output_tokens"] += attempt_tokens.get(
+                        "output_tokens", 0
+                    )
+                    cumulative_failed_tokens["total_tokens"] += attempt_tokens.get(
+                        "total_tokens", 0
+                    )
+
+                if not self._should_retry_error(e):
+                    logger.debug(f"Error not retryable: {type(e).__name__}")
+                    # Attach token usage to exception so it can be included in failed result
+                    if hasattr(e, "__dict__"):
+                        e.__dict__["_failed_token_usage"] = cumulative_failed_tokens
                     raise
-                except Exception as e:
-                    # Try to extract token usage from this failed attempt using robust extraction
-                    attempt_tokens = self._extract_token_usage(e)
-                    if attempt_tokens:
-                        cumulative_failed_tokens["input_tokens"] += attempt_tokens.get(
-                            "input_tokens", 0
-                        )
-                        cumulative_failed_tokens["output_tokens"] += attempt_tokens.get(
-                            "output_tokens", 0
-                        )
-                        cumulative_failed_tokens["total_tokens"] += attempt_tokens.get(
-                            "total_tokens", 0
-                        )
+                if attempt >= self.config.retry.max_attempts:
+                    error_msg = str(e)
+                    token_summary = ""
+                    if cumulative_failed_tokens["total_tokens"] > 0:
+                        total = cumulative_failed_tokens['total_tokens']
+                        token_summary = f"\n  Total tokens consumed across all attempts: {total}"
+                    logger.error(
+                        f"✗ ALL {self.config.retry.max_attempts} ATTEMPTS EXHAUSTED "
+                        f"for {work_item.item_id}:\n"
+                        f"  Final error type: {type(e).__name__}\n"
+                        f"  Final error message: {error_msg[:500]}{token_summary}"
+                    )
+                    # Attach token usage to exception so it can be included in failed result
+                    if hasattr(e, "__dict__"):
+                        e.__dict__["_failed_token_usage"] = cumulative_failed_tokens
+                    raise
 
-                    if not self._should_retry_error(e):
-                        logger.debug(f"Error not retryable: {type(e).__name__}")
-                        # Attach token usage to exception so it can be included in failed result
-                        if hasattr(e, "__dict__"):
-                            e.__dict__["_failed_token_usage"] = cumulative_failed_tokens
-                        raise
-                    if attempt >= self.config.retry.max_attempts:
-                        error_msg = str(e)
-                        token_summary = ""
-                        if cumulative_failed_tokens["total_tokens"] > 0:
-                            total = cumulative_failed_tokens['total_tokens']
-                            token_summary = f"\n  Total tokens consumed across all attempts: {total}"
-                        logger.error(
-                            f"✗ ALL {self.config.retry.max_attempts} ATTEMPTS EXHAUSTED "
-                            f"for {work_item.item_id}:\n"
-                            f"  Final error type: {type(e).__name__}\n"
-                            f"  Final error message: {error_msg[:500]}{token_summary}"
-                        )
-                        # Attach token usage to exception so it can be included in failed result
-                        if hasattr(e, "__dict__"):
-                            e.__dict__["_failed_token_usage"] = cumulative_failed_tokens
-                        raise
+                # Classify error to determine if we should delay
+                error_info = self.error_classifier.classify(e)
 
-                    # Classify error to determine if we should delay
-                    error_info = self.error_classifier.classify(e)
+                # Only delay for network/timeout errors, not for validation errors
+                # Validation errors are immediate - strategy can adjust its behavior on retry
+                # PydanticAI wraps validation errors in UnexpectedModelBehavior
+                error_msg_for_check = str(e)
+                is_validation_error = (
+                    "validation" in type(e).__name__.lower()
+                    or "parse" in type(e).__name__.lower()
+                    or "unexpectedmodelbehavior" in type(e).__name__.lower()
+                    or "result validation" in error_msg_for_check.lower()
+                    or error_info.error_category == "validation_error"
+                )
 
-                    # Only delay for network/timeout errors, not for validation errors
-                    # Validation errors are immediate - strategy can adjust its behavior on retry
-                    # PydanticAI wraps validation errors in UnexpectedModelBehavior
-                    error_msg_for_check = str(e)
-                    is_validation_error = (
-                        "validation" in type(e).__name__.lower()
-                        or "parse" in type(e).__name__.lower()
-                        or "unexpectedmodelbehavior" in type(e).__name__.lower()
-                        or "result validation" in error_msg_for_check.lower()
-                        or error_info.error_category == "validation_error"
+                if is_validation_error:
+                    wait_time = 0.0  # No delay for validation - retry immediately
+                else:
+                    # Calculate wait time with exponential backoff for network/timeout errors
+                    wait_time = min(
+                        self.config.retry.initial_wait
+                        * (self.config.retry.exponential_base ** (attempt - 1)),
+                        self.config.retry.max_wait,
                     )
 
-                    if is_validation_error:
-                        wait_time = 0.0  # No delay for validation - retry immediately
-                    else:
-                        # Calculate wait time with exponential backoff for network/timeout errors
-                        wait_time = min(
-                            self.config.retry.initial_wait
-                            * (self.config.retry.exponential_base ** (attempt - 1)),
-                            self.config.retry.max_wait,
-                        )
+                    # Apply jitter if enabled to prevent thundering herd
+                    if self.config.retry.jitter:
+                        import random
 
-                        # Apply jitter if enabled to prevent thundering herd
-                        if self.config.retry.jitter:
-                            import random
+                        # Apply jitter: multiply by random factor between 0.5 and 1.0
+                        # This reduces wait time by up to 50% to spread out retries
+                        wait_time = wait_time * (0.5 + random.random() * 0.5)
 
-                            # Apply jitter: multiply by random factor between 0.5 and 1.0
-                            # This reduces wait time by up to 50% to spread out retries
-                            wait_time = wait_time * (0.5 + random.random() * 0.5)
+                # Log retry attempt
+                error_snippet = str(e)[:150]
+                error_type = type(e).__name__
+                if is_validation_error:
+                    logger.warning(
+                        f"⚠️  Attempt {attempt}/{self.config.retry.max_attempts} failed for "
+                        f"{work_item.item_id}: {error_type} - {error_snippet}. "
+                        f"Retrying immediately..."
+                    )
+                else:
+                    logger.warning(
+                        f"⚠️  Attempt {attempt}/{self.config.retry.max_attempts} failed for "
+                        f"{work_item.item_id}: {error_type} - {error_snippet}. "
+                        f"Retrying in {wait_time:.1f}s..."
+                    )
 
-                    # Log retry attempt
-                    error_snippet = str(e)[:150]
-                    error_type = type(e).__name__
-                    if is_validation_error:
-                        logger.warning(
-                            f"⚠️  Attempt {attempt}/{self.config.retry.max_attempts} failed for "
-                            f"{work_item.item_id}: {error_type} - {error_snippet}. "
-                            f"Retrying immediately..."
-                        )
-                    else:
-                        logger.warning(
-                            f"⚠️  Attempt {attempt}/{self.config.retry.max_attempts} failed for "
-                            f"{work_item.item_id}: {error_type} - {error_snippet}. "
-                            f"Retrying in {wait_time:.1f}s..."
-                        )
+                if wait_time > 0:
+                    await asyncio.sleep(wait_time)
 
-                    if wait_time > 0:
-                        await asyncio.sleep(wait_time)
-
-            # Unreachable - all paths raise or return
-            raise RuntimeError(
-                f"Unexpected: all retry attempts should have raised for {work_item.item_id}"
-            )
-        finally:
-            # Call cleanup() once after all retries complete (success or failure)
-            try:
-                await strategy.cleanup()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"⚠️  Strategy cleanup() failed for {work_item.item_id}: {e}")
+        # Unreachable - all paths raise or return
+        raise RuntimeError(
+            f"Unexpected: all retry attempts should have raised for {work_item.item_id}"
+        )
 
     def _get_strategy(
         self, work_item: LLMWorkItem[TInput, TOutput, TContext]

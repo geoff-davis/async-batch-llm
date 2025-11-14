@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-01-14
+
+Major release adding strategy lifecycle management with context managers.
+
+### Added
+
+- **Strategy lifecycle management** - Hybrid approach using context managers for prepare/cleanup
+  - Strategies are prepared once when first used (via existing `_ensure_strategy_prepared()`)
+  - Strategies are cleaned up once on exit when using `async with` context manager
+  - Backward compatible: without context manager, no cleanup is called
+  - Prevents adding work after process_all() starts (raises `RuntimeError`)
+  - Supports shared strategy instances (prepared once, cleaned up once)
+  - Comprehensive test coverage in `test_strategy_lifecycle.py`
+
+### Changed
+
+- **BREAKING: Per-item cleanup removed** - Strategies are no longer cleaned up after each item
+  - Previously: `strategy.cleanup()` called after each work item completed
+  - Now: `strategy.cleanup()` only called in `__aexit__` when using context manager
+  - Migration: Wrap processor in `async with` to enable automatic cleanup
+  - For production caches that should persist, make `cleanup()` a no-op
+- **Base class tracking** - `BatchProcessor` now tracks unique strategy instances and processing
+  state
+
 ### Fixed
 
 - **Cancellation propagation** - Added regression test and explicit `asyncio.CancelledError`

@@ -337,6 +337,10 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._is_processing = False
         self._progress_tasks: set[asyncio.Task[Any]] = set()
 
+        # Strategy lifecycle management (v0.4.0)
+        self._unique_strategies: dict[int, Any] = {}  # id(strategy) -> strategy instance
+        self._processing_started = False  # Prevent add_work() after process_all() starts
+
     async def __aenter__(self):
         """Context manager entry - returns self for use in async with."""
         return self
@@ -397,7 +401,21 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
 
         Args:
             work_item: Work item to process
+
+        Raises:
+            RuntimeError: If called after process_all() has started
         """
+        if self._processing_started:
+            raise RuntimeError(
+                "Cannot add work after process_all() has started. "
+                "Create a new processor instance for additional batches."
+            )
+
+        # Track unique strategy instances for lifecycle management (v0.4.0)
+        strategy_id = id(work_item.strategy)
+        if strategy_id not in self._unique_strategies:
+            self._unique_strategies[strategy_id] = work_item.strategy
+
         await self._queue.put(work_item)
         self._stats.total += 1
 
@@ -408,6 +426,9 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         Returns:
             BatchResult containing all results and statistics
         """
+        # Mark processing as started to prevent add_work() calls (v0.4.0)
+        self._processing_started = True
+
         # Clear results and reinitialize stats for this run
         # This ensures each call to process_all() starts fresh
         self._results = []

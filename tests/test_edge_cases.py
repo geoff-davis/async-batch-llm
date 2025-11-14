@@ -537,8 +537,8 @@ async def test_max_queue_size_zero_is_unlimited():
 
 
 @pytest.mark.asyncio
-async def test_processor_reuse_clears_state():
-    """Test that reusing a processor clears results and stats from previous runs."""
+async def test_processor_reuse_not_allowed():
+    """Test that reusing a processor after process_all() raises RuntimeError (v0.4.0)."""
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
@@ -561,37 +561,12 @@ async def test_processor_reuse_clears_state():
     assert result1.succeeded == 3
     assert len(result1.results) == 3
 
-    # Verify first run's results contain only run1 items
-    assert all(r.item_id.startswith("run1_") for r in result1.results)
-
-    # Second run: add 2 different items
-    for i in range(2):
+    # v0.4.0: Attempting to add work after process_all() should raise RuntimeError
+    with pytest.raises(RuntimeError, match="Cannot add work after process_all\\(\\) has started"):
         await processor.add_work(
             LLMWorkItem(
-                item_id=f"run2_item_{i}",
+                item_id="run2_item_0",
                 strategy=PydanticAIStrategy(agent=mock_agent),
-                prompt=f"Run 2 Test {i}",
+                prompt="Run 2 Test 0",
             )
         )
-
-    result2 = await processor.process_all()
-
-    # Second run should have only its own items
-    assert result2.total_items == 2
-    assert result2.succeeded == 2
-    assert len(result2.results) == 2
-
-    # Verify second run's results contain only run2 items
-    assert all(r.item_id.startswith("run2_") for r in result2.results)
-
-    # CRITICAL: First run's results should NOT be contaminated by second run
-    # This tests the bug where result1.results would grow to 5 items
-    assert len(result1.results) == 3, (
-        f"First run's results were contaminated! "
-        f"Expected 3 items, got {len(result1.results)}. "
-        f"Items: {[r.item_id for r in result1.results]}"
-    )
-    assert all(r.item_id.startswith("run1_") for r in result1.results), (
-        f"First run's results contain items from second run: "
-        f"{[r.item_id for r in result1.results]}"
-    )
