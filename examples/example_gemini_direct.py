@@ -47,6 +47,8 @@ from pydantic import BaseModel, Field
 from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
 from batch_llm.llm_strategies import GeminiStrategy, LLMCallStrategy
 
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+
 
 class SummaryOutput(BaseModel):
     """Output model for text summarization."""
@@ -130,14 +132,14 @@ async def main():
     """
 
     # Check for API key
-    if not os.environ.get("GOOGLE_API_KEY"):
-        print("Error: GOOGLE_API_KEY environment variable not set")
+    if not GOOGLE_API_KEY:
+        print("Error: GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable not set")
         print("Get your API key from: https://aistudio.google.com/apikey")
-        print("Then run: export GOOGLE_API_KEY=your_key_here")
+        print("Then run: export GOOGLE_API_KEY=your_key_here  # GEMINI_API_KEY also works")
         return
 
     # Initialize Gemini client
-    client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+    client = genai.Client(api_key=GOOGLE_API_KEY)
 
     # Sample texts to summarize
     texts = [
@@ -230,6 +232,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Note: Requires GOOGLE_API_KEY environment variable
+    # Note: Requires GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable
     # export GOOGLE_API_KEY=your_api_key_here
     asyncio.run(main())

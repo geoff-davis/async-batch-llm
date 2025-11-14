@@ -21,7 +21,7 @@ uv pip install batch-llm
 Most examples require a Google Gemini API key:
 
 ```bash
-export GEMINI_API_KEY="your-api-key-here"
+export GOOGLE_API_KEY="your-api-key-here"  # GEMINI_API_KEY also works
 ```
 
 Get your API key from: https://makersuite.google.com/app/apikey

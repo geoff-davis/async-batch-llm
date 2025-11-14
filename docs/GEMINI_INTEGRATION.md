@@ -37,6 +37,9 @@ import os
 os.environ["GOOGLE_API_KEY"] = "your_api_key_here"
 ```
 
+> **Tip:** `google-genai` still honors the older `GEMINI_API_KEY` variable for backward
+> compatibility, but `GOOGLE_API_KEY` takes precedence when both are set. Set at least one.
+
 ### 3. Verify Setup
 
 ```python

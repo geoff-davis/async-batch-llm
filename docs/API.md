@@ -567,13 +567,16 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
 
 **Requires:** `pip install 'batch-llm[gemini]'`
 
+> **API key:** Set `GOOGLE_API_KEY` (preferred) or the legacy `GEMINI_API_KEY` environment
+> variable before running this example.
+
 **Example:**
 
 ```python
 from batch_llm import GeminiStrategy, LLMWorkItem
 from google import genai
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
 
 def parse_response(response) -> str:
     return response.text
@@ -638,6 +641,8 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 
 **Requires:** `pip install 'batch-llm[gemini]'`
 
+> **API key:** Same as above – `GOOGLE_API_KEY` is preferred, `GEMINI_API_KEY` also works.
+
 **Example:**
 
 ```python
@@ -645,7 +650,7 @@ from batch_llm import GeminiCachedStrategy, LLMWorkItem
 from google import genai
 from google.genai.types import Content
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
 
 # Large document to cache
 cached_content = [

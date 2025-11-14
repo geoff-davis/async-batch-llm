@@ -2,7 +2,8 @@
 
 ## Overview
 
-As of v2.0.1, `batch-llm` has made both **PydanticAI** and **google-genai** optional dependencies. In v3.0, the strategy pattern makes it even easier to use any LLM provider.
+As of v0.4.0, `batch-llm` has made both **PydanticAI** and **google-genai** optional
+dependencies. The strategy pattern makes it easy to plug into any LLM provider.
 
 **Core dependency**: Only `pydantic>=2.0.0` is required.
 
@@ -17,17 +18,20 @@ uv add batch-llm
 ```
 
 This installs only the core dependencies:
+
 - `pydantic>=2.0.0`
 
 **Use case**: Custom strategies with any LLM provider (OpenAI, Anthropic, Cohere, etc.)
 
 **What works**:
+
 - ✅ Custom LLM strategies
 - ✅ All retry/rate-limit logic
 - ✅ Middleware and observers
 - ✅ Full framework functionality
 
 **What requires extras**:
+
 - ❌ `PydanticAIStrategy` (requires `[pydantic-ai]`)
 - ❌ `GeminiStrategy` / `GeminiCachedStrategy` (requires `[gemini]`)
 
@@ -42,6 +46,7 @@ uv add 'batch-llm[pydantic-ai]'
 **Use case**: Using PydanticAI agents with batch-llm
 
 **Enables**:
+
 - `PydanticAIStrategy` for wrapping PydanticAI agents
 - Structured output with Pydantic models
 - Works with any PydanticAI-supported provider
@@ -57,6 +62,7 @@ uv add 'batch-llm[gemini]'
 **Use case**: Direct Google Gemini API integration
 
 **Enables**:
+
 - `GeminiStrategy` for direct Gemini API calls
 - `GeminiCachedStrategy` for Gemini with context caching
 - `GeminiErrorClassifier` for Gemini-specific error handling
@@ -70,6 +76,7 @@ uv add 'batch-llm[all]'
 ```
 
 Includes:
+
 - PydanticAI support
 - Gemini SDK support
 
@@ -82,6 +89,7 @@ uv add 'batch-llm[dev]'
 ```
 
 Includes:
+
 - All dependencies above
 - pytest, pytest-asyncio
 - ruff, mypy
@@ -178,9 +186,10 @@ work_item = LLMWorkItem(
 See `examples/example_llm_strategies.py` for complete Gemini examples using built-in strategies.
 
 Install:
+
 ```bash
 pip install 'batch-llm[gemini]'
-export GOOGLE_API_KEY=your_api_key
+export GOOGLE_API_KEY=your_api_key  # GEMINI_API_KEY also works
 python examples/example_llm_strategies.py
 ```
 
@@ -191,6 +200,7 @@ python examples/example_llm_strategies.py
 See `examples/example_openai.py` for OpenAI integration.
 
 Install:
+
 ```bash
 pip install batch-llm openai
 export OPENAI_API_KEY=your_api_key
@@ -202,6 +212,7 @@ python examples/example_openai.py
 See `examples/example_anthropic.py` for Anthropic integration.
 
 Install:
+
 ```bash
 pip install batch-llm anthropic
 export ANTHROPIC_API_KEY=your_api_key
@@ -213,6 +224,7 @@ python examples/example_anthropic.py
 See `examples/example_langchain.py` for LangChain integration including RAG.
 
 Install:
+
 ```bash
 pip install batch-llm langchain langchain-openai
 python examples/example_langchain.py
@@ -299,6 +311,7 @@ except ImportError:
 ```
 
 This allows the package to:
+
 - Work without optional deps installed
 - Maintain type hints for those who do install them
 - Fail gracefully with clear errors if you try to use a strategy without installing its dependencies

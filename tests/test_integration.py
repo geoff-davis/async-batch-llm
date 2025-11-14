@@ -11,13 +11,16 @@ import os
 import pytest
 
 # Check if integration tests should run
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(not GEMINI_API_KEY, reason="Requires GEMINI_API_KEY environment variable")
+@pytest.mark.skipif(
+    not GOOGLE_API_KEY,
+    reason="Requires GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable",
+)
 @pytest.mark.asyncio
 async def test_gemini_strategy_real_api():
     """Integration test with real Gemini API - basic generation."""
@@ -30,7 +33,7 @@ async def test_gemini_strategy_real_api():
         pytest.skip("google-genai not installed")
 
     # Create client with API key
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = genai.Client(api_key=GOOGLE_API_KEY)
 
     # Simple response parser
     def parse_response(response):
@@ -72,7 +75,10 @@ async def test_gemini_strategy_real_api():
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(not GEMINI_API_KEY, reason="Requires GEMINI_API_KEY environment variable")
+@pytest.mark.skipif(
+    not GOOGLE_API_KEY,
+    reason="Requires GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable",
+)
 @pytest.mark.asyncio
 async def test_gemini_cached_strategy_real_api():
     """Integration test with real Gemini API - context caching."""
@@ -86,7 +92,7 @@ async def test_gemini_cached_strategy_real_api():
         pytest.skip("google-genai not installed")
 
     # Create client
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = genai.Client(api_key=GOOGLE_API_KEY)
 
     # Create cached content (system instruction)
     cached_content = [
@@ -147,7 +153,10 @@ async def test_gemini_cached_strategy_real_api():
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(not GEMINI_API_KEY, reason="Requires GEMINI_API_KEY environment variable")
+@pytest.mark.skipif(
+    not GOOGLE_API_KEY,
+    reason="Requires GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable",
+)
 @pytest.mark.asyncio
 async def test_gemini_response_with_safety_ratings_real_api():
     """Integration test for GeminiResponse with safety ratings (v0.3.0)."""
@@ -159,7 +168,7 @@ async def test_gemini_response_with_safety_ratings_real_api():
     except ImportError:
         pytest.skip("google-genai not installed")
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = genai.Client(api_key=GOOGLE_API_KEY)
 
     def parse_response(response):
         return response.text
@@ -209,7 +218,10 @@ async def test_gemini_response_with_safety_ratings_real_api():
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(not GEMINI_API_KEY, reason="Requires GEMINI_API_KEY environment variable")
+@pytest.mark.skipif(
+    not GOOGLE_API_KEY,
+    reason="Requires GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable",
+)
 @pytest.mark.asyncio
 async def test_retry_on_real_validation_error():
     """Integration test that triggers real validation error and retries."""
@@ -276,10 +288,10 @@ async def test_integration_suite_summary():
     available_tests = []
     missing_keys = []
 
-    if GEMINI_API_KEY:
+    if GOOGLE_API_KEY:
         available_tests.append("✅ Gemini API tests")
     else:
-        missing_keys.append("❌ GEMINI_API_KEY not set")
+        missing_keys.append("❌ GOOGLE_API_KEY (or GEMINI_API_KEY) not set")
 
     if OPENAI_API_KEY:
         available_tests.append("✅ OpenAI API tests (not yet implemented)")

@@ -24,6 +24,8 @@ from batch_llm.llm_strategies import (
     PydanticAIStrategy,
 )
 
+GEMINI_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+
 
 class SummaryOutput(BaseModel):
     """Example output model for structured summaries."""
@@ -89,7 +91,7 @@ async def example_gemini_strategy():
     print("=" * 60 + "\n")
 
     # Initialize Gemini client
-    client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
     # Create a response parser
     def parse_response(response: Any) -> str:
@@ -140,7 +142,7 @@ async def example_gemini_cached_strategy():
     print("=" * 60 + "\n")
 
     # Initialize Gemini client
-    client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
     # Large context to cache (e.g., a document, knowledge base, etc.)
     # In a real RAG system, this would be retrieved documents
@@ -292,13 +294,15 @@ async def example_custom_strategy():
 async def main():
     """Run all examples."""
     # Example 1: PydanticAI Strategy
-    if os.environ.get("GEMINI_API_KEY"):
+    if GEMINI_API_KEY:
         await example_pydantic_ai_strategy()
         await example_gemini_strategy()
         await example_gemini_cached_strategy()
     else:
-        print("Skipping Gemini examples (GEMINI_API_KEY not set)")
-        print("Set GEMINI_API_KEY environment variable to run Gemini examples")
+        print("Skipping Gemini examples (GOOGLE_API_KEY/GEMINI_API_KEY not set)")
+        print(
+            "Set GOOGLE_API_KEY (preferred) or GEMINI_API_KEY environment variable to run Gemini examples"
+        )
 
     # Example 4: Custom Strategy (doesn't require API key)
     await example_custom_strategy()

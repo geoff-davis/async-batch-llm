@@ -11,25 +11,25 @@ git clone https://github.com/yourusername/batch-llm.git
 cd batch-llm
 ```
 
-2. **Install uv** (if not already installed)
+1. **Install uv** (if not already installed)
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-3. **Install dependencies**
+1. **Install dependencies**
 
 ```bash
 uv sync --all-extras
 ```
 
-4. **Install markdown lint tooling** (requires Node 18+)
+1. **Install markdown lint tooling** (requires Node 18+)
 
 ```bash
 npm install --save-dev markdownlint-cli2
 ```
 
-5. **Install pre-commit hooks** (recommended)
+1. **Install pre-commit hooks** (recommended)
 
 ```bash
 make pre-commit-install
@@ -40,7 +40,7 @@ pre-commit install
 
 This will automatically run linting and type checking before each commit.
 
-6. **Run tests**
+1. **Run tests**
 
 ```bash
 uv run pytest
@@ -82,6 +82,7 @@ make pre-commit-update
 ```
 
 Pre-commit will automatically run these checks before each commit:
+
 - Ruff linting and formatting
 - Mypy type checking
 - Markdown linting
@@ -113,7 +114,7 @@ make ci
 uv run python examples/example.py
 
 # Set API key first if needed
-export GEMINI_API_KEY="your-api-key"
+export GOOGLE_API_KEY="your-api-key"  # GEMINI_API_KEY is also accepted
 ```
 
 ## Making Changes
@@ -124,13 +125,13 @@ export GEMINI_API_KEY="your-api-key"
 git checkout -b feature/your-feature-name
 ```
 
-2. **Make your changes** following these guidelines:
+1. **Make your changes** following these guidelines:
    - Write clear, descriptive commit messages
    - Add tests for new functionality
    - Update documentation as needed
    - Follow existing code style
 
-3. **Test your changes**
+2. **Test your changes**
 
 ```bash
 uv run pytest
@@ -138,7 +139,7 @@ uv run ruff check src/
 uv run mypy src/batch_llm/
 ```
 
-4. **Submit a pull request**
+1. **Submit a pull request**
    - Describe what your changes do
    - Reference any related issues
    - Ensure all tests pass

@@ -26,6 +26,9 @@ import os
 from typing import Annotated
 
 from google import genai
+
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+
 from google.genai.types import GenerateContentConfig
 from pydantic import BaseModel, Field, ValidationError
 
@@ -248,7 +251,7 @@ async def example_progressive_temp():
     print("Example 1: Progressive Temperature Retry")
     print("=" * 70 + "\n")
 
-    client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+    client = genai.Client(api_key=GOOGLE_API_KEY)
     strategy = ProgressiveTempGeminiStrategy(client=client, temps=[0.0, 0.5, 1.0])
 
     config = ProcessorConfig(
@@ -296,7 +299,7 @@ async def example_smart_retry():
     print("Example 2: Smart Retry with Partial Success Feedback")
     print("=" * 70 + "\n")
 
-    client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+    client = genai.Client(api_key=GOOGLE_API_KEY)
     strategy = SmartRetryGeminiStrategy(client=client)
 
     config = ProcessorConfig(
@@ -343,7 +346,7 @@ async def example_comparison():
     print("Example 3: Strategy Comparison")
     print("=" * 70 + "\n")
 
-    client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+    client = genai.Client(api_key=GOOGLE_API_KEY)
 
     # Very messy data that will likely need retries
     difficult_texts = [
@@ -416,10 +419,10 @@ async def example_comparison():
 
 async def main():
     """Run all examples."""
-    if not os.environ.get("GOOGLE_API_KEY"):
-        print("Error: GOOGLE_API_KEY environment variable not set")
+    if not GOOGLE_API_KEY:
+        print("Error: GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable not set")
         print("Get your API key from: https://aistudio.google.com/apikey")
-        print("Then run: export GOOGLE_API_KEY=your_key_here")
+        print("Then run: export GOOGLE_API_KEY=your_key_here  # GEMINI_API_KEY also works")
         return
 
     await example_progressive_temp()

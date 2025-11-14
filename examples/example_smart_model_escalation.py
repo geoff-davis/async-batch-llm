@@ -38,6 +38,9 @@ import os
 from typing import Annotated
 
 from google import genai
+
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+
 from google.genai.types import GenerateContentConfig
 from pydantic import BaseModel, Field, ValidationError
 
@@ -265,7 +268,7 @@ async def example_smart_escalation():
     print("Example 1: Smart Model Escalation (Validation Errors Only)")
     print("=" * 70 + "\n")
 
-    client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+    client = genai.Client(api_key=GOOGLE_API_KEY)
 
     config = ProcessorConfig(
         max_workers=1,
@@ -314,7 +317,7 @@ async def example_comparison():
     print("Example 2: Smart vs Blind Escalation Comparison")
     print("=" * 70 + "\n")
 
-    client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+    client = genai.Client(api_key=GOOGLE_API_KEY)
 
     config = ProcessorConfig(
         max_workers=1,
@@ -380,10 +383,10 @@ async def example_comparison():
 
 async def main():
     """Run all examples."""
-    if not os.environ.get("GOOGLE_API_KEY"):
-        print("Error: GOOGLE_API_KEY environment variable not set")
+    if not GOOGLE_API_KEY:
+        print("Error: GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable not set")
         print("Get your API key from: https://aistudio.google.com/apikey")
-        print("Then run: export GOOGLE_API_KEY=your_key_here")
+        print("Then run: export GOOGLE_API_KEY=your_key_here  # GEMINI_API_KEY also works")
         return
 
     await example_smart_escalation()
