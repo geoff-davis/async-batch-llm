@@ -17,7 +17,7 @@ strategy pattern. Built on asyncio for efficient I/O-bound processing.
 - ✅ **Reliable** - Built-in retry logic, timeout handling, and coordinated rate limiting
 - ✅ **Fast** - Parallel async processing with configurable concurrency
 - ✅ **Observable** - Token tracking, metrics collection, and event hooks
-- ✅ **Cost-Effective** - Shared caching strategies can reduce costs by 70-90%
+- ✅ **Cost-Effective** - Shared caching strategies can dramatically reduce repeated prompt costs
 - ✅ **Type-Safe** - Full generic type support with Pydantic validation
 
 ---
@@ -104,7 +104,7 @@ Built-in strategies for common providers:
 
 - **`PydanticAIStrategy`** - PydanticAI agents with structured output
 - **`GeminiStrategy`** - Direct Google Gemini API calls
-- **`GeminiCachedStrategy`** - Gemini with context caching (70-90% cost savings for RAG)
+- **`GeminiCachedStrategy`** - Gemini with context caching via the explicit cache API (more predictable than implicit caching)
 
 Create custom strategies for any provider:
 
@@ -184,7 +184,7 @@ resume to prevent immediate re-limiting.
 
 ### Cost Optimization with Caching
 
-Share a single cached strategy across all work items for 70-90% cost savings:
+Share a single cached strategy across all work items to avoid paying for the same context repeatedly:
 
 ```python
 from batch_llm import GeminiCachedStrategy
@@ -192,7 +192,7 @@ from google import genai
 
 client = genai.Client(api_key="your-api-key")
 
-# Create one cached strategy for large context (e.g., RAG documents)
+# Create one cached strategy using the explicit cache API (see https://ai.google.dev/gemini-api/docs/caching?lang=python); implicit caching exists but is harder to control
 strategy = GeminiCachedStrategy(
     model="gemini-2.0-flash",
     client=client,
@@ -228,7 +228,7 @@ async with ParallelBatchProcessor(config=config) as processor:
 **Cost Example:**
 
 - Without caching: 100 items × $0.10 = **$10.00**
-- With shared caching: 100 items × $0.03 = **$3.00** (70% savings)
+- With shared caching: 100 items × $0.03 = **$3.00** (assuming cached tokens are billed at 10% of the original rate)
 
 ### Token Tracking
 
@@ -360,7 +360,7 @@ from google import genai
 
 client = genai.Client(api_key="your-api-key")
 
-# Cache the large document context once
+# Cache the large document context once via the explicit API; see also https://developers.googleblog.com/en/gemini-2-5-models-now-support-implicit-caching/
 strategy = GeminiCachedStrategy(
     model="gemini-2.0-flash",
     client=client,
@@ -386,7 +386,7 @@ async with ParallelBatchProcessor(config=config) as processor:
 
     result = await processor.process_all()
 
-# 90% discount on cached tokens = 70-90% overall cost savings
+# Cached tokens are billed at ~10% of the usual rate, so reusing context can reduce total cost substantially
 ```
 
 ### Custom Post-Processing
@@ -555,11 +555,11 @@ class PartialRecoveryStrategy(LLMCallStrategy[dict]):
         return result, extract_tokens(response)
 ```
 
-**Cost Savings:**
+**Cost Considerations:**
 
-- Attempt 1: Extract 4 fields, get 3 correct (75% success)
-- Attempt 2: Extract only 1 missing field (25% of original cost)
-- **Result: 81% cost savings**
+- Retries focus only on the fields that failed validation, so the second attempt
+  usually consumes fewer tokens than the first.
+- Actual savings depend on how many fields typically fail and the provider's billing model.
 
 ---
 
