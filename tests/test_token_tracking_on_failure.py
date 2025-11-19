@@ -66,7 +66,9 @@ async def test_tokens_tracked_on_validation_failure():
     async with ParallelBatchProcessor[str, StrictOutput, None](config=config) as processor:
         # Add 5 items that will all fail validation
         for i in range(5):
-            await processor.add_work(LLMWorkItem(item_id=f"item_{i}", strategy=strategy, prompt=f"Test {i}"))
+            await processor.add_work(
+                LLMWorkItem(item_id=f"item_{i}", strategy=strategy, prompt=f"Test {i}")
+            )
 
         result = await processor.process_all()
 
@@ -89,6 +91,9 @@ async def test_tokens_tracked_on_validation_failure():
         assert not item_result.success
         assert item_result.error is not None
         # Check that error message contains ValidationError
-        assert "ValidationError" in item_result.error, f"Expected ValidationError in error: {item_result.error}"
-        assert "required_field" in item_result.error, f"Expected 'required_field' in error: {item_result.error}"
-
+        assert (
+            "ValidationError" in item_result.error
+        ), f"Expected ValidationError in error: {item_result.error}"
+        assert (
+            "required_field" in item_result.error
+        ), f"Expected 'required_field' in error: {item_result.error}"

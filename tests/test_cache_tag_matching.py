@@ -22,13 +22,12 @@ async def test_cache_tags_exact_match():
     strategy_tags = {"customer": "acme", "version": "v1", "environment": "prod"}
 
     # Test: Exact match should succeed
-    cache = MockCache("gemini-2.0-flash", metadata={"customer": "acme", "version": "v1", "environment": "prod"})
+    cache = MockCache(
+        "gemini-2.0-flash", metadata={"customer": "acme", "version": "v1", "environment": "prod"}
+    )
 
     # Simulate the matching logic from _find_or_create_cache
-    tags_match = all(
-        cache.metadata.get(k) == v
-        for k, v in strategy_tags.items()
-    )
+    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
 
     assert tags_match, "Exact tag match should succeed"
 
@@ -52,14 +51,11 @@ async def test_cache_tags_subset_match():
     # Cache has superset (extra tags)
     cache = MockCache(
         "gemini-2.0-flash",
-        metadata={"customer": "acme", "version": "v1", "environment": "prod", "region": "us"}
+        metadata={"customer": "acme", "version": "v1", "environment": "prod", "region": "us"},
     )
 
     # Simulate the matching logic
-    tags_match = all(
-        cache.metadata.get(k) == v
-        for k, v in strategy_tags.items()
-    )
+    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
 
     assert tags_match, "Cache with superset of tags should match strategy's subset"
 
@@ -84,10 +80,7 @@ async def test_cache_tags_mismatch_value():
     cache = MockCache("gemini-2.0-flash", metadata={"customer": "globex", "version": "v1"})
 
     # Simulate the matching logic
-    tags_match = all(
-        cache.metadata.get(k) == v
-        for k, v in strategy_tags.items()
-    )
+    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
 
     assert not tags_match, "Cache with different tag value should NOT match"
 
@@ -112,10 +105,7 @@ async def test_cache_tags_missing_key():
     cache = MockCache("gemini-2.0-flash", metadata={"customer": "acme", "version": "v1"})
 
     # Simulate the matching logic
-    tags_match = all(
-        cache.metadata.get(k) == v
-        for k, v in strategy_tags.items()
-    )
+    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
 
     assert not tags_match, "Cache missing required tag should NOT match"
 
@@ -140,10 +130,7 @@ async def test_cache_tags_empty_metadata():
     cache = MockCache("gemini-2.0-flash", metadata={})
 
     # Simulate the matching logic
-    tags_match = all(
-        cache.metadata.get(k) == v
-        for k, v in strategy_tags.items()
-    )
+    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
 
     assert not tags_match, "Cache with no metadata should NOT match strategy with tags"
 
@@ -168,10 +155,7 @@ async def test_cache_no_tags_matches_any():
     cache = MockCache("gemini-2.0-flash", metadata={"customer": "acme", "version": "v1"})
 
     # Simulate the matching logic - empty dict means all() returns True
-    tags_match = all(
-        cache.metadata.get(k) == v
-        for k, v in strategy_tags.items()
-    )
+    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
 
     assert tags_match, "Strategy with no tags should match any cache (backward compatibility)"
 
@@ -196,10 +180,7 @@ async def test_cache_tags_case_sensitive():
     cache = MockCache("gemini-2.0-flash", metadata={"customer": "ACME"})
 
     # Simulate the matching logic
-    tags_match = all(
-        cache.metadata.get(k) == v
-        for k, v in strategy_tags.items()
-    )
+    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
 
     assert not tags_match, "Tag matching should be case-sensitive"
 
@@ -224,10 +205,7 @@ async def test_cache_tags_type_sensitivity():
     cache = MockCache("gemini-2.0-flash", metadata={"version": 1})
 
     # Simulate the matching logic
-    tags_match = all(
-        cache.metadata.get(k) == v
-        for k, v in strategy_tags.items()
-    )
+    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
 
     assert not tags_match, "Tag matching should be type-sensitive (string '1' != int 1)"
 
@@ -252,17 +230,16 @@ async def test_cache_tags_multiple_caches_filtering():
     caches = [
         MockCache("gemini-2.0-flash", metadata={"customer": "globex", "environment": "prod"}),
         MockCache("gemini-2.0-flash", metadata={"customer": "acme", "environment": "dev"}),
-        MockCache("gemini-2.0-flash", metadata={"customer": "acme", "environment": "prod"}),  # Match!
+        MockCache(
+            "gemini-2.0-flash", metadata={"customer": "acme", "environment": "prod"}
+        ),  # Match!
         MockCache("gemini-2.0-flash", metadata={"customer": "acme", "environment": "staging"}),
     ]
 
     # Find matching caches
     matching_caches = []
     for cache in caches:
-        tags_match = all(
-            cache.metadata.get(k) == v
-            for k, v in strategy_tags.items()
-        )
+        tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
         if tags_match:
             matching_caches.append(cache)
 
@@ -287,7 +264,7 @@ async def test_cache_tags_special_characters():
     strategy_tags = {
         "git-sha": "abc123-def456",
         "build.date": "2024-01-15",
-        "owner@company": "user@example.com"
+        "owner@company": "user@example.com",
     }
 
     # Cache with matching special characters
@@ -296,14 +273,11 @@ async def test_cache_tags_special_characters():
         metadata={
             "git-sha": "abc123-def456",
             "build.date": "2024-01-15",
-            "owner@company": "user@example.com"
-        }
+            "owner@company": "user@example.com",
+        },
     )
 
     # Simulate the matching logic
-    tags_match = all(
-        cache.metadata.get(k) == v
-        for k, v in strategy_tags.items()
-    )
+    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
 
     assert tags_match, "Tags with special characters should match correctly"

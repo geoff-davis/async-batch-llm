@@ -534,9 +534,9 @@ async def test_metrics_observer_thread_safety():
     assert collected_metrics["items_succeeded"] == num_items, "Metrics items_succeeded mismatch"
     assert collected_metrics["items_failed"] == 0, "Metrics items_failed should be 0"
     assert collected_metrics["success_rate"] == 1.0, "Success rate should be 100%"
-    assert len(collected_metrics["processing_times"]) == num_items, (
-        "Processing times count mismatch"
-    )
+    assert (
+        len(collected_metrics["processing_times"]) == num_items
+    ), "Processing times count mismatch"
 
 
 @pytest.mark.asyncio

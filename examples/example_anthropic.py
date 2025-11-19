@@ -52,9 +52,7 @@ class AnthropicStrategy(LLMCallStrategy[str]):
         self.temperature = temperature
         self.system_prompt = system_prompt
 
-    async def execute(
-        self, prompt: str, attempt: int, timeout: float
-    ) -> tuple[str, TokenUsage]:
+    async def execute(self, prompt: str, attempt: int, timeout: float) -> tuple[str, TokenUsage]:
         """Execute Anthropic API call.
 
         Note: timeout parameter is provided for information but timeout enforcement
@@ -304,9 +302,7 @@ async def example_anthropic_progressive_temperature():
             tokens: TokenUsage = {
                 "input_tokens": usage.input_tokens if usage else 0,
                 "output_tokens": usage.output_tokens if usage else 0,
-                "total_tokens": (usage.input_tokens + usage.output_tokens)
-                if usage
-                else 0,
+                "total_tokens": (usage.input_tokens + usage.output_tokens) if usage else 0,
             }
 
             return output, tokens

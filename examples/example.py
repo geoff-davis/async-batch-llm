@@ -81,8 +81,7 @@ async def example_post_processor(result: WorkItemResult[BookSummary, EnrichmentC
     """
     if result.success and result.output:
         logging.info(
-            f"Post-processing {result.item_id}: "
-            f"{result.output.title} ({result.output.genre})"
+            f"Post-processing {result.item_id}: " f"{result.output.title} ({result.output.genre})"
         )
         # Could save to database here
         # await save_to_db(result.output, result.context)
@@ -103,6 +102,7 @@ async def example_simple():
         system_prompt="You are a book summarization expert.",
     )
     from batch_llm import PydanticAIStrategy
+
     strategy = PydanticAIStrategy(agent=agent)
 
     # Create processor with new configuration system
@@ -167,6 +167,7 @@ async def example_with_context_and_postprocessor():
         system_prompt="You are a book summarization expert.",
     )
     from batch_llm import PydanticAIStrategy
+
     strategy = PydanticAIStrategy(agent=agent)
 
     # Create configuration with custom retry settings
@@ -259,6 +260,7 @@ async def example_error_handling():
         system_prompt="You are a book summarization expert.",
     )
     from batch_llm import PydanticAIStrategy
+
     strategy = PydanticAIStrategy(agent=agent)
 
     # Create processor with custom rate limit configuration
@@ -309,7 +311,9 @@ async def example_error_handling():
 
     # Show metrics
     collected_metrics = await metrics.get_metrics()
-    logging.info(f"\nMetrics: {collected_metrics['items_failed']} failures out of {collected_metrics['items_processed']} items")
+    logging.info(
+        f"\nMetrics: {collected_metrics['items_failed']} failures out of {collected_metrics['items_processed']} items"
+    )
 
 
 async def example_testing_with_mocks():
@@ -337,6 +341,7 @@ async def example_testing_with_mocks():
         # You can enable it by setting rate_limit_on_call=3
     )
     from batch_llm import PydanticAIStrategy
+
     strategy = PydanticAIStrategy(agent=mock_agent)
 
     # Create processor with fast configuration for testing

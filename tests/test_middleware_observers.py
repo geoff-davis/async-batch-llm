@@ -491,13 +491,11 @@ async def test_metrics_observer_export_json():
     observer = MetricsObserver()
 
     # Simulate some events
+    await observer.on_event(ProcessingEvent.ITEM_COMPLETED, {"item_id": "1", "duration": 1.5})
+    await observer.on_event(ProcessingEvent.ITEM_COMPLETED, {"item_id": "2", "duration": 2.0})
     await observer.on_event(
-        ProcessingEvent.ITEM_COMPLETED, {"item_id": "1", "duration": 1.5}
+        ProcessingEvent.ITEM_FAILED, {"item_id": "3", "error_type": "ValueError"}
     )
-    await observer.on_event(
-        ProcessingEvent.ITEM_COMPLETED, {"item_id": "2", "duration": 2.0}
-    )
-    await observer.on_event(ProcessingEvent.ITEM_FAILED, {"item_id": "3", "error_type": "ValueError"})
     await observer.on_event(ProcessingEvent.RATE_LIMIT_HIT, {})
     await observer.on_event(ProcessingEvent.COOLDOWN_ENDED, {"duration": 60.0})
 
@@ -529,9 +527,7 @@ async def test_metrics_observer_export_prometheus():
     # Simulate some events
     await observer.on_event(ProcessingEvent.ITEM_COMPLETED, {"duration": 1.0})
     await observer.on_event(ProcessingEvent.ITEM_COMPLETED, {"duration": 2.0})
-    await observer.on_event(
-        ProcessingEvent.ITEM_FAILED, {"error_type": "ConnectionError"}
-    )
+    await observer.on_event(ProcessingEvent.ITEM_FAILED, {"error_type": "ConnectionError"})
     await observer.on_event(ProcessingEvent.RATE_LIMIT_HIT, {})
     await observer.on_event(ProcessingEvent.COOLDOWN_ENDED, {"duration": 120.0})
 
@@ -560,9 +556,7 @@ async def test_metrics_observer_export_dict():
 
     # Simulate events
     await observer.on_event(ProcessingEvent.ITEM_COMPLETED, {"duration": 3.0})
-    await observer.on_event(
-        ProcessingEvent.ITEM_FAILED, {"error_type": "TimeoutError"}
-    )
+    await observer.on_event(ProcessingEvent.ITEM_FAILED, {"error_type": "TimeoutError"})
 
     # Export as dict
     data = await observer.export_dict()

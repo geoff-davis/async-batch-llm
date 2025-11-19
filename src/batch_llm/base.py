@@ -103,6 +103,7 @@ class RetryState:
         """String representation showing all state data."""
         return f"RetryState({self.data!r})"
 
+
 # Timeout constants (seconds)
 WORKER_CANCELLATION_TIMEOUT = 2.0  # Time to wait for workers to cancel gracefully
 WORKER_SHUTDOWN_TIMEOUT = 30.0  # Time to wait for workers to finish after queue is done

@@ -60,8 +60,8 @@ async def test_cache_expiration_only_one_new_cache_created():
     async def mock_generate(*args, **kwargs):
         """Mock content generation - track which cache was used."""
         # In google-genai v1.46+, cached_content is passed in the config dict
-        config = kwargs.get('config', {})
-        cached_content = config.get('cached_content') if isinstance(config, dict) else None
+        config = kwargs.get("config", {})
+        cached_content = config.get("cached_content") if isinstance(config, dict) else None
         if cached_content:
             cache_usage.append(cached_content)
 
@@ -89,7 +89,9 @@ async def test_cache_expiration_only_one_new_cache_created():
     # Manually set the cache to an expired one to simulate the scenario
     strategy._cache = old_cache
     strategy._cache_lock = asyncio.Lock()
-    strategy._cache_created_at = datetime.now(timezone.utc).timestamp() - 7200  # Created 2 hours ago
+    strategy._cache_created_at = (
+        datetime.now(timezone.utc).timestamp() - 7200
+    )  # Created 2 hours ago
 
     config = ProcessorConfig(
         max_workers=5,  # Multiple workers
@@ -153,7 +155,9 @@ async def test_cache_expiration_during_processing():
     current_cache.expire_time = datetime.now(timezone.utc) + timedelta(hours=1)
     current_cache.model = "models/gemini-2.0-flash"
     current_cache.create_time = MagicMock()
-    current_cache.create_time.timestamp = MagicMock(return_value=datetime.now(timezone.utc).timestamp())
+    current_cache.create_time.timestamp = MagicMock(
+        return_value=datetime.now(timezone.utc).timestamp()
+    )
 
     new_cache = MagicMock()
     new_cache.name = "renewed-cache"
@@ -228,9 +232,7 @@ async def test_cache_expiration_during_processing():
 
     # Verify cache was recreated (but only once, even though multiple workers
     # may have detected expiration simultaneously)
-    assert cache_create_count == 1, (
-        f"Expected exactly 1 cache recreation, got {cache_create_count}"
-    )
+    assert cache_create_count == 1, f"Expected exactly 1 cache recreation, got {cache_create_count}"
 
 
 @pytest.mark.asyncio

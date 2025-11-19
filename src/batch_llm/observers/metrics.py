@@ -70,11 +70,9 @@ class MetricsObserver(BaseObserver):
                 **{k: v for k, v in self.metrics.items() if k != "processing_times"},
                 "processing_times": list(self._processing_times),
                 "avg_processing_time": (
-
-                        self.metrics["processing_times_sum"] / self.metrics["processing_times_count"]
-                        if self.metrics["processing_times_count"] > 0
-                        else 0
-
+                    self.metrics["processing_times_sum"] / self.metrics["processing_times_count"]
+                    if self.metrics["processing_times_count"] > 0
+                    else 0
                 ),
                 "success_rate": (
                     self.metrics["items_succeeded"] / self.metrics["items_processed"]

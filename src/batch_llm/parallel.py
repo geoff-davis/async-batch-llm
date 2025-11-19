@@ -37,8 +37,6 @@ OBSERVER_CALLBACK_TIMEOUT = 5.0  # Observer events should complete quickly
 POST_PROCESSOR_TIMEOUT = 90.0  # Post-processors may do database/IO work
 
 
-
-
 class ParallelBatchProcessor(
     BatchProcessor[TInput, TOutput, TContext], Generic[TInput, TOutput, TContext]
 ):
@@ -185,9 +183,7 @@ class ParallelBatchProcessor(
                 return
 
             strategy_id = id(strategy)
-            logger.debug(
-                f"Preparing strategy {strategy.__class__.__name__} (id={strategy_id})"
-            )
+            logger.debug(f"Preparing strategy {strategy.__class__.__name__} (id={strategy_id})")
             await strategy.prepare()
             self._prepared_strategies.add(strategy)
             logger.debug(
@@ -453,10 +449,8 @@ class ParallelBatchProcessor(
 
             # Log completion
             status = "✓" if result.success else "✗"
-            outcome = 'success' if result.success else 'failed'
-            logger.info(
-                f"{status} [Worker {worker_id}] Completed {work_item.item_id} ({outcome})"
-            )
+            outcome = "success" if result.success else "failed"
+            logger.info(f"{status} [Worker {worker_id}] Completed {work_item.item_id} ({outcome})")
 
             # Log progress (thread-safe read of stats)
             async with self._stats_lock:
@@ -494,9 +488,7 @@ class ParallelBatchProcessor(
                     f"{error_breakdown} | {calls_per_sec:.2f} calls/sec{token_summary}"
                 )
 
-    async def _handle_rate_limit(
-        self, worker_id: int, observed_generation: int | None = None
-    ):
+    async def _handle_rate_limit(self, worker_id: int, observed_generation: int | None = None):
         """Handle rate limit by pausing all workers and coordinating cooldown."""
         # Use generation counter to track cooldown cycles and prevent race conditions.
         # Workers that detect a rate limit while another cooldown is active simply wait
@@ -716,7 +708,11 @@ class ParallelBatchProcessor(
         for attempt in range(1, self.config.retry.max_attempts + 1):
             try:
                 return await self._process_item(
-                    work_item, worker_id, attempt_number=attempt, strategy=strategy, retry_state=retry_state
+                    work_item,
+                    worker_id,
+                    attempt_number=attempt,
+                    strategy=strategy,
+                    retry_state=retry_state,
                 )
             except asyncio.CancelledError:
                 raise
@@ -744,7 +740,7 @@ class ParallelBatchProcessor(
                     error_msg = str(e)
                     token_summary = ""
                     if cumulative_failed_tokens["total_tokens"] > 0:
-                        total = cumulative_failed_tokens['total_tokens']
+                        total = cumulative_failed_tokens["total_tokens"]
                         token_summary = f"\n  Total tokens consumed across all attempts: {total}"
                     logger.error(
                         f"✗ ALL {self.config.retry.max_attempts} ATTEMPTS EXHAUSTED "
@@ -888,7 +884,10 @@ class ParallelBatchProcessor(
                     # Wrap in asyncio.wait_for to enforce timeout at framework level
                     output, token_usage = await asyncio.wait_for(
                         strategy.execute(
-                            work_item.prompt, attempt_number, self.config.timeout_per_item, retry_state
+                            work_item.prompt,
+                            attempt_number,
+                            self.config.timeout_per_item,
+                            retry_state,
                         ),
                         timeout=self.config.timeout_per_item,
                     )

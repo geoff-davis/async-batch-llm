@@ -25,14 +25,13 @@ async def main():
 
     # Wrap in strategy
     from batch_llm import PydanticAIStrategy
+
     strategy = PydanticAIStrategy(agent=mock_agent)
 
     config = ProcessorConfig(max_workers=3, timeout_per_item=10.0)
 
     # Using async context manager ensures cleanup even if errors occur
-    async with ParallelBatchProcessor[str, SummaryOutput, None](
-        config=config
-    ) as processor:
+    async with ParallelBatchProcessor[str, SummaryOutput, None](config=config) as processor:
         # Add work items
         for i in range(5):
             await processor.add_work(

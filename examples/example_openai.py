@@ -49,9 +49,7 @@ class OpenAIStrategy(LLMCallStrategy[str]):
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-    async def execute(
-        self, prompt: str, attempt: int, timeout: float
-    ) -> tuple[str, TokenUsage]:
+    async def execute(self, prompt: str, attempt: int, timeout: float) -> tuple[str, TokenUsage]:
         """Execute OpenAI API call.
 
         Note: timeout parameter is provided for information but timeout enforcement
@@ -202,9 +200,7 @@ async def example_openai_structured():
     config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
 
     # Process items
-    async with ParallelBatchProcessor[None, SummaryOutput, None](
-        config=config
-    ) as processor:
+    async with ParallelBatchProcessor[None, SummaryOutput, None](config=config) as processor:
         documents = [
             """
             Python is a high-level, interpreted programming language known for its

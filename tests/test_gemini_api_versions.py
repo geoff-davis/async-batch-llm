@@ -24,14 +24,15 @@ def test_api_version_matches_installed_package():
         from google.genai.types import CreateCachedContentConfig  # noqa: F401
 
         # If import succeeds, we should detect v1.46+ or v1.49+
-        assert version in ["v1.46-v1.48", "v1.49+"], (
-            f"CreateCachedContentConfig is importable but version detection returned {version}"
-        )
+        assert version in [
+            "v1.46-v1.48",
+            "v1.49+",
+        ], f"CreateCachedContentConfig is importable but version detection returned {version}"
     except ImportError:
         # If import fails, we should detect v1.45
-        assert version == "v1.45", (
-            f"CreateCachedContentConfig is not importable but version detection returned {version}"
-        )
+        assert (
+            version == "v1.45"
+        ), f"CreateCachedContentConfig is not importable but version detection returned {version}"
 
 
 @pytest.mark.asyncio

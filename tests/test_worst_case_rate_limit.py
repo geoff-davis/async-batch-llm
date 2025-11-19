@@ -72,18 +72,20 @@ async def test_all_workers_hit_rate_limit_simultaneously():
 
     # Verify results
     assert result.total_items == num_workers
-    assert result.succeeded == num_workers, f"Expected all {num_workers} to succeed, got {result.succeeded}"
+    assert (
+        result.succeeded == num_workers
+    ), f"Expected all {num_workers} to succeed, got {result.succeeded}"
     assert result.failed == 0
 
     # Verify rate limit was hit by all workers
-    assert rate_limit_count == num_workers, (
-        f"Expected {num_workers} rate limit hits, got {rate_limit_count}"
-    )
+    assert (
+        rate_limit_count == num_workers
+    ), f"Expected {num_workers} rate limit hits, got {rate_limit_count}"
 
     # Verify retry logic worked (2 attempts per item: fail then succeed)
-    assert execute_count == num_workers * 2, (
-        f"Expected {num_workers * 2} total executions (2 per item), got {execute_count}"
-    )
+    assert (
+        execute_count == num_workers * 2
+    ), f"Expected {num_workers * 2} total executions (2 per item), got {execute_count}"
 
     # Check that rate limit cooldown was triggered
     stats = await processor.get_stats()
@@ -125,7 +127,7 @@ async def test_cascading_rate_limits_under_high_load():
             return f"Result after {attempt} attempts: {prompt}", {
                 "input_tokens": 10,
                 "output_tokens": 5,
-                "total_tokens": 15
+                "total_tokens": 15,
             }
 
     config = ProcessorConfig(
@@ -152,9 +154,9 @@ async def test_cascading_rate_limits_under_high_load():
 
     # Verify multiple cooldowns occurred
     stats = await processor.get_stats()
-    assert stats["rate_limit_count"] >= 2, (
-        f"Expected at least 2 rate limit cooldowns (cascading), got {stats['rate_limit_count']}"
-    )
+    assert (
+        stats["rate_limit_count"] >= 2
+    ), f"Expected at least 2 rate limit cooldowns (cascading), got {stats['rate_limit_count']}"
 
     # Verify items required multiple attempts
     for item_id, count in attempt_counts.items():
@@ -203,7 +205,7 @@ async def test_rate_limit_with_mixed_success_and_failures():
     ) as processor:
         # Add 20 items: 10 will rate limit, 10 will succeed immediately
         for i in range(20):
-            should_rate_limit = (i % 2 == 0)  # Every other item rate limits
+            should_rate_limit = i % 2 == 0  # Every other item rate limits
             strategy = MixedRateLimitStrategy(should_rate_limit=should_rate_limit)
             await processor.add_work(
                 LLMWorkItem(item_id=f"item_{i}", strategy=strategy, prompt=f"Test {i}")

@@ -116,9 +116,7 @@ async def test_retry_state_isolation():
         # Add 5 work items that will all retry
         for i in range(5):
             await processor.add_work(
-                LLMWorkItem(
-                    item_id=f"item_{i}", strategy=strategy, prompt=f"Prompt {i}"
-                )
+                LLMWorkItem(item_id=f"item_{i}", strategy=strategy, prompt=f"Prompt {i}")
             )
 
         result = await processor.process_all()
@@ -180,9 +178,7 @@ async def test_retry_state_none_backward_compatibility():
     config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
-        await processor.add_work(
-            LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test")
-        )
+        await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
 
         result = await processor.process_all()
 
@@ -219,9 +215,7 @@ async def test_on_error_receives_state():
     config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
-        await processor.add_work(
-            LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test")
-        )
+        await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
 
         result = await processor.process_all()
 
@@ -376,12 +370,10 @@ async def test_gemini_response_generic_type():
     strategy = GenericGeminiStrategy(include_metadata=True)
     config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
 
-    async with ParallelBatchProcessor[
-        str, TestOutput | GeminiResponse[TestOutput], None
-    ](config=config) as processor:
-        await processor.add_work(
-            LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test")
-        )
+    async with ParallelBatchProcessor[str, TestOutput | GeminiResponse[TestOutput], None](
+        config=config
+    ) as processor:
+        await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
 
         result = await processor.process_all()
 
@@ -526,12 +518,8 @@ async def test_retry_state_with_gemini_response():
     strategy = CombinedStrategy()
     config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
 
-    async with ParallelBatchProcessor[str, GeminiResponse[str], None](
-        config=config
-    ) as processor:
-        await processor.add_work(
-            LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test")
-        )
+    async with ParallelBatchProcessor[str, GeminiResponse[str], None](config=config) as processor:
+        await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
 
         result = await processor.process_all()
 

@@ -173,9 +173,7 @@ async def main():
 
     config = ProcessorConfig(max_workers=3, timeout_per_item=30.0)
 
-    async with ParallelBatchProcessor[str, SummaryOutput, None](
-        config=config
-    ) as processor:
+    async with ParallelBatchProcessor[str, SummaryOutput, None](config=config) as processor:
         for i, text in enumerate(texts):
             await processor.add_work(
                 LLMWorkItem(
@@ -208,9 +206,7 @@ async def main():
         temps=[0.0, 0.5, 1.0],  # Increase temp on retries
     )
 
-    async with ParallelBatchProcessor[str, SummaryOutput, None](
-        config=config
-    ) as processor:
+    async with ParallelBatchProcessor[str, SummaryOutput, None](config=config) as processor:
         for i, text in enumerate(texts):
             await processor.add_work(
                 LLMWorkItem(

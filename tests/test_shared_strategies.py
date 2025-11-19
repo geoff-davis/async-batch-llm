@@ -57,9 +57,9 @@ async def test_shared_strategy_prepare_called_once():
     assert result.failed == 0
 
     # prepare() should be called exactly once despite 20 work items
-    assert strategy.prepare_count == 1, (
-        f"Expected prepare() to be called once, but it was called {strategy.prepare_count} times"
-    )
+    assert (
+        strategy.prepare_count == 1
+    ), f"Expected prepare() to be called once, but it was called {strategy.prepare_count} times"
 
     # execute() should be called 20 times (once per work item)
     assert strategy.execute_count == 20
@@ -76,23 +76,13 @@ async def test_different_strategies_prepare_called_separately():
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         # Add work items with different strategy instances
-        await processor.add_work(
-            LLMWorkItem(item_id="item_1", strategy=strategy1, prompt="Test 1")
-        )
-        await processor.add_work(
-            LLMWorkItem(item_id="item_2", strategy=strategy2, prompt="Test 2")
-        )
-        await processor.add_work(
-            LLMWorkItem(item_id="item_3", strategy=strategy3, prompt="Test 3")
-        )
+        await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy1, prompt="Test 1"))
+        await processor.add_work(LLMWorkItem(item_id="item_2", strategy=strategy2, prompt="Test 2"))
+        await processor.add_work(LLMWorkItem(item_id="item_3", strategy=strategy3, prompt="Test 3"))
 
         # Add more items reusing the strategies
-        await processor.add_work(
-            LLMWorkItem(item_id="item_4", strategy=strategy1, prompt="Test 4")
-        )
-        await processor.add_work(
-            LLMWorkItem(item_id="item_5", strategy=strategy2, prompt="Test 5")
-        )
+        await processor.add_work(LLMWorkItem(item_id="item_4", strategy=strategy1, prompt="Test 4"))
+        await processor.add_work(LLMWorkItem(item_id="item_5", strategy=strategy2, prompt="Test 5"))
 
         result = await processor.process_all()
 
@@ -158,9 +148,7 @@ async def test_prepare_failure_propagates():
     config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
-        await processor.add_work(
-            LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test")
-        )
+        await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
 
         result = await processor.process_all()
 

@@ -47,7 +47,9 @@ class MockStrategy(LLMCallStrategy[TestOutput]):
             "total_tokens": 30,
         }
 
-    async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None) -> None:
+    async def on_error(
+        self, exception: Exception, attempt: int, state: RetryState | None = None
+    ) -> None:
         self.on_error_calls.append((exception, attempt, state))
 
     async def cleanup(self):
@@ -342,7 +344,9 @@ async def test_on_error_callback_called():
             self.errors_received = []
             self.attempts_received = []
 
-        async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None) -> None:
+        async def on_error(
+            self, exception: Exception, attempt: int, state: RetryState | None = None
+        ) -> None:
             self.errors_received.append(exception)
             self.attempts_received.append(attempt)
 
@@ -400,7 +404,9 @@ async def test_on_error_callback_with_state():
             self.network_errors = 0
             self.last_error = None
 
-        async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None) -> None:
+        async def on_error(
+            self, exception: Exception, attempt: int, state: RetryState | None = None
+        ) -> None:
             self.last_error = exception
             # Track different error types
             if "validation" in str(exception).lower():
@@ -456,7 +462,9 @@ async def test_on_error_callback_exception_handling():
         def __init__(self):
             self.execute_count = 0
 
-        async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None) -> None:
+        async def on_error(
+            self, exception: Exception, attempt: int, state: RetryState | None = None
+        ) -> None:
             # Intentionally buggy callback
             raise RuntimeError("Buggy on_error callback")
 
@@ -501,7 +509,9 @@ async def test_on_error_not_called_on_success():
         def __init__(self):
             self.on_error_called = False
 
-        async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None) -> None:
+        async def on_error(
+            self, exception: Exception, attempt: int, state: RetryState | None = None
+        ) -> None:
             self.on_error_called = True
 
         async def execute(

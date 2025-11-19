@@ -50,9 +50,7 @@ class Analysis(BaseModel):
 
     summary: Annotated[str, Field(description="Brief summary")]
     key_insights: Annotated[list[str], Field(description="Main insights", min_length=3)]
-    recommendations: Annotated[
-        list[str], Field(description="Actionable recommendations")
-    ]
+    recommendations: Annotated[list[str], Field(description="Actionable recommendations")]
     confidence: Annotated[str, Field(description="High, Medium, or Low")]
 
 
@@ -351,9 +349,7 @@ async def example_cost_comparison():
     print("Analysis:")
     print(f"  Always-Pro strategy: {always_cost} cost units")
     print(f"  Escalation strategy: ~{escalation_cost} cost units")
-    print(
-        f"  Potential savings: ~{((always_cost - escalation_cost) / always_cost * 100):.0f}%"
-    )
+    print(f"  Potential savings: ~{((always_cost - escalation_cost) / always_cost * 100):.0f}%")
     print("\n  Note: Actual savings depend on task difficulty distribution.")
     print("  Easy tasks = more savings. Hard tasks = less savings.")
 

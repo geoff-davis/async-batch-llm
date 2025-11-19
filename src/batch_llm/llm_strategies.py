@@ -149,7 +149,9 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
         """
         pass
 
-    async def on_error(self, exception: Exception, attempt: int, state: "RetryState | None" = None) -> None:
+    async def on_error(
+        self, exception: Exception, attempt: int, state: "RetryState | None" = None
+    ) -> None:
         """
         Handle errors that occur during execute().
 
@@ -273,7 +275,9 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
                 if hasattr(candidate, "safety_ratings") and candidate.safety_ratings:
                     for rating in candidate.safety_ratings:
                         # Extract category and probability
-                        category = str(rating.category) if hasattr(rating, "category") else "UNKNOWN"
+                        category = (
+                            str(rating.category) if hasattr(rating, "category") else "UNKNOWN"
+                        )
                         probability = (
                             str(rating.probability) if hasattr(rating, "probability") else "UNKNOWN"
                         )
@@ -458,12 +462,13 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         # Allow short TTLs for testing (< 10 seconds), warn for production values
         if 10 <= cache_ttl_seconds < 60:
             import warnings
+
             warnings.warn(
                 f"cache_ttl_seconds ({cache_ttl_seconds}) is less than 60 seconds. "
                 f"Very short TTLs defeat the purpose of caching. "
                 f"Recommended minimum: 300 seconds (5 minutes).",
                 UserWarning,
-                stacklevel=2
+                stacklevel=2,
             )
 
         self.model = model
@@ -503,7 +508,9 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
                 if hasattr(candidate, "safety_ratings") and candidate.safety_ratings:
                     for rating in candidate.safety_ratings:
                         # Extract category and probability
-                        category = str(rating.category) if hasattr(rating, "category") else "UNKNOWN"
+                        category = (
+                            str(rating.category) if hasattr(rating, "category") else "UNKNOWN"
+                        )
                         probability = (
                             str(rating.probability) if hasattr(rating, "probability") else "UNKNOWN"
                         )
@@ -537,7 +544,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
             params = sig.parameters
 
             # v1.49+ has contents in the signature
-            if 'contents' in params or 'data' in params:
+            if "contents" in params or "data" in params:
                 return "v1.49+"
             else:
                 return "v1.46-v1.48"
@@ -590,10 +597,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
                     cache_metadata = getattr(cache, "metadata", {}) or {}
 
                     # Check if all our tags match the cache's tags
-                    tags_match = all(
-                        cache_metadata.get(k) == v
-                        for k, v in self.cache_tags.items()
-                    )
+                    tags_match = all(cache_metadata.get(k) == v for k, v in self.cache_tags.items())
 
                     if not tags_match:
                         logger.debug(
@@ -614,9 +618,14 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
                     self._cache_created_at = time.time() - self.cache_ttl_seconds
 
                 tag_info = f" with tags {self.cache_tags}" if self.cache_tags else ""
+                age = (
+                    time.time() - self._cache_created_at
+                    if self._cache_created_at is not None
+                    else 0
+                )
                 logger.info(
                     f"Reusing existing Gemini cache: {self._cache.name}{tag_info} "
-                    f"(age: {time.time() - self._cache_created_at:.0f}s)"
+                    f"(age: {age:.0f}s)"
                 )
                 return
         except Exception as e:

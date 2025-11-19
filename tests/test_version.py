@@ -9,9 +9,9 @@ def test_version_matches_package():
 
     # Should match pyproject.toml version
     package_version = version("batch-llm")
-    assert __version__ == package_version, (
-        f"__version__ ({__version__}) doesn't match package metadata ({package_version})"
-    )
+    assert (
+        __version__ == package_version
+    ), f"__version__ ({__version__}) doesn't match package metadata ({package_version})"
 
 
 def test_version_format():

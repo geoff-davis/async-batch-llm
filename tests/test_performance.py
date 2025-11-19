@@ -102,7 +102,9 @@ async def test_throughput_scaling_workers():
 
         results[workers] = elapsed
 
-        print(f"Workers: {workers:2d} | Time: {elapsed:5.2f}s | Throughput: {items_per_second:6.2f} items/sec | Speedup: {speedup:.2f}x")
+        print(
+            f"Workers: {workers:2d} | Time: {elapsed:5.2f}s | Throughput: {items_per_second:6.2f} items/sec | Speedup: {speedup:.2f}x"
+        )
 
         assert result.succeeded == num_items
 
@@ -345,7 +347,9 @@ async def test_retry_performance_impact():
     )
 
     start_time = time.time()
-    async with ParallelBatchProcessor[str, BenchmarkOutput, None](config=config_with_retries) as processor:
+    async with ParallelBatchProcessor[str, BenchmarkOutput, None](
+        config=config_with_retries
+    ) as processor:
         for i in range(num_items):
             await processor.add_work(
                 LLMWorkItem(item_id=f"item_{i}", strategy=strategy, prompt="test")

@@ -58,9 +58,7 @@ class PersonData(BaseModel):
         str,
         Field(pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$", description="Valid email address"),
     ]
-    phone: Annotated[
-        str, Field(pattern=r"^\+?1?\d{10,14}$", description="Phone number")
-    ]
+    phone: Annotated[str, Field(pattern=r"^\+?1?\d{10,14}$", description="Phone number")]
 
 
 # ============================================================================
@@ -120,10 +118,7 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
             # Network/rate limit error - don't escalate
             error_type = type(exception).__name__
             if self.verbose:
-                print(
-                    f"  ⚠️  {error_type} on attempt {attempt} "
-                    f"(will retry same model)"
-                )
+                print(f"  ⚠️  {error_type} on attempt {attempt} " f"(will retry same model)")
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float
@@ -144,15 +139,9 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
             if attempt == 1:
                 print(f"  Attempt {attempt}: Using {model}")
             elif self.last_error and self._is_validation_error(self.last_error):
-                print(
-                    f"  Attempt {attempt}: Escalating to {model} "
-                    f"(after validation error)"
-                )
+                print(f"  Attempt {attempt}: Escalating to {model} " f"(after validation error)")
             else:
-                print(
-                    f"  Attempt {attempt}: Retrying with {model} "
-                    f"(network/rate limit error)"
-                )
+                print(f"  Attempt {attempt}: Retrying with {model} " f"(network/rate limit error)")
 
         # Configure request
         config = GenerateContentConfig(
@@ -284,9 +273,7 @@ async def example_smart_escalation():
     Phone: call me at 555.123.4567
     """
 
-    async with ParallelBatchProcessor[str, PersonData, None](
-        config=config
-    ) as processor:
+    async with ParallelBatchProcessor[str, PersonData, None](config=config) as processor:
         strategy = SmartModelEscalationStrategy(client=client, verbose=True)
         await processor.add_work(
             LLMWorkItem(
@@ -333,9 +320,7 @@ async def example_comparison():
 
     # Test smart escalation
     print("Testing Smart Escalation (validation errors only):")
-    async with ParallelBatchProcessor[str, PersonData, None](
-        config=config
-    ) as processor:
+    async with ParallelBatchProcessor[str, PersonData, None](config=config) as processor:
         for i, text in enumerate(test_texts):
             strategy = SmartModelEscalationStrategy(client=client, verbose=False)
             await processor.add_work(
@@ -348,15 +333,11 @@ async def example_comparison():
         smart_result = await processor.process_all()
 
     print(f"  Success rate: {smart_result.succeeded}/{smart_result.total_items}")
-    print(
-        f"  Total tokens: {smart_result.total_input_tokens + smart_result.total_output_tokens}\n"
-    )
+    print(f"  Total tokens: {smart_result.total_input_tokens + smart_result.total_output_tokens}\n")
 
     # Test blind escalation
     print("Testing Blind Escalation (always escalate):")
-    async with ParallelBatchProcessor[str, PersonData, None](
-        config=config
-    ) as processor:
+    async with ParallelBatchProcessor[str, PersonData, None](config=config) as processor:
         for i, text in enumerate(test_texts):
             strategy = BlindEscalationStrategy(client=client, verbose=False)
             await processor.add_work(
@@ -369,14 +350,10 @@ async def example_comparison():
         blind_result = await processor.process_all()
 
     print(f"  Success rate: {blind_result.succeeded}/{blind_result.total_items}")
-    print(
-        f"  Total tokens: {blind_result.total_input_tokens + blind_result.total_output_tokens}\n"
-    )
+    print(f"  Total tokens: {blind_result.total_input_tokens + blind_result.total_output_tokens}\n")
 
     print("Analysis:")
-    print(
-        "  Smart Escalation only uses expensive models when quality issues occur."
-    )
+    print("  Smart Escalation only uses expensive models when quality issues occur.")
     print("  Blind Escalation wastes expensive models on network/rate limit errors.")
     print("  In production with network errors, smart escalation saves significant cost.")
 

@@ -55,9 +55,7 @@ async def example_pydantic_ai_strategy():
     config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
 
     # Process items using the strategy
-    async with ParallelBatchProcessor[None, SummaryOutput, None](
-        config=config
-    ) as processor:
+    async with ParallelBatchProcessor[None, SummaryOutput, None](config=config) as processor:
         documents = [
             "Python is a high-level programming language known for its simplicity and readability.",
             "Machine learning is a subset of artificial intelligence that enables systems to learn from data.",
@@ -254,9 +252,7 @@ async def example_custom_strategy():
         ) -> tuple[str, TokenUsage]:
             """Execute the LLM call."""
             self.call_count += 1
-            print(
-                f"  [Strategy] execute() called - attempt {attempt}, prompt: {prompt[:50]}..."
-            )
+            print(f"  [Strategy] execute() called - attempt {attempt}, prompt: {prompt[:50]}...")
 
             # Simulate processing
             await asyncio.sleep(0.1)
@@ -268,9 +264,7 @@ async def example_custom_strategy():
 
         async def cleanup(self):
             """Clean up resources."""
-            print(
-                f"  [Strategy] cleanup() called - processed {self.call_count} calls total"
-            )
+            print(f"  [Strategy] cleanup() called - processed {self.call_count} calls total")
 
     # Use the custom strategy
     strategy = MockLLMStrategy()

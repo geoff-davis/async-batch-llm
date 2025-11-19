@@ -46,9 +46,7 @@ class PersonData(BaseModel):
         str,
         Field(pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$", description="Valid email address"),
     ]
-    phone: Annotated[
-        str, Field(pattern=r"^\+?1?\d{10,14}$", description="Phone number")
-    ]
+    phone: Annotated[str, Field(pattern=r"^\+?1?\d{10,14}$", description="Phone number")]
 
 
 # ============================================================================
@@ -268,9 +266,7 @@ async def example_progressive_temp():
     Phone: call me at 555.123.4567
     """
 
-    async with ParallelBatchProcessor[str, PersonData, None](
-        config=config
-    ) as processor:
+    async with ParallelBatchProcessor[str, PersonData, None](config=config) as processor:
         await processor.add_work(
             LLMWorkItem(
                 item_id="person_1",
@@ -314,9 +310,7 @@ async def example_smart_retry():
     My phone? It's 212-555-0123
     """
 
-    async with ParallelBatchProcessor[str, PersonData, None](
-        config=config
-    ) as processor:
+    async with ParallelBatchProcessor[str, PersonData, None](config=config) as processor:
         await processor.add_work(
             LLMWorkItem(
                 item_id="person_2",
@@ -370,9 +364,7 @@ async def example_comparison():
     # Test progressive temperature
     print("Testing Progressive Temperature Strategy:")
     prog_strategy = ProgressiveTempGeminiStrategy(client=client)
-    async with ParallelBatchProcessor[str, PersonData, None](
-        config=config
-    ) as processor:
+    async with ParallelBatchProcessor[str, PersonData, None](config=config) as processor:
         for i, text in enumerate(difficult_texts):
             await processor.add_work(
                 LLMWorkItem(
@@ -384,15 +376,11 @@ async def example_comparison():
         prog_result = await processor.process_all()
 
     print(f"  Success rate: {prog_result.succeeded}/{prog_result.total_items}")
-    print(
-        f"  Total tokens: {prog_result.total_input_tokens + prog_result.total_output_tokens}\n"
-    )
+    print(f"  Total tokens: {prog_result.total_input_tokens + prog_result.total_output_tokens}\n")
 
     # Test smart retry
     print("Testing Smart Retry Strategy:")
-    async with ParallelBatchProcessor[str, PersonData, None](
-        config=config
-    ) as processor:
+    async with ParallelBatchProcessor[str, PersonData, None](config=config) as processor:
         for i, text in enumerate(difficult_texts):
             # Note: Need new instance per item for stateful strategy
             item_strategy = SmartRetryGeminiStrategy(client=client)
@@ -406,14 +394,10 @@ async def example_comparison():
         smart_result = await processor.process_all()
 
     print(f"  Success rate: {smart_result.succeeded}/{smart_result.total_items}")
-    print(
-        f"  Total tokens: {smart_result.total_input_tokens + smart_result.total_output_tokens}\n"
-    )
+    print(f"  Total tokens: {smart_result.total_input_tokens + smart_result.total_output_tokens}\n")
 
     print("Analysis:")
-    print(
-        "  Smart Retry typically uses fewer tokens by being more focused on failed fields."
-    )
+    print("  Smart Retry typically uses fewer tokens by being more focused on failed fields.")
     print("  Progressive Temp is simpler but may waste tokens on full re-extraction.")
 
 

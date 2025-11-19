@@ -31,9 +31,7 @@ class LangChainStrategy(LLMCallStrategy[str]):
         """
         self.chain = chain
 
-    async def execute(
-        self, prompt: str, attempt: int, timeout: float
-    ) -> tuple[str, TokenUsage]:
+    async def execute(self, prompt: str, attempt: int, timeout: float) -> tuple[str, TokenUsage]:
         """Execute LangChain chain.
 
         Note: timeout parameter is provided for information but timeout enforcement
@@ -317,9 +315,7 @@ Answer:"""
 {input}
 
 Creative response:"""
-    creative_prompt = PromptTemplate(
-        template=creative_template, input_variables=["input"]
-    )
+    creative_prompt = PromptTemplate(template=creative_template, input_variables=["input"])
     creative_chain = LLMChain(llm=anthropic_llm, prompt=creative_prompt)
 
     # Create strategies

@@ -36,7 +36,9 @@ class CachedTokenStrategy(LLMCallStrategy[str]):
 async def test_cached_token_aggregation():
     """Test that cached tokens are properly aggregated in BatchResult."""
     strategy = CachedTokenStrategy(
-        input_tokens=500, output_tokens=100, cached_tokens=450  # 90% cached
+        input_tokens=500,
+        output_tokens=100,
+        cached_tokens=450,  # 90% cached
     )
     config = ProcessorConfig(max_workers=2)
 
@@ -60,7 +62,9 @@ async def test_cached_token_aggregation():
 async def test_cache_hit_rate_calculation():
     """Test cache_hit_rate() method."""
     strategy = CachedTokenStrategy(
-        input_tokens=500, output_tokens=100, cached_tokens=450  # 90% cached
+        input_tokens=500,
+        output_tokens=100,
+        cached_tokens=450,  # 90% cached
     )
     config = ProcessorConfig(max_workers=2)
 
@@ -80,7 +84,9 @@ async def test_cache_hit_rate_calculation():
 async def test_effective_input_tokens_calculation():
     """Test effective_input_tokens() method (cost after caching)."""
     strategy = CachedTokenStrategy(
-        input_tokens=500, output_tokens=100, cached_tokens=450  # 90% cached
+        input_tokens=500,
+        output_tokens=100,
+        cached_tokens=450,  # 90% cached
     )
     config = ProcessorConfig(max_workers=2)
 
@@ -118,9 +124,7 @@ async def test_no_cached_tokens():
     config = ProcessorConfig(max_workers=1)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
-        await processor.add_work(
-            LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test")
-        )
+        await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
 
         result = await processor.process_all()
 
@@ -132,9 +136,7 @@ async def test_no_cached_tokens():
 @pytest.mark.asyncio
 async def test_mixed_cached_and_noncached():
     """Test mixture of cached and non-cached strategies."""
-    cached_strategy = CachedTokenStrategy(
-        input_tokens=500, output_tokens=100, cached_tokens=450
-    )
+    cached_strategy = CachedTokenStrategy(input_tokens=500, output_tokens=100, cached_tokens=450)
 
     class NonCachedStrategy(LLMCallStrategy[str]):
         async def execute(
@@ -153,9 +155,7 @@ async def test_mixed_cached_and_noncached():
         # Add 5 cached items
         for i in range(5):
             await processor.add_work(
-                LLMWorkItem(
-                    item_id=f"cached_{i}", strategy=cached_strategy, prompt="Test"
-                )
+                LLMWorkItem(item_id=f"cached_{i}", strategy=cached_strategy, prompt="Test")
             )
 
         # Add 5 non-cached items
@@ -198,9 +198,7 @@ async def test_cache_hit_rate_with_zero_input_tokens():
     config = ProcessorConfig(max_workers=1)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
-        await processor.add_work(
-            LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test")
-        )
+        await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
 
         result = await processor.process_all()
 
@@ -213,7 +211,9 @@ async def test_cache_hit_rate_with_zero_input_tokens():
 async def test_100_percent_cache_hit_rate():
     """Test 100% cache hit rate scenario."""
     strategy = CachedTokenStrategy(
-        input_tokens=500, output_tokens=100, cached_tokens=500  # 100% cached
+        input_tokens=500,
+        output_tokens=100,
+        cached_tokens=500,  # 100% cached
     )
     config = ProcessorConfig(max_workers=2)
 

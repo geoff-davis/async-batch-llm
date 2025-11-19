@@ -64,7 +64,9 @@ async def test_gemini_strategy_real_api():
 
     # Verify results
     assert result.total_items == 3
-    assert result.succeeded == 3, f"Expected 3 successes, got {result.succeeded}. Errors: {[r.error for r in result.results if r.error]}"
+    assert (
+        result.succeeded == 3
+    ), f"Expected 3 successes, got {result.succeeded}. Errors: {[r.error for r in result.results if r.error]}"
     assert result.failed == 0
 
     # Verify token usage tracked
@@ -141,15 +143,16 @@ async def test_gemini_cached_strategy_real_api():
 
     # Verify cached tokens were used
     cached_tokens_used = sum(
-        item_result.token_usage.get("cached_input_tokens", 0)
-        for item_result in result.results
+        item_result.token_usage.get("cached_input_tokens", 0) for item_result in result.results
     )
     assert cached_tokens_used > 0, "Should have used cached tokens"
 
     # Cleanup cache
     await strategy.delete_cache()
 
-    print(f"✅ Gemini cached integration test passed: {result.succeeded}/{result.total_items} items, {cached_tokens_used} cached tokens used")
+    print(
+        f"✅ Gemini cached integration test passed: {result.succeeded}/{result.total_items} items, {cached_tokens_used} cached tokens used"
+    )
 
 
 @pytest.mark.integration
@@ -199,7 +202,9 @@ async def test_gemini_response_with_safety_ratings_real_api():
 
     # Check that we got GeminiResponse with metadata
     item_result = result.results[0]
-    assert isinstance(item_result.output, GeminiResponse), "Should return GeminiResponse when include_metadata=True"
+    assert isinstance(
+        item_result.output, GeminiResponse
+    ), "Should return GeminiResponse when include_metadata=True"
 
     # Verify safety ratings are present
     assert item_result.output.safety_ratings is not None, "Safety ratings should be present"
