@@ -437,6 +437,8 @@ uv run pre-commit install
 The pre-commit hooks will automatically run on staged files:
 
 1. **Ruff** - Code formatting and linting (with auto-fix)
+   - **Note:** `examples/` directory is excluded from ruff checks
+   - Examples intentionally check environment variables before imports
 2. **Mypy** - Type checking on `src/batch_llm/`
 3. **General checks**:
    - Trailing whitespace removal
@@ -489,9 +491,13 @@ uv run mkdocs gh-deploy
 The project has two automated workflows:
 
 1. **`.github/workflows/test.yml`** - Runs on every push and PR:
-   - Tests on Python 3.10, 3.11, 3.12, 3.13, 3.14
-   - Runs `pytest`, `ruff`, and `mypy`
-   - Uses `uv` for dependency management
+   - **Test job:** Tests on Python 3.10, 3.11, 3.12, 3.13, 3.14
+     - Runs `pytest`, `ruff`, and `mypy`
+     - Uses `uv` for dependency management
+   - **Security job:** Runs security audits
+     - `pip-audit` for Python dependencies
+     - `npm audit` for JavaScript dependencies
+     - Fails build on moderate+ severity vulnerabilities
 
 2. **`.github/workflows/docs.yml`** - Runs on push to `main`:
    - Builds documentation with MkDocs
