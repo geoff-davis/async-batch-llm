@@ -87,7 +87,7 @@ strategy = PydanticAIStrategy(agent=agent)
 work_item = LLMWorkItem(item_id="1", strategy=strategy, prompt="...")
 ```
 
-See `docs/archive/MIGRATION_V0_1.md` for complete migration guide 
+See `docs/archive/MIGRATION_V0_1.md` for complete migration guide
 
 ### 2. Rate Limiting Strategy
 
@@ -421,9 +421,108 @@ make markdown-lint-fix
 make ci
 ```
 
+### Automated Pre-Commit Hooks
+
+**NEW:** The project now uses pre-commit hooks to automatically run quality checks before each commit.
+
+#### Setup (One-time)
+
+```bash
+# Install pre-commit hooks
+uv run pre-commit install
+```
+
+#### What Gets Checked Automatically
+
+The pre-commit hooks will automatically run on staged files:
+
+1. **Ruff** - Code formatting and linting (with auto-fix)
+2. **Mypy** - Type checking on `src/batch_llm/`
+3. **General checks**:
+   - Trailing whitespace removal
+   - End-of-file newline fixes
+   - YAML/TOML syntax validation
+   - Large file detection
+   - Prevents commits to main/master
+4. **Markdownlint** - Documentation linting (with auto-fix)
+
+#### Manual Pre-Commit Run
+
+```bash
+# Run on all files (not just staged)
+uv run pre-commit run --all-files
+
+# Run specific hook
+uv run pre-commit run ruff --all-files
+uv run pre-commit run mypy --all-files
+```
+
+#### Bypassing Hooks (NOT RECOMMENDED)
+
+```bash
+# Only if absolutely necessary
+git commit --no-verify -m "message"
+```
+
+### Documentation Website
+
+#### Building Documentation
+
+```bash
+# Install docs dependencies
+uv sync --extra docs
+
+# Serve docs locally at http://localhost:8000
+uv run mkdocs serve
+
+# Build static site
+uv run mkdocs build
+
+# Deploy to GitHub Pages (manual)
+uv run mkdocs gh-deploy
+```
+
+**Note:** Documentation is automatically built and deployed to GitHub Pages on every push to `main` via `.github/workflows/docs.yml`.
+
+#### GitHub Actions Workflows
+
+The project has two automated workflows:
+
+1. **`.github/workflows/test.yml`** - Runs on every push and PR:
+   - Tests on Python 3.10, 3.11, 3.12, 3.13, 3.14
+   - Runs `pytest`, `ruff`, and `mypy`
+   - Uses `uv` for dependency management
+
+2. **`.github/workflows/docs.yml`** - Runs on push to `main`:
+   - Builds documentation with MkDocs
+   - Deploys to GitHub Pages automatically
+   - Documentation available at: <https://geoff-davis.github.io/batch-llm/>
+
+#### Documentation Structure
+
+```text
+docs/
+├── index.md                    # Home page (from README)
+├── getting-started.md          # Installation and basics
+├── examples/
+│   ├── basic.md               # Basic usage examples
+│   ├── custom-strategies.md   # Building custom strategies
+│   └── advanced.md            # Advanced patterns
+├── migration/
+│   ├── v0.4.md               # v0.4 migration guide
+│   └── v0.1.md               # v0.1 migration guide
+├── api/
+│   ├── core.md               # Core API reference
+│   ├── strategies.md         # Strategy API reference
+│   └── observers.md          # Observer API reference
+└── contributing.md            # Contribution guide
+```
+
+**Note:** API documentation is auto-generated from docstrings using `mkdocstrings`.
+
 ### Pre-Commit Checklist
 
-**IMPORTANT:** Always run these checks before ANY commit (not just before tagging):
+**IMPORTANT:** With pre-commit hooks installed, most checks run automatically. But you can still run manually:
 
 ```bash
 # 1. Run all tests
@@ -439,10 +538,13 @@ uv run ruff check src/ tests/
 uv run mypy src/batch_llm/ --ignore-missing-imports
 
 # 5. Lint markdown documentation
-npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md"
+npx markdownlint-cli2 "README.md" "docs/**/*.md" "CLAUDE.md"
 
 # Or run all checks at once
 make ci
+
+# Or use pre-commit
+uv run pre-commit run --all-files
 ```
 
 **Only proceed with commit if all checks pass.**

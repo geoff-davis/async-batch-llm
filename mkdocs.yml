@@ -1,0 +1,72 @@
+site_name: batch-llm
+site_description: Provider-agnostic framework for high-throughput LLM processing with async workers, automatic retries, and intelligent validation recovery.
+site_url: https://geoff-davis.github.io/batch-llm/
+
+repo_name: geoff-davis/batch-llm
+repo_url: https://github.com/geoff-davis/batch-llm
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - content.code.copy
+    - content.code.annotate
+  palette:
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_root_heading: true
+            show_source: true
+            show_signature_annotations: true
+            separate_signature: true
+            docstring_style: google
+            merge_init_into_class: true
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Examples:
+    - Basic Usage: examples/basic.md
+    - Custom Strategies: examples/custom-strategies.md
+    - Advanced Patterns: examples/advanced.md
+  - Migration Guides:
+    - v0.4 Migration: migration/v0.4.md
+    - v0.1 Migration: migration/v0.1.md
+  - API Reference:
+    - Core: api/core.md
+    - Strategies: api/strategies.md
+    - Observers: api/observers.md
+  - Contributing: contributing.md
