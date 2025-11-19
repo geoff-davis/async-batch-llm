@@ -41,3 +41,36 @@ jobs:
     - name: Run type checker
       run: |
         uv run mypy src/batch_llm/ --ignore-missing-imports
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        enable-cache: true
+
+    - name: Set up Python
+      run: uv python install 3.12
+
+    - name: Install dependencies
+      run: |
+        uv sync --all-extras
+
+    - name: Python security audit
+      run: |
+        uv tool install pip-audit
+        uv tool run pip-audit
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install npm dependencies
+      run: npm ci
+
+    - name: NPM security audit
+      run: npm audit --audit-level=moderate
