@@ -987,8 +987,10 @@ class ProcessorObserver(ABC):
 - `COOLDOWN_ENDED`: `{duration, error?}`
 
 **Cleanup note:**
+
 - Preferred: wrap `ParallelBatchProcessor` in `async with` so strategy cleanup runs automatically.
-- If you do not use a context manager, call `await processor.shutdown()` after `process_all()` to flush observers, stop workers, and run strategy cleanups.
+- If you do not use a context manager, call `await processor.shutdown()` after `process_all()` to flush
+  observers, stop workers, and run strategy cleanups.
 
 ---
 
