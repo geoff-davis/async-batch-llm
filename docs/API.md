@@ -976,15 +976,19 @@ class ProcessorObserver(ABC):
 
 **Events:**
 
-- `PROCESSING_STARTED`: Batch processing started
-- `PROCESSING_COMPLETED`: Batch processing completed
-- `ITEM_STARTED`: Work item started
-- `ITEM_COMPLETED`: Work item completed
-- `ITEM_FAILED`: Work item failed
-- `RETRY_SCHEDULED`: Retry scheduled
-- `RATE_LIMIT_HIT`: Rate limit encountered
-- `WORKER_STARTED`: Worker started
-- `WORKER_STOPPED`: Worker stopped
+- `BATCH_STARTED`: `{total, max_workers, start_time}`
+- `BATCH_COMPLETED`: `{processed, succeeded, failed, total, total_tokens, cached_input_tokens, duration}`
+- `WORKER_STARTED` / `WORKER_STOPPED`: `{worker_id}`
+- `ITEM_STARTED`: `{item_id, worker_id}`
+- `ITEM_COMPLETED`: `{item_id, duration, tokens}`
+- `ITEM_FAILED`: `{item_id, error_type}`
+- `RATE_LIMIT_HIT`: `{item_id, worker_id}`
+- `COOLDOWN_STARTED`: `{worker_id, duration, consecutive}`
+- `COOLDOWN_ENDED`: `{duration, error?}`
+
+**Cleanup note:**
+- Preferred: wrap `ParallelBatchProcessor` in `async with` so strategy cleanup runs automatically.
+- If you do not use a context manager, call `await processor.shutdown()` after `process_all()` to flush observers, stop workers, and run strategy cleanups.
 
 ---
 

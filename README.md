@@ -260,6 +260,12 @@ from batch_llm import MetricsObserver
 # Collect metrics
 metrics = MetricsObserver()
 
+# Observers receive lifecycle events:
+# - BATCH_STARTED / BATCH_COMPLETED
+# - WORKER_STARTED / WORKER_STOPPED
+# - ITEM_STARTED / ITEM_COMPLETED / ITEM_FAILED
+# - RATE_LIMIT_HIT / COOLDOWN_STARTED / COOLDOWN_ENDED
+
 processor = ParallelBatchProcessor(
     config=config,
     observers=[metrics],
@@ -281,6 +287,11 @@ collected_metrics = await metrics.get_metrics()
 # Export in different formats
 json_export = await metrics.export_json()
 prometheus_export = await metrics.export_prometheus()
+
+# If you don't use `async with`, call shutdown() to clean up workers/strategies:
+# processor = ParallelBatchProcessor(config=config)
+# ... add work, process ...
+# await processor.shutdown()
 ```
 
 ---
