@@ -21,13 +21,13 @@ coverage-report:  ## Generate and open HTML coverage report
 	open htmlcov/index.html || xdg-open htmlcov/index.html || echo "Please open htmlcov/index.html manually"
 
 lint:  ## Run ruff linter
-	uv run ruff check src/ tests/ examples/
+	uv run ruff check src/ tests/
 
 lint-fix:  ## Run ruff linter with auto-fix
-	uv run ruff check src/ tests/ examples/ --fix
+	uv run ruff check src/ tests/ --fix
 
 format:  ## Format code with ruff
-	uv run ruff format src/ tests/ examples/
+	uv run ruff format src/ tests/
 
 typecheck:  ## Run mypy type checker
 	uv run mypy src/batch_llm/ --ignore-missing-imports

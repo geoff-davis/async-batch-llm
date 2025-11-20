@@ -88,6 +88,35 @@ Issues = "https://github.com/geoff-davis/batch-llm/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/batch_llm"]
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+    "/pyproject.toml",
+    "/uv.lock",
+    "/docs",
+    "/examples",
+]
+exclude = [
+    "/.github",
+    "/.claude",
+    "/.uv-cache",
+    "/.ruff_cache",
+    "/.mypy_cache",
+    "/.pytest_cache",
+    "/htmlcov",
+    "/dist",
+    "/build",
+    "/node_modules",
+    "/.venv",
+    "/tests",
+    "/docs/internal",
+    "**/__pycache__",
+    "**/*.pyc",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
