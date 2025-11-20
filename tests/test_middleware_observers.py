@@ -323,6 +323,40 @@ async def test_observer_receives_failure_events():
 
 
 @pytest.mark.asyncio
+async def test_observer_receives_batch_start_and_end_events():
+    """Test that observers see batch lifecycle events."""
+
+    events_received = []
+
+    class TrackingObserver(BaseObserver):
+        async def on_event(self, event: ProcessingEvent, data: dict[str, Any]):
+            events_received.append(event.name)
+
+    mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
+
+    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    async with ParallelBatchProcessor[str, TestOutput, None](
+        config=config,
+        observers=[TrackingObserver()],
+    ) as processor:
+        await processor.add_work(
+            LLMWorkItem(
+                item_id="item_1",
+                strategy=PydanticAIStrategy(agent=mock_agent),
+                prompt="Test",
+                context=None,
+            )
+        )
+
+        result = await processor.process_all()
+
+    assert result.succeeded == 1
+    assert "BATCH_STARTED" in events_received
+    assert "BATCH_COMPLETED" in events_received
+    assert events_received.index("BATCH_STARTED") < events_received.index("BATCH_COMPLETED")
+
+
+@pytest.mark.asyncio
 async def test_multiple_observers_all_receive_events():
     """Test that multiple observers all receive events."""
 

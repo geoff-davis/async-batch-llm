@@ -97,3 +97,50 @@ async def test_tokens_tracked_on_validation_failure():
         assert (
             "required_field" in item_result.error
         ), f"Expected 'required_field' in error: {item_result.error}"
+
+
+@pytest.mark.asyncio
+async def test_cached_tokens_tracked_on_failure():
+    """Ensure cached token usage is aggregated when retries all fail."""
+
+    from batch_llm.base import RetryState, TokenUsage
+    from batch_llm.llm_strategies import LLMCallStrategy
+
+    class TokenTimeoutError(TimeoutError):
+        """Custom timeout that allows attaching token usage."""
+
+        pass
+
+    class CachedFailStrategy(LLMCallStrategy[str]):
+        def __init__(self):
+            self.calls = 0
+
+        async def execute(
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+        ) -> tuple[str, TokenUsage]:
+            self.calls += 1
+            tokens: TokenUsage = {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "cached_input_tokens": 7,
+            }
+            exc = TokenTimeoutError("Simulated timeout")
+            exc.__dict__["_failed_token_usage"] = tokens
+            raise exc
+
+    strategy = CachedFailStrategy()
+    config = ProcessorConfig(max_workers=1, timeout_per_item=5.0)
+
+    async with ParallelBatchProcessor[str, str, None](config=config) as processor:
+        await processor.add_work(
+            LLMWorkItem(item_id="cached_failure", strategy=strategy, prompt="Test cached tokens")
+        )
+        result = await processor.process_all()
+
+    assert result.failed == 1
+    # Default retry config is 3 attempts; ensure cached tokens are counted for every attempt
+    expected_cached_tokens = strategy.calls * 7
+    assert result.total_cached_tokens == expected_cached_tokens, (
+        f"Expected cached tokens {expected_cached_tokens}, " f"got {result.total_cached_tokens}"
+    )

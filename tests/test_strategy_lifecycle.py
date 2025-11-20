@@ -192,6 +192,24 @@ async def test_backward_compatibility_no_context_manager_no_cleanup():
 
 
 @pytest.mark.asyncio
+async def test_shutdown_triggers_cleanup_without_context_manager():
+    """shutdown() should run strategy cleanup when not using context manager."""
+    strategy = LifecycleTrackingStrategy()
+    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+
+    processor = ParallelBatchProcessor[str, str, None](config=config)
+    await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
+
+    result = await processor.process_all()
+    assert result.succeeded == 1
+    assert strategy.prepare_called
+    assert not strategy.cleanup_called  # Not yet cleaned up
+
+    await processor.shutdown()
+    assert strategy.cleanup_called
+
+
+@pytest.mark.asyncio
 async def test_cannot_add_work_after_process_all_starts():
     """Test that add_work() raises RuntimeError after process_all() starts."""
     strategy = LifecycleTrackingStrategy()

@@ -40,11 +40,13 @@ After cooldown: Coordinator redistributes all _rate_limited_items back to queue
 ### Key Changes
 
 1. **Add Rate-Limited Item Storage**
+
    ```python
    self._rate_limited_items: list[LLMWorkItem] = []  # Protected by _rate_limit_lock
    ```
 
 2. **Modify Rate Limit Detection** (in `_handle_exception`):
+
    ```python
    if error_info.is_rate_limit:
        # DON'T re-queue here - store for later redistribution
@@ -59,6 +61,7 @@ After cooldown: Coordinator redistributes all _rate_limited_items back to queue
    ```
 
 3. **Coordinator Redistributes After Cooldown** (in `_finalize_cooldown`):
+
    ```python
    async def _finalize_cooldown(self, start_time: float, error: Exception | None) -> None:
        actual_duration = max(0.0, time.time() - start_time)
@@ -79,6 +82,7 @@ After cooldown: Coordinator redistributes all _rate_limited_items back to queue
    ```
 
 4. **Update Worker Loop** (in `_worker`):
+
    ```python
    try:
        result = await self._process_item_with_retries(work_item, worker_id)
@@ -91,6 +95,7 @@ After cooldown: Coordinator redistributes all _rate_limited_items back to queue
    ```
 
 5. **Simplify `_handle_rate_limit()`**:
+
    ```python
    async def _handle_rate_limit(self, worker_id: int):
        """Handle rate limit by pausing all workers and coordinating cooldown."""
@@ -126,29 +131,34 @@ After cooldown: Coordinator redistributes all _rate_limited_items back to queue
 ## Implementation Steps
 
 ### Phase 1: Add Infrastructure (Low Risk)
+
 1. Add `_rate_limited_items` list to `__init__`
 2. Create `RateLimitHandled` exception class
 3. Add tests to verify list operations are thread-safe
 
 ### Phase 2: Modify Rate Limit Detection (Medium Risk)
+
 1. Update `_handle_exception` to store items instead of re-queueing
 2. Change exception handling to return None instead of raising
 3. Update worker loop to handle None return value
 4. Run existing rate limit tests to verify no regression
 
 ### Phase 3: Implement Redistribution (Medium Risk)
+
 1. Add redistribution logic to `_finalize_cooldown`
 2. Ensure items are re-queued outside lock
 3. Add logging to track redistribution
 4. Test with simple rate limit scenarios
 
 ### Phase 4: Cleanup & Validation (Low Risk)
+
 1. Remove old re-queue code from `_handle_exception`
 2. Simplify `_handle_rate_limit` (no more RateLimitException)
 3. Update comments and docstrings
 4. Run full test suite
 
 ### Phase 5: Enable Worst-Case Tests (Validation)
+
 1. Remove `@pytest.mark.skip` from worst-case tests
 2. Run tests with increased logging
 3. Verify all three scenarios pass
@@ -157,13 +167,16 @@ After cooldown: Coordinator redistributes all _rate_limited_items back to queue
 ## Alternative Approaches Considered
 
 ### Alternative 1: Semaphore-Based Rate Limiting
+
 **Idea**: Use `asyncio.Semaphore` to limit concurrent requests instead of Event-based pausing.
 
 **Pros**:
+
 - Simpler state management
 - No need for cooldown coordination
 
 **Cons**:
+
 - Doesn't handle "pause all workers" requirement
 - Can't implement slow-start mechanism
 - Doesn't prevent hitting rate limits (reactive vs proactive)
@@ -171,13 +184,16 @@ After cooldown: Coordinator redistributes all _rate_limited_items back to queue
 **Decision**: Not suitable - we need to pause ALL workers, not just limit concurrency.
 
 ### Alternative 2: Single Coordinator Worker
+
 **Idea**: Designate one worker as "coordinator" that handles all rate-limited items.
 
 **Pros**:
+
 - No coordination needed between workers
 - Clear ownership of rate-limited items
 
 **Cons**:
+
 - Coordinator becomes bottleneck
 - Doesn't scale well
 - Complex handoff protocol needed
@@ -185,13 +201,16 @@ After cooldown: Coordinator redistributes all _rate_limited_items back to queue
 **Decision**: Too complex, doesn't solve core issue.
 
 ### Alternative 3: Queue Deduplication
+
 **Idea**: Deduplicate items in queue using item_id before processing.
 
 **Pros**:
+
 - Prevents duplicate processing
 - Minimal changes to existing code
 
 **Cons**:
+
 - Queue modifications are expensive (O(n) search)
 - Doesn't solve event state race conditions
 - Band-aid solution, not addressing root cause
@@ -210,11 +229,13 @@ After cooldown: Coordinator redistributes all _rate_limited_items back to queue
 ## Testing Strategy
 
 ### Unit Tests
+
 1. Test rate-limited item storage under concurrent access
 2. Test redistribution logic in isolation
 3. Test coordinator selection (first worker to acquire lock)
 
 ### Integration Tests
+
 1. Single worker rate limit (baseline)
 2. Two workers hitting rate limit simultaneously
 3. Ten workers hitting rate limit simultaneously ✅ (current worst-case test)
@@ -222,6 +243,7 @@ After cooldown: Coordinator redistributes all _rate_limited_items back to queue
 5. Mixed success and rate limit scenarios
 
 ### Stress Tests
+
 1. 100 items, 20 workers, 50% rate limit
 2. Verify no items lost
 3. Verify no items duplicated
@@ -230,6 +252,7 @@ After cooldown: Coordinator redistributes all _rate_limited_items back to queue
 ## Metrics to Track
 
 Add counters to monitor:
+
 - `rate_limited_items_stored`: Items stored during rate limit
 - `rate_limited_items_redistributed`: Items redistributed after cooldown
 - `rate_limit_generations`: Total number of cooldown cycles
@@ -238,6 +261,7 @@ Add counters to monitor:
 ## Rollback Plan
 
 If implementation fails:
+
 1. Revert to previous commit (current generation counter approach)
 2. Keep worst-case tests skipped
 3. Document why approach didn't work in BATCH_LLM_FEEDBACK.md

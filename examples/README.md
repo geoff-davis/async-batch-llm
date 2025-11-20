@@ -24,7 +24,7 @@ Most examples require a Google Gemini API key:
 export GOOGLE_API_KEY="your-api-key-here"  # GEMINI_API_KEY also works
 ```
 
-Get your API key from: https://makersuite.google.com/app/apikey
+Get your API key from: <https://makersuite.google.com/app/apikey>
 
 ### Run Examples
 

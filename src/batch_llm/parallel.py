@@ -159,6 +159,29 @@ class ParallelBatchProcessor(
         else:
             self._proactive_rate_limiter = None
 
+        self._strategies_cleaned_up = False
+
+    async def _cleanup_strategies(self) -> None:
+        """Cleanup all prepared strategies exactly once."""
+        if self._strategies_cleaned_up:
+            return
+
+        # Iterate over copy of set since cleanup may modify it
+        for strategy in list(self._prepared_strategies):
+            if hasattr(strategy, "cleanup") and callable(strategy.cleanup):
+                try:
+                    logger.debug(
+                        f"Cleaning up strategy {strategy.__class__.__name__} (id={id(strategy)})"
+                    )
+                    await strategy.cleanup()
+                except Exception as e:
+                    # Log but don't fail the batch - cleanup failures shouldn't invalidate work
+                    logger.warning(
+                        f"⚠️  Strategy cleanup failed for {strategy.__class__.__name__}: {e}"
+                    )
+
+        self._strategies_cleaned_up = True
+
     async def _ensure_strategy_prepared(self, strategy: LLMCallStrategy[TOutput]) -> None:
         """
         Ensure strategy is prepared exactly once, even with concurrent calls.
@@ -186,6 +209,7 @@ class ParallelBatchProcessor(
             logger.debug(f"Preparing strategy {strategy.__class__.__name__} (id={strategy_id})")
             await strategy.prepare()
             self._prepared_strategies.add(strategy)
+            self._strategies_cleaned_up = False
             logger.debug(
                 f"Strategy {strategy.__class__.__name__} prepared successfully (id={strategy_id})"
             )
@@ -204,20 +228,7 @@ class ParallelBatchProcessor(
         Returns:
             False to indicate exceptions should not be suppressed
         """
-        # Clean up all prepared strategies (v0.4.0)
-        # Iterate over copy of set since cleanup may modify it
-        for strategy in list(self._prepared_strategies):
-            if hasattr(strategy, "cleanup") and callable(strategy.cleanup):
-                try:
-                    logger.debug(
-                        f"Cleaning up strategy {strategy.__class__.__name__} (id={id(strategy)})"
-                    )
-                    await strategy.cleanup()
-                except Exception as e:
-                    # Log but don't fail the batch - cleanup failures shouldn't invalidate work
-                    logger.warning(
-                        f"⚠️  Strategy cleanup failed for {strategy.__class__.__name__}: {e}"
-                    )
+        await self._cleanup_strategies()
 
         # Call parent cleanup to handle workers and queue
         await self.cleanup()
@@ -239,6 +250,42 @@ class ParallelBatchProcessor(
         """
         async with self._stats_lock:
             return self._stats.copy()
+
+    async def _on_batch_started(self) -> None:
+        """Emit batch start event with initial stats snapshot."""
+        async with self._stats_lock:
+            stats_snapshot = self._stats.copy()
+
+        await self._emit_event(
+            ProcessingEvent.BATCH_STARTED,
+            {
+                "total": stats_snapshot["total"],
+                "max_workers": self.max_workers,
+                "start_time": stats_snapshot["start_time"],
+            },
+        )
+
+    async def _on_batch_completed(self) -> None:
+        """Emit batch completion event with final stats snapshot."""
+        async with self._stats_lock:
+            stats_snapshot = self._stats.copy()
+
+        duration = 0.0
+        if stats_snapshot.get("start_time"):
+            duration = time.time() - float(stats_snapshot["start_time"])
+
+        await self._emit_event(
+            ProcessingEvent.BATCH_COMPLETED,
+            {
+                "processed": stats_snapshot["processed"],
+                "succeeded": stats_snapshot["succeeded"],
+                "failed": stats_snapshot["failed"],
+                "total": stats_snapshot["total"],
+                "total_tokens": stats_snapshot["total_tokens"],
+                "cached_input_tokens": stats_snapshot.get("cached_input_tokens", 0),
+                "duration": duration,
+            },
+        )
 
     async def _emit_event(self, event: ProcessingEvent, data: dict | None = None) -> None:
         """Emit event to all observers."""
@@ -679,6 +726,7 @@ class ParallelBatchProcessor(
             "input_tokens": 0,
             "output_tokens": 0,
             "total_tokens": 0,
+            "cached_input_tokens": 0,
         }
 
     async def _process_item_with_retries(
@@ -686,7 +734,12 @@ class ParallelBatchProcessor(
     ) -> WorkItemResult[TOutput, TContext]:
         """Wrapper that applies retry logic and strategy lifecycle."""
         # Track cumulative token usage across all failed attempts
-        cumulative_failed_tokens = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        cumulative_failed_tokens = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cached_input_tokens": 0,
+        }
 
         # Get the strategy
         strategy = self._get_strategy(work_item)
@@ -728,6 +781,9 @@ class ParallelBatchProcessor(
                     )
                     cumulative_failed_tokens["total_tokens"] += attempt_tokens.get(
                         "total_tokens", 0
+                    )
+                    cumulative_failed_tokens["cached_input_tokens"] += attempt_tokens.get(
+                        "cached_input_tokens", 0
                     )
 
                 if not self._should_retry_error(e):
@@ -899,12 +955,21 @@ class ParallelBatchProcessor(
                     f"Consider increasing config.timeout_per_item if this error persists."
                 )
                 # Wrap in FrameworkTimeoutError to differentiate from API timeouts
-                raise FrameworkTimeoutError(
+                framework_timeout = FrameworkTimeoutError(
                     f"Framework timeout after {elapsed:.1f}s (limit: {self.config.timeout_per_item}s)",
                     item_id=work_item.item_id,
                     elapsed=elapsed,
                     timeout_limit=self.config.timeout_per_item,
-                ) from timeout_exc
+                )
+                # Preserve token usage if the underlying exception had it (including cached tokens)
+                if (
+                    hasattr(timeout_exc, "__dict__")
+                    and "_failed_token_usage" in timeout_exc.__dict__
+                ):
+                    framework_timeout.__dict__["_failed_token_usage"] = timeout_exc.__dict__[
+                        "_failed_token_usage"
+                    ]
+                raise framework_timeout from timeout_exc
 
             llm_duration = time.time() - llm_start_time
             logger.debug(
@@ -1227,5 +1292,5 @@ class ParallelBatchProcessor(
 
     async def shutdown(self):
         """Clean up resources: flush observers and cancel pending tasks."""
-        # Notify observers of shutdown
-        await self._emit_event(ProcessingEvent.BATCH_COMPLETED, {})
+        await self._cleanup_strategies()
+        await self.cleanup()

@@ -413,6 +413,14 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         await self._queue.put(work_item)
         self._stats.total += 1
 
+    async def _on_batch_started(self) -> None:
+        """Hook for subclasses to run logic when a batch starts."""
+        return
+
+    async def _on_batch_completed(self) -> None:
+        """Hook for subclasses to run logic after a batch completes."""
+        return
+
     async def process_all(self) -> BatchResult[TOutput, TContext]:
         """
         Process all work items in the queue.
@@ -431,6 +439,8 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         # Record start time for rate calculation
         self._stats.start_time = time.time()
         self._is_processing = True
+
+        await self._on_batch_started()
 
         # Start workers and store them for cleanup
         self._workers = [
@@ -473,6 +483,8 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 logger.error("⚠️  Some workers could not be cancelled")
 
         self._is_processing = False
+
+        await self._on_batch_completed()
 
         # Snapshot results before returning to prevent contamination if processor is reused
         # Create a copy so the returned BatchResult is independent of future runs

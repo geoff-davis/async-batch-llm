@@ -11,6 +11,7 @@
 The batch-llm package demonstrates **high code quality** with thoughtful architecture, solid concurrency handling, and good test coverage. The strategy pattern is excellently implemented, and the v0.2.0/v0.3.0 features (shared strategies, RetryState, safety ratings, cache tagging) add significant value.
 
 **Key Strengths:**
+
 - Clean, extensible strategy pattern architecture
 - Comprehensive error handling and intelligent retry logic
 - Solid concurrency safety (proper use of asyncio locks)
@@ -18,6 +19,7 @@ The batch-llm package demonstrates **high code quality** with thoughtful archite
 - Well-documented advanced features with examples
 
 **Main Areas for Improvement:**
+
 - Version synchronization issues
 - Missing tests for advanced v0.2.0/v0.3.0 features
 - Documentation gaps for cost optimization patterns
@@ -33,12 +35,14 @@ The batch-llm package demonstrates **high code quality** with thoughtful archite
 **Files:** `pyproject.toml:7` vs `src/batch_llm/__init__.py:120`
 
 **Problem:**
+
 - `pyproject.toml` declares `version = "0.2.0"`
 - `__init__.py` declares `__version__ = "0.1.0"`
 
 **Impact:** Users get wrong version at runtime, breaks debugging
 
 **Fix:**
+
 ```python
 from importlib.metadata import version
 __version__ = version("batch-llm")
@@ -51,11 +55,13 @@ __version__ = version("batch-llm")
 **Impact:** HIGH - Critical cost-saving feature (70-90%) could break silently
 
 **Problem:** The v0.2.0 shared strategy optimization has no tests verifying:
+
 - `prepare()` called exactly once when strategy shared across 100 items
 - Concurrent workers don't race to call `prepare()` multiple times
 - `cleanup()` still called per item (not per strategy)
 
 **Recommendation:** Add `tests/test_shared_strategy_advanced.py` with tests for:
+
 - Concurrent prepare() calls (stress test with 20 workers, 100 items)
 - Cleanup count verification
 - Strategy instance tracking
@@ -81,6 +87,7 @@ for doc in documents:
 ```
 
 **Fix:** Add prominent warnings in:
+
 1. `GeminiCachedStrategy` docstring
 2. README with cost comparison
 3. Strategy protocol documentation
@@ -96,6 +103,7 @@ for doc in documents:
 **Impact:** Masks type safety issues, makes refactoring riskier
 
 **Example fixes:**
+
 ```python
 # Before
 token_usage: TokenUsage = field(default_factory=dict)  # type: ignore
@@ -126,6 +134,7 @@ token_usage: TokenUsage = field(default_factory=_empty_token_usage)
 **Problem:** If `prepare()` fails after acquiring resources, cleanup not called
 
 **Fix:**
+
 ```python
 try:
     await self._ensure_strategy_prepared(strategy)
@@ -146,6 +155,7 @@ except Exception as e:
 **Impact:** HIGH - Common user confusion
 
 **Recommendation:** Add decision tree to README:
+
 ```markdown
 ## Choosing max_workers
 
@@ -166,6 +176,7 @@ except Exception as e:
 **Risk:** Silent cache matching failures
 
 **Tests needed:**
+
 - Matching tags → cache reused
 - Different tags → new cache created
 - Missing tags → default behavior
@@ -241,6 +252,7 @@ except Exception as e:
 ### 15. Add Missing Docstrings
 
 **Examples:**
+
 - `MetricsObserver.reset()`
 - `ProcessorConfig.validate()`
 - `RetryState.__contains__()`
@@ -250,6 +262,7 @@ except Exception as e:
 ### 16. Create Migration Guides
 
 **Missing:**
+
 - `docs/MIGRATION_V0_2.md` (v0.1 → v0.2)
 - v0.2 introduced shared strategies and cache lifecycle changes
 
@@ -354,6 +367,7 @@ except Exception as e:
 **File:** `base.py:145-157`
 
 **Missing:**
+
 - Validate prompt length (prevent exceeding model limits)
 - Validate strategy is not None
 - Warn on circular references in context
@@ -373,59 +387,69 @@ except Exception as e:
 ## Prioritized Action Plan
 
 ### Week 1 (Critical)
+
 1. ✅ Fix version mismatch
 2. ✅ Add shared strategy lifecycle tests
 3. ✅ Document shared strategy cost optimization
 
 ### Sprint 1 (High Impact)
-4. ✅ Reduce type ignores to <10
-5. ✅ Fix line length violations
-6. ✅ Add resource cleanup for failed prepare()
-7. ✅ Document worker count selection
-8. ✅ Add cache tag tests
+
+1. ✅ Reduce type ignores to <10
+2. ✅ Fix line length violations
+3. ✅ Add resource cleanup for failed prepare()
+4. ✅ Document worker count selection
+5. ✅ Add cache tag tests
 
 ### Sprint 2 (Performance & Polish)
-9. ✅ Optimize slow-start calculations
-10. ✅ Improve strategy lifecycle docs
-11. ✅ Add validation for cache parameters
-12. ✅ Add debug logging
+
+1. ✅ Optimize slow-start calculations
+2. ✅ Improve strategy lifecycle docs
+3. ✅ Add validation for cache parameters
+4. ✅ Add debug logging
 
 ### Backlog (Future)
-13. ✅ Integration tests
-14. ✅ Performance benchmarks
-15. ✅ Progress bar integration
-16. ✅ Migration guides
+
+1. ✅ Integration tests
+2. ✅ Performance benchmarks
+3. ✅ Progress bar integration
+4. ✅ Migration guides
 
 ---
 
 ## Overall Assessment
 
 ### Code Quality: 8.5/10
+
 - Well-structured with thoughtful error handling
 - Good concurrency patterns
 - Clean separation of concerns
 
 ### Architecture: 9/10
+
 - Excellent strategy pattern
 - Extensible with protocols
 - Clean abstractions
 
 ### Testing: 7.5/10
+
 - Good coverage of basics (76%)
 - Missing tests for advanced features
 - No integration tests
 
 ### Documentation: 7/10
+
 - Good examples
 - Missing key decision guides
 - Cost optimization not prominent enough
 
 ### Performance: 8/10
+
 - Generally efficient
 - A few optimization opportunities
 - No major bottlenecks
 
 ### User Experience: 7/10
+
 - Powerful but learning curve
 - Missing convenience features
 - Could be more discoverable
@@ -437,6 +461,7 @@ except Exception as e:
 **This is a production-ready package with excellent foundations.** The issues identified are mostly polish, documentation improvements, and test coverage gaps rather than fundamental problems. The architecture is sound and demonstrates attention to edge cases and concurrency correctness.
 
 **Recommended next steps:**
+
 1. Fix critical version mismatch
 2. Add tests for shared strategy lifecycle (v0.2.0 feature)
 3. Prominently document cost optimization patterns
