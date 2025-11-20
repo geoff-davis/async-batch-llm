@@ -138,6 +138,7 @@ cython_debug/
 # IDEs
 .vscode/
 .idea/
+.claude/settings.local.json
 *.swp
 *.swo
 *~
