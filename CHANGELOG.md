@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`TokenTrackingError` export** - The `TokenTrackingError` class is now exported from the main
+  `batch_llm` package for users who want to catch it explicitly when handling failed LLM calls
+  with token usage tracking.
+
+### Changed
+
+- **Deprecation warnings** - Added `DeprecationWarning` for legacy constructor parameters on
+  `ParallelBatchProcessor`:
+  - `max_workers` → Use `ProcessorConfig(max_workers=...)`
+  - `timeout_per_item` → Use `ProcessorConfig(timeout_per_item=...)`
+  - `rate_limit_cooldown` → Use `ProcessorConfig(rate_limit=RateLimitConfig(cooldown_seconds=...))`
+- **Module docstring** - Updated to accurately describe the v0.1+ strategy pattern API instead
+  of the removed v0.0.x integration modes.
+- **Python classifiers** - Added Python 3.13 and 3.14 to pyproject.toml classifiers (tests already
+  run on these versions in CI).
+
+### Fixed
+
+- **Code duplication** - Deduplicated the `TokenTrackingError` class which was defined inline
+  3 times in `llm_strategies.py`. Now defined once in `strategies/errors.py`.
+
 ## [0.4.0] - 2025-01-14
 
 Major release adding strategy lifecycle management with context managers.

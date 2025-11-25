@@ -80,6 +80,31 @@ class ParallelBatchProcessor(
             observers: List of observers for events
             progress_callback: Optional callback(completed, total, current_item_id) for progress updates
         """
+        import warnings
+
+        # Emit deprecation warnings for legacy parameters
+        if max_workers is not None:
+            warnings.warn(
+                "The 'max_workers' parameter is deprecated. "
+                "Use ProcessorConfig(max_workers=...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if timeout_per_item is not None:
+            warnings.warn(
+                "The 'timeout_per_item' parameter is deprecated. "
+                "Use ProcessorConfig(timeout_per_item=...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if rate_limit_cooldown is not None:
+            warnings.warn(
+                "The 'rate_limit_cooldown' parameter is deprecated. "
+                "Use ProcessorConfig(rate_limit=RateLimitConfig(cooldown_seconds=...)) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         # Handle backward compatibility
         if config is None:
             from .core import RateLimitConfig

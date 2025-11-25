@@ -8,6 +8,41 @@ RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota", "rate limit")
 DEFAULT_RATE_LIMIT_WAIT = 300.0  # 5 minutes
 
 
+class TokenTrackingError(Exception):
+    """
+    Wrapper exception that preserves token usage from failed LLM calls.
+
+    When an LLM call fails (e.g., validation error), we still want to track
+    the tokens that were consumed. This wrapper attaches token usage to
+    exceptions that don't natively support it (e.g., built-in exceptions
+    without __dict__).
+
+    Attributes:
+        token_usage: Dictionary with input_tokens, output_tokens, total_tokens,
+            and optionally cached_input_tokens.
+
+    Example:
+        >>> try:
+        ...     # LLM call that fails validation
+        ...     output = parse_response(response)
+        ... except Exception as e:
+        ...     wrapped = TokenTrackingError(str(e), token_usage=tokens)
+        ...     wrapped.__cause__ = e
+        ...     raise wrapped from e
+    """
+
+    def __init__(self, message: str, *, token_usage: dict[str, int] | None = None):
+        """
+        Initialize TokenTrackingError.
+
+        Args:
+            message: Human-readable error message
+            token_usage: Token usage dict to preserve (input_tokens, output_tokens, etc.)
+        """
+        super().__init__(message)
+        self._failed_token_usage = token_usage or {}
+
+
 class FrameworkTimeoutError(TimeoutError):
     """
     Timeout enforced by the batch-llm framework (asyncio.wait_for).

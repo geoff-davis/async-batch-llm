@@ -1,10 +1,11 @@
 """Batch LLM processing utilities for handling bulk LLM requests.
 
 This module provides a flexible framework for processing multiple LLM requests
-efficiently, with support for PydanticAI agents, direct API calls, and custom factories.
+efficiently using a strategy pattern for provider-agnostic LLM integration.
 
 Key features:
-- Three integration modes: PydanticAI agents, direct API calls, agent factories
+- Strategy pattern for any LLM provider (OpenAI, Anthropic, Google, LangChain, custom)
+- Built-in strategies: PydanticAIStrategy, GeminiStrategy, GeminiCachedStrategy
 - Provider-agnostic error classification
 - Pluggable rate limit strategies
 - Middleware pipeline for extensibility
@@ -12,18 +13,25 @@ Key features:
 - Configuration-based setup
 
 Example:
-    >>> from batch_llm import ParallelBatchProcessor, ProcessorConfig
-    >>> from batch_llm.classifiers import GeminiErrorClassifier
-    >>> from batch_llm.observers import MetricsObserver
-    >>>
-    >>> config = ProcessorConfig(max_workers=5, timeout_per_item=60.0)
-    >>> metrics = MetricsObserver()
-    >>>
-    >>> processor = ParallelBatchProcessor(
-    ...     config=config,
-    ...     error_classifier=GeminiErrorClassifier(),
-    ...     observers=[metrics],
+    >>> from batch_llm import (
+    ...     ParallelBatchProcessor,
+    ...     ProcessorConfig,
+    ...     LLMWorkItem,
+    ...     PydanticAIStrategy,
     ... )
+    >>> from pydantic_ai import Agent
+    >>>
+    >>> agent = Agent("openai:gpt-4o-mini", result_type=MyOutput)
+    >>> strategy = PydanticAIStrategy(agent=agent)
+    >>> config = ProcessorConfig(max_workers=5, timeout_per_item=60.0)
+    >>>
+    >>> async with ParallelBatchProcessor(config=config) as processor:
+    ...     await processor.add_work(LLMWorkItem(
+    ...         item_id="item_1",
+    ...         strategy=strategy,
+    ...         prompt="Process this",
+    ...     ))
+    ...     result = await processor.process_all()
 """
 
 # Core classes
@@ -72,6 +80,7 @@ from .strategies import (
     FixedDelayStrategy,
     FrameworkTimeoutError,
     RateLimitStrategy,
+    TokenTrackingError,
 )
 
 __all__ = [
@@ -100,6 +109,7 @@ __all__ = [
     "ErrorInfo",
     "DefaultErrorClassifier",
     "FrameworkTimeoutError",
+    "TokenTrackingError",
     "RateLimitStrategy",
     "ExponentialBackoffStrategy",
     "FixedDelayStrategy",

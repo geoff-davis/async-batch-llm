@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from .base import RetryState, TokenUsage
+from .strategies.errors import TokenTrackingError
 
 # Conditional imports for optional dependencies
 if TYPE_CHECKING:
@@ -333,17 +334,10 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
             output = self.response_parser(response)
         except Exception as e:
             # Attach token usage to exception so framework can track it
-            # Store in __dict__ to avoid AttributeError on immutable exceptions
             if not hasattr(e, "__dict__"):
-                # For built-in exceptions without __dict__, wrap in custom exception
-                class TokenTrackingError(Exception):
-                    """Wrapper that adds token tracking to exception."""
-
-                    pass
-
-                wrapped = TokenTrackingError(str(e))
+                # For built-in exceptions without __dict__, wrap in TokenTrackingError
+                wrapped = TokenTrackingError(str(e), token_usage=tokens)
                 wrapped.__cause__ = e
-                wrapped.__dict__["_failed_token_usage"] = tokens
                 raise wrapped from e
             else:
                 e.__dict__["_failed_token_usage"] = tokens
@@ -793,17 +787,10 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
             output = self.response_parser(response)
         except Exception as e:
             # Attach token usage to exception so framework can track it
-            # Store in __dict__ to avoid AttributeError on immutable exceptions
             if not hasattr(e, "__dict__"):
-                # For built-in exceptions without __dict__, wrap in custom exception
-                class TokenTrackingError(Exception):
-                    """Wrapper that adds token tracking to exception."""
-
-                    pass
-
-                wrapped = TokenTrackingError(str(e))
+                # For built-in exceptions without __dict__, wrap in TokenTrackingError
+                wrapped = TokenTrackingError(str(e), token_usage=tokens)
                 wrapped.__cause__ = e
-                wrapped.__dict__["_failed_token_usage"] = tokens
                 raise wrapped from e
             else:
                 e.__dict__["_failed_token_usage"] = tokens
@@ -937,17 +924,10 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
             output = result.output
         except Exception as e:
             # Attach token usage to exception so framework can track it
-            # Store in __dict__ to avoid AttributeError on immutable exceptions
             if not hasattr(e, "__dict__"):
-                # For built-in exceptions without __dict__, wrap in custom exception
-                class TokenTrackingError(Exception):
-                    """Wrapper that adds token tracking to exception."""
-
-                    pass
-
-                wrapped = TokenTrackingError(str(e))
+                # For built-in exceptions without __dict__, wrap in TokenTrackingError
+                wrapped = TokenTrackingError(str(e), token_usage=tokens)
                 wrapped.__cause__ = e
-                wrapped.__dict__["_failed_token_usage"] = tokens
                 raise wrapped from e
             else:
                 e.__dict__["_failed_token_usage"] = tokens
