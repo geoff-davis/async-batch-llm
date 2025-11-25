@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main, develop ]
 
+# Permissions needed for coverage action to push to data branch and comment on PRs
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -30,9 +35,9 @@ jobs:
       run: |
         uv sync --all-extras
 
-    - name: Run tests
+    - name: Run tests with coverage
       run: |
-        uv run pytest tests/ -v --tb=short
+        uv run pytest tests/ -v --tb=short --cov --cov-report=term-missing --cov-report=xml
 
     - name: Run linter
       run: |
@@ -42,45 +47,11 @@ jobs:
       run: |
         uv run mypy src/batch_llm/ --ignore-missing-imports
 
-  coverage:
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      contents: write
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Install uv
-      uses: astral-sh/setup-uv@v4
-      with:
-        enable-cache: true
-
-    - name: Set up Python
-      run: uv python install 3.12
-
-    - name: Install dependencies
-      run: |
-        uv sync --all-extras
-
-    - name: Run tests with coverage
-      run: |
-        uv run pytest tests/ --cov --cov-report=xml --cov-report=term
-
     - name: Coverage comment
-      id: coverage_comment
       uses: py-cov-action/python-coverage-comment-action@v3
+      if: matrix.python-version == '3.12'
       with:
-        GITHUB_TOKEN: ${{ github.token }}
-        MINIMUM_GREEN: 80
-        MINIMUM_ORANGE: 60
-
-    - name: Store coverage comment
-      uses: actions/upload-artifact@v4
-      if: steps.coverage_comment.outputs.COMMENT_FILE_WRITTEN == 'true'
-      with:
-        name: python-coverage-comment-action
-        path: python-coverage-comment-action.txt
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   security:
     runs-on: ubuntu-latest
