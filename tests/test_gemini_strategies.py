@@ -12,6 +12,7 @@ from batch_llm.llm_strategies import (
     GeminiResponse,
     GeminiStrategy,
     LLMCallStrategy,
+    _extract_safety_ratings,
 )
 
 
@@ -267,26 +268,15 @@ class TestGeminiStrategy:
 
         assert exc_info.value.__dict__["_failed_token_usage"]["total_tokens"] == 30
 
-    @pytest.mark.asyncio
-    async def test_extract_safety_ratings_no_candidates(self):
+    def test_extract_safety_ratings_no_candidates(self):
         """Test safety rating extraction with no candidates."""
         mock_response = MagicMock()
         mock_response.candidates = []
 
-        mock_client = self._create_mock_client(mock_response)
-
-        strategy = GeminiStrategy(
-            model="gemini-test",
-            client=mock_client,
-            response_parser=lambda r: TestOutput(text="parsed"),
-            include_metadata=True,
-        )
-
-        ratings = strategy._extract_safety_ratings(mock_response)
+        ratings = _extract_safety_ratings(mock_response)
         assert ratings == {}
 
-    @pytest.mark.asyncio
-    async def test_extract_safety_ratings_exception(self):
+    def test_extract_safety_ratings_exception(self):
         """Test safety rating extraction handles exceptions gracefully."""
         mock_response = MagicMock()
         # Make candidates access raise an exception
@@ -294,15 +284,7 @@ class TestGeminiStrategy:
             lambda self: (_ for _ in ()).throw(RuntimeError())
         )
 
-        mock_client = self._create_mock_client(mock_response)
-
-        strategy = GeminiStrategy(
-            model="gemini-test",
-            client=mock_client,
-            response_parser=lambda r: TestOutput(text="parsed"),
-        )
-
-        ratings = strategy._extract_safety_ratings(mock_response)
+        ratings = _extract_safety_ratings(mock_response)
         assert ratings == {}
 
     @pytest.mark.asyncio

@@ -39,6 +39,34 @@ logger = logging.getLogger(__name__)
 TOutput = TypeVar("TOutput")
 
 
+def _extract_safety_ratings(response: Any) -> dict[str, str]:
+    """
+    Extract safety ratings from Gemini response.
+
+    This is a module-level helper used by both GeminiStrategy and GeminiCachedStrategy.
+
+    Args:
+        response: Gemini API response object
+
+    Returns:
+        Dict mapping category to probability (e.g., {"HARM_CATEGORY_HATE_SPEECH": "LOW"})
+    """
+    ratings: dict[str, str] = {}
+    try:
+        if hasattr(response, "candidates") and response.candidates:
+            candidate = response.candidates[0]
+            if hasattr(candidate, "safety_ratings") and candidate.safety_ratings:
+                for rating in candidate.safety_ratings:
+                    category = str(rating.category) if hasattr(rating, "category") else "UNKNOWN"
+                    probability = (
+                        str(rating.probability) if hasattr(rating, "probability") else "UNKNOWN"
+                    )
+                    ratings[category] = probability
+    except Exception as e:
+        logger.warning(f"Failed to extract safety ratings: {e}")
+    return ratings
+
+
 @dataclass
 class GeminiResponse(Generic[TOutput]):
     """
@@ -259,34 +287,6 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
         self.config = config
         self.include_metadata = include_metadata
 
-    def _extract_safety_ratings(self, response: Any) -> dict[str, str]:
-        """
-        Extract safety ratings from Gemini response (v0.3.0).
-
-        Args:
-            response: Gemini API response object
-
-        Returns:
-            Dict mapping category to probability (e.g., {"HARM_CATEGORY_HATE_SPEECH": "LOW"})
-        """
-        ratings = {}
-        try:
-            if hasattr(response, "candidates") and response.candidates:
-                candidate = response.candidates[0]
-                if hasattr(candidate, "safety_ratings") and candidate.safety_ratings:
-                    for rating in candidate.safety_ratings:
-                        # Extract category and probability
-                        category = (
-                            str(rating.category) if hasattr(rating, "category") else "UNKNOWN"
-                        )
-                        probability = (
-                            str(rating.probability) if hasattr(rating, "probability") else "UNKNOWN"
-                        )
-                        ratings[category] = probability
-        except Exception as e:
-            logger.warning(f"Failed to extract safety ratings: {e}")
-        return ratings
-
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
     ) -> tuple[TOutput | GeminiResponse[TOutput], TokenUsage]:
@@ -345,7 +345,7 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
 
         # Return with metadata if requested (v0.3.0)
         if self.include_metadata:
-            safety_ratings = self._extract_safety_ratings(response)
+            safety_ratings = _extract_safety_ratings(response)
             finish_reason = None
             try:
                 if hasattr(response, "candidates") and response.candidates:
@@ -484,34 +484,6 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         # Detect API version (v0.2.0)
         self._api_version = self._detect_google_genai_version()
         logger.debug(f"Detected google-genai API version: {self._api_version}")
-
-    def _extract_safety_ratings(self, response: Any) -> dict[str, str]:
-        """
-        Extract safety ratings from Gemini response (v0.3.0).
-
-        Args:
-            response: Gemini API response object
-
-        Returns:
-            Dict mapping category to probability (e.g., {"HARM_CATEGORY_HATE_SPEECH": "LOW"})
-        """
-        ratings = {}
-        try:
-            if hasattr(response, "candidates") and response.candidates:
-                candidate = response.candidates[0]
-                if hasattr(candidate, "safety_ratings") and candidate.safety_ratings:
-                    for rating in candidate.safety_ratings:
-                        # Extract category and probability
-                        category = (
-                            str(rating.category) if hasattr(rating, "category") else "UNKNOWN"
-                        )
-                        probability = (
-                            str(rating.probability) if hasattr(rating, "probability") else "UNKNOWN"
-                        )
-                        ratings[category] = probability
-        except Exception as e:
-            logger.warning(f"Failed to extract safety ratings: {e}")
-        return ratings
 
     @staticmethod
     def _detect_google_genai_version() -> str:
@@ -798,7 +770,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 
         # Return with metadata if requested (v0.3.0)
         if self.include_metadata:
-            safety_ratings = self._extract_safety_ratings(response)
+            safety_ratings = _extract_safety_ratings(response)
             finish_reason = None
             try:
                 if hasattr(response, "candidates") and response.candidates:
