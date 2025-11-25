@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2025-11-25
+
+Release focused on developer experience improvements and code quality.
+
 ### Added
 
 - **`TokenTrackingError` export** - The `TokenTrackingError` class is now exported from the main
