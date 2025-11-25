@@ -72,6 +72,7 @@ from .strategies import (
     FixedDelayStrategy,
     FrameworkTimeoutError,
     RateLimitStrategy,
+    TokenTrackingError,
 )
 
 __all__ = [
@@ -100,6 +101,7 @@ __all__ = [
     "ErrorInfo",
     "DefaultErrorClassifier",
     "FrameworkTimeoutError",
+    "TokenTrackingError",
     "RateLimitStrategy",
     "ExponentialBackoffStrategy",
     "FixedDelayStrategy",

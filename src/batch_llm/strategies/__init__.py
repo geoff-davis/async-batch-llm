@@ -1,6 +1,12 @@
 """Processing strategies."""
 
-from .errors import DefaultErrorClassifier, ErrorClassifier, ErrorInfo, FrameworkTimeoutError
+from .errors import (
+    DefaultErrorClassifier,
+    ErrorClassifier,
+    ErrorInfo,
+    FrameworkTimeoutError,
+    TokenTrackingError,
+)
 from .rate_limit import (
     ExponentialBackoffStrategy,
     FixedDelayStrategy,
@@ -12,6 +18,7 @@ __all__ = [
     "ErrorInfo",
     "DefaultErrorClassifier",
     "FrameworkTimeoutError",
+    "TokenTrackingError",
     "RateLimitStrategy",
     "ExponentialBackoffStrategy",
     "FixedDelayStrategy",
