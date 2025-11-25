@@ -32,7 +32,31 @@ Example:
     ...         prompt="Process this",
     ...     ))
     ...     result = await processor.process_all()
+
+Type Aliases:
+    For convenience, type aliases are provided to reduce verbosity:
+
+    - ``SimpleBatchProcessor[T]``: Processor with string input, output type T, no context
+      Equivalent to ``ParallelBatchProcessor[str, T, None]``
+
+    - ``SimpleWorkItem[T]``: Work item with string input, output type T, no context
+      Equivalent to ``LLMWorkItem[str, T, None]``
+
+    - ``SimpleResult[T]``: Result with output type T, no context
+      Equivalent to ``WorkItemResult[T, None]``
+
+    Example using type aliases:
+        >>> from batch_llm import SimpleBatchProcessor, SimpleWorkItem
+        >>>
+        >>> async with SimpleBatchProcessor[MyOutput](config=config) as processor:
+        ...     await processor.add_work(SimpleWorkItem[MyOutput](
+        ...         item_id="item_1",
+        ...         strategy=strategy,
+        ...         prompt="Process this",
+        ...     ))
 """
+
+from typing import TypeVar
 
 # Core classes
 from .base import (
@@ -83,6 +107,39 @@ from .strategies import (
     TokenTrackingError,
 )
 
+# Type variable for output type in simplified aliases
+_T = TypeVar("_T")
+
+# Type aliases for common use cases
+# These reduce verbosity for the most common pattern: string input, typed output, no context
+SimpleBatchProcessor = ParallelBatchProcessor[str, _T, None]
+"""Type alias for ParallelBatchProcessor[str, T, None].
+
+Use when you have string prompts, a typed output, and no context.
+
+Example:
+    async with SimpleBatchProcessor[MyOutput](config=config) as processor:
+        ...
+"""
+
+SimpleWorkItem = LLMWorkItem[str, _T, None]
+"""Type alias for LLMWorkItem[str, T, None].
+
+Use when creating work items with string prompts, typed output, and no context.
+
+Example:
+    item = SimpleWorkItem[MyOutput](item_id="1", strategy=strategy, prompt="Hello")
+"""
+
+SimpleResult = WorkItemResult[_T, None]
+"""Type alias for WorkItemResult[T, None].
+
+Use when working with results that have no context.
+
+Example:
+    result: SimpleResult[MyOutput] = results[0]
+"""
+
 __all__ = [
     # Core
     "BatchProcessor",
@@ -125,6 +182,10 @@ __all__ = [
     "GeminiErrorClassifier",
     # Processor
     "ParallelBatchProcessor",
+    # Type aliases (convenience)
+    "SimpleBatchProcessor",
+    "SimpleWorkItem",
+    "SimpleResult",
 ]
 
 # Version is read from package metadata (single source of truth in pyproject.toml)
