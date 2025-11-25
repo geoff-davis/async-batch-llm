@@ -66,7 +66,6 @@ from batch_llm import ParallelBatchProcessor, ProcessorConfig
 config = ProcessorConfig(
     max_workers=5,
     timeout_per_item=30.0,
-    max_retries=3
 )
 
 async with ParallelBatchProcessor(config=config) as processor:
