@@ -13,7 +13,7 @@ from batch_llm import (
     PydanticAIStrategy,
     WorkItemResult,
 )
-from batch_llm.core import RetryConfig
+from batch_llm.core import RateLimitConfig, RetryConfig
 from batch_llm.testing import MockAgent
 
 
@@ -421,22 +421,18 @@ async def test_complex_context_types():
 async def test_zero_workers():
     """Test that zero workers is handled (should use at least 1)."""
 
-    # This should either error or auto-correct to 1
-    config = ProcessorConfig(max_workers=0, timeout_per_item=10.0)
-
-    # Should validate and reject
-    with pytest.raises(ValueError):
-        config.validate()
+    # ProcessorConfig auto-validates on construction, so this raises immediately
+    with pytest.raises(ValueError, match="max_workers must be >= 1"):
+        ProcessorConfig(max_workers=0, timeout_per_item=10.0)
 
 
 @pytest.mark.asyncio
 async def test_negative_timeout():
     """Test that negative timeout is rejected."""
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=-1.0)
-
-    with pytest.raises(ValueError):
-        config.validate()
+    # ProcessorConfig auto-validates on construction, so this raises immediately
+    with pytest.raises(ValueError, match="timeout_per_item must be > 0"):
+        ProcessorConfig(max_workers=1, timeout_per_item=-1.0)
 
 
 @pytest.mark.asyncio
@@ -483,19 +479,16 @@ async def test_adding_work_after_processing_started():
 async def test_max_queue_size_config_validation():
     """Test that max_queue_size configuration is properly validated."""
 
-    # Test that negative max_queue_size is rejected
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0, max_queue_size=-1)
-
+    # ProcessorConfig auto-validates on construction, so this raises immediately
     with pytest.raises(ValueError, match="max_queue_size must be >= 0"):
-        config.validate()
+        ProcessorConfig(max_workers=1, timeout_per_item=10.0, max_queue_size=-1)
 
-    # Test that 0 and positive values are accepted
-    config_unlimited = ProcessorConfig(
+    # Test that 0 and positive values are accepted (should not raise)
+    ProcessorConfig(
         max_workers=1,
         timeout_per_item=10.0,
         max_queue_size=0,  # Unlimited
     )
-    config_unlimited.validate()  # Should not raise
 
     config_limited = ProcessorConfig(max_workers=1, timeout_per_item=10.0, max_queue_size=100)
     config_limited.validate()  # Should not raise
@@ -571,3 +564,51 @@ async def test_processor_reuse_not_allowed():
                 prompt="Run 2 Test 0",
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_config_auto_validation():
+    """Test that ProcessorConfig validates automatically on construction."""
+
+    # Test RetryConfig auto-validation
+    with pytest.raises(ValueError, match="max_attempts must be >= 1"):
+        RetryConfig(max_attempts=0)
+
+    with pytest.raises(ValueError, match="initial_wait must be > 0"):
+        RetryConfig(initial_wait=-1.0)
+
+    with pytest.raises(ValueError, match="max_wait must be >= initial_wait"):
+        RetryConfig(initial_wait=10.0, max_wait=5.0)
+
+    with pytest.raises(ValueError, match="exponential_base must be >= 1"):
+        RetryConfig(exponential_base=0.5)
+
+    # Test RateLimitConfig auto-validation
+    with pytest.raises(ValueError, match="cooldown_seconds must be >= 0"):
+        RateLimitConfig(cooldown_seconds=-1.0)
+
+    with pytest.raises(ValueError, match="slow_start_items must be >= 0"):
+        RateLimitConfig(slow_start_items=-1)
+
+    with pytest.raises(
+        ValueError, match="slow_start_initial_delay must be >= slow_start_final_delay"
+    ):
+        RateLimitConfig(slow_start_initial_delay=0.1, slow_start_final_delay=1.0)
+
+    with pytest.raises(ValueError, match="backoff_multiplier must be >= 1.0"):
+        RateLimitConfig(backoff_multiplier=0.5)
+
+    # Test ProcessorConfig auto-validation
+    with pytest.raises(ValueError, match="max_requests_per_minute must be > 0 or None"):
+        ProcessorConfig(max_workers=1, timeout_per_item=10.0, max_requests_per_minute=-1.0)
+
+    with pytest.raises(ValueError, match="progress_interval must be >= 1"):
+        ProcessorConfig(max_workers=1, timeout_per_item=10.0, progress_interval=0)
+
+    with pytest.raises(ValueError, match="progress_callback_timeout must be > 0"):
+        ProcessorConfig(max_workers=1, timeout_per_item=10.0, progress_callback_timeout=-1.0)
+
+    # Test that valid configs can still be created
+    valid_config = ProcessorConfig(max_workers=5, timeout_per_item=60.0)
+    assert valid_config.max_workers == 5
+    assert valid_config.timeout_per_item == 60.0

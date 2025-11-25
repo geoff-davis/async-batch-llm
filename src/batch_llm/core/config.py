@@ -16,6 +16,10 @@ class RetryConfig:
     exponential_base: float = 2.0
     jitter: bool = True
 
+    def __post_init__(self) -> None:
+        """Validate configuration on construction."""
+        self.validate()
+
     def validate(self) -> None:
         """Validate retry configuration."""
         if self.max_attempts < 1:
@@ -49,6 +53,10 @@ class RateLimitConfig:
     slow_start_initial_delay: float = 2.0
     slow_start_final_delay: float = 0.1
     backoff_multiplier: float = 1.5  # Increase cooldown on repeated rate limits
+
+    def __post_init__(self) -> None:
+        """Validate configuration on construction."""
+        self.validate()
 
     def validate(self) -> None:
         """Validate rate limit configuration."""
@@ -100,6 +108,10 @@ class ProcessorConfig:
 
     # Dry-run mode (for testing configuration without making API calls)
     dry_run: bool = False
+
+    def __post_init__(self) -> None:
+        """Validate configuration on construction."""
+        self.validate()
 
     def validate(self) -> None:
         """Validate complete configuration."""
