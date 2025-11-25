@@ -8,6 +8,8 @@ strategy pattern. Built on asyncio for efficient I/O-bound processing.
 [![PyPI version](https://badge.fury.io/py/batch-llm.svg)](https://badge.fury.io/py/batch-llm)
 [![Python 3.10-3.14](https://img.shields.io/badge/python-3.10--3.14-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Tests](https://github.com/geoff-davis/batch-llm/workflows/Tests/badge.svg)](https://github.com/geoff-davis/batch-llm/actions)
+[![Coverage](https://raw.githubusercontent.com/geoff-davis/batch-llm/python-coverage-comment-action-data/badge.svg)](https://github.com/geoff-davis/batch-llm/tree/python-coverage-comment-action-data)
 [![Documentation](https://img.shields.io/badge/docs-mkdocs-blue)](https://geoff-davis.github.io/batch-llm/)
 
 **📚 [Read the Documentation](https://geoff-davis.github.io/batch-llm/)**
