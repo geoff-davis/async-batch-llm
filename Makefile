@@ -13,10 +13,10 @@ test-all:  ## Run all tests including slow ones
 	uv run pytest tests/ -v -m ''
 
 coverage:  ## Run tests with coverage report
-	uv run pytest --cov=batch_llm --cov-report=term-missing --cov-report=html
+	uv run pytest --cov=async_batch_llm --cov-report=term-missing --cov-report=html
 
 coverage-report:  ## Generate and open HTML coverage report
-	uv run pytest --cov=batch_llm --cov-report=html
+	uv run pytest --cov=async_batch_llm --cov-report=html
 	@echo "\n==> Opening coverage report..."
 	open htmlcov/index.html || xdg-open htmlcov/index.html || echo "Please open htmlcov/index.html manually"
 
@@ -30,7 +30,7 @@ format:  ## Format code with ruff
 	uv run ruff format src/ tests/
 
 typecheck:  ## Run mypy type checker
-	uv run mypy src/batch_llm/ --ignore-missing-imports
+	uv run mypy src/async_batch_llm/ --ignore-missing-imports
 
 markdown-lint:  ## Check markdown files
 	npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md"

@@ -10,9 +10,9 @@ This tests the hybrid approach using context managers for prepare/cleanup:
 
 import pytest
 
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-from batch_llm.base import RetryState, TokenUsage
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm.base import RetryState, TokenUsage
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 
 class LifecycleTrackingStrategy(LLMCallStrategy[str]):

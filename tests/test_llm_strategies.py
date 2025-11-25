@@ -6,14 +6,20 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import BaseModel
 
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, RetryConfig, RetryState
-from batch_llm.llm_strategies import (
+from async_batch_llm import (
+    LLMWorkItem,
+    ParallelBatchProcessor,
+    ProcessorConfig,
+    RetryConfig,
+    RetryState,
+)
+from async_batch_llm.llm_strategies import (
     GeminiCachedStrategy,
     GeminiStrategy,
     LLMCallStrategy,
     PydanticAIStrategy,
 )
-from batch_llm.testing import MockAgent
+from async_batch_llm.testing import MockAgent
 
 
 class TestOutput(BaseModel):

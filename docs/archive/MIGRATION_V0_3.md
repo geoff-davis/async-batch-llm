@@ -36,7 +36,7 @@ Enable sophisticated multi-stage retry strategies that maintain state across ret
 **Basic Usage:**
 
 ```python
-from batch_llm import LLMCallStrategy, RetryState
+from async_batch_llm import LLMCallStrategy, RetryState
 
 class MultiStageStrategy(LLMCallStrategy[Output]):
     async def execute(
@@ -62,7 +62,7 @@ class MultiStageStrategy(LLMCallStrategy[Output]):
 Implement cost-optimized retry strategy with different stages:
 
 ```python
-from batch_llm import LLMCallStrategy, RetryState
+from async_batch_llm import LLMCallStrategy, RetryState
 from pydantic import ValidationError
 
 class SmartRetryStrategy(LLMCallStrategy[BookMetadata]):
@@ -152,7 +152,7 @@ class SmartRetryStrategy(LLMCallStrategy[BookMetadata]):
 **RetryState API:**
 
 ```python
-from batch_llm import RetryState
+from async_batch_llm import RetryState
 
 state = RetryState()
 
@@ -194,7 +194,7 @@ strategy = GeminiCachedStrategy(
 **After (v0.3.0):**
 
 ```python
-from batch_llm import GeminiCachedStrategy, GeminiResponse
+from async_batch_llm import GeminiCachedStrategy, GeminiResponse
 
 strategy = GeminiCachedStrategy(
     response_parser=lambda r: parse_json(r.text),
@@ -403,8 +403,8 @@ Helper for custom strategies that need idempotency (though v0.2.0's framework tr
 **Usage:**
 
 ```python
-from batch_llm.mixins import PrepareOnceMixin
-from batch_llm import LLMCallStrategy
+from async_batch_llm.mixins import PrepareOnceMixin
+from async_batch_llm import LLMCallStrategy
 
 class MyCustomStrategy(PrepareOnceMixin, LLMCallStrategy[Output]):
     async def _prepare_once(self) -> None:

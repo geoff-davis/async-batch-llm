@@ -88,7 +88,7 @@ Repository = "https://github.com/geoff-davis/batch-llm"
 Issues = "https://github.com/geoff-davis/batch-llm/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/batch_llm"]
+packages = ["src/async_batch_llm"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -139,7 +139,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["batch_llm"]
+known-first-party = ["async_batch_llm"]
 
 [tool.mypy]
 python_version = "3.10"
@@ -153,11 +153,11 @@ warn_redundant_casts = true
 warn_unused_ignores = false  # Allow unused ignores for optional dependencies
 
 [[tool.mypy.overrides]]
-module = "batch_llm.llm_strategies"
+module = "async_batch_llm.llm_strategies"
 disable_error_code = ["override", "arg-type", "attr-defined", "assignment"]
 
 [[tool.mypy.overrides]]
-module = "batch_llm.base"
+module = "async_batch_llm.base"
 disable_error_code = ["assignment"]  # TypedDict default_factory limitation
 
 [tool.pytest.ini_options]
@@ -178,7 +178,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["src/batch_llm"]
+source = ["src/async_batch_llm"]
 omit = [
     "*/tests/*",
     "*/testing/*",

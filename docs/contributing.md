@@ -142,7 +142,7 @@ To add a new LLM provider strategy:
 Example:
 
 ```python
-from batch_llm import LLMCallStrategy
+from async_batch_llm import LLMCallStrategy
 
 class MyProviderStrategy(LLMCallStrategy[str]):
     async def execute(self, prompt: str, attempt: int, timeout: float):

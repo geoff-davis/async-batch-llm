@@ -32,7 +32,7 @@ In addition to the strategy pattern refactor, v0.1 adds powerful new capabilitie
 
 ```python
 from pydantic import ValidationError
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 class SmartStrategy(LLMCallStrategy[Output]):
     def __init__(self, client):
@@ -110,7 +110,7 @@ class SmartStrategy(LLMCallStrategy[Output]):
 **v0.0.x Code:**
 
 ```python
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
 from pydantic_ai import Agent
 
 # Old way - passing agent directly
@@ -126,7 +126,7 @@ work_item = LLMWorkItem(
 **v0.1 Code:**
 
 ```python
-from batch_llm import (
+from async_batch_llm import (
     LLMWorkItem,
     ParallelBatchProcessor,
     ProcessorConfig,
@@ -158,7 +158,7 @@ work_item = LLMWorkItem(
 **v0.0.x Code:**
 
 ```python
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
 from google import genai
 
 client = genai.Client(api_key=API_KEY)
@@ -174,8 +174,8 @@ work_item = LLMWorkItem(
 **v0.1 Code:**
 
 ```python
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-from batch_llm.llm_strategies import GeminiStrategy  # ✅ New import
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm.llm_strategies import GeminiStrategy  # ✅ New import
 from google import genai
 
 client = genai.Client(api_key=API_KEY)
@@ -213,7 +213,7 @@ work_item = LLMWorkItem(
 **v0.0.x Code:**
 
 ```python
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
 from google import genai
 
 client = genai.Client(api_key=API_KEY)
@@ -229,8 +229,8 @@ work_item = LLMWorkItem(
 **v0.1 Code:**
 
 ```python
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-from batch_llm.llm_strategies import GeminiCachedStrategy  # ✅ New import
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm.llm_strategies import GeminiCachedStrategy  # ✅ New import
 from google import genai
 
 client = genai.Client(api_key=API_KEY)
@@ -280,7 +280,7 @@ Here's a complete example showing before and after:
 
 ```python
 import asyncio
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
@@ -319,7 +319,7 @@ if __name__ == "__main__":
 
 ```python
 import asyncio
-from batch_llm import (
+from async_batch_llm import (
     LLMWorkItem,
     ParallelBatchProcessor,
     ProcessorConfig,
@@ -377,7 +377,7 @@ One of the biggest benefits of v0.1 is the ability to create custom strategies f
 ### Example: OpenAI Custom Strategy
 
 ```python
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm.llm_strategies import LLMCallStrategy
 from openai import AsyncOpenAI
 
 class OpenAIStrategy(LLMCallStrategy[str]):

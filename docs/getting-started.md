@@ -31,7 +31,7 @@ batch-llm uses a strategy pattern to support any LLM provider. A strategy encaps
 - How to manage resources (e.g., caches)
 
 ```python
-from batch_llm import LLMCallStrategy
+from async_batch_llm import LLMCallStrategy
 
 class MyCustomStrategy(LLMCallStrategy[str]):
     async def execute(self, prompt: str, attempt: int, timeout: float):
@@ -46,7 +46,7 @@ class MyCustomStrategy(LLMCallStrategy[str]):
 Each task is represented by an `LLMWorkItem`:
 
 ```python
-from batch_llm import LLMWorkItem
+from async_batch_llm import LLMWorkItem
 
 work_item = LLMWorkItem(
     item_id="unique-id",
@@ -61,7 +61,7 @@ work_item = LLMWorkItem(
 The `ParallelBatchProcessor` manages parallel execution:
 
 ```python
-from batch_llm import ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm import ParallelBatchProcessor, ProcessorConfig
 
 config = ProcessorConfig(
     max_workers=5,
@@ -80,7 +80,7 @@ async with ParallelBatchProcessor(config=config) as processor:
 For structured output with validation:
 
 ```python
-from batch_llm import PydanticAIStrategy
+from async_batch_llm import PydanticAIStrategy
 from pydantic_ai import Agent
 from pydantic import BaseModel
 
@@ -97,7 +97,7 @@ strategy = PydanticAIStrategy(agent=agent)
 Direct Gemini API calls:
 
 ```python
-from batch_llm.llm_strategies.gemini import GeminiStrategy
+from async_batch_llm.llm_strategies.gemini import GeminiStrategy
 from google import genai
 
 client = genai.Client(api_key="your-key")
@@ -113,7 +113,7 @@ strategy = GeminiStrategy(
 With context caching for repeated prompts:
 
 ```python
-from batch_llm.llm_strategies.gemini import GeminiCachedStrategy
+from async_batch_llm.llm_strategies.gemini import GeminiCachedStrategy
 
 strategy = GeminiCachedStrategy(
     client=client,

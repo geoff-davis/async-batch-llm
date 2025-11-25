@@ -5,16 +5,16 @@ from typing import Annotated
 import pytest
 from pydantic import BaseModel, Field, ValidationError
 
-from batch_llm import (
+from async_batch_llm import (
     LLMWorkItem,
     ParallelBatchProcessor,
     ProcessorConfig,
     PydanticAIStrategy,
 )
-from batch_llm.classifiers import GeminiErrorClassifier
-from batch_llm.core import RetryConfig
-from batch_llm.strategies import DefaultErrorClassifier, ErrorInfo
-from batch_llm.testing import MockAgent
+from async_batch_llm.classifiers import GeminiErrorClassifier
+from async_batch_llm.core import RetryConfig
+from async_batch_llm.strategies import DefaultErrorClassifier, ErrorInfo
+from async_batch_llm.testing import MockAgent
 
 
 class TestOutput(BaseModel):
@@ -402,7 +402,7 @@ async def test_retry_succeeds_on_final_attempt():
 async def test_token_usage_tracked_across_retries():
     """Test that token usage is accumulated across failed retries."""
 
-    from batch_llm.testing.mocks import MockResult, MockUsage
+    from async_batch_llm.testing.mocks import MockResult, MockUsage
 
     class TokenTrackingAgent:
         def __init__(self):

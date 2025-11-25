@@ -6,7 +6,7 @@ This tests the fix for the bug where failed items don't report token usage.
 import pytest
 from pydantic import BaseModel
 
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
 
 
 class StrictOutput(BaseModel):
@@ -20,8 +20,8 @@ class StrictOutput(BaseModel):
 async def test_tokens_tracked_on_validation_failure():
     """Test that tokens are tracked even when validation fails."""
     # Use a custom strategy that simulates Gemini API + parser validation
-    from batch_llm.base import RetryState, TokenUsage
-    from batch_llm.llm_strategies import LLMCallStrategy
+    from async_batch_llm.base import RetryState, TokenUsage
+    from async_batch_llm.llm_strategies import LLMCallStrategy
 
     class FailingParserStrategy(LLMCallStrategy[StrictOutput]):
         """Strategy that returns tokens but fails validation."""
@@ -103,8 +103,8 @@ async def test_tokens_tracked_on_validation_failure():
 async def test_cached_tokens_tracked_on_failure():
     """Ensure cached token usage is aggregated when retries all fail."""
 
-    from batch_llm.base import RetryState, TokenUsage
-    from batch_llm.llm_strategies import LLMCallStrategy
+    from async_batch_llm.base import RetryState, TokenUsage
+    from async_batch_llm.llm_strategies import LLMCallStrategy
 
     class TokenTimeoutError(TimeoutError):
         """Custom timeout that allows attaching token usage."""

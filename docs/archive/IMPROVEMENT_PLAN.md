@@ -64,14 +64,14 @@ user experience.
    ```python
    def test_version_matches_package():
        """Verify __version__ matches package metadata."""
-       from batch_llm import __version__
+       from async_batch_llm import __version__
        from importlib.metadata import version
        assert __version__ == version("batch-llm")
    ```
 
 **Validation:**
 
-- Run `python -c "import batch_llm; print(batch_llm.__version__)"`
+- Run `python -c "import async_batch_llm; print(batch_llm.__version__)"`
 - Should print "0.3.0"
 - Test passes in CI
 
@@ -101,8 +101,8 @@ Create `tests/test_shared_strategy_lifecycle.py`:
 
 import asyncio
 import pytest
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 
 @pytest.mark.asyncio
@@ -661,7 +661,7 @@ Add to `tests/test_v0_3_features.py` or create `tests/test_cache_tags.py`:
 async def test_cache_tags_matching_real_caches():
     """Test that cache tags correctly filter cache matches."""
     try:
-        from batch_llm.llm_strategies import GeminiCachedStrategy
+        from async_batch_llm.llm_strategies import GeminiCachedStrategy
         import google.genai as genai
         from google.genai.types import Content
     except ImportError:
@@ -1021,7 +1021,7 @@ def delete(self, key: str, raise_if_missing: bool = False) -> None:
 **Implementation:** Optional integration with `rich` or `tqdm`
 
 ```python
-from batch_llm.progress import RichProgressBar
+from async_batch_llm.progress import RichProgressBar
 
 processor = ParallelBatchProcessor(
     config=config,

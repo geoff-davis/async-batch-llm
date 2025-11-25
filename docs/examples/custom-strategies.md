@@ -5,7 +5,7 @@ Learn how to create custom strategies for any LLM provider.
 ## Basic Custom Strategy
 
 ```python
-from batch_llm import LLMCallStrategy
+from async_batch_llm import LLMCallStrategy
 
 class OpenAIStrategy(LLMCallStrategy[str]):
     def __init__(self, client, model: str):
@@ -142,7 +142,7 @@ class AnthropicStrategy(LLMCallStrategy[str]):
 ## Usage
 
 ```python
-from batch_llm import ParallelBatchProcessor, LLMWorkItem, ProcessorConfig
+from async_batch_llm import ParallelBatchProcessor, LLMWorkItem, ProcessorConfig
 
 async def main():
     # Use your custom strategy

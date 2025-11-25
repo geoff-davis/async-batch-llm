@@ -2,9 +2,9 @@
 
 import pytest
 
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, RetryState
-from batch_llm.base import TokenUsage
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, RetryState
+from async_batch_llm.base import TokenUsage
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 
 class CachedTokenStrategy(LLMCallStrategy[str]):

@@ -2,8 +2,8 @@
 
 import pytest
 
-from batch_llm.classifiers.gemini import GeminiErrorClassifier
-from batch_llm.strategies.errors import DefaultErrorClassifier, FrameworkTimeoutError
+from async_batch_llm.classifiers.gemini import GeminiErrorClassifier
+from async_batch_llm.strategies.errors import DefaultErrorClassifier, FrameworkTimeoutError
 
 
 @pytest.mark.asyncio

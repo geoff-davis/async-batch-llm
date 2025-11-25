@@ -15,8 +15,8 @@ from langchain.prompts import PromptTemplate
 from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
 
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 
 class LangChainStrategy(LLMCallStrategy[str]):

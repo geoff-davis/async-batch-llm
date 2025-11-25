@@ -13,8 +13,8 @@ import os
 from anthropic import AsyncAnthropic
 from pydantic import BaseModel
 
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 
 class AnalysisOutput(BaseModel):
@@ -315,7 +315,7 @@ async def example_anthropic_progressive_temperature():
     )
 
     # Configure with retries
-    from batch_llm.core import RetryConfig
+    from async_batch_llm.core import RetryConfig
 
     config = ProcessorConfig(
         max_workers=1,

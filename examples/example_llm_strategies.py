@@ -17,8 +17,8 @@ from google import genai
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
-from batch_llm.llm_strategies import (
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
+from async_batch_llm.llm_strategies import (
     GeminiCachedStrategy,
     GeminiStrategy,
     PydanticAIStrategy,
@@ -228,7 +228,7 @@ async def example_custom_strategy():
     print("Example 4: Custom Strategy")
     print("=" * 60 + "\n")
 
-    from batch_llm.llm_strategies import LLMCallStrategy
+    from async_batch_llm.llm_strategies import LLMCallStrategy
 
     class MockLLMStrategy(LLMCallStrategy[str]):
         """

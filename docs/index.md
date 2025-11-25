@@ -44,7 +44,7 @@ pip install 'async-batch-llm[all]'
 
 ```python
 import asyncio
-from batch_llm import (
+from async_batch_llm import (
     ParallelBatchProcessor,
     LLMWorkItem,
     ProcessorConfig,

@@ -4,8 +4,8 @@ import asyncio
 
 from pydantic import BaseModel
 
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-from batch_llm.testing import MockAgent
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm.testing import MockAgent
 
 
 class SummaryOutput(BaseModel):
@@ -24,7 +24,7 @@ async def main():
     )
 
     # Wrap in strategy
-    from batch_llm import PydanticAIStrategy
+    from async_batch_llm import PydanticAIStrategy
 
     strategy = PydanticAIStrategy(agent=mock_agent)
 

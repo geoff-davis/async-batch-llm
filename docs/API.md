@@ -67,7 +67,7 @@ class LLMWorkItem(Generic[TInput, TOutput, TContext]):
 **Example:**
 
 ```python
-from batch_llm import LLMWorkItem, PydanticAIStrategy
+from async_batch_llm import LLMWorkItem, PydanticAIStrategy
 from pydantic_ai import Agent
 
 agent = Agent("openai:gpt-4", result_type=MyOutput)
@@ -263,7 +263,7 @@ async with ParallelBatchProcessor(config=config) as processor:
 **Example:**
 
 ```python
-from batch_llm import ParallelBatchProcessor, ProcessorConfig, LLMWorkItem
+from async_batch_llm import ParallelBatchProcessor, ProcessorConfig, LLMWorkItem
 
 config = ProcessorConfig(max_workers=5, timeout_per_item=60.0)
 
@@ -483,7 +483,7 @@ Clean up resources after all attempts complete (e.g., delete caches, close clien
 **Custom Strategy Example:**
 
 ```python
-from batch_llm import LLMCallStrategy, TokenUsage
+from async_batch_llm import LLMCallStrategy, TokenUsage
 
 class MyCustomStrategy(LLMCallStrategy[str]):
     async def execute(
@@ -521,7 +521,7 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
 **Example:**
 
 ```python
-from batch_llm import PydanticAIStrategy, LLMWorkItem
+from async_batch_llm import PydanticAIStrategy, LLMWorkItem
 from pydantic_ai import Agent
 from pydantic import BaseModel
 
@@ -574,7 +574,7 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
 **Example:**
 
 ```python
-from batch_llm import GeminiStrategy, LLMWorkItem
+from async_batch_llm import GeminiStrategy, LLMWorkItem
 from google import genai
 
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
@@ -647,7 +647,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 **Example:**
 
 ```python
-from batch_llm import GeminiCachedStrategy, LLMWorkItem
+from async_batch_llm import GeminiCachedStrategy, LLMWorkItem
 from google import genai
 from google.genai.types import Content
 
@@ -718,7 +718,7 @@ class ProcessorConfig:
 **Example:**
 
 ```python
-from batch_llm import ProcessorConfig, RetryConfig
+from async_batch_llm import ProcessorConfig, RetryConfig
 
 config = ProcessorConfig(
     max_workers=10,
@@ -825,7 +825,7 @@ class ErrorClassifier(ABC):
 **Custom Example:**
 
 ```python
-from batch_llm import ErrorClassifier, ErrorInfo
+from async_batch_llm import ErrorClassifier, ErrorInfo
 
 class MyErrorClassifier(ErrorClassifier):
     def classify(self, exception: Exception) -> ErrorInfo:
@@ -878,7 +878,7 @@ class ErrorInfo:
 **Example:**
 
 ```python
-from batch_llm import ErrorInfo
+from async_batch_llm import ErrorInfo
 
 # Rate limit error
 rate_limit_info = ErrorInfo(
@@ -949,7 +949,7 @@ class Middleware(ABC):
 **Example:**
 
 ```python
-from batch_llm.middleware import BaseMiddleware
+from async_batch_llm.middleware import BaseMiddleware
 
 class LoggingMiddleware(BaseMiddleware):
     async def before_process(self, work_item):
@@ -1017,7 +1017,7 @@ class MetricsObserver(BaseObserver):
 **Example:**
 
 ```python
-from batch_llm import MetricsObserver
+from async_batch_llm import MetricsObserver
 
 metrics = MetricsObserver()
 processor = ParallelBatchProcessor(config=config, observers=[metrics])
@@ -1065,7 +1065,7 @@ class TokenUsage(TypedDict, total=False):
 **Example:**
 
 ```python
-from batch_llm import TokenUsage
+from async_batch_llm import TokenUsage
 
 tokens: TokenUsage = {
     "input_tokens": 150,
@@ -1207,7 +1207,7 @@ If you see frequent `FrameworkTimeoutError`, it indicates:
 **Example:**
 
 ```python
-from batch_llm import FrameworkTimeoutError
+from async_batch_llm import FrameworkTimeoutError
 
 try:
     result = await processor.process_all()
@@ -1269,7 +1269,7 @@ except Exception as e:
 **Catching TokenTrackingError:**
 
 ```python
-from batch_llm import TokenTrackingError
+from async_batch_llm import TokenTrackingError
 
 for item_result in result.results:
     if not item_result.success:
@@ -1335,7 +1335,7 @@ processor = ParallelBatchProcessor(
 
 ```python
 import asyncio
-from batch_llm import (
+from async_batch_llm import (
     ParallelBatchProcessor,
     ProcessorConfig,
     LLMWorkItem,

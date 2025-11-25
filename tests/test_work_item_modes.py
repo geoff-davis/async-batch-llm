@@ -6,7 +6,7 @@ from typing import Annotated
 import pytest
 from pydantic import BaseModel, Field
 
-from batch_llm import (
+from async_batch_llm import (
     LLMCallStrategy,
     LLMWorkItem,
     ParallelBatchProcessor,
@@ -14,7 +14,7 @@ from batch_llm import (
     PydanticAIStrategy,
     RetryState,
 )
-from batch_llm.testing import MockAgent
+from async_batch_llm.testing import MockAgent
 
 
 class TestOutput(BaseModel):
@@ -214,7 +214,7 @@ async def test_custom_strategy_timeout_handling():
             return TestOutput(value="Should timeout"), {}
 
     # Use very short timeout and no retries to make test fast
-    from batch_llm.core import RetryConfig
+    from async_batch_llm.core import RetryConfig
 
     config = ProcessorConfig(
         max_workers=1,

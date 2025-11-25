@@ -215,7 +215,7 @@ class SmartRetryStrategy(LLMCallStrategy[Output]):
 ### Pattern 1: Using PydanticAI Strategy
 
 ```python
-from batch_llm import PydanticAIStrategy, LLMWorkItem
+from async_batch_llm import PydanticAIStrategy, LLMWorkItem
 from pydantic_ai import Agent
 
 agent = Agent("gemini-2.0-flash", result_type=Output)
@@ -231,7 +231,7 @@ work_item = LLMWorkItem(
 ### Pattern 2: Custom Strategy for Any Provider
 
 ```python
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 class OpenAIStrategy(LLMCallStrategy[str]):
     def __init__(self, client: AsyncOpenAI, model: str):
@@ -1007,7 +1007,7 @@ See `examples/example_smart_model_escalation.py` for complete implementation wit
 ### Minimal Example (v0.1+)
 
 ```python
-from batch_llm import ParallelBatchProcessor, LLMWorkItem, ProcessorConfig, PydanticAIStrategy
+from async_batch_llm import ParallelBatchProcessor, LLMWorkItem, ProcessorConfig, PydanticAIStrategy
 from pydantic_ai import Agent
 from pydantic import BaseModel
 

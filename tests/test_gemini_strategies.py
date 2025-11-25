@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
-from batch_llm import RetryState, TokenTrackingError
-from batch_llm.llm_strategies import (
+from async_batch_llm import RetryState, TokenTrackingError
+from async_batch_llm.llm_strategies import (
     GeminiCachedStrategy,
     GeminiResponse,
     GeminiStrategy,
@@ -312,7 +312,7 @@ class TestGeminiStrategy:
 
     def test_import_error_when_genai_not_available(self):
         """Test that ImportError is raised when google-genai is not available."""
-        with patch("batch_llm.llm_strategies.genai", None):
+        with patch("async_batch_llm.llm_strategies.genai", None):
             with pytest.raises(ImportError) as exc_info:
                 GeminiStrategy(
                     model="gemini-test",
@@ -672,7 +672,7 @@ class TestGeminiCachedStrategy:
 
     def test_import_error_when_genai_not_available(self):
         """Test that ImportError is raised when google-genai is not available."""
-        with patch("batch_llm.llm_strategies.genai", None):
+        with patch("async_batch_llm.llm_strategies.genai", None):
             with pytest.raises(ImportError) as exc_info:
                 GeminiCachedStrategy(
                     model="gemini-test",

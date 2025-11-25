@@ -173,7 +173,7 @@ class MySharedStrategy:
 **Proposed API**:
 
 ```python
-from batch_llm.mixins import PrepareOnceMixin
+from async_batch_llm.mixins import PrepareOnceMixin
 
 class MyStrategy(PrepareOnceMixin):
     async def _prepare_once(self) -> None:
@@ -187,7 +187,7 @@ class MyStrategy(PrepareOnceMixin):
 Or as a decorator:
 
 ```python
-from batch_llm.decorators import prepare_once
+from async_batch_llm.decorators import prepare_once
 
 class MyStrategy:
     @prepare_once

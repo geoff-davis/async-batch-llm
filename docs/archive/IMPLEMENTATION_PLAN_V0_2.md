@@ -336,7 +336,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 @pytest.mark.asyncio
 async def test_api_version_detection():
     """Test that API version detection works correctly."""
-    from batch_llm.llm_strategies import GeminiCachedStrategy
+    from async_batch_llm.llm_strategies import GeminiCachedStrategy
 
     version = GeminiCachedStrategy._detect_google_genai_version()
     assert version in ["v1.45", "v1.46+"]
@@ -476,7 +476,7 @@ class ProcessingStats:
 @pytest.mark.asyncio
 async def test_cached_token_aggregation():
     """Test that cached tokens are properly aggregated."""
-    from batch_llm.testing import MockStrategy
+    from async_batch_llm.testing import MockStrategy
 
     class CachedTokenStrategy(LLMCallStrategy[str]):
         async def execute(self, prompt, attempt, timeout):
@@ -949,7 +949,7 @@ async def test_cache_reuse_creation_time():
 @pytest.mark.asyncio
 async def test_cache_expiration_error_classification():
     """Test that cache expiration errors are classified as retryable."""
-    from batch_llm.classifiers import GeminiErrorClassifier
+    from async_batch_llm.classifiers import GeminiErrorClassifier
 
     classifier = GeminiErrorClassifier()
 

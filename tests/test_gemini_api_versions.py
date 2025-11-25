@@ -5,7 +5,7 @@ import pytest
 
 def test_api_version_detection():
     """Test that API version detection works correctly."""
-    from batch_llm.llm_strategies import GeminiCachedStrategy
+    from async_batch_llm.llm_strategies import GeminiCachedStrategy
 
     version = GeminiCachedStrategy._detect_google_genai_version()
 
@@ -15,7 +15,7 @@ def test_api_version_detection():
 
 def test_api_version_matches_installed_package():
     """Test that detected version matches what's actually installed."""
-    from batch_llm.llm_strategies import GeminiCachedStrategy
+    from async_batch_llm.llm_strategies import GeminiCachedStrategy
 
     version = GeminiCachedStrategy._detect_google_genai_version()
 
@@ -40,7 +40,7 @@ async def test_gemini_cached_strategy_initialization_includes_version():
     """Test that GeminiCachedStrategy stores API version on init."""
     from unittest.mock import MagicMock
 
-    from batch_llm.llm_strategies import GeminiCachedStrategy
+    from async_batch_llm.llm_strategies import GeminiCachedStrategy
 
     # Create a mock client (won't actually use it in this test)
     mock_client = MagicMock()

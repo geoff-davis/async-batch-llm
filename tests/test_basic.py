@@ -8,7 +8,7 @@ from typing import Annotated
 import pytest
 from pydantic import BaseModel, Field
 
-from batch_llm import (
+from async_batch_llm import (
     LLMWorkItem,
     MetricsObserver,
     ParallelBatchProcessor,
@@ -18,7 +18,7 @@ from batch_llm import (
     SimpleResult,
     SimpleWorkItem,
 )
-from batch_llm.testing import MockAgent
+from async_batch_llm.testing import MockAgent
 
 
 class BookSummary(BaseModel):

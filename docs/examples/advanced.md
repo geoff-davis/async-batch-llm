@@ -6,7 +6,7 @@ Save costs by starting with cheap models and escalating only on validation error
 
 ```python
 from pydantic import ValidationError
-from batch_llm import LLMCallStrategy
+from async_batch_llm import LLMCallStrategy
 
 class SmartModelEscalation(LLMCallStrategy[dict]):
     MODELS = [
@@ -77,7 +77,7 @@ class SmartRetryStrategy(LLMCallStrategy[PersonData]):
 Dramatically reduce costs for RAG and repeated context:
 
 ```python
-from batch_llm.llm_strategies.gemini import GeminiCachedStrategy
+from async_batch_llm.llm_strategies.gemini import GeminiCachedStrategy
 from google import genai
 
 async def process_with_caching():
@@ -119,8 +119,8 @@ async def process_with_caching():
 Inject custom behavior into the processing pipeline:
 
 ```python
-from batch_llm.middleware import Middleware
-from batch_llm import LLMWorkItem, WorkItemResult
+from async_batch_llm.middleware import Middleware
+from async_batch_llm import LLMWorkItem, WorkItemResult
 
 class LoggingMiddleware(Middleware):
     async def before_process(self, work_item: LLMWorkItem):
@@ -151,8 +151,8 @@ async def main():
 Track custom metrics:
 
 ```python
-from batch_llm.observers import BaseObserver, ProcessingEvent
-from batch_llm import LLMWorkItem, WorkItemResult
+from async_batch_llm.observers import BaseObserver, ProcessingEvent
+from async_batch_llm import LLMWorkItem, WorkItemResult
 from typing import Any
 
 class CostTracker(BaseObserver):

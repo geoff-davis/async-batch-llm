@@ -57,7 +57,7 @@ Process a batch of documents with structured output:
 
 ```python
 import asyncio
-from batch_llm import (
+from async_batch_llm import (
     ParallelBatchProcessor,
     LLMWorkItem,
     ProcessorConfig,
@@ -114,8 +114,8 @@ Built-in strategies for common providers:
 Create custom strategies for any provider:
 
 ```python
-from batch_llm.llm_strategies import LLMCallStrategy
-from batch_llm import TokenUsage
+from async_batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm import TokenUsage
 
 class OpenAIStrategy(LLMCallStrategy[str]):
     def __init__(self, client, model: str = "gpt-4o-mini"):
@@ -150,7 +150,7 @@ See [`examples/`](examples/) directory for OpenAI, Anthropic, LangChain, and mor
 Configure retry behavior with exponential backoff and jitter:
 
 ```python
-from batch_llm.core import RetryConfig
+from async_batch_llm.core import RetryConfig
 
 config = ProcessorConfig(
     max_workers=5,
@@ -171,7 +171,7 @@ The framework automatically retries on validation errors, network errors, and ot
 Coordinated rate limit handling across all workers:
 
 ```python
-from batch_llm.core import RateLimitConfig
+from async_batch_llm.core import RateLimitConfig
 
 config = ProcessorConfig(
     rate_limit=RateLimitConfig(
@@ -192,7 +192,7 @@ resume to prevent immediate re-limiting.
 Share a single cached strategy across all work items to avoid paying for the same context repeatedly:
 
 ```python
-from batch_llm import GeminiCachedStrategy
+from async_batch_llm import GeminiCachedStrategy
 from google import genai
 
 client = genai.Client(api_key="your-api-key")
@@ -257,7 +257,7 @@ print(f"Effective cost: {result.effective_input_tokens()} tokens")
 Monitor processing with metrics, middleware, and event observers:
 
 ```python
-from batch_llm import MetricsObserver
+from async_batch_llm import MetricsObserver
 
 # Collect metrics
 metrics = MetricsObserver()
@@ -306,7 +306,7 @@ Extract structured data with automatic validation retry:
 
 ```python
 from pydantic import BaseModel, Field
-from batch_llm import PydanticAIStrategy, LLMWorkItem
+from async_batch_llm import PydanticAIStrategy, LLMWorkItem
 from pydantic_ai import Agent
 
 class ContactInfo(BaseModel):
@@ -371,7 +371,7 @@ async with ParallelBatchProcessor(config=config) as processor:
 Process queries against large document context with caching:
 
 ```python
-from batch_llm import GeminiCachedStrategy
+from async_batch_llm import GeminiCachedStrategy
 from google import genai
 
 client = genai.Client(api_key="your-api-key")
@@ -453,8 +453,8 @@ Increase creativity on retries to get past validation errors:
 
 ```python
 from pydantic import ValidationError
-from batch_llm import RetryState
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm import RetryState
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 class ProgressiveTempStrategy(LLMCallStrategy[str]):
     """Increase temperature only when validation keeps failing."""
@@ -534,7 +534,7 @@ See [`examples/example_smart_model_escalation.py`](examples/example_smart_model_
 Save partial results and retry only failed fields:
 
 ```python
-from batch_llm import RetryState
+from async_batch_llm import RetryState
 
 class PartialRecoveryStrategy(LLMCallStrategy[dict]):
     """Parse partial results and retry only failed fields."""
@@ -589,8 +589,8 @@ class PartialRecoveryStrategy(LLMCallStrategy[dict]):
 Complete configuration options:
 
 ```python
-from batch_llm import ProcessorConfig
-from batch_llm.core import RetryConfig, RateLimitConfig
+from async_batch_llm import ProcessorConfig
+from async_batch_llm.core import RetryConfig, RateLimitConfig
 
 config = ProcessorConfig(
     # Core Settings
@@ -660,7 +660,7 @@ async with ParallelBatchProcessor(config=config) as processor:
 #### 2. Mock Strategies (Unit Tests)
 
 ```python
-from batch_llm.testing import MockAgent
+from async_batch_llm.testing import MockAgent
 
 mock_agent = MockAgent(
     response_factory=lambda p: Summary(title="Test", key_points=["A", "B"]),

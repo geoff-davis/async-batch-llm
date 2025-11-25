@@ -4,15 +4,15 @@ import asyncio
 
 import pytest
 
-from batch_llm import (
+from async_batch_llm import (
     GeminiResponse,
     LLMWorkItem,
     ParallelBatchProcessor,
     ProcessorConfig,
     RetryState,
 )
-from batch_llm.base import TokenUsage
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm.base import TokenUsage
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 
 # Custom exception that will be retried
@@ -399,7 +399,7 @@ def test_cache_tags_isolation():
         import google.genai as genai
         from google.genai.types import Content
 
-        from batch_llm.llm_strategies import GeminiCachedStrategy
+        from async_batch_llm.llm_strategies import GeminiCachedStrategy
     except ImportError:
         pytest.skip("google-genai not installed")
 
@@ -442,7 +442,7 @@ def test_cache_tags_none_default():
         import google.genai as genai
         from google.genai.types import Content
 
-        from batch_llm.llm_strategies import GeminiCachedStrategy
+        from async_batch_llm.llm_strategies import GeminiCachedStrategy
     except ImportError:
         pytest.skip("google-genai not installed")
 

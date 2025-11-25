@@ -2,7 +2,7 @@
 
 import pytest
 
-from batch_llm.strategies.rate_limit import ExponentialBackoffStrategy, FixedDelayStrategy
+from async_batch_llm.strategies.rate_limit import ExponentialBackoffStrategy, FixedDelayStrategy
 
 
 @pytest.mark.asyncio

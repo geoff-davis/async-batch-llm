@@ -62,8 +62,8 @@ batch-llm provides two built-in Gemini strategies:
 For direct Gemini API calls without caching:
 
 ```python
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-from batch_llm.llm_strategies import GeminiStrategy
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm.llm_strategies import GeminiStrategy
 from google import genai
 from pydantic import BaseModel
 
@@ -122,7 +122,7 @@ for item in result.results:
 Perfect for RAG applications with large shared context:
 
 ```python
-from batch_llm.llm_strategies import GeminiCachedStrategy
+from async_batch_llm.llm_strategies import GeminiCachedStrategy
 from google import genai
 
 client = genai.Client(api_key="your-api-key")
@@ -185,7 +185,7 @@ async with ParallelBatchProcessor[str, str, None](config=config) as processor:
 Create a custom strategy that adjusts temperature based on attempt:
 
 ```python
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
     """Gemini strategy with progressive temperature."""
@@ -296,7 +296,7 @@ See: <https://ai.google.dev/gemini-api/docs/models/generative-models#model-param
 batch-llm includes `GeminiErrorClassifier` for Gemini-specific errors:
 
 ```python
-from batch_llm.classifiers import GeminiErrorClassifier
+from async_batch_llm.classifiers import GeminiErrorClassifier
 
 processor = ParallelBatchProcessor(
     config=config,
@@ -316,7 +316,7 @@ The classifier automatically:
 Gemini has rate limits. Configure automatic handling:
 
 ```python
-from batch_llm.core import RateLimitConfig
+from async_batch_llm.core import RateLimitConfig
 
 config = ProcessorConfig(
     max_workers=10,
@@ -343,7 +343,7 @@ Process images with text:
 
 ```python
 from google.genai.types import Part, Content
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 class GeminiVisionStrategy(LLMCallStrategy[str]):
     """Strategy for Gemini vision tasks."""
@@ -425,7 +425,7 @@ uv run python examples/example_gemini_direct.py
 ### With PydanticAI
 
 ```python
-from batch_llm import PydanticAIStrategy
+from async_batch_llm import PydanticAIStrategy
 from pydantic_ai import Agent
 
 agent = Agent('gemini-2.5-flash', result_type=SummaryOutput)
@@ -444,7 +444,7 @@ work_item = LLMWorkItem(
 ### Direct Gemini Strategy
 
 ```python
-from batch_llm.llm_strategies import GeminiStrategy
+from async_batch_llm.llm_strategies import GeminiStrategy
 
 strategy = GeminiStrategy(
     model="gemini-2.5-flash",
@@ -536,8 +536,8 @@ Use the `on_error` callback to handle Gemini-specific errors intelligently:
 Only escalate to expensive Gemini models on validation errors, not network/rate limit errors:
 
 ```python
-from batch_llm.llm_strategies import LLMCallStrategy
-from batch_llm import TokenUsage
+from async_batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm import TokenUsage
 from pydantic import ValidationError
 from google import genai
 

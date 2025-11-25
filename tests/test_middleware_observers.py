@@ -6,15 +6,15 @@ from typing import Annotated, Any
 import pytest
 from pydantic import BaseModel, Field
 
-from batch_llm import (
+from async_batch_llm import (
     LLMWorkItem,
     ParallelBatchProcessor,
     ProcessorConfig,
     PydanticAIStrategy,
 )
-from batch_llm.middleware import BaseMiddleware
-from batch_llm.observers import BaseObserver, ProcessingEvent
-from batch_llm.testing import MockAgent
+from async_batch_llm.middleware import BaseMiddleware
+from async_batch_llm.observers import BaseObserver, ProcessingEvent
+from async_batch_llm.testing import MockAgent
 
 
 class TestOutput(BaseModel):
@@ -289,7 +289,7 @@ async def test_observer_receives_failure_events():
     # Create custom error classifier that marks as non-retryable
     class NonRetryableClassifier:
         def classify(self, exception):
-            from batch_llm.strategies import ErrorInfo
+            from async_batch_llm.strategies import ErrorInfo
 
             return ErrorInfo(
                 is_retryable=False,
@@ -520,7 +520,7 @@ async def test_metrics_observer_export_json():
     """Test MetricsObserver export_json method."""
     import json
 
-    from batch_llm.observers.metrics import MetricsObserver
+    from async_batch_llm.observers.metrics import MetricsObserver
 
     observer = MetricsObserver()
 
@@ -554,7 +554,7 @@ async def test_metrics_observer_export_json():
 @pytest.mark.asyncio
 async def test_metrics_observer_export_prometheus():
     """Test MetricsObserver export_prometheus method."""
-    from batch_llm.observers.metrics import MetricsObserver
+    from async_batch_llm.observers.metrics import MetricsObserver
 
     observer = MetricsObserver()
 
@@ -584,7 +584,7 @@ async def test_metrics_observer_export_prometheus():
 @pytest.mark.asyncio
 async def test_metrics_observer_export_dict():
     """Test MetricsObserver export_dict method."""
-    from batch_llm.observers.metrics import MetricsObserver
+    from async_batch_llm.observers.metrics import MetricsObserver
 
     observer = MetricsObserver()
 
@@ -608,7 +608,7 @@ async def test_metrics_observer_export_dict():
 @pytest.mark.asyncio
 async def test_metrics_observer_reset():
     """Test MetricsObserver reset method."""
-    from batch_llm.observers.metrics import MetricsObserver
+    from async_batch_llm.observers.metrics import MetricsObserver
 
     observer = MetricsObserver()
 
@@ -637,7 +637,7 @@ async def test_metrics_observer_reset():
 @pytest.mark.asyncio
 async def test_metrics_observer_processing_times_bounded():
     """Processing time storage should remain bounded to avoid unbounded memory."""
-    from batch_llm.observers.metrics import MetricsObserver
+    from async_batch_llm.observers.metrics import MetricsObserver
 
     observer = MetricsObserver(max_processing_samples=32)
 

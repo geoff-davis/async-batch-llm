@@ -11,13 +11,13 @@ from typing import Annotated
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from batch_llm.base import LLMWorkItem, WorkItemResult
-from batch_llm.classifiers import GeminiErrorClassifier
-from batch_llm.core import ProcessorConfig, RateLimitConfig, RetryConfig
-from batch_llm.middleware import BaseMiddleware
-from batch_llm.observers import MetricsObserver
-from batch_llm.parallel import ParallelBatchProcessor
-from batch_llm.testing import MockAgent
+from async_batch_llm.base import LLMWorkItem, WorkItemResult
+from async_batch_llm.classifiers import GeminiErrorClassifier
+from async_batch_llm.core import ProcessorConfig, RateLimitConfig, RetryConfig
+from async_batch_llm.middleware import BaseMiddleware
+from async_batch_llm.observers import MetricsObserver
+from async_batch_llm.parallel import ParallelBatchProcessor
+from async_batch_llm.testing import MockAgent
 
 # Configure logging
 logging.basicConfig(
@@ -101,7 +101,7 @@ async def example_simple():
         output_type=BookSummary,
         system_prompt="You are a book summarization expert.",
     )
-    from batch_llm import PydanticAIStrategy
+    from async_batch_llm import PydanticAIStrategy
 
     strategy = PydanticAIStrategy(agent=agent)
 
@@ -166,7 +166,7 @@ async def example_with_context_and_postprocessor():
         output_type=BookSummary,
         system_prompt="You are a book summarization expert.",
     )
-    from batch_llm import PydanticAIStrategy
+    from async_batch_llm import PydanticAIStrategy
 
     strategy = PydanticAIStrategy(agent=agent)
 
@@ -259,7 +259,7 @@ async def example_error_handling():
         output_type=BookSummary,
         system_prompt="You are a book summarization expert.",
     )
-    from batch_llm import PydanticAIStrategy
+    from async_batch_llm import PydanticAIStrategy
 
     strategy = PydanticAIStrategy(agent=agent)
 
@@ -340,7 +340,7 @@ async def example_testing_with_mocks():
         # Note: rate_limit_on_call is disabled for this simple example
         # You can enable it by setting rate_limit_on_call=3
     )
-    from batch_llm import PydanticAIStrategy
+    from async_batch_llm import PydanticAIStrategy
 
     strategy = PydanticAIStrategy(agent=mock_agent)
 

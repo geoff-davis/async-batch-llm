@@ -501,8 +501,8 @@ class PrepareOnceMixin:
 **Usage:**
 
 ```python
-from batch_llm.mixins import PrepareOnceMixin
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm.mixins import PrepareOnceMixin
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 class MyCustomStrategy(PrepareOnceMixin, LLMCallStrategy[Output]):
     async def _prepare_once(self) -> None:

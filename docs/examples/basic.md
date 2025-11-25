@@ -6,7 +6,7 @@ Process multiple prompts in parallel:
 
 ```python
 import asyncio
-from batch_llm import (
+from async_batch_llm import (
     ParallelBatchProcessor,
     LLMWorkItem,
     ProcessorConfig,
@@ -159,7 +159,7 @@ async def process_with_post_processor():
 Track metrics using observers:
 
 ```python
-from batch_llm.observers import MetricsObserver
+from async_batch_llm.observers import MetricsObserver
 
 async def process_with_metrics():
     metrics = MetricsObserver()

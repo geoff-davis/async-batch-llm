@@ -24,7 +24,7 @@ repos:
         additional_dependencies:
           - pydantic>=2.0.0
           - types-aiofiles
-        files: ^src/batch_llm/
+        files: ^src/async_batch_llm/
 
   # General code quality checks
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -56,3 +56,4 @@ repos:
       - id: markdownlint-cli2
         args: [--fix]
         files: \.(md|markdown)$
+        exclude: ^docs/archive/

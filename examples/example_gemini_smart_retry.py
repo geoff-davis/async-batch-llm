@@ -32,9 +32,9 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_
 from google.genai.types import GenerateContentConfig
 from pydantic import BaseModel, Field, ValidationError
 
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
-from batch_llm.core import RetryConfig
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
+from async_batch_llm.core import RetryConfig
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 
 class PersonData(BaseModel):

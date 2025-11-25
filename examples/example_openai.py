@@ -13,8 +13,8 @@ import os
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 
 class SummaryOutput(BaseModel):

@@ -24,8 +24,8 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 @pytest.mark.asyncio
 async def test_gemini_strategy_real_api():
     """Integration test with real Gemini API - basic generation."""
-    from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-    from batch_llm.llm_strategies import GeminiStrategy
+    from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+    from async_batch_llm.llm_strategies import GeminiStrategy
 
     try:
         import google.genai as genai
@@ -84,8 +84,8 @@ async def test_gemini_strategy_real_api():
 @pytest.mark.asyncio
 async def test_gemini_cached_strategy_real_api():
     """Integration test with real Gemini API - context caching."""
-    from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-    from batch_llm.llm_strategies import GeminiCachedStrategy
+    from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+    from async_batch_llm.llm_strategies import GeminiCachedStrategy
 
     try:
         import google.genai as genai
@@ -163,8 +163,8 @@ async def test_gemini_cached_strategy_real_api():
 @pytest.mark.asyncio
 async def test_gemini_response_with_safety_ratings_real_api():
     """Integration test for GeminiResponse with safety ratings (v0.3.0)."""
-    from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-    from batch_llm.llm_strategies import GeminiResponse, GeminiStrategy
+    from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+    from async_batch_llm.llm_strategies import GeminiResponse, GeminiStrategy
 
     try:
         import google.genai as genai
@@ -232,7 +232,7 @@ async def test_retry_on_real_validation_error():
     """Integration test that triggers real validation error and retries."""
     from pydantic import BaseModel, Field
 
-    from batch_llm import (
+    from async_batch_llm import (
         LLMWorkItem,
         ParallelBatchProcessor,
         ProcessorConfig,
