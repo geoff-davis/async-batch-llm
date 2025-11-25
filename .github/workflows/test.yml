@@ -45,7 +45,7 @@ jobs:
 
     - name: Run type checker
       run: |
-        uv run mypy src/batch_llm/ --ignore-missing-imports
+        uv run mypy src/async_batch_llm/ --ignore-missing-imports
 
     - name: Coverage comment
       uses: py-cov-action/python-coverage-comment-action@v3
