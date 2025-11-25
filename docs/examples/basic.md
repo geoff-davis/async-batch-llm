@@ -178,7 +178,7 @@ async def process_with_metrics():
 
         # Get collected metrics
         collected_metrics = await metrics.get_metrics()
-        print(f"Total requests: {collected_metrics['total_requests']}")
-        print(f"Successful: {collected_metrics['successful']}")
-        print(f"Failed: {collected_metrics['failed']}")
+        print(f"Items processed: {collected_metrics['items_processed']}")
+        print(f"Succeeded: {collected_metrics['items_succeeded']}")
+        print(f"Failed: {collected_metrics['items_failed']}")
 ```

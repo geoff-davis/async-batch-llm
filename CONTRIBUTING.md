@@ -7,7 +7,7 @@ Thank you for your interest in contributing to Batch LLM! This document provides
 1. **Clone the repository**
 
 ```bash
-git clone https://github.com/yourusername/batch-llm.git
+git clone https://github.com/geoff-davis/batch-llm.git
 cd batch-llm
 ```
 

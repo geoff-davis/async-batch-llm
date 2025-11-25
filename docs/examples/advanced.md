@@ -136,13 +136,13 @@ class LoggingMiddleware(Middleware):
         print(f"Retry {attempt} for {work_item.item_id}: {error}")
 
 async def main():
-    middleware = LoggingMiddleware()
+    logging_middleware = LoggingMiddleware()
 
     async with ParallelBatchProcessor(
         config=config,
-        middleware=[middleware]
+        middlewares=[logging_middleware]
     ) as processor:
-        # Process with logging
+        # Add work items...
         result = await processor.process_all()
 ```
 
@@ -151,26 +151,22 @@ async def main():
 Track custom metrics:
 
 ```python
-from batch_llm.observers import Observer
+from batch_llm.observers import BaseObserver, ProcessingEvent
 from batch_llm import LLMWorkItem, WorkItemResult
+from typing import Any
 
-class CostTracker(Observer):
+class CostTracker(BaseObserver):
     def __init__(self):
         self.total_cost = 0.0
-        self.cost_per_model = {}
+        self.total_tokens = 0
 
-    async def on_item_complete(self, work_item: LLMWorkItem, result: WorkItemResult):
-        if result.success:
-            # Calculate cost based on tokens and model
-            cost = self._calculate_cost(result.token_usage, work_item.strategy.model)
-            self.total_cost += cost
-
-            model = work_item.strategy.model
-            self.cost_per_model[model] = self.cost_per_model.get(model, 0) + cost
-
-    def _calculate_cost(self, tokens, model):
-        # Your cost calculation logic
-        return tokens["total_tokens"] * 0.00001
+    async def on_event(self, event: ProcessingEvent, data: dict[str, Any]) -> None:
+        if event == ProcessingEvent.ITEM_COMPLETED:
+            # Calculate cost based on tokens
+            tokens = data.get("tokens", {})
+            total = tokens.get("total_tokens", 0)
+            self.total_tokens += total
+            self.total_cost += total * 0.00001  # Example rate
 
 async def main():
     cost_tracker = CostTracker()
@@ -179,11 +175,11 @@ async def main():
         config=config,
         observers=[cost_tracker]
     ) as processor:
+        # Add work items...
         result = await processor.process_all()
 
-        print(f"Total cost: ${cost_tracker.total_cost:.2f}")
-        for model, cost in cost_tracker.cost_per_model.items():
-            print(f"{model}: ${cost:.2f}")
+        print(f"Total tokens: {cost_tracker.total_tokens}")
+        print(f"Estimated cost: ${cost_tracker.total_cost:.4f}")
 ```
 
 ## Dynamic Worker Scaling

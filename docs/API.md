@@ -29,6 +29,7 @@ Complete API documentation for batch-llm v0.4.0.
 - [Core Types](#core-types)
   - [TokenUsage](#tokenusage)
   - [FrameworkTimeoutError](#frameworktimeouterror)
+  - [TokenTrackingError](#tokentrackingerror)
 - [Type Aliases](#type-aliases)
   - [PostProcessorFunc](#postprocessorfunc)
   - [ProgressCallbackFunc](#progresscallbackfunc)
@@ -1218,6 +1219,63 @@ except FrameworkTimeoutError as e:
 for item_result in result.results:
     if not item_result.success and "FrameworkTimeoutError" in item_result.error:
         print(f"{item_result.item_id} exceeded timeout")
+```
+
+---
+
+### TokenTrackingError
+
+Exception wrapper that preserves token usage from failed LLM calls.
+
+```python
+class TokenTrackingError(Exception):
+    """
+    Wrapper exception that preserves token usage from failed LLM calls.
+
+    When an LLM call fails (e.g., validation error), we still want to track
+    the tokens that were consumed. This wrapper attaches token usage to
+    exceptions that don't natively support it.
+    """
+
+    def __init__(self, message: str, *, token_usage: dict[str, int] | None = None):
+        super().__init__(message)
+        self._failed_token_usage = token_usage or {}
+```
+
+**Purpose:**
+
+When an LLM call succeeds in getting a response but fails during parsing/validation,
+the tokens were still consumed and should be tracked for accurate cost accounting.
+This wrapper preserves that token usage even when the original exception doesn't
+have a `__dict__` (like built-in exceptions).
+
+**Usage:**
+
+Strategies use this internally to wrap exceptions that don't support attribute assignment:
+
+```python
+try:
+    output = parse_response(response)
+except Exception as e:
+    if not hasattr(e, "__dict__"):
+        wrapped = TokenTrackingError(str(e), token_usage=tokens)
+        wrapped.__cause__ = e
+        raise wrapped from e
+    else:
+        e.__dict__["_failed_token_usage"] = tokens
+        raise
+```
+
+**Catching TokenTrackingError:**
+
+```python
+from batch_llm import TokenTrackingError
+
+for item_result in result.results:
+    if not item_result.success:
+        # Token usage is preserved even for failed items
+        print(f"Failed: {item_result.item_id}")
+        print(f"Tokens consumed: {item_result.token_usage}")
 ```
 
 ---
