@@ -6,7 +6,7 @@ Works with any LLM provider (OpenAI, Anthropic, Google, LangChain, or custom) th
 strategy pattern. Built on asyncio for efficient I/O-bound processing.
 
 [![PyPI version](https://badge.fury.io/py/batch-llm.svg)](https://badge.fury.io/py/batch-llm)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10-3.14](https://img.shields.io/badge/python-3.10--3.14-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Documentation](https://img.shields.io/badge/docs-mkdocs-blue)](https://geoff-davis.github.io/batch-llm/)
 
@@ -424,20 +424,21 @@ async def save_result(result):
             summary=result.output,
         )
 
-processor = ParallelBatchProcessor(
+async with ParallelBatchProcessor(
     config=config,
     post_processor=save_result,
-)
-
-# Add work with context
-await processor.add_work(
-    LLMWorkItem(
-        item_id="doc_123",
-        strategy=strategy,
-        prompt="Summarize...",
-        context=WorkContext(user_id="user_1", document_id="doc_123"),
+) as processor:
+    # Add work with context
+    await processor.add_work(
+        LLMWorkItem(
+            item_id="doc_123",
+            strategy=strategy,
+            prompt="Summarize...",
+            context=WorkContext(user_id="user_1", document_id="doc_123"),
+        )
     )
-)
+
+    result = await processor.process_all()
 ```
 
 ---
@@ -449,6 +450,8 @@ await processor.add_work(
 Increase creativity on retries to get past validation errors:
 
 ```python
+from pydantic import ValidationError
+from batch_llm import RetryState
 from batch_llm.llm_strategies import LLMCallStrategy
 
 class ProgressiveTempStrategy(LLMCallStrategy[str]):
@@ -716,8 +719,9 @@ Check out the [`examples/`](examples/) directory for complete working examples:
 
 ## Documentation
 
-- **[API Reference](docs/API.md)** - Complete API documentation
-- **[Migration Guides](docs/)** - Version upgrade guides
+- **[Full Documentation](https://geoff-davis.github.io/batch-llm/)** - Getting started, examples, and API reference
+- **[API Reference](https://geoff-davis.github.io/batch-llm/api/core/)** - Complete API documentation
+- **[Migration Guides](https://geoff-davis.github.io/batch-llm/migration/v0.4/)** - Version upgrade guides
 
 ---
 
@@ -753,4 +757,4 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ---
 
-**Questions?** Open an issue on [GitHub](https://github.com/geoff-davis/batch-llm/issues) or check the [API documentation](docs/API.md).
+**Questions?** Open an issue on [GitHub](https://github.com/geoff-davis/batch-llm/issues) or check the [documentation](https://geoff-davis.github.io/batch-llm/).
