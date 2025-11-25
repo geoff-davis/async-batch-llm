@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`TokenTrackingError` export** - The `TokenTrackingError` class is now exported from the main
   `batch_llm` package for users who want to catch it explicitly when handling failed LLM calls
   with token usage tracking.
+- **Type aliases** - Added convenience type aliases for the most common use case (string input,
+  typed output, no context):
+  - `SimpleBatchProcessor[T]` → `ParallelBatchProcessor[str, T, None]`
+  - `SimpleWorkItem[T]` → `LLMWorkItem[str, T, None]`
+  - `SimpleResult[T]` → `WorkItemResult[T, None]`
 
 ### Changed
 
@@ -24,11 +29,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the removed v0.0.x integration modes.
 - **Python classifiers** - Added Python 3.13 and 3.14 to pyproject.toml classifiers (tests already
   run on these versions in CI).
+- **Config auto-validation** - `ProcessorConfig`, `RetryConfig`, and `RateLimitConfig` now
+  automatically validate on construction via `__post_init__`. Invalid values raise `ValueError`
+  immediately instead of waiting for explicit `validate()` call. This is a **behavior change**
+  for code that creates configs with invalid values and validates later.
+- **Logging format** - Replaced emoji characters in log messages with ASCII text alternatives
+  for better terminal compatibility:
+  - `✓` → `[OK]`
+  - `✗` → `[FAIL]`
+  - `⚠️` → `[WARN]`
+  - `ℹ️` → `[INFO]`
 
 ### Fixed
 
 - **Code duplication** - Deduplicated the `TokenTrackingError` class which was defined inline
   3 times in `llm_strategies.py`. Now defined once in `strategies/errors.py`.
+- **Code duplication** - Deduplicated `_extract_safety_ratings` method from `GeminiStrategy`
+  and `GeminiCachedStrategy` into a module-level function.
 
 ## [0.4.0] - 2025-01-14
 
