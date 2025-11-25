@@ -13,7 +13,7 @@ First, install the package:
 uv pip install -e ..
 
 # If installed from PyPI
-uv pip install batch-llm
+uv pip install async-batch-llm
 ```
 
 ### Set API Key
@@ -48,7 +48,7 @@ Each example is self-contained and includes detailed comments.
 
 ## Example Output
 
-```
+```text
 ================================================================================
 EXAMPLE 1: Simple Batch Processing (New API)
 ================================================================================

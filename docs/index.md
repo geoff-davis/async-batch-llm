@@ -26,16 +26,16 @@ Built on asyncio for efficient I/O-bound processing.
 
 ```bash
 # Basic installation
-pip install batch-llm
+pip install async-batch-llm
 
 # With PydanticAI support (recommended for structured output)
-pip install 'batch-llm[pydantic-ai]'
+pip install 'async-batch-llm[pydantic-ai]'
 
 # With Google Gemini support
-pip install 'batch-llm[gemini]'
+pip install 'async-batch-llm[gemini]'
 
 # With everything
-pip install 'batch-llm[all]'
+pip install 'async-batch-llm[all]'
 ```
 
 ---

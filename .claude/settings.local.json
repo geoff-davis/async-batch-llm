@@ -10,7 +10,8 @@
       "Bash(git add:*)",
       "Bash(npx markdownlint-cli2:*)",
       "Bash(find:*)",
-      "Bash(jobs:*)"
+      "Bash(jobs:*)",
+      "Bash(tree:*)"
     ],
     "deny": [],
     "ask": []

@@ -590,8 +590,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
                     else 0
                 )
                 logger.info(
-                    f"Reusing existing Gemini cache: {self._cache.name}{tag_info} "
-                    f"(age: {age:.0f}s)"
+                    f"Reusing existing Gemini cache: {self._cache.name}{tag_info} (age: {age:.0f}s)"
                 )
                 return
         except Exception as e:

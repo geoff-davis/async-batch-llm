@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "batch-llm"
+name = "async-batch-llm"
 version = "0.5.0"
 description = "Provider-agnostic framework for high-throughput LLM processing with async workers, automatic retries, rate limiting, and intelligent validation recovery."
 readme = "README.md"

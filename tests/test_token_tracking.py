@@ -256,7 +256,6 @@ async def test_partial_cache_hit_rate():
 
             result = await processor.process_all()
 
-        assert result.cache_hit_rate() == expected_rate, (
-            f"Expected {expected_rate}% hit rate for "
-            f"{cached_tokens}/{input_tokens} cached tokens"
-        )
+        assert (
+            result.cache_hit_rate() == expected_rate
+        ), f"Expected {expected_rate}% hit rate for {cached_tokens}/{input_tokens} cached tokens"

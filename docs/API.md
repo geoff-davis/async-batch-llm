@@ -516,7 +516,7 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
 
 - `agent` (Agent[None, TOutput]): Configured PydanticAI agent
 
-**Requires:** `pip install 'batch-llm[pydantic-ai]'`
+**Requires:** `pip install 'async-batch-llm[pydantic-ai]'`
 
 **Example:**
 
@@ -566,7 +566,7 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
 - `include_metadata` (bool): If True, `execute()` returns `GeminiResponse[TOutput]`
   so you can access safety ratings, finish reasons, and raw responses
 
-**Requires:** `pip install 'batch-llm[gemini]'`
+**Requires:** `pip install 'async-batch-llm[gemini]'`
 
 > **API key:** Set `GOOGLE_API_KEY` (preferred) or the legacy `GEMINI_API_KEY` environment
 > variable before running this example.
@@ -640,7 +640,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 - `cleanup()`: Runs once when the processor exits; by default caches are left alive so
   future batches can reuse them (call `delete_cache()` to remove immediately)
 
-**Requires:** `pip install 'batch-llm[gemini]'`
+**Requires:** `pip install 'async-batch-llm[gemini]'`
 
 > **API key:** Same as above – `GOOGLE_API_KEY` is preferred, `GEMINI_API_KEY` also works.
 

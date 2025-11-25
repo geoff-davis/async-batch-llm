@@ -192,7 +192,7 @@ __all__ = [
 try:
     from importlib.metadata import PackageNotFoundError, version
 
-    __version__ = version("batch-llm")
+    __version__ = version("async-batch-llm")
 except PackageNotFoundError:
     # Package not installed (e.g., running from source in development)
     __version__ = "0.0.0+dev"

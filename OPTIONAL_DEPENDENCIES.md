@@ -12,7 +12,7 @@ dependencies. The strategy pattern makes it easy to plug into any LLM provider.
 ### Minimal Installation (Core only)
 
 ```bash
-pip install batch-llm
+pip install async-batch-llm
 # or
 uv add batch-llm
 ```
@@ -38,9 +38,9 @@ This installs only the core dependencies:
 ### With PydanticAI Support
 
 ```bash
-pip install 'batch-llm[pydantic-ai]'
+pip install 'async-batch-llm[pydantic-ai]'
 # or
-uv add 'batch-llm[pydantic-ai]'
+uv add 'async-batch-llm[pydantic-ai]'
 ```
 
 **Use case**: Using PydanticAI agents with batch-llm
@@ -54,9 +54,9 @@ uv add 'batch-llm[pydantic-ai]'
 ### With Gemini SDK
 
 ```bash
-pip install 'batch-llm[gemini]'
+pip install 'async-batch-llm[gemini]'
 # or
-uv add 'batch-llm[gemini]'
+uv add 'async-batch-llm[gemini]'
 ```
 
 **Use case**: Direct Google Gemini API integration
@@ -70,9 +70,9 @@ uv add 'batch-llm[gemini]'
 ### With Everything
 
 ```bash
-pip install 'batch-llm[all]'
+pip install 'async-batch-llm[all]'
 # or
-uv add 'batch-llm[all]'
+uv add 'async-batch-llm[all]'
 ```
 
 Includes:
@@ -83,9 +83,9 @@ Includes:
 ### For Development
 
 ```bash
-pip install 'batch-llm[dev]'
+pip install 'async-batch-llm[dev]'
 # or
-uv add 'batch-llm[dev]'
+uv add 'async-batch-llm[dev]'
 ```
 
 Includes:
@@ -188,7 +188,7 @@ See `examples/example_llm_strategies.py` for complete Gemini examples using buil
 Install:
 
 ```bash
-pip install 'batch-llm[gemini]'
+pip install 'async-batch-llm[gemini]'
 export GOOGLE_API_KEY=your_api_key  # GEMINI_API_KEY also works
 python examples/example_llm_strategies.py
 ```
@@ -202,7 +202,7 @@ See `examples/example_openai.py` for OpenAI integration.
 Install:
 
 ```bash
-pip install batch-llm openai
+pip install async-batch-llm openai
 export OPENAI_API_KEY=your_api_key
 python examples/example_openai.py
 ```
@@ -214,7 +214,7 @@ See `examples/example_anthropic.py` for Anthropic integration.
 Install:
 
 ```bash
-pip install batch-llm anthropic
+pip install async-batch-llm anthropic
 export ANTHROPIC_API_KEY=your_api_key
 python examples/example_anthropic.py
 ```
@@ -226,7 +226,7 @@ See `examples/example_langchain.py` for LangChain integration including RAG.
 Install:
 
 ```bash
-pip install batch-llm langchain langchain-openai
+pip install async-batch-llm langchain langchain-openai
 python examples/example_langchain.py
 ```
 

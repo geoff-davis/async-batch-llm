@@ -141,6 +141,6 @@ async def test_cached_tokens_tracked_on_failure():
     assert result.failed == 1
     # Default retry config is 3 attempts; ensure cached tokens are counted for every attempt
     expected_cached_tokens = strategy.calls * 7
-    assert result.total_cached_tokens == expected_cached_tokens, (
-        f"Expected cached tokens {expected_cached_tokens}, " f"got {result.total_cached_tokens}"
-    )
+    assert (
+        result.total_cached_tokens == expected_cached_tokens
+    ), f"Expected cached tokens {expected_cached_tokens}, got {result.total_cached_tokens}"

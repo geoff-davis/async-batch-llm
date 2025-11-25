@@ -875,7 +875,7 @@ See `examples/example_smart_model_escalation.py` for complete implementation wit
 
 - GitHub: <https://github.com/yourusername/batch-llm>
 - Issues: <https://github.com/yourusername/batch-llm/issues>
-- PyPI: <https://pypi.org/project/batch-llm/>
+- PyPI: <https://pypi.org/project/async-batch-llm/>
 
 ---
 

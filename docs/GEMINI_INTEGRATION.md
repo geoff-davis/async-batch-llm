@@ -6,9 +6,9 @@ Complete guide for using batch-llm with Google's Gemini API.
 
 ```bash
 # Install batch-llm with Gemini support
-pip install 'batch-llm[gemini]'
+pip install 'async-batch-llm[gemini]'
 # or
-uv add 'batch-llm[gemini]'
+uv add 'async-batch-llm[gemini]'
 ```
 
 This installs:

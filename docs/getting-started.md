@@ -1,23 +1,23 @@
 # Getting Started
 
-This guide will help you get started with batch-llm.
+This guide will help you get started with async-batch-llm.
 
 ## Installation
 
-Install batch-llm with the extras you need:
+Install async-batch-llm with the extras you need:
 
 ```bash
 # Basic installation
-pip install batch-llm
+pip install async-batch-llm
 
 # With PydanticAI support (recommended for structured output)
-pip install 'batch-llm[pydantic-ai]'
+pip install 'async-batch-llm[pydantic-ai]'
 
 # With Google Gemini support
-pip install 'batch-llm[gemini]'
+pip install 'async-batch-llm[gemini]'
 
 # With everything
-pip install 'batch-llm[all]'
+pip install 'async-batch-llm[all]'
 ```
 
 ## Core Concepts
