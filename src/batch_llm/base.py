@@ -390,7 +390,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                     timeout=PROGRESS_TASK_CANCELLATION_TIMEOUT,
                 )
             except asyncio.TimeoutError:
-                logger.warning("⚠️  Some progress callbacks did not cancel in time")
+                logger.warning("[WARN]Some progress callbacks did not cancel in time")
             finally:
                 self._progress_tasks.clear()
 
@@ -455,7 +455,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             for _ in range(self.max_workers):
                 await self._queue.put(None)
 
-        logger.info("✓ Queue processing complete, waiting for workers to finish...")
+        logger.info("[OK]Queue processing complete, waiting for workers to finish...")
 
         # Wait for workers to finish with timeout
         try:
@@ -463,10 +463,10 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 asyncio.gather(*self._workers),
                 timeout=WORKER_SHUTDOWN_TIMEOUT,
             )
-            logger.info(f"✓ All {len(self._workers)} workers finished successfully")
+            logger.info(f"[OK]All {len(self._workers)} workers finished successfully")
         except TimeoutError:
             logger.error(
-                f"⚠️  Workers did not finish within {WORKER_SHUTDOWN_TIMEOUT}s after queue.join(). "
+                f"[WARN]Workers did not finish within {WORKER_SHUTDOWN_TIMEOUT}s after queue.join(). "
                 "Cancelling workers and proceeding..."
             )
             # Cancel any workers that are still running
@@ -480,7 +480,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                     timeout=WORKER_CANCELLATION_TIMEOUT * 2.5,  # Allow more time during shutdown
                 )
             except TimeoutError:
-                logger.error("⚠️  Some workers could not be cancelled")
+                logger.error("[WARN]Some workers could not be cancelled")
 
         self._is_processing = False
 
@@ -539,14 +539,14 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 await asyncio.wait_for(await_result, timeout=POST_PROCESSOR_EXECUTION_TIMEOUT)
         except TimeoutError:
             logger.error(
-                f"✗ Post-processor execution timed out after {POST_PROCESSOR_EXECUTION_TIMEOUT}s for {result.item_id}"
+                f"[FAIL]Post-processor execution timed out after {POST_PROCESSOR_EXECUTION_TIMEOUT}s for {result.item_id}"
             )
         except Exception as e:
             # Log error with full details - this is critical for debugging
             import traceback
 
             logger.error(
-                f"✗ Post-processor failed for {result.item_id}:\n"
+                f"[FAIL]Post-processor failed for {result.item_id}:\n"
                 f"  Error type: {type(e).__name__}\n"
                 f"  Error message: {str(e)}\n"
                 f"  Full traceback:\n{traceback.format_exc()}"
@@ -580,7 +580,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                     )
                 except asyncio.TimeoutError:
                     logger.warning(
-                        "⚠️  Progress callback exceeded timeout of %.2fs; continuing without waiting.",
+                        "[WARN]Progress callback exceeded timeout of %.2fs; continuing without waiting.",
                         self.progress_callback_timeout,
                     )
                     callback_task.cancel()
@@ -602,6 +602,6 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 pass
             except Exception as exc:
                 if log_exceptions:
-                    logger.warning(f"⚠️  Progress callback failed: {exc}")
+                    logger.warning(f"[WARN]Progress callback failed: {exc}")
 
         task.add_done_callback(_cleanup)
