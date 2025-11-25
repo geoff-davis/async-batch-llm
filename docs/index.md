@@ -99,4 +99,4 @@ asyncio.run(main())
 
 ## License
 
-MIT License - See [LICENSE](https://github.com/geoff-davis/batch-llm/blob/main/LICENSE) for details.
+MIT License - See [LICENSE](https://github.com/geoff-davis/async-batch-llm/blob/main/LICENSE) for details.

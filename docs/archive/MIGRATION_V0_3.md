@@ -690,7 +690,7 @@ All features have complete working examples in `examples/` directory.
 
 ### Getting Help
 
-- GitHub Issues: <https://github.com/geoff-davis/batch-llm/issues>
+- GitHub Issues: <https://github.com/geoff-davis/async-batch-llm/issues>
 - Check logs for debug information
 - Enable debug logging: `logging.basicConfig(level=logging.DEBUG)`
 

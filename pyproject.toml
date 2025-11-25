@@ -82,10 +82,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/geoff-davis/batch-llm"
-Documentation = "https://geoff-davis.github.io/batch-llm/"
-Repository = "https://github.com/geoff-davis/batch-llm"
-Issues = "https://github.com/geoff-davis/batch-llm/issues"
+Homepage = "https://github.com/geoff-davis/async-batch-llm"
+Documentation = "https://geoff-davis.github.io/async-batch-llm/"
+Repository = "https://github.com/geoff-davis/async-batch-llm"
+Issues = "https://github.com/geoff-davis/async-batch-llm/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/async_batch_llm"]

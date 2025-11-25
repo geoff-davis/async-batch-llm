@@ -252,7 +252,7 @@ If you encounter issues during migration:
 
 1. Check the [CHANGELOG.md](../CHANGELOG.md) for detailed changes
 2. Review [test_strategy_lifecycle.py](../tests/test_strategy_lifecycle.py) for examples
-3. File an issue at <https://github.com/geoff-davis/batch-llm/issues>
+3. File an issue at <https://github.com/geoff-davis/async-batch-llm/issues>
 
 ## Benefits of v0.4.0
 

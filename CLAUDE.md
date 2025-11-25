@@ -1,12 +1,13 @@
 # Project Knowledge for Claude
 
-This document contains important information about the `batch-llm` project for future AI assistants working on this codebase.
+This document contains important information about the `async-batch-llm` project
+for future AI assistants working on this codebase.
 
 ---
 
 ## Project Overview
 
-**batch-llm** is a Python package for processing multiple LLM requests efficiently using a **strategy pattern** (v0.1+).
+**async-batch-llm** is a Python package for processing multiple LLM requests efficiently using a **strategy pattern** (v0.1+).
 
 **Current Version: v0.1.0** - Uses `LLMCallStrategy` for provider-agnostic LLM integration
 
@@ -502,7 +503,7 @@ The project has two automated workflows:
 2. **`.github/workflows/docs.yml`** - Runs on push to `main`:
    - Builds documentation with MkDocs
    - Deploys to GitHub Pages automatically
-   - Documentation available at: <https://geoff-davis.github.io/batch-llm/>
+   - Documentation available at: <https://geoff-davis.github.io/async-batch-llm/>
 
 #### Documentation Structure
 
@@ -873,8 +874,8 @@ See `examples/example_smart_model_escalation.py` for complete implementation wit
 
 ## Contact & Support
 
-- GitHub: <https://github.com/yourusername/batch-llm>
-- Issues: <https://github.com/yourusername/batch-llm/issues>
+- GitHub: <https://github.com/geoff-davis/async-batch-llm>
+- Issues: <https://github.com/geoff-davis/async-batch-llm/issues>
 - PyPI: <https://pypi.org/project/async-batch-llm/>
 
 ---

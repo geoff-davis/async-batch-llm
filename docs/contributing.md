@@ -7,7 +7,7 @@ Thank you for considering contributing to batch-llm!
 ### 1. Clone and Install
 
 ```bash
-git clone https://github.com/geoff-davis/batch-llm.git
+git clone https://github.com/geoff-davis/async-batch-llm.git
 cd batch-llm
 
 # Create virtual environment and install dependencies
@@ -152,8 +152,8 @@ class MyProviderStrategy(LLMCallStrategy[str]):
 
 ## Questions?
 
-- Open an [issue](https://github.com/geoff-davis/batch-llm/issues)
-- Start a [discussion](https://github.com/geoff-davis/batch-llm/discussions)
+- Open an [issue](https://github.com/geoff-davis/async-batch-llm/issues)
+- Start a [discussion](https://github.com/geoff-davis/async-batch-llm/discussions)
 
 ## License
 
