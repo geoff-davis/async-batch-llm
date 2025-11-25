@@ -2,16 +2,16 @@
 
 ## LLMCallStrategy
 
-::: batch_llm.LLMCallStrategy
+::: async_batch_llm.LLMCallStrategy
 
 ## PydanticAIStrategy
 
-::: batch_llm.PydanticAIStrategy
+::: async_batch_llm.PydanticAIStrategy
 
 ## GeminiStrategy
 
-::: batch_llm.GeminiStrategy
+::: async_batch_llm.GeminiStrategy
 
 ## GeminiCachedStrategy
 
-::: batch_llm.GeminiCachedStrategy
+::: async_batch_llm.GeminiCachedStrategy

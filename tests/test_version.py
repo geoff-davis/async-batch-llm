@@ -8,7 +8,7 @@ def test_version_matches_package():
     from async_batch_llm import __version__
 
     # Should match pyproject.toml version
-    package_version = version("batch-llm")
+    package_version = version("async-batch-llm")
     assert (
         __version__ == package_version
     ), f"__version__ ({__version__}) doesn't match package metadata ({package_version})"

@@ -2,12 +2,12 @@
 
 ## ProcessorObserver
 
-::: batch_llm.observers.ProcessorObserver
+::: async_batch_llm.observers.ProcessorObserver
 
 ## BaseObserver
 
-::: batch_llm.observers.BaseObserver
+::: async_batch_llm.observers.BaseObserver
 
 ## MetricsObserver
 
-::: batch_llm.observers.MetricsObserver
+::: async_batch_llm.observers.MetricsObserver

@@ -2,20 +2,20 @@
 
 ## ParallelBatchProcessor
 
-::: batch_llm.ParallelBatchProcessor
+::: async_batch_llm.ParallelBatchProcessor
 
 ## LLMWorkItem
 
-::: batch_llm.LLMWorkItem
+::: async_batch_llm.LLMWorkItem
 
 ## WorkItemResult
 
-::: batch_llm.WorkItemResult
+::: async_batch_llm.WorkItemResult
 
 ## ProcessorConfig
 
-::: batch_llm.ProcessorConfig
+::: async_batch_llm.ProcessorConfig
 
 ## BatchResult
 
-::: batch_llm.BatchResult
+::: async_batch_llm.BatchResult
