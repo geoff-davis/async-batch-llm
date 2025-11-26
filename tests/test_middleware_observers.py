@@ -569,16 +569,16 @@ async def test_metrics_observer_export_prometheus():
     prom_text = await observer.export_prometheus()
 
     # Verify Prometheus format
-    assert "# HELP batch_llm_items_processed Total items processed" in prom_text
-    assert "# TYPE batch_llm_items_processed counter" in prom_text
-    assert "batch_llm_items_processed 3" in prom_text
-    assert "batch_llm_items_succeeded 2" in prom_text
-    assert "batch_llm_items_failed 1" in prom_text
-    assert "batch_llm_rate_limits_hit 1" in prom_text
-    assert "# HELP batch_llm_avg_processing_time" in prom_text
-    assert "# TYPE batch_llm_avg_processing_time gauge" in prom_text
-    assert "batch_llm_total_cooldown_time 120.0" in prom_text
-    assert 'batch_llm_errors_total{error_type="ConnectionError"} 1' in prom_text
+    assert "# HELP async_batch_llm_items_processed Total items processed" in prom_text
+    assert "# TYPE async_batch_llm_items_processed counter" in prom_text
+    assert "async_batch_llm_items_processed 3" in prom_text
+    assert "async_batch_llm_items_succeeded 2" in prom_text
+    assert "async_batch_llm_items_failed 1" in prom_text
+    assert "async_batch_llm_rate_limits_hit 1" in prom_text
+    assert "# HELP async_batch_llm_avg_processing_time" in prom_text
+    assert "# TYPE async_batch_llm_avg_processing_time gauge" in prom_text
+    assert "async_batch_llm_total_cooldown_time 120.0" in prom_text
+    assert 'async_batch_llm_errors_total{error_type="ConnectionError"} 1' in prom_text
 
 
 @pytest.mark.asyncio

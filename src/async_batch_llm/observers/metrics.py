@@ -127,9 +127,9 @@ class MetricsObserver(BaseObserver):
             >>> # ... process items ...
             >>> prom_text = await observer.export_prometheus()
             >>> print(prom_text)
-            # HELP batch_llm_items_processed Total items processed
-            # TYPE batch_llm_items_processed counter
-            batch_llm_items_processed 100
+            # HELP async_batch_llm_items_processed Total items processed
+            # TYPE async_batch_llm_items_processed counter
+            async_batch_llm_items_processed 100
             ...
         """
         metrics = await self.get_metrics()
@@ -145,9 +145,9 @@ class MetricsObserver(BaseObserver):
         ]
 
         for metric_name, help_text in counters:
-            lines.append(f"# HELP batch_llm_{metric_name} {help_text}")
-            lines.append(f"# TYPE batch_llm_{metric_name} counter")
-            lines.append(f"batch_llm_{metric_name} {metrics.get(metric_name, 0)}")
+            lines.append(f"# HELP async_batch_llm_{metric_name} {help_text}")
+            lines.append(f"# TYPE async_batch_llm_{metric_name} counter")
+            lines.append(f"async_batch_llm_{metric_name} {metrics.get(metric_name, 0)}")
             lines.append("")
 
         # Gauge metrics
@@ -159,20 +159,20 @@ class MetricsObserver(BaseObserver):
         ]
 
         for metric_name, help_text in gauges:
-            lines.append(f"# HELP batch_llm_{metric_name} {help_text}")
-            lines.append(f"# TYPE batch_llm_{metric_name} gauge")
-            lines.append(f"batch_llm_{metric_name} {metrics.get(metric_name, 0)}")
+            lines.append(f"# HELP async_batch_llm_{metric_name} {help_text}")
+            lines.append(f"# TYPE async_batch_llm_{metric_name} gauge")
+            lines.append(f"async_batch_llm_{metric_name} {metrics.get(metric_name, 0)}")
             lines.append("")
 
         # Error counts as labeled counter
         error_counts = metrics.get("error_counts", {})
         if error_counts:
-            lines.append("# HELP batch_llm_errors_total Total errors by type")
-            lines.append("# TYPE batch_llm_errors_total counter")
+            lines.append("# HELP async_batch_llm_errors_total Total errors by type")
+            lines.append("# TYPE async_batch_llm_errors_total counter")
             for error_type, count in error_counts.items():
                 # Sanitize error type for Prometheus label
                 safe_type = error_type.replace('"', '\\"')
-                lines.append(f'batch_llm_errors_total{{error_type="{safe_type}"}} {count}')
+                lines.append(f'async_batch_llm_errors_total{{error_type="{safe_type}"}} {count}')
             lines.append("")
 
         return "\n".join(lines)
