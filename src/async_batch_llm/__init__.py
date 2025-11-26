@@ -13,7 +13,7 @@ Key features:
 - Configuration-based setup
 
 Example:
-    >>> from batch_llm import (
+    >>> from async_batch_llm import (
     ...     ParallelBatchProcessor,
     ...     ProcessorConfig,
     ...     LLMWorkItem,
@@ -46,7 +46,7 @@ Type Aliases:
       Equivalent to ``WorkItemResult[T, None]``
 
     Example using type aliases:
-        >>> from batch_llm import SimpleBatchProcessor, SimpleWorkItem
+        >>> from async_batch_llm import SimpleBatchProcessor, SimpleWorkItem
         >>>
         >>> async with SimpleBatchProcessor[MyOutput](config=config) as processor:
         ...     await processor.add_work(SimpleWorkItem[MyOutput](

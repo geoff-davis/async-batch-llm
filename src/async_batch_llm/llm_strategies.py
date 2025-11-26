@@ -278,7 +278,7 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
         if genai is None:
             raise ImportError(
                 "google-genai is required for GeminiStrategy. "
-                "Install with: pip install 'batch-llm[gemini]'"
+                "Install with: pip install 'async-batch-llm[gemini]'"
             )
 
         self.model = model
@@ -441,7 +441,7 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
         if genai is None:
             raise ImportError(
                 "google-genai is required for GeminiCachedStrategy. "
-                "Install with: pip install 'batch-llm[gemini]'"
+                "Install with: pip install 'async-batch-llm[gemini]'"
             )
 
         # Validate cache parameters (v0.4.0)
@@ -861,7 +861,7 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
         if Agent is Any:
             raise ImportError(
                 "pydantic-ai is required for PydanticAIStrategy. "
-                "Install with: pip install 'batch-llm[pydantic-ai]'"
+                "Install with: pip install 'async-batch-llm[pydantic-ai]'"
             )
 
         self.agent = agent

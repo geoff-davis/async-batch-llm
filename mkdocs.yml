@@ -1,4 +1,4 @@
-site_name: batch-llm
+site_name: async-batch-llm
 site_description: Provider-agnostic framework for high-throughput LLM processing with async workers, automatic retries, and intelligent validation recovery.
 site_url: https://geoff-davis.github.io/async-batch-llm/
 

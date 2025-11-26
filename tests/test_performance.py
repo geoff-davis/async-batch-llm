@@ -1,4 +1,4 @@
-"""Performance benchmarks for batch-llm.
+"""Performance benchmarks for async-batch-llm.
 
 These tests measure throughput, scaling, and resource usage.
 Run with: pytest -m benchmark

@@ -8,9 +8,9 @@ depends on Node tooling—install Node 18+ and add `markdownlint-cli2` as a dev 
 
 ## Project Structure & Module Organization
 
-Source lives in `src/batch_llm`, with core orchestration under `core/`, reusable strategy interfaces in
+Source lives in `src/async_batch_llm`, with core orchestration under `core/`, reusable strategy interfaces in
 `strategies/`, parallel scheduling in `parallel.py`, and middleware/observers grouped by folder. Shared test
-fixtures are in `src/batch_llm/testing`. End-to-end and regression suites sit in `tests/`, while runnable client
+fixtures are in `src/async_batch_llm/testing`. End-to-end and regression suites sit in `tests/`, while runnable client
 snippets are in `examples/`. Reference material, including architecture notes, is in `docs/`. The `Makefile` and
 `pyproject.toml` define tooling defaults—review them before adjusting project-wide settings.
 
@@ -32,7 +32,7 @@ with `Strategy` or `Classifier`. Observers and middleware should expose verbs de
 
 Pytest is configured via `pyproject.toml`, discovering files matching `test_*.py` and skipping `@pytest.mark.slow` by
 default. Add new coverage under `tests/` mirroring the target module path, and prefer descriptive test names like
-`test_strategy_handles_token_limits`. Integration fixtures live in `src/batch_llm/testing`; reuse rather than
+`test_strategy_handles_token_limits`. Integration fixtures live in `src/async_batch_llm/testing`; reuse rather than
 duplicating helpers. For scenarios that hit remote APIs, guard them with `slow` or a dedicated marker so they stay
 opt-in.
 

@@ -1,10 +1,10 @@
-"""Example demonstrating batch-llm with LangChain integration.
+"""Example demonstrating async-batch-llm with LangChain integration.
 
 This example shows how to create custom strategies that integrate with LangChain,
 including chains, agents, and RAG (Retrieval-Augmented Generation) pipelines.
 
 Install dependencies:
-    pip install 'batch-llm' 'langchain' 'langchain-openai' 'langchain-anthropic' 'langchain-community' 'faiss-cpu'
+    pip install 'async-batch-llm' 'langchain' 'langchain-openai' 'langchain-anthropic' 'langchain-community' 'faiss-cpu'
 """
 
 import asyncio
@@ -20,7 +20,7 @@ from async_batch_llm.llm_strategies import LLMCallStrategy
 
 
 class LangChainStrategy(LLMCallStrategy[str]):
-    """Strategy for using LangChain chains with batch-llm."""
+    """Strategy for using LangChain chains with async-batch-llm."""
 
     def __init__(self, chain: LLMChain):
         """

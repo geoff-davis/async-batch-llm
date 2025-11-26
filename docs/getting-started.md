@@ -24,7 +24,7 @@ pip install 'async-batch-llm[all]'
 
 ### 1. Strategy Pattern
 
-batch-llm uses a strategy pattern to support any LLM provider. A strategy encapsulates:
+async-batch-llm uses a strategy pattern to support any LLM provider. A strategy encapsulates:
 
 - How to call the LLM
 - How to handle errors

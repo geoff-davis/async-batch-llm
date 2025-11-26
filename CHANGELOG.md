@@ -14,7 +14,7 @@ Release focused on developer experience improvements and code quality.
 ### Added
 
 - **`TokenTrackingError` export** - The `TokenTrackingError` class is now exported from the main
-  `batch_llm` package for users who want to catch it explicitly when handling failed LLM calls
+  `async_batch_llm` package for users who want to catch it explicitly when handling failed LLM calls
   with token usage tracking.
 - **Type aliases** - Added convenience type aliases for the most common use case (string input,
   typed output, no context):
@@ -518,7 +518,7 @@ work_item = LLMWorkItem(
 )
 
 # ✅ New (v0.1) - Use strategy
-from batch_llm import PydanticAIStrategy
+from async_batch_llm import PydanticAIStrategy
 
 strategy = PydanticAIStrategy(agent=agent)
 work_item = LLMWorkItem(
@@ -615,7 +615,7 @@ See **[Migration Guide](docs/archive/MIGRATION_V0_1.md)** for complete upgrade i
 
 #### Testing
 
-- **`batch_llm.testing.MockAgent`** - Mock agent for testing without API calls
+- **`async_batch_llm.testing.MockAgent`** - Mock agent for testing without API calls
 - Comprehensive test coverage for all strategies
 - Strategy lifecycle tests (prepare/execute/cleanup)
 - **New `on_error` callback tests** (4 comprehensive tests):

@@ -2,7 +2,9 @@
 
 ## Problem Summary
 
-When multiple workers hit rate limits simultaneously, the current implementation deadlocks. The core issue is complex state management across concurrent workers during rate limit cooldown cycles.
+When multiple workers hit rate limits simultaneously, the current implementation deadlocks.
+The core issue is complex state management across concurrent workers during rate limit
+cooldown cycles.
 
 ## Root Causes Identified
 
@@ -28,7 +30,7 @@ Instead of re-queueing items, track rate-limited items separately and redistribu
 
 ### Architecture Overview
 
-```
+```text
 Current (broken):
 Worker hits rate limit → Re-queue item → Call _handle_rate_limit() → Raise exception
 
@@ -264,7 +266,7 @@ If implementation fails:
 
 1. Revert to previous commit (current generation counter approach)
 2. Keep worst-case tests skipped
-3. Document why approach didn't work in BATCH_LLM_FEEDBACK.md
+3. Document why approach didn't work in the feedback docs.md
 
 ## Success Criteria
 
@@ -296,12 +298,13 @@ If implementation fails:
    **A**: No - `_in_cooldown` flag prevents this. Second wave waits for first to complete.
 
 4. **Q**: What about proactive rate limiting?
-   **A**: This fix is orthogonal - proactive limits reduce rate limit frequency, but when they DO hit, this fix ensures proper handling.
+   **A**: This fix is orthogonal - proactive limits reduce rate limit frequency, but when
+   they DO hit, this fix ensures proper handling.
 
 ## References
 
-- Current implementation: `src/batch_llm/parallel.py` lines 458-548 (`_handle_rate_limit`)
-- Rate limit detection: `src/batch_llm/parallel.py` lines 951-984 (`_handle_exception`)
-- Worker loop: `src/batch_llm/parallel.py` lines 288-365 (`_worker`)
+- Current implementation: `src/async_batch_llm/parallel.py` lines 458-548 (`_handle_rate_limit`)
+- Rate limit detection: `src/async_batch_llm/parallel.py` lines 951-984 (`_handle_exception`)
+- Worker loop: `src/async_batch_llm/parallel.py` lines 288-365 (`_worker`)
 - Worst-case tests: `tests/test_worst_case_rate_limit.py`
-- Investigation: `BATCH_LLM_FEEDBACK.md`
+- Investigation: `feedback documentation`

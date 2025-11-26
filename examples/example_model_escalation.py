@@ -10,7 +10,7 @@ This maximizes cost efficiency while maintaining high success rates.
 ## Installation
 
 ```bash
-pip install 'batch-llm[gemini]'
+pip install 'async-batch-llm[gemini]'
 export GOOGLE_API_KEY=your_api_key_here
 ```
 

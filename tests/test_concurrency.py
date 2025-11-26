@@ -1,4 +1,4 @@
-"""Concurrency and thread-safety tests for batch_llm.
+"""Concurrency and thread-safety tests for async_batch_llm.
 
 These tests verify that the package handles concurrent access correctly
 and doesn't have race conditions.

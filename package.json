@@ -1,5 +1,5 @@
 {
-  "name": "batch-llm",
+  "name": "async-batch-llm",
   "version": "1.0.0",
   "description": "**Provider-agnostic parallel LLM processing with automatic retries, rate limiting, and flexible strategies.**",
   "main": "index.js",

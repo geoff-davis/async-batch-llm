@@ -1,4 +1,4 @@
-"""Example usage of the batch_llm module.
+"""Example usage of the async_batch_llm module.
 
 This demonstrates how to use the batch processing framework with PydanticAI agents.
 Includes examples of the new configuration system, middleware, observers, and testing utilities.

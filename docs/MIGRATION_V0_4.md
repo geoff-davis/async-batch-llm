@@ -1,6 +1,6 @@
 # Migration Guide: v0.3.x → v0.4.0
 
-This guide helps you migrate from batch-llm v0.3.x to v0.4.0, which introduces strategy lifecycle
+This guide helps you migrate from async-batch-llm v0.3.x to v0.4.0, which introduces strategy lifecycle
 management with context managers.
 
 ## Summary of Changes

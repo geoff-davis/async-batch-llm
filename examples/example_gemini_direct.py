@@ -1,4 +1,4 @@
-"""Example of using batch_llm with Google Gemini using GeminiStrategy.
+"""Example of using async_batch_llm with Google Gemini API using GeminiStrategy.
 
 This example shows how to process batches using the built-in GeminiStrategy,
 with progressive temperature increases on retries.
@@ -6,9 +6,9 @@ with progressive temperature increases on retries.
 ## Installation
 
 ```bash
-pip install 'batch-llm[gemini]'
+pip install 'async-batch-llm[gemini]'
 # or
-uv add 'batch-llm[gemini]'
+uv add 'async-batch-llm[gemini]'
 ```
 
 ## Setup

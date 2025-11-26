@@ -1,11 +1,11 @@
 # Gemini API Integration Guide
 
-Complete guide for using batch-llm with Google's Gemini API.
+Complete guide for using async-batch-llm with Google's Gemini API.
 
 ## Installation
 
 ```bash
-# Install batch-llm with Gemini support
+# Install async-batch-llm with Gemini support
 pip install 'async-batch-llm[gemini]'
 # or
 uv add 'async-batch-llm[gemini]'
@@ -13,7 +13,7 @@ uv add 'async-batch-llm[gemini]'
 
 This installs:
 
-- `batch-llm` - Core batch processing framework
+- `async-batch-llm` - Core batch processing framework
 - `google-genai` - Official Google Gemini SDK
 - `pydantic` - For response validation
 
@@ -53,9 +53,9 @@ response = client.models.generate_content(
 print(response.text)
 ```
 
-## Usage with batch-llm
+## Usage with async-batch-llm
 
-batch-llm provides two built-in Gemini strategies:
+async-batch-llm provides two built-in Gemini strategies:
 
 ### 1. GeminiStrategy (Simple API Calls)
 
@@ -293,7 +293,7 @@ See: <https://ai.google.dev/gemini-api/docs/models/generative-models#model-param
 
 ### Error Handling
 
-batch-llm includes `GeminiErrorClassifier` for Gemini-specific errors:
+async-batch-llm includes `GeminiErrorClassifier` for Gemini-specific errors:
 
 ```python
 from async_batch_llm.classifiers import GeminiErrorClassifier
@@ -707,12 +707,12 @@ Ensure all fields match the required schema exactly."""
 - **Models**: <https://ai.google.dev/gemini-api/docs/models/gemini>
 - **Get API Key**: <https://aistudio.google.com/apikey>
 - **Quickstart**: <https://ai.google.dev/gemini-api/docs/quickstart>
-- **batch-llm API Docs**: [docs/API.md](API.md)
+- **async-batch-llm API Docs**: [docs/API.md](API.md)
 
 ## Support
 
 For issues with:
 
-- **batch-llm**: <https://github.com/yourusername/batch-llm/issues>
+- **batch-llm**: <https://github.com/geoff-davis/async-batch-llm/issues>
 - **Gemini API**: <https://developers.google.com/support>
 - **google-genai SDK**: <https://github.com/googleapis/python-genai/issues>

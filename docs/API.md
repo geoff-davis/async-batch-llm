@@ -1,6 +1,6 @@
-# batch-llm API Reference
+# async-batch-llm API Reference
 
-Complete API documentation for batch-llm v0.4.0.
+Complete API documentation for async-batch-llm v0.4.0.
 
 ## Table of Contents
 
@@ -1175,7 +1175,7 @@ Exception raised when framework-level timeout is exceeded.
 ```python
 class FrameworkTimeoutError(TimeoutError):
     """
-    Timeout enforced by the batch-llm framework (asyncio.wait_for).
+    Timeout enforced by the async-batch-llm framework (asyncio.wait_for).
 
     This distinguishes framework-level timeouts from API-level timeouts.
     Framework timeouts indicate the configured timeout_per_item was exceeded,

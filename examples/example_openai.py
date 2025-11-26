@@ -1,10 +1,10 @@
-"""Example demonstrating batch-llm with OpenAI API.
+"""Example demonstrating async-batch-llm with OpenAI API.
 
 This example shows how to create a custom strategy for OpenAI's API,
 including both direct API calls and structured output with Pydantic models.
 
 Install dependencies:
-    pip install 'batch-llm' 'openai'
+    pip install 'async-batch-llm' 'openai'
 """
 
 import asyncio

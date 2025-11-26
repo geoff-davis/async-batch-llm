@@ -137,7 +137,7 @@ class OpenAIStrategy(LLMCallStrategy[str]):
 
         return output, tokens
 
-# Use with batch-llm
+# Use with async-batch-llm
 from openai import AsyncOpenAI
 client = AsyncOpenAI(api_key="...")
 strategy = OpenAIStrategy(client=client)
@@ -741,7 +741,7 @@ Contributions welcome! Areas of interest:
 ```bash
 # Clone and install
 git clone https://github.com/geoff-davis/async-batch-llm.git
-cd batch-llm
+cd async-batch-llm
 uv sync --all-extras
 
 # Run tests

@@ -1,4 +1,4 @@
-"""Basic tests for the batch_llm module using MockAgent.
+"""Basic tests for the async_batch_llm module using MockAgent.
 
 These tests don't require any API keys and can be run in CI/CD.
 """

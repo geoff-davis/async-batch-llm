@@ -1,4 +1,4 @@
-# Pre-commit hooks for batch-llm
+# Pre-commit hooks for async-batch-llm
 # Install: pip install pre-commit && pre-commit install
 # Run manually: pre-commit run --all-files
 

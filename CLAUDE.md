@@ -363,7 +363,7 @@ uv run pytest tests/test_basic.py -v
 uv run pytest tests/test_concurrency.py -v
 
 # With coverage
-uv run pytest --cov=batch_llm --cov-report=html
+uv run pytest --cov=async_batch_llm --cov-report=html
 ```
 
 ### Code Quality
@@ -383,7 +383,7 @@ uv run ruff check src/ tests/ examples/ --fix
 uv run ruff check src/ tests/ examples/
 
 # Type check
-uv run mypy src/batch_llm/ --ignore-missing-imports
+uv run mypy src/async_batch_llm/ --ignore-missing-imports
 ```
 
 **Workflow:** After any Python code changes, run `uv run ruff check src/ --fix` before committing.
@@ -440,7 +440,7 @@ The pre-commit hooks will automatically run on staged files:
 1. **Ruff** - Code formatting and linting (with auto-fix)
    - **Note:** `examples/` directory is excluded from ruff checks
    - Examples intentionally check environment variables before imports
-2. **Mypy** - Type checking on `src/batch_llm/`
+2. **Mypy** - Type checking on `src/async_batch_llm/`
 3. **General checks**:
    - Trailing whitespace removal
    - End-of-file newline fixes
@@ -542,7 +542,7 @@ uv run ruff check src/ tests/ --fix
 uv run ruff check src/ tests/
 
 # 4. Run type checker
-uv run mypy src/batch_llm/ --ignore-missing-imports
+uv run mypy src/async_batch_llm/ --ignore-missing-imports
 
 # 5. Lint markdown documentation
 npx markdownlint-cli2 "README.md" "docs/**/*.md" "CLAUDE.md"
@@ -578,7 +578,7 @@ uv publish
 ### Package Structure
 
 ```text
-src/batch_llm/
+src/async_batch_llm/
 ├── __init__.py           # Public API exports
 ├── base.py               # Core data models
 ├── parallel.py           # Main processor (1000+ lines)
@@ -887,7 +887,7 @@ See `examples/example_smart_model_escalation.py` for complete implementation wit
 1. **CRITICAL: Always run quality checks before ANY commit:**
    - Run tests: `uv run pytest`
    - Run linter: `uv run ruff check src/ tests/ --fix`
-   - Run type checker: `uv run mypy src/batch_llm/ --ignore-missing-imports`
+   - Run type checker: `uv run mypy src/async_batch_llm/ --ignore-missing-imports`
    - Lint markdown: `npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md"`
    - Or run all at once: `make ci`
    - **All checks must pass with 0 errors before committing**
@@ -981,7 +981,7 @@ See `examples/example_smart_model_escalation.py` for complete implementation wit
 ### Project-Specific Knowledge
 
 1. **File structure:**
-   - Main code: `src/batch_llm/`
+   - Main code: `src/async_batch_llm/`
    - Tests: `tests/`
    - Examples: `examples/`
    - Docs: `docs/` + `README.md`

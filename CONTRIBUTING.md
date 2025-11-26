@@ -8,7 +8,7 @@ Thank you for your interest in contributing to Batch LLM! This document provides
 
 ```bash
 git clone https://github.com/geoff-davis/async-batch-llm.git
-cd batch-llm
+cd async-batch-llm
 ```
 
 1. **Install uv** (if not already installed)
@@ -55,7 +55,7 @@ uv run pytest
 uv run pytest
 
 # Run with coverage
-uv run pytest --cov=batch_llm --cov-report=html
+uv run pytest --cov=async_batch_llm --cov-report=html
 
 # Run specific test file
 uv run pytest tests/test_basic.py
@@ -98,7 +98,7 @@ uv run ruff format src/ tests/ examples/
 uv run ruff check src/ tests/ examples/ --fix
 
 # Type check
-uv run mypy src/batch_llm/ --ignore-missing-imports
+uv run mypy src/async_batch_llm/ --ignore-missing-imports
 
 # Markdown lint (requires npm install first)
 npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md" --fix
@@ -136,7 +136,7 @@ git checkout -b feature/your-feature-name
 ```bash
 uv run pytest
 uv run ruff check src/
-uv run mypy src/batch_llm/
+uv run mypy src/async_batch_llm/
 ```
 
 1. **Submit a pull request**

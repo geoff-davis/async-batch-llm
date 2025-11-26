@@ -1,1 +1,1 @@
-"""Tests for batch_llm package."""
+"""Tests for async_batch_llm package."""

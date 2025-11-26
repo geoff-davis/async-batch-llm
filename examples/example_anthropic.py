@@ -1,10 +1,10 @@
-"""Example demonstrating batch-llm with Anthropic Claude API.
+"""Example demonstrating async-batch-llm with Anthropic Claude API.
 
 This example shows how to create a custom strategy for Anthropic's API,
 including both direct API calls and streaming responses.
 
 Install dependencies:
-    pip install 'batch-llm' 'anthropic'
+    pip install 'async-batch-llm' 'anthropic'
 """
 
 import asyncio

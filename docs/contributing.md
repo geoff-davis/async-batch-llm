@@ -1,6 +1,6 @@
-# Contributing to batch-llm
+# Contributing to async-batch-llm
 
-Thank you for considering contributing to batch-llm!
+Thank you for considering contributing to async-batch-llm!
 
 ## Development Setup
 
@@ -8,7 +8,7 @@ Thank you for considering contributing to batch-llm!
 
 ```bash
 git clone https://github.com/geoff-davis/async-batch-llm.git
-cd batch-llm
+cd async-batch-llm
 
 # Create virtual environment and install dependencies
 uv venv
@@ -35,7 +35,7 @@ uv run pytest
 uv run pytest tests/test_basic.py -v
 
 # Run with coverage
-uv run pytest --cov=batch_llm --cov-report=html
+uv run pytest --cov=async_batch_llm --cov-report=html
 ```
 
 ### Code Quality
@@ -53,7 +53,7 @@ uv run ruff check src/ tests/ examples/ --fix
 uv run ruff check src/ tests/ examples/
 
 # Type check
-uv run mypy src/batch_llm/ --ignore-missing-imports
+uv run mypy src/async_batch_llm/ --ignore-missing-imports
 
 # Or run all checks at once
 make ci
@@ -95,7 +95,7 @@ Before committing, ensure:
 
 1. ✅ All tests pass: `uv run pytest`
 2. ✅ Linting passes: `uv run ruff check src/ tests/`
-3. ✅ Type checking passes: `uv run mypy src/batch_llm/`
+3. ✅ Type checking passes: `uv run mypy src/async_batch_llm/`
 4. ✅ Markdown is clean: `make markdown-lint`
 
 Or run everything at once:
@@ -116,8 +116,8 @@ make ci
 ## Project Structure
 
 ```text
-batch-llm/
-├── src/batch_llm/          # Main package
+async-batch-llm/
+├── src/async_batch_llm/          # Main package
 │   ├── base.py             # Core data models
 │   ├── parallel.py         # Main processor
 │   ├── llm_strategies/     # Strategy implementations
@@ -133,7 +133,7 @@ batch-llm/
 
 To add a new LLM provider strategy:
 
-1. Create strategy in `src/batch_llm/llm_strategies/`
+1. Create strategy in `src/async_batch_llm/llm_strategies/`
 2. Implement `LLMCallStrategy` protocol
 3. Add tests in `tests/`
 4. Add example in `examples/`
@@ -152,8 +152,8 @@ class MyProviderStrategy(LLMCallStrategy[str]):
 
 ## Questions?
 
-- Open an [issue](https://github.com/geoff-davis/async-batch-llm/issues)
-- Start a [discussion](https://github.com/geoff-davis/async-batch-llm/discussions)
+- Open an [issue](https://github.com/geoff-davis/async-async-batch-llm/issues)
+- Start a [discussion](https://github.com/geoff-davis/async-async-batch-llm/discussions)
 
 ## License
 

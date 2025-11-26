@@ -13,7 +13,7 @@ limits don't benefit from a smarter model.
 ## Installation
 
 ```bash
-pip install 'batch-llm[gemini]'
+pip install 'async-batch-llm[gemini]'
 export GOOGLE_API_KEY=your_api_key_here
 ```
 

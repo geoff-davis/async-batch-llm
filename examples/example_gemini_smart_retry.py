@@ -9,7 +9,7 @@ This example demonstrates two advanced patterns for handling Pydantic validation
 ## Installation
 
 ```bash
-pip install 'batch-llm[gemini]'
+pip install 'async-batch-llm[gemini]'
 export GOOGLE_API_KEY=your_api_key_here
 ```
 

@@ -1,6 +1,6 @@
 # Batch LLM Examples
 
-This directory contains example scripts demonstrating how to use the `batch-llm` package.
+This directory contains example scripts demonstrating how to use the `async-batch-llm` package.
 
 ## Running Examples
 

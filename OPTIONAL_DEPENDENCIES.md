@@ -2,7 +2,7 @@
 
 ## Overview
 
-As of v0.4.0, `batch-llm` has made both **PydanticAI** and **google-genai** optional
+As of v0.4.0, `async-batch-llm` has made both **PydanticAI** and **google-genai** optional
 dependencies. The strategy pattern makes it easy to plug into any LLM provider.
 
 **Core dependency**: Only `pydantic>=2.0.0` is required.
@@ -14,7 +14,7 @@ dependencies. The strategy pattern makes it easy to plug into any LLM provider.
 ```bash
 pip install async-batch-llm
 # or
-uv add batch-llm
+uv add async-batch-llm
 ```
 
 This installs only the core dependencies:
@@ -43,7 +43,7 @@ pip install 'async-batch-llm[pydantic-ai]'
 uv add 'async-batch-llm[pydantic-ai]'
 ```
 
-**Use case**: Using PydanticAI agents with batch-llm
+**Use case**: Using PydanticAI agents with async-batch-llm
 
 **Enables**:
 
@@ -99,7 +99,7 @@ Includes:
 ### Pattern 1: PydanticAI Strategy (requires `pydantic-ai`)
 
 ```python
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, PydanticAIStrategy
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, PydanticAIStrategy
 from pydantic_ai import Agent
 
 # Create agent
@@ -116,12 +116,12 @@ work_item = LLMWorkItem(
 )
 ```
 
-**Required**: `batch-llm[pydantic-ai]`
+**Required**: `async-batch-llm[pydantic-ai]`
 
 ### Pattern 2: Gemini Strategies (requires `gemini`)
 
 ```python
-from batch_llm.llm_strategies import GeminiStrategy, GeminiCachedStrategy
+from async_batch_llm.llm_strategies import GeminiStrategy, GeminiCachedStrategy
 from google import genai
 
 client = genai.Client(api_key="your-api-key")
@@ -149,13 +149,13 @@ work_item = LLMWorkItem(
 )
 ```
 
-**Required**: `batch-llm[gemini]`
+**Required**: `async-batch-llm[gemini]`
 
 ### Pattern 3: Custom Strategy (no extra dependencies)
 
 ```python
-from batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 class MyCustomStrategy(LLMCallStrategy[MyOutput]):
     """Custom strategy for any LLM provider."""
@@ -177,7 +177,7 @@ work_item = LLMWorkItem(
 )
 ```
 
-**Required**: Only `batch-llm` (no extras needed)
+**Required**: Only `async-batch-llm` (no extras needed)
 
 ## Examples
 
@@ -245,7 +245,7 @@ work_item = LLMWorkItem(
 )
 
 # v0.4.0+
-from batch_llm import PydanticAIStrategy
+from async_batch_llm import PydanticAIStrategy
 
 strategy = PydanticAIStrategy(agent=agent)
 work_item = LLMWorkItem(
@@ -255,7 +255,7 @@ work_item = LLMWorkItem(
 )
 ```
 
-**Migration**: Install `batch-llm[pydantic-ai]` and wrap agents in `PydanticAIStrategy`
+**Migration**: Install `async-batch-llm[pydantic-ai]` and wrap agents in `PydanticAIStrategy`
 
 ### From pre-0.4.0 with direct_call
 
@@ -272,7 +272,7 @@ work_item = LLMWorkItem(
 )
 
 # v0.4.0+
-from batch_llm.llm_strategies import LLMCallStrategy
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 class MyStrategy(LLMCallStrategy[OutputType]):
     async def execute(self, prompt: str, attempt: int, timeout: float):
@@ -303,7 +303,7 @@ See [docs/archive/MIGRATION_V0_1.md](docs/archive/MIGRATION_V0_1.md) for complet
 Optional dependencies are conditionally imported:
 
 ```python
-# In src/batch_llm/llm_strategies.py
+# In src/async_batch_llm/llm_strategies.py
 try:
     from pydantic_ai import Agent
 except ImportError:

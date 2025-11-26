@@ -1,17 +1,17 @@
-# batch-llm
+# async-batch-llm
 
 **Process thousands of LLM requests in parallel with automatic retries, rate limiting, and flexible error handling.**
 
 Works with any LLM provider (OpenAI, Anthropic, Google, LangChain, or custom) through a simple strategy pattern.
 Built on asyncio for efficient I/O-bound processing.
 
-[![PyPI version](https://badge.fury.io/py/batch-llm.svg)](https://badge.fury.io/py/batch-llm)
+[![PyPI version](https://badge.fury.io/py/async-batch-llm.svg)](https://badge.fury.io/py/async-batch-llm)
 [![Python 3.10-3.14](https://img.shields.io/badge/python-3.10--3.14-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
 
-## Why batch-llm?
+## Why async-batch-llm?
 
 - ✅ **Universal** - Works with any LLM provider through a simple strategy interface
 - ✅ **Reliable** - Built-in retry logic, timeout handling, and coordinated rate limiting
@@ -93,7 +93,7 @@ asyncio.run(main())
 - [Getting Started Guide](getting-started.md) - Learn the basics
 - [Examples](examples/basic.md) - See more examples
 - [API Reference](api/core.md) - Full API documentation
-- [Contributing](contributing.md) - Help improve batch-llm
+- [Contributing](contributing.md) - Help improve async-batch-llm
 
 ---
 
