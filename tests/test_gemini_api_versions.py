@@ -1,57 +1,26 @@
-"""Tests for google-genai API version compatibility."""
-
-import pytest
+"""Tests for google-genai API compatibility."""
 
 
-def test_api_version_detection():
-    """Test that API version detection works correctly."""
-    from async_batch_llm.models import GeminiCachedModel
+def test_google_genai_version_sufficient():
+    """Test that installed google-genai meets minimum version requirement (>=1.49.0)."""
+    from importlib.metadata import version
 
-    version = GeminiCachedModel._detect_google_genai_version()
-
-    # Should detect one of the three supported versions
-    assert version in ["v1.45", "v1.46-v1.48", "v1.49+"], f"Unexpected API version: {version}"
-
-
-def test_api_version_matches_installed_package():
-    """Test that detected version matches what's actually installed."""
-    from async_batch_llm.models import GeminiCachedModel
-
-    version = GeminiCachedModel._detect_google_genai_version()
-
-    # Try to import the new API type
-    try:
-        from google.genai.types import CreateCachedContentConfig  # noqa: F401
-
-        # If import succeeds, we should detect v1.46+ or v1.49+
-        assert version in [
-            "v1.46-v1.48",
-            "v1.49+",
-        ], f"CreateCachedContentConfig is importable but version detection returned {version}"
-    except ImportError:
-        # If import fails, we should detect v1.45
-        assert version == "v1.45", (
-            f"CreateCachedContentConfig is not importable but version detection returned {version}"
-        )
-
-
-@pytest.mark.asyncio
-async def test_gemini_cached_model_initialization_includes_version():
-    """Test that GeminiCachedModel stores API version on init."""
-    from unittest.mock import MagicMock
-
-    from async_batch_llm.models import GeminiCachedModel
-
-    # Create a mock client (won't actually use it in this test)
-    mock_client = MagicMock()
-
-    model = GeminiCachedModel(
-        model="gemini-2.5-flash",
-        client=mock_client,
-        cached_content=[],
-        cache_ttl_seconds=3600,
+    installed = version("google-genai")
+    major, minor, *_ = installed.split(".")
+    assert int(major) >= 1
+    assert int(major) > 1 or int(minor) >= 49, (
+        f"google-genai {installed} is below minimum 1.49.0"
     )
 
-    # Check that _api_version was set during init
-    assert hasattr(model, "_api_version")
-    assert model._api_version in ["v1.45", "v1.46-v1.48", "v1.49+"]
+
+def test_create_cached_content_config_available():
+    """Test that CreateCachedContentConfig accepts contents parameter (v1.49+ API)."""
+    import inspect
+
+    from google.genai.types import CreateCachedContentConfig
+
+    sig = inspect.signature(CreateCachedContentConfig.__init__)
+    params = sig.parameters
+    assert "contents" in params or "data" in params, (
+        "CreateCachedContentConfig must accept 'contents' or 'data' parameter"
+    )

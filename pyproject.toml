@@ -58,11 +58,11 @@ pydantic-ai = [
     "pydantic-ai>=0.0.1",
 ]
 gemini = [
-    "google-genai>=1.46.0",
+    "google-genai>=1.49.0",
 ]
 all = [
     "pydantic-ai>=0.0.1",
-    "google-genai>=1.46.0",
+    "google-genai>=1.49.0",
 ]
 docs = [
     "mkdocs>=1.5.0",
@@ -78,7 +78,7 @@ dev = [
     "mypy>=1.0.0",
     "ty>=0.0.1a16",
     "pydantic-ai>=0.0.1",  # Required for tests
-    "google-genai>=1.46.0",  # Required for Gemini tests
+    "google-genai>=1.49.0",  # Required for Gemini tests
     "pre-commit>=3.0.0",
 ]
 

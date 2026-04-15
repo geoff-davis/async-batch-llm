@@ -269,8 +269,6 @@ class GeminiCachedModel:
         self._cache_lock: Any = None
         self._prepared = False
 
-        self._api_version = self._detect_google_genai_version()
-        logger.debug(f"Detected google-genai API version: {self._api_version}")
 
     @property
     def cache_name(self) -> str | None:
@@ -457,75 +455,23 @@ class GeminiCachedModel:
         await self._create_new_cache()
 
     async def _create_new_cache(self) -> None:
-        if self._api_version == "v1.49+":
-            from google.genai.types import CreateCachedContentConfig
+        from google.genai.types import CreateCachedContentConfig
 
-            config_kwargs: dict[str, Any] = {
-                "contents": self._cached_content,
-                "ttl": f"{self._cache_ttl_seconds}s",
-            }
-            if self._cache_tags:
-                try:
-                    config_kwargs["metadata"] = self._cache_tags
-                except TypeError:
-                    logger.warning(
-                        "Gemini API doesn't support metadata parameter, "
-                        "cache tags will not be stored"
-                    )
+        config_kwargs: dict[str, Any] = {
+            "contents": self._cached_content,
+            "ttl": f"{self._cache_ttl_seconds}s",
+        }
+        if self._cache_tags:
+            config_kwargs["metadata"] = self._cache_tags
 
-            self._cache = await self._client.aio.caches.create(  # type: ignore[call-arg]
-                model=self._model,
-                config=CreateCachedContentConfig(**config_kwargs),
-            )
-        elif self._api_version == "v1.46-v1.48":
-            from google.genai.types import CreateCachedContentConfig
-
-            config_kwargs = {"ttl": f"{self._cache_ttl_seconds}s"}
-            if self._cache_tags:
-                try:
-                    config_kwargs["metadata"] = self._cache_tags  # ty:ignore[invalid-assignment]
-                except TypeError:
-                    logger.warning(
-                        "Gemini API doesn't support metadata parameter, "
-                        "cache tags will not be stored"
-                    )
-
-            self._cache = await self._client.aio.caches.create(  # type: ignore[call-arg]
-                model=self._model,
-                contents=self._cached_content,  # ty:ignore[unknown-argument]
-                config=CreateCachedContentConfig(**config_kwargs),  # ty:ignore[invalid-argument-type]
-            )
-        else:
-            if self._cache_tags:
-                logger.warning(
-                    "Cache tags not supported on legacy google-genai API (v1.45 and earlier)."
-                )
-
-            self._cache = await self._client.aio.caches.create(  # type: ignore[call-arg]
-                model=self._model,
-                contents=self._cached_content,  # ty:ignore[unknown-argument]
-                ttl=f"{self._cache_ttl_seconds}s",  # ty:ignore[unknown-argument]
-            )
+        self._cache = await self._client.aio.caches.create(  # type: ignore[call-arg]
+            model=self._model,
+            config=CreateCachedContentConfig(**config_kwargs),
+        )
 
         self._cache_created_at = time.time()
         tag_info = f" with tags {self._cache_tags}" if self._cache_tags else ""
         logger.info(
             f"Created new Gemini cache: {self._cache.name}{tag_info} "
-            f"(TTL: {self._cache_ttl_seconds}s, API: {self._api_version})"
+            f"(TTL: {self._cache_ttl_seconds}s)"
         )
-
-    @staticmethod
-    def _detect_google_genai_version() -> str:
-        try:
-            import inspect
-
-            from google.genai.types import CreateCachedContentConfig
-
-            sig = inspect.signature(CreateCachedContentConfig.__init__)
-            params = sig.parameters
-            if "contents" in params or "data" in params:
-                return "v1.49+"
-            else:
-                return "v1.46-v1.48"
-        except ImportError:
-            return "v1.45"

@@ -755,19 +755,6 @@ class TestGeminiCachedModel:
         # Should not raise
         await model.delete_cache()
 
-    def test_detect_api_version(self):
-        """Test API version detection."""
-        mock_client = self._create_mock_client()
-
-        model = GeminiCachedModel(
-            model="gemini-test",
-            client=mock_client,
-            cached_content=[],
-        )
-
-        # Should return a valid version string
-        assert model._api_version in ["v1.45", "v1.46-v1.48", "v1.49+"]
-
     def test_cache_name_property(self):
         """Test cache_name property returns None when no cache."""
         mock_client = self._create_mock_client()
