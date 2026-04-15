@@ -1,6 +1,7 @@
 # Release Prep
 
-Prepare a new release of async-batch-llm. This skill handles changelog generation, version bumping, and creating the release PR.
+Prepare a new release of async-batch-llm. This skill handles changelog
+generation, version bumping, and creating the release PR.
 
 ## Arguments
 
@@ -11,7 +12,8 @@ Prepare a new release of async-batch-llm. This skill handles changelog generatio
 ### 0. Pre-flight checks
 
 - Run `git fetch origin main` to ensure we have the latest remote state.
-- Check for uncommitted changes. If there are any, stop and tell the user to commit or stash them first (branch switching may lose work).
+- Check for uncommitted changes. If there are any, stop and tell the user
+  to commit or stash them first (branch switching may lose work).
 
 ### 1. Generate changelog entries
 
