@@ -19,6 +19,21 @@ from async_batch_llm.models import (
 )
 
 
+class AsyncIterList:
+    """Wrap a list to make it async-iterable (for mocking AsyncPager)."""
+
+    def __init__(self, items):
+        self._items = items
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._items:
+            raise StopAsyncIteration
+        return self._items.pop(0)
+
+
 class TestOutput(BaseModel):
     """Test output model."""
 
@@ -360,7 +375,7 @@ class TestGeminiStrategy:
     async def test_prepare_delegates_to_managed_model(self):
         """Test that prepare() delegates to ManagedLLMModel."""
         mock_client = MagicMock()
-        mock_client.aio.caches.list = AsyncMock(return_value=[])
+        mock_client.aio.caches.list = AsyncMock(return_value=AsyncIterList([]))
         mock_cache = MagicMock()
         mock_cache.name = "test-cache"
         mock_client.aio.caches.create = AsyncMock(return_value=mock_cache)
@@ -386,7 +401,7 @@ class TestGeminiStrategy:
     async def test_cleanup_delegates_to_managed_model(self):
         """Test that cleanup() delegates to ManagedLLMModel."""
         mock_client = MagicMock()
-        mock_client.aio.caches.list = AsyncMock(return_value=[])
+        mock_client.aio.caches.list = AsyncMock(return_value=AsyncIterList([]))
         mock_cache = MagicMock()
         mock_cache.name = "test-cache"
         mock_client.aio.caches.create = AsyncMock(return_value=mock_cache)
@@ -456,7 +471,7 @@ class TestGeminiCachedModel:
     def _create_mock_client(self, caches=None, response=None):
         """Create a mock Gemini client."""
         mock_client = MagicMock()
-        mock_client.aio.caches.list = AsyncMock(return_value=caches or [])
+        mock_client.aio.caches.list = AsyncMock(return_value=AsyncIterList(list(caches or [])))
         mock_client.aio.caches.create = AsyncMock(return_value=self._create_mock_cache())
         mock_client.aio.caches.delete = AsyncMock()
         if response:

@@ -152,11 +152,12 @@ class GeminiModel:
         if config:
             call_config.update(config)
 
-        # Make the API call
-        response = await self._client.aio.models.generate_content(  # type: ignore[arg-type]
+        # Make the API call (config is built as a dict; the SDK accepts this at runtime
+        # even though the type stubs say GenerateContentConfig)
+        response = await self._client.aio.models.generate_content(
             model=self._model,
             contents=prompt,
-            config=call_config,  # ty:ignore[invalid-argument-type]
+            config=call_config,  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
         )
 
         # Extract tokens
@@ -380,10 +381,10 @@ class GeminiCachedModel:
         if config:
             call_config.update(config)
 
-        response = await self._client.aio.models.generate_content(  # type: ignore[arg-type]
+        response = await self._client.aio.models.generate_content(
             model=self._model,
             contents=prompt,
-            config=call_config,  # ty:ignore[invalid-argument-type]
+            config=call_config,  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
         )
 
         input_tokens, output_tokens, total_tokens, cached_tokens = _extract_tokens(response)
@@ -421,8 +422,8 @@ class GeminiCachedModel:
         try:
             caches = await self._client.aio.caches.list()
 
-            for cache in caches:
-                if not cache.model.endswith(self._model):  # ty:ignore[unresolved-attribute]
+            async for cache in caches:
+                if not cache.model or not cache.model.endswith(self._model):  # ty:ignore[unresolved-attribute]
                     continue
 
                 if self._cache_tags:

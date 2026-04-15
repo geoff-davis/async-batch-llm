@@ -9,6 +9,7 @@ import pytest
 from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
 from async_batch_llm.llm_strategies import GeminiStrategy
 from async_batch_llm.models import GeminiCachedModel
+from tests.test_gemini_strategies import AsyncIterList
 
 
 @pytest.mark.asyncio
@@ -55,7 +56,7 @@ async def test_cache_expiration_only_one_new_cache_created():
         return new_cache
 
     mock_client.aio.caches.create = AsyncMock(side_effect=mock_create_cache)
-    mock_client.aio.caches.list = AsyncMock(return_value=[])  # No existing caches
+    mock_client.aio.caches.list = AsyncMock(return_value=AsyncIterList([]))  # No existing caches
 
     # Mock the generate_content call
     async def mock_generate(*args, **kwargs):
@@ -180,7 +181,7 @@ async def test_cache_expiration_during_processing():
         return new_cache
 
     mock_client.aio.caches.create = AsyncMock(side_effect=mock_create_cache)
-    mock_client.aio.caches.list = AsyncMock(return_value=[])  # No existing caches
+    mock_client.aio.caches.list = AsyncMock(return_value=AsyncIterList([]))  # No existing caches
 
     # We need a reference to the cached_model so mock_generate can backdate it
     cached_model = GeminiCachedModel(
@@ -287,7 +288,7 @@ async def test_cache_check_is_thread_safe():
         return new_cache
 
     mock_client.aio.caches.create = AsyncMock(side_effect=mock_create)
-    mock_client.aio.caches.list = AsyncMock(return_value=[])  # No existing caches
+    mock_client.aio.caches.list = AsyncMock(return_value=AsyncIterList([]))  # No existing caches
 
     async def mock_generate(*args, **kwargs):
         nonlocal check_count

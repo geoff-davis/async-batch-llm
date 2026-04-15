@@ -21,6 +21,7 @@ from async_batch_llm.llm_strategies import (
 )
 from async_batch_llm.models import GeminiCachedModel
 from async_batch_llm.testing import MockAgent
+from tests.test_gemini_strategies import AsyncIterList
 
 
 class TestOutput(BaseModel):
@@ -213,7 +214,7 @@ async def test_gemini_cached_model_lifecycle():
     # Create mock client
     mock_client = MagicMock()
     mock_client.aio.caches.create = AsyncMock(return_value=mock_cache)
-    mock_client.aio.caches.list = AsyncMock(return_value=[])  # No existing caches
+    mock_client.aio.caches.list = AsyncMock(return_value=AsyncIterList([]))  # No existing caches
     mock_client.aio.caches.update = AsyncMock(return_value=mock_cache)
     mock_client.aio.caches.delete = AsyncMock()
     mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
@@ -269,7 +270,7 @@ async def test_gemini_cached_model_auto_renewal():
     mock_client = MagicMock()
     create_calls = [mock_cache1, mock_cache2]
     mock_client.aio.caches.create = AsyncMock(side_effect=create_calls)
-    mock_client.aio.caches.list = AsyncMock(return_value=[])  # No existing caches
+    mock_client.aio.caches.list = AsyncMock(return_value=AsyncIterList([]))  # No existing caches
     mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
     # Create cached model with short TTL and renewal buffer
