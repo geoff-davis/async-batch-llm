@@ -97,30 +97,26 @@ strategy = PydanticAIStrategy(agent=agent)
 Direct Gemini API calls:
 
 ```python
-from async_batch_llm.llm_strategies.gemini import GeminiStrategy
+from async_batch_llm import GeminiModel, GeminiStrategy
 from google import genai
 
 client = genai.Client(api_key="your-key")
-strategy = GeminiStrategy(
-    client=client,
-    model="gemini-2.5-flash",
-    output_type=str
-)
+model = GeminiModel("gemini-2.5-flash", client)
+strategy = GeminiStrategy(model, response_parser=lambda r: r.text)
 ```
 
-### Gemini Cached Strategy
+### Gemini with Context Caching
 
-With context caching for repeated prompts:
+With context caching for repeated prompts (70-90% cost savings):
 
 ```python
-from async_batch_llm.llm_strategies.gemini import GeminiCachedStrategy
+from async_batch_llm import GeminiCachedModel, GeminiStrategy
 
-strategy = GeminiCachedStrategy(
-    client=client,
-    model="gemini-2.5-flash",
-    system_instruction="Your RAG context here...",
-    output_type=str
+cached_model = GeminiCachedModel(
+    "gemini-2.5-flash", client,
+    cached_content=[system_instruction, context_docs],
 )
+strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
 ```
 
 ## Next Steps

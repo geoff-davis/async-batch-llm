@@ -77,8 +77,9 @@ class SmartRetryStrategy(LLMCallStrategy[PersonData]):
 Dramatically reduce costs for RAG and repeated context:
 
 ```python
-from async_batch_llm.llm_strategies.gemini import GeminiCachedStrategy
+from async_batch_llm import GeminiCachedModel, GeminiStrategy
 from google import genai
+from google.genai.types import Content
 
 async def process_with_caching():
     client = genai.Client(api_key="your-key")
@@ -87,13 +88,12 @@ async def process_with_caching():
     with open("knowledge_base.txt") as f:
         rag_context = f.read()  # Could be 100K+ tokens
 
-    # Strategy creates cache in prepare(), deletes in cleanup()
-    strategy = GeminiCachedStrategy(
-        client=client,
-        model="gemini-2.5-flash",
-        system_instruction=rag_context,  # Cached!
-        output_type=str
+    # Model manages cache lifecycle (prepare/cleanup)
+    cached_model = GeminiCachedModel(
+        "gemini-2.5-flash", client,
+        cached_content=[Content(parts=[{"text": rag_context}], role="user")],
     )
+    strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
 
     config = ProcessorConfig(max_workers=5)
 
