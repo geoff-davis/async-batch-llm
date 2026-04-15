@@ -1,4 +1,4 @@
-"""Comprehensive tests for Gemini strategies to improve coverage."""
+"""Comprehensive tests for Gemini strategies and models to improve coverage."""
 
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -7,12 +7,15 @@ import pytest
 from pydantic import BaseModel
 
 from async_batch_llm import RetryState, TokenTrackingError
+from async_batch_llm.base import LLMResponse
 from async_batch_llm.llm_strategies import (
-    GeminiCachedStrategy,
-    GeminiResponse,
     GeminiStrategy,
     LLMCallStrategy,
-    _extract_safety_ratings,
+)
+from async_batch_llm.models import (
+    GeminiCachedModel,
+    GeminiModel,
+    _extract_metadata,
 )
 
 
@@ -90,26 +93,30 @@ class TestLLMCallStrategyBase:
 
 
 # =============================================================================
-# GeminiStrategy tests
+# GeminiModel tests
 # =============================================================================
 
 
-class TestGeminiStrategy:
-    """Tests for GeminiStrategy."""
+class TestGeminiModel:
+    """Tests for GeminiModel."""
 
     def _create_mock_response(
         self,
+        text: str = "output text",
         input_tokens: int = 10,
         output_tokens: int = 20,
         total_tokens: int = 30,
         has_safety_ratings: bool = False,
         has_finish_reason: bool = False,
     ):
-        """Create a mock Gemini response."""
+        """Create a mock Gemini API response."""
         mock_response = MagicMock()
+        mock_response.text = text
+        mock_response.usage_metadata = MagicMock()
         mock_response.usage_metadata.prompt_token_count = input_tokens
         mock_response.usage_metadata.candidates_token_count = output_tokens
         mock_response.usage_metadata.total_token_count = total_tokens
+        mock_response.usage_metadata.cached_content_token_count = 0
 
         if has_safety_ratings or has_finish_reason:
             mock_candidate = MagicMock()
@@ -137,96 +144,181 @@ class TestGeminiStrategy:
         return mock_client
 
     @pytest.mark.asyncio
-    async def test_execute_basic(self):
-        """Test basic execute functionality."""
+    async def test_generate_basic(self):
+        """Test basic generate functionality."""
         mock_response = self._create_mock_response()
         mock_client = self._create_mock_client(mock_response)
 
-        strategy = GeminiStrategy(
-            model="gemini-test",
-            client=mock_client,
-            response_parser=lambda r: TestOutput(text="parsed"),
-        )
+        model = GeminiModel("gemini-test", mock_client)
+        llm_response = await model.generate("test prompt")
 
-        output, tokens = await strategy.execute("test prompt", 1, 10.0)
-
-        assert output.text == "parsed"
-        assert tokens["input_tokens"] == 10
-        assert tokens["output_tokens"] == 20
-        assert tokens["total_tokens"] == 30
+        assert llm_response.text == "output text"
+        assert llm_response.input_tokens == 10
+        assert llm_response.output_tokens == 20
+        assert llm_response.total_tokens == 30
 
     @pytest.mark.asyncio
-    async def test_execute_with_config(self):
-        """Test execute with GenerateContentConfig."""
-        mock_response = self._create_mock_response()
-        mock_client = self._create_mock_client(mock_response)
-
-        mock_config = MagicMock()
-        mock_config.__dict__ = {"temperature": 0.7}
-
-        strategy = GeminiStrategy(
-            model="gemini-test",
-            client=mock_client,
-            response_parser=lambda r: TestOutput(text="parsed"),
-            config=mock_config,
-        )
-
-        await strategy.execute("test prompt", 1, 10.0)
-
-        mock_client.aio.models.generate_content.assert_called_once()
-        call_kwargs = mock_client.aio.models.generate_content.call_args
-        assert call_kwargs.kwargs["config"] == mock_config
-
-    @pytest.mark.asyncio
-    async def test_execute_with_metadata(self):
-        """Test execute with include_metadata=True returns GeminiResponse."""
+    async def test_generate_with_metadata(self):
+        """Test generate extracts safety ratings and finish reason."""
         mock_response = self._create_mock_response(
             has_safety_ratings=True,
             has_finish_reason=True,
         )
         mock_client = self._create_mock_client(mock_response)
 
-        strategy = GeminiStrategy(
-            model="gemini-test",
-            client=mock_client,
-            response_parser=lambda r: TestOutput(text="parsed"),
-            include_metadata=True,
-        )
+        model = GeminiModel("gemini-test", mock_client)
+        llm_response = await model.generate("test prompt")
 
-        result, tokens = await strategy.execute("test prompt", 1, 10.0)
-
-        assert isinstance(result, GeminiResponse)
-        assert result.output.text == "parsed"
-        assert result.safety_ratings == {"HARM_CATEGORY_HATE_SPEECH": "LOW"}
-        assert result.finish_reason == "STOP"
-        assert result.raw_response is mock_response
+        assert llm_response.metadata is not None
+        assert "safety_ratings" in llm_response.metadata
+        assert "HARM_CATEGORY_HATE_SPEECH" in llm_response.metadata["safety_ratings"]
+        assert llm_response.metadata["finish_reason"] == "STOP"
+        assert llm_response.raw is mock_response
 
     @pytest.mark.asyncio
-    async def test_execute_no_usage_metadata(self):
-        """Test execute when response has no usage_metadata."""
+    async def test_generate_no_usage_metadata(self):
+        """Test generate when response has no usage_metadata."""
         mock_response = MagicMock()
+        mock_response.text = "output"
         mock_response.usage_metadata = None
         mock_response.candidates = []
 
         mock_client = self._create_mock_client(mock_response)
 
+        model = GeminiModel("gemini-test", mock_client)
+        llm_response = await model.generate("test prompt")
+
+        assert llm_response.input_tokens == 0
+        assert llm_response.output_tokens == 0
+        assert llm_response.total_tokens == 0
+
+    @pytest.mark.asyncio
+    async def test_generate_with_system_instruction(self):
+        """Test generate passes system_instruction to config."""
+        mock_response = self._create_mock_response()
+        mock_client = self._create_mock_client(mock_response)
+
+        model = GeminiModel("gemini-test", mock_client, system_instruction="Be helpful")
+        await model.generate("test prompt")
+
+        call_kwargs = mock_client.aio.models.generate_content.call_args
+        assert call_kwargs.kwargs["config"]["system_instruction"] == "Be helpful"
+
+    @pytest.mark.asyncio
+    async def test_generate_none_text_raises(self):
+        """Test generate raises ValueError when text is None (safety blocked)."""
+        mock_response = MagicMock()
+        mock_response.text = None
+        mock_response.usage_metadata = MagicMock()
+        mock_response.usage_metadata.prompt_token_count = 10
+        mock_response.usage_metadata.candidates_token_count = 0
+        mock_response.usage_metadata.total_token_count = 10
+        mock_response.usage_metadata.cached_content_token_count = 0
+        mock_response.candidates = []
+
+        mock_client = self._create_mock_client(mock_response)
+
+        model = GeminiModel("gemini-test", mock_client)
+
+        with pytest.raises(ValueError, match="Empty response from model"):
+            await model.generate("test prompt")
+
+    def test_import_error_when_genai_not_available(self):
+        """Test that ImportError is raised when google-genai is not available."""
+        with patch("async_batch_llm.models.genai", None):
+            with pytest.raises(ImportError) as exc_info:
+                GeminiModel("gemini-test", MagicMock())
+            assert "google-genai is required" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_token_usage_property(self):
+        """Test that LLMResponse.token_usage returns correct dict."""
+        mock_response = self._create_mock_response()
+        mock_client = self._create_mock_client(mock_response)
+
+        model = GeminiModel("gemini-test", mock_client)
+        llm_response = await model.generate("test")
+
+        tokens = llm_response.token_usage
+        assert tokens["input_tokens"] == 10
+        assert tokens["output_tokens"] == 20
+        assert tokens["total_tokens"] == 30
+
+
+# =============================================================================
+# GeminiStrategy tests
+# =============================================================================
+
+
+class TestGeminiStrategy:
+    """Tests for GeminiStrategy with mocked LLMModel."""
+
+    def _create_mock_model(
+        self,
+        text: str = "parsed output",
+        input_tokens: int = 10,
+        output_tokens: int = 20,
+        total_tokens: int = 30,
+        metadata: dict | None = None,
+    ):
+        """Create a mock LLMModel."""
+        mock_model = AsyncMock()
+        mock_model.generate = AsyncMock(
+            return_value=LLMResponse(
+                text=text,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                metadata=metadata,
+            )
+        )
+        return mock_model
+
+    @pytest.mark.asyncio
+    async def test_execute_basic(self):
+        """Test basic execute functionality."""
+        mock_model = self._create_mock_model()
+
         strategy = GeminiStrategy(
-            model="gemini-test",
-            client=mock_client,
-            response_parser=lambda r: TestOutput(text="parsed"),
+            model=mock_model,
+            response_parser=lambda r: TestOutput(text=r.text),
         )
 
         output, tokens = await strategy.execute("test prompt", 1, 10.0)
 
-        assert tokens["input_tokens"] == 0
-        assert tokens["output_tokens"] == 0
-        assert tokens["total_tokens"] == 0
+        assert output.text == "parsed output"
+        assert tokens["input_tokens"] == 10
+        assert tokens["output_tokens"] == 20
+        assert tokens["total_tokens"] == 30
+
+    @pytest.mark.asyncio
+    async def test_execute_response_parser_receives_llm_response(self):
+        """Test that response_parser receives LLMResponse object."""
+        mock_model = self._create_mock_model(
+            text="hello",
+            metadata={"safety_ratings": {"HARM_CATEGORY_HATE_SPEECH": "LOW"}},
+        )
+
+        received_responses = []
+
+        def parser(r):
+            received_responses.append(r)
+            return TestOutput(text=r.text)
+
+        strategy = GeminiStrategy(model=mock_model, response_parser=parser)
+        await strategy.execute("test", 1, 10.0)
+
+        assert len(received_responses) == 1
+        assert isinstance(received_responses[0], LLMResponse)
+        assert received_responses[0].text == "hello"
+        assert (
+            received_responses[0].metadata["safety_ratings"]["HARM_CATEGORY_HATE_SPEECH"] == "LOW"
+        )
 
     @pytest.mark.asyncio
     async def test_execute_parser_raises_with_dict(self):
         """Test that parser exceptions with __dict__ preserve token usage."""
-        mock_response = self._create_mock_response()
-        mock_client = self._create_mock_client(mock_response)
+        mock_model = self._create_mock_model()
 
         class CustomError(Exception):
             pass
@@ -235,8 +327,7 @@ class TestGeminiStrategy:
             raise CustomError("Parse failed")
 
         strategy = GeminiStrategy(
-            model="gemini-test",
-            client=mock_client,
+            model=mock_model,
             response_parser=failing_parser,
         )
 
@@ -249,16 +340,13 @@ class TestGeminiStrategy:
     @pytest.mark.asyncio
     async def test_execute_parser_raises_builtin_exception(self):
         """Test that builtin exceptions without __dict__ get wrapped."""
-        mock_response = self._create_mock_response()
-        mock_client = self._create_mock_client(mock_response)
+        mock_model = self._create_mock_model()
 
         def failing_parser(r):
-            # StopIteration has no __dict__ in some Python versions
             raise ValueError("Parse failed")
 
         strategy = GeminiStrategy(
-            model="gemini-test",
-            client=mock_client,
+            model=mock_model,
             response_parser=failing_parser,
         )
 
@@ -268,67 +356,78 @@ class TestGeminiStrategy:
 
         assert exc_info.value.__dict__["_failed_token_usage"]["total_tokens"] == 30
 
-    def test_extract_safety_ratings_no_candidates(self):
-        """Test safety rating extraction with no candidates."""
-        mock_response = MagicMock()
-        mock_response.candidates = []
-
-        ratings = _extract_safety_ratings(mock_response)
-        assert ratings == {}
-
-    def test_extract_safety_ratings_exception(self):
-        """Test safety rating extraction handles exceptions gracefully."""
-        mock_response = MagicMock()
-        # Make candidates access raise an exception
-        type(mock_response).candidates = property(
-            lambda self: (_ for _ in ()).throw(RuntimeError())
-        )
-
-        ratings = _extract_safety_ratings(mock_response)
-        assert ratings == {}
-
     @pytest.mark.asyncio
-    async def test_extract_finish_reason_exception(self):
-        """Test finish reason extraction handles exceptions gracefully."""
-        mock_response = self._create_mock_response(has_safety_ratings=True)
-        # Make finish_reason access raise
-        mock_response.candidates[0].finish_reason = property(
-            lambda self: (_ for _ in ()).throw(RuntimeError())
-        )
+    async def test_prepare_delegates_to_managed_model(self):
+        """Test that prepare() delegates to ManagedLLMModel."""
+        mock_client = MagicMock()
+        mock_client.aio.caches.list = AsyncMock(return_value=[])
+        mock_cache = MagicMock()
+        mock_cache.name = "test-cache"
+        mock_client.aio.caches.create = AsyncMock(return_value=mock_cache)
 
-        mock_client = self._create_mock_client(mock_response)
-
-        strategy = GeminiStrategy(
+        cached_model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: TestOutput(text="parsed"),
-            include_metadata=True,
+            cached_content=[],
+            cache_ttl_seconds=3600,
         )
 
-        # Should not raise, just log warning
-        result, _ = await strategy.execute("test", 1, 10.0)
-        # finish_reason should be None due to exception
-        assert isinstance(result, GeminiResponse)
+        strategy = GeminiStrategy(
+            model=cached_model,
+            response_parser=lambda r: r.text,
+        )
 
-    def test_import_error_when_genai_not_available(self):
-        """Test that ImportError is raised when google-genai is not available."""
-        with patch("async_batch_llm.llm_strategies.genai", None):
-            with pytest.raises(ImportError) as exc_info:
-                GeminiStrategy(
-                    model="gemini-test",
-                    client=MagicMock(),
-                    response_parser=lambda r: r,
-                )
-            assert "google-genai is required" in str(exc_info.value)
+        await strategy.prepare()
+
+        # Should have called through to create cache
+        mock_client.aio.caches.create.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_delegates_to_managed_model(self):
+        """Test that cleanup() delegates to ManagedLLMModel."""
+        mock_client = MagicMock()
+        mock_client.aio.caches.list = AsyncMock(return_value=[])
+        mock_cache = MagicMock()
+        mock_cache.name = "test-cache"
+        mock_client.aio.caches.create = AsyncMock(return_value=mock_cache)
+
+        cached_model = GeminiCachedModel(
+            model="gemini-test",
+            client=mock_client,
+            cached_content=[],
+            cache_ttl_seconds=3600,
+        )
+
+        strategy = GeminiStrategy(
+            model=cached_model,
+            response_parser=lambda r: r.text,
+        )
+
+        await strategy.prepare()
+        # cleanup should not raise
+        await strategy.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_prepare_noop_for_plain_model(self):
+        """Test that prepare() is a no-op for non-managed models."""
+        mock_model = self._create_mock_model()
+
+        strategy = GeminiStrategy(
+            model=mock_model,
+            response_parser=lambda r: r.text,
+        )
+
+        # Should not raise (plain model is not ManagedLLMModel)
+        await strategy.prepare()
 
 
 # =============================================================================
-# GeminiCachedStrategy tests
+# GeminiCachedModel tests
 # =============================================================================
 
 
-class TestGeminiCachedStrategy:
-    """Tests for GeminiCachedStrategy."""
+class TestGeminiCachedModel:
+    """Tests for GeminiCachedModel."""
 
     def _create_mock_cache(self, name: str = "test-cache", create_time=None):
         """Create a mock cache object."""
@@ -345,6 +444,8 @@ class TestGeminiCachedStrategy:
     def _create_mock_response(self, cached_tokens: int = 100):
         """Create a mock Gemini response with cached tokens."""
         mock_response = MagicMock()
+        mock_response.text = "cached response text"
+        mock_response.usage_metadata = MagicMock()
         mock_response.usage_metadata.prompt_token_count = 10
         mock_response.usage_metadata.candidates_token_count = 20
         mock_response.usage_metadata.total_token_count = 30
@@ -367,10 +468,9 @@ class TestGeminiCachedStrategy:
         mock_client = self._create_mock_client()
 
         with pytest.raises(ValueError) as exc_info:
-            GeminiCachedStrategy(
+            GeminiCachedModel(
                 model="gemini-test",
                 client=mock_client,
-                response_parser=lambda r: r,
                 cached_content=[],
                 cache_ttl_seconds=60,
                 cache_renewal_buffer_seconds=60,  # Same as TTL - invalid
@@ -382,10 +482,9 @@ class TestGeminiCachedStrategy:
         mock_client = self._create_mock_client()
 
         with pytest.warns(UserWarning) as record:
-            GeminiCachedStrategy(
+            GeminiCachedModel(
                 model="gemini-test",
                 client=mock_client,
-                response_parser=lambda r: r,
                 cached_content=[],
                 cache_ttl_seconds=30,  # Short TTL
                 cache_renewal_buffer_seconds=5,
@@ -403,10 +502,9 @@ class TestGeminiCachedStrategy:
         # Should not warn for TTL < 10 (testing)
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            GeminiCachedStrategy(
+            GeminiCachedModel(
                 model="gemini-test",
                 client=mock_client,
-                response_parser=lambda r: r,
                 cached_content=[],
                 cache_ttl_seconds=5,  # Very short TTL for testing
                 cache_renewal_buffer_seconds=1,
@@ -425,19 +523,18 @@ class TestGeminiCachedStrategy:
         )
         mock_client = self._create_mock_client(caches=[existing_cache])
 
-        strategy = GeminiCachedStrategy(
+        model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: r,
             cached_content=[],
             cache_ttl_seconds=3600,
         )
 
-        await strategy.prepare()
+        await model.prepare()
 
         # Should not create new cache
         mock_client.aio.caches.create.assert_not_called()
-        assert strategy._cache == existing_cache
+        assert model._cache == existing_cache
 
     @pytest.mark.asyncio
     async def test_find_cache_with_matching_tags(self):
@@ -452,17 +549,16 @@ class TestGeminiCachedStrategy:
 
         mock_client = self._create_mock_client(caches=[other_cache, matching_cache])
 
-        strategy = GeminiCachedStrategy(
+        model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: r,
             cached_content=[],
             cache_tags={"version": "1.0", "type": "test"},
         )
 
-        await strategy.prepare()
+        await model.prepare()
 
-        assert strategy._cache == matching_cache
+        assert model._cache == matching_cache
 
     @pytest.mark.asyncio
     async def test_cache_list_failure(self):
@@ -470,100 +566,92 @@ class TestGeminiCachedStrategy:
         mock_client = self._create_mock_client()
         mock_client.aio.caches.list = AsyncMock(side_effect=RuntimeError("List failed"))
 
-        strategy = GeminiCachedStrategy(
+        model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: r,
             cached_content=[],
         )
 
-        await strategy.prepare()
+        await model.prepare()
 
         # Should create new cache after list failure
         mock_client.aio.caches.create.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_is_cache_expired_no_cache(self):
+    def test_is_cache_expired_no_cache(self):
         """Test _is_cache_expired returns True when no cache."""
         mock_client = self._create_mock_client()
 
-        strategy = GeminiCachedStrategy(
+        model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: r,
             cached_content=[],
         )
 
-        assert strategy._is_cache_expired() is True
+        assert model._is_cache_expired() is True
 
-    @pytest.mark.asyncio
-    async def test_is_cache_expired_within_buffer(self):
+    def test_is_cache_expired_within_buffer(self):
         """Test _is_cache_expired returns True when within renewal buffer."""
         mock_client = self._create_mock_client()
 
-        strategy = GeminiCachedStrategy(
+        model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: r,
             cached_content=[],
             cache_ttl_seconds=100,
             cache_renewal_buffer_seconds=30,
         )
 
-        strategy._cache = MagicMock()
+        model._cache = MagicMock()
         # Created 80s ago, so only 20s remain (< 30s buffer)
-        strategy._cache_created_at = time.time() - 80
+        model._cache_created_at = time.time() - 80
 
-        assert strategy._is_cache_expired() is True
+        assert model._is_cache_expired() is True
 
     @pytest.mark.asyncio
-    async def test_execute_without_prepare_raises(self):
-        """Test execute raises when prepare() not called."""
+    async def test_generate_without_prepare_raises(self):
+        """Test generate raises when prepare() not called."""
         mock_client = self._create_mock_client()
 
-        strategy = GeminiCachedStrategy(
+        model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: r,
             cached_content=[],
             auto_renew=False,  # Disable auto-renew to trigger error
         )
 
         with pytest.raises(RuntimeError) as exc_info:
-            await strategy.execute("test", 1, 10.0)
+            await model.generate("test")
 
-        assert "prepare() was not called" in str(exc_info.value)
+        assert "prepare()" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_execute_with_cached_tokens(self):
-        """Test execute tracks cached tokens."""
+    async def test_generate_with_cached_tokens(self):
+        """Test generate tracks cached tokens."""
         mock_response = self._create_mock_response(cached_tokens=500)
         mock_client = self._create_mock_client(response=mock_response)
 
-        strategy = GeminiCachedStrategy(
+        model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: TestOutput(text="cached"),
             cached_content=[],
         )
 
-        await strategy.prepare()
-        output, tokens = await strategy.execute("test", 1, 10.0)
+        await model.prepare()
+        llm_response = await model.generate("test")
 
-        assert tokens["cached_input_tokens"] == 500
-        assert output.text == "cached"
+        assert llm_response.cached_input_tokens == 500
+        assert llm_response.text == "cached response text"
 
     @pytest.mark.asyncio
-    async def test_execute_auto_renew_concurrent(self):
+    async def test_generate_auto_renew_concurrent(self):
         """Test auto-renewal uses lock for concurrent access."""
         mock_response = self._create_mock_response()
         mock_client = self._create_mock_client(response=mock_response)
         mock_client.aio.caches.create = AsyncMock(return_value=self._create_mock_cache())
 
-        strategy = GeminiCachedStrategy(
+        model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: TestOutput(text="result"),
             cached_content=[],
             cache_ttl_seconds=10,
             cache_renewal_buffer_seconds=5,
@@ -571,18 +659,18 @@ class TestGeminiCachedStrategy:
         )
 
         # Manually set up expired cache
-        await strategy.prepare()
-        strategy._cache_created_at = time.time() - 100  # Expired
+        await model.prepare()
+        model._cache_created_at = time.time() - 100  # Expired
 
-        # Execute should trigger renewal
-        await strategy.execute("test", 1, 10.0)
+        # Generate should trigger renewal
+        await model.generate("test")
 
         # Should have created twice (initial + renewal)
         assert mock_client.aio.caches.create.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_execute_with_metadata(self):
-        """Test execute with include_metadata=True."""
+    async def test_generate_with_metadata(self):
+        """Test generate returns metadata in LLMResponse."""
         mock_response = self._create_mock_response()
         mock_response.candidates = [MagicMock()]
         mock_response.candidates[0].safety_ratings = []
@@ -590,34 +678,32 @@ class TestGeminiCachedStrategy:
 
         mock_client = self._create_mock_client(response=mock_response)
 
-        strategy = GeminiCachedStrategy(
+        model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: TestOutput(text="result"),
             cached_content=[],
-            include_metadata=True,
         )
 
-        await strategy.prepare()
-        result, tokens = await strategy.execute("test", 1, 10.0)
+        await model.prepare()
+        llm_response = await model.generate("test")
 
-        assert isinstance(result, GeminiResponse)
-        assert result.finish_reason == "STOP"
+        assert isinstance(llm_response, LLMResponse)
+        assert llm_response.metadata is not None
+        assert llm_response.metadata["finish_reason"] == "STOP"
 
     @pytest.mark.asyncio
     async def test_cleanup_preserves_cache(self):
         """Test cleanup preserves cache by default."""
         mock_client = self._create_mock_client()
 
-        strategy = GeminiCachedStrategy(
+        model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: r,
             cached_content=[],
         )
 
-        await strategy.prepare()
-        await strategy.cleanup()
+        await model.prepare()
+        await model.cleanup()
 
         mock_client.aio.caches.delete.assert_not_called()
 
@@ -626,18 +712,17 @@ class TestGeminiCachedStrategy:
         """Test explicit cache deletion."""
         mock_client = self._create_mock_client()
 
-        strategy = GeminiCachedStrategy(
+        model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: r,
             cached_content=[],
         )
 
-        await strategy.prepare()
-        await strategy.delete_cache()
+        await model.prepare()
+        await model.delete_cache()
 
         mock_client.aio.caches.delete.assert_called_once()
-        assert strategy._cache is None
+        assert model._cache is None
 
     @pytest.mark.asyncio
     async def test_delete_cache_handles_failure(self):
@@ -645,79 +730,137 @@ class TestGeminiCachedStrategy:
         mock_client = self._create_mock_client()
         mock_client.aio.caches.delete = AsyncMock(side_effect=RuntimeError("Delete failed"))
 
-        strategy = GeminiCachedStrategy(
+        model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: r,
             cached_content=[],
         )
 
-        await strategy.prepare()
+        await model.prepare()
         # Should not raise
-        await strategy.delete_cache()
+        await model.delete_cache()
 
     def test_detect_api_version(self):
         """Test API version detection."""
         mock_client = self._create_mock_client()
 
-        strategy = GeminiCachedStrategy(
+        model = GeminiCachedModel(
             model="gemini-test",
             client=mock_client,
-            response_parser=lambda r: r,
             cached_content=[],
         )
 
         # Should return a valid version string
-        assert strategy._api_version in ["v1.45", "v1.46-v1.48", "v1.49+"]
+        assert model._api_version in ["v1.45", "v1.46-v1.48", "v1.49+"]
+
+    def test_cache_name_property(self):
+        """Test cache_name property returns None when no cache."""
+        mock_client = self._create_mock_client()
+
+        model = GeminiCachedModel(
+            model="gemini-test",
+            client=mock_client,
+            cached_content=[],
+        )
+
+        assert model.cache_name is None
+
+    @pytest.mark.asyncio
+    async def test_cache_name_property_after_prepare(self):
+        """Test cache_name property returns name after prepare."""
+        mock_client = self._create_mock_client()
+
+        model = GeminiCachedModel(
+            model="gemini-test",
+            client=mock_client,
+            cached_content=[],
+        )
+
+        await model.prepare()
+        assert model.cache_name == "test-cache"
 
     def test_import_error_when_genai_not_available(self):
         """Test that ImportError is raised when google-genai is not available."""
-        with patch("async_batch_llm.llm_strategies.genai", None):
+        with patch("async_batch_llm.models.genai", None):
             with pytest.raises(ImportError) as exc_info:
-                GeminiCachedStrategy(
+                GeminiCachedModel(
                     model="gemini-test",
                     client=MagicMock(),
-                    response_parser=lambda r: r,
                     cached_content=[],
                 )
             assert "google-genai is required" in str(exc_info.value)
 
+    @pytest.mark.asyncio
+    async def test_generate_rejects_system_instruction(self):
+        """Test that generate() raises when system_instruction is passed."""
+        mock_response = self._create_mock_response()
+        mock_client = self._create_mock_client(response=mock_response)
+
+        model = GeminiCachedModel(
+            model="gemini-test",
+            client=mock_client,
+            cached_content=[],
+        )
+        await model.prepare()
+
+        with pytest.raises(ValueError, match="system_instruction cannot be overridden"):
+            await model.generate("test", system_instruction="override")
+
 
 # =============================================================================
-# GeminiResponse tests
+# _extract_metadata tests
 # =============================================================================
 
 
-class TestGeminiResponse:
-    """Tests for GeminiResponse dataclass."""
+class TestExtractMetadata:
+    """Tests for _extract_metadata function."""
 
-    def test_creation(self):
-        """Test GeminiResponse creation."""
-        response = GeminiResponse(
-            output=TestOutput(text="test"),
-            safety_ratings={"HARM_CATEGORY_HATE_SPEECH": "LOW"},
-            finish_reason="STOP",
-            token_usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
-            raw_response=MagicMock(),
+    def test_no_candidates(self):
+        """Test metadata extraction with no candidates."""
+        mock_response = MagicMock()
+        mock_response.candidates = []
+
+        metadata = _extract_metadata(mock_response)
+        assert metadata is None
+
+    def test_with_safety_ratings(self):
+        """Test metadata extraction with safety ratings."""
+        mock_response = MagicMock()
+        mock_rating = MagicMock()
+        mock_rating.category = "HARM_CATEGORY_HATE_SPEECH"
+        mock_rating.probability = "LOW"
+        mock_candidate = MagicMock()
+        mock_candidate.safety_ratings = [mock_rating]
+        mock_candidate.finish_reason = None
+        mock_response.candidates = [mock_candidate]
+
+        metadata = _extract_metadata(mock_response)
+        assert metadata is not None
+        assert "safety_ratings" in metadata
+        assert metadata["safety_ratings"]["HARM_CATEGORY_HATE_SPEECH"] == "LOW"
+
+    def test_with_finish_reason(self):
+        """Test metadata extraction with finish reason."""
+        mock_response = MagicMock()
+        mock_candidate = MagicMock()
+        mock_candidate.safety_ratings = None
+        mock_candidate.finish_reason = "STOP"
+        mock_response.candidates = [mock_candidate]
+
+        metadata = _extract_metadata(mock_response)
+        assert metadata is not None
+        assert metadata["finish_reason"] == "STOP"
+
+    def test_exception_handling(self):
+        """Test metadata extraction handles exceptions gracefully."""
+        mock_response = MagicMock()
+        # Make candidates access raise an exception
+        type(mock_response).candidates = property(
+            lambda self: (_ for _ in ()).throw(RuntimeError())
         )
 
-        assert response.output.text == "test"
-        assert response.safety_ratings["HARM_CATEGORY_HATE_SPEECH"] == "LOW"
-        assert response.finish_reason == "STOP"
-
-    def test_creation_with_none_values(self):
-        """Test GeminiResponse with None optional values."""
-        response = GeminiResponse(
-            output="simple string",
-            safety_ratings=None,
-            finish_reason=None,
-            token_usage={},
-            raw_response=None,
-        )
-
-        assert response.output == "simple string"
-        assert response.safety_ratings is None
-        assert response.finish_reason is None
+        metadata = _extract_metadata(mock_response)
+        assert metadata is None
 
 
 # =============================================================================

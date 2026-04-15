@@ -7,7 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-from async_batch_llm.llm_strategies import GeminiCachedStrategy
+from async_batch_llm.llm_strategies import GeminiStrategy
+from async_batch_llm.models import GeminiCachedModel
 
 
 @pytest.mark.asyncio
@@ -16,7 +17,7 @@ async def test_cache_expiration_only_one_new_cache_created():
     Test that when cache expires, only ONE new cache is created even with multiple workers.
 
     Scenario:
-    1. Multiple workers process items with a cached strategy
+    1. Multiple workers process items with a cached model
     2. Cache expires while workers are active
     3. Only the first worker to detect expiration should create a new cache
     4. Other workers should wait and use the newly created cache
@@ -77,21 +78,26 @@ async def test_cache_expiration_only_one_new_cache_created():
 
     mock_client.aio.models.generate_content = AsyncMock(side_effect=mock_generate)
 
-    # Create the strategy with the mock client
-    strategy = GeminiCachedStrategy(
+    # Create the cached model and strategy
+    cached_model = GeminiCachedModel(
         model="gemini-2.0-flash",
         client=mock_client,
-        response_parser=lambda r: r.text,
         cached_content=[],
         cache_ttl_seconds=3600,
     )
 
     # Manually set the cache to an expired one to simulate the scenario
-    strategy._cache = old_cache
-    strategy._cache_lock = asyncio.Lock()
-    strategy._cache_created_at = (
+    cached_model._cache = old_cache
+    cached_model._cache_lock = asyncio.Lock()
+    cached_model._cache_created_at = (
         datetime.now(timezone.utc).timestamp() - 7200
     )  # Created 2 hours ago
+    cached_model._prepared = True
+
+    strategy = GeminiStrategy(
+        model=cached_model,
+        response_parser=lambda r: r.text,
+    )
 
     config = ProcessorConfig(
         max_workers=5,  # Multiple workers
@@ -176,15 +182,26 @@ async def test_cache_expiration_during_processing():
     mock_client.aio.caches.create = AsyncMock(side_effect=mock_create_cache)
     mock_client.aio.caches.list = AsyncMock(return_value=[])  # No existing caches
 
+    # We need a reference to the cached_model so mock_generate can backdate it
+    cached_model = GeminiCachedModel(
+        model="gemini-2.0-flash",
+        client=mock_client,
+        cached_content=[],
+        cache_ttl_seconds=3600,
+        cache_renewal_buffer_seconds=300,
+    )
+
     async def mock_generate(*args, **kwargs):
         """Mock generation that simulates cache expiring mid-processing."""
         nonlocal items_processed
         items_processed += 1
 
-        # After processing 3 items, make the cache "expire"
+        # After processing 3 items, make the cache "expire" by backdating
+        # _cache_created_at so that remaining TTL < renewal buffer
         if items_processed == 3:
-            # Simulate expiration by backdating the expire_time
-            current_cache.expire_time = datetime.now(timezone.utc) - timedelta(minutes=1)
+            cached_model._cache_created_at = (
+                datetime.now(timezone.utc) - timedelta(hours=2)
+            ).timestamp()
 
         response = MagicMock()
         response.text = "Response"
@@ -197,18 +214,16 @@ async def test_cache_expiration_during_processing():
 
     mock_client.aio.models.generate_content = AsyncMock(side_effect=mock_generate)
 
-    strategy = GeminiCachedStrategy(
-        model="gemini-2.0-flash",
-        client=mock_client,
-        response_parser=lambda r: r.text,
-        cached_content=[],
-        cache_ttl_seconds=3600,
-    )
-
     # Set initial cache
-    strategy._cache = current_cache
-    strategy._cache_lock = asyncio.Lock()
-    strategy._cache_created_at = datetime.now(timezone.utc).timestamp()
+    cached_model._cache = current_cache
+    cached_model._cache_lock = asyncio.Lock()
+    cached_model._cache_created_at = datetime.now(timezone.utc).timestamp()
+    cached_model._prepared = True
+
+    strategy = GeminiStrategy(
+        model=cached_model,
+        response_parser=lambda r: r.text,
+    )
 
     config = ProcessorConfig(
         max_workers=3,
@@ -289,17 +304,22 @@ async def test_cache_check_is_thread_safe():
 
     mock_client.aio.models.generate_content = AsyncMock(side_effect=mock_generate)
 
-    strategy = GeminiCachedStrategy(
+    cached_model = GeminiCachedModel(
         model="gemini-2.0-flash",
         client=mock_client,
-        response_parser=lambda r: r.text,
         cached_content=[],
         cache_ttl_seconds=3600,
     )
 
-    strategy._cache = cache
-    strategy._cache_lock = asyncio.Lock()
-    strategy._cache_created_at = (datetime.now(timezone.utc) - timedelta(hours=2)).timestamp()
+    cached_model._cache = cache
+    cached_model._cache_lock = asyncio.Lock()
+    cached_model._cache_created_at = (datetime.now(timezone.utc) - timedelta(hours=2)).timestamp()
+    cached_model._prepared = True
+
+    strategy = GeminiStrategy(
+        model=cached_model,
+        response_parser=lambda r: r.text,
+    )
 
     config = ProcessorConfig(
         max_workers=10,  # Many workers to stress test

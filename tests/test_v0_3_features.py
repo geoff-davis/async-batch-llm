@@ -1,11 +1,10 @@
-"""Tests for v0.3.0 features: RetryState, GeminiResponse, and cache tagging."""
+"""Tests for v0.3.0 features: RetryState, and cache tagging."""
 
 import asyncio
 
 import pytest
 
 from async_batch_llm import (
-    GeminiResponse,
     LLMWorkItem,
     ParallelBatchProcessor,
     ProcessorConfig,
@@ -233,159 +232,6 @@ async def test_on_error_receives_state():
 
 
 # =============================================================================
-# Issue #3: GeminiResponse Tests
-# =============================================================================
-
-
-class MockGeminiStrategy(LLMCallStrategy[str]):
-    """Mock strategy that returns GeminiResponse with safety ratings."""
-
-    def __init__(self, include_metadata: bool = False):
-        self.include_metadata = include_metadata
-
-    async def execute(
-        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
-    ) -> tuple[str | GeminiResponse[str], TokenUsage]:
-        """Return either raw output or GeminiResponse based on include_metadata."""
-        output = f"Response: {prompt}"
-        token_usage = {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
-
-        if not self.include_metadata:
-            return output, token_usage
-
-        # Create mock safety ratings
-        safety_ratings = {
-            "HARM_CATEGORY_HATE_SPEECH": "NEGLIGIBLE",
-            "HARM_CATEGORY_DANGEROUS_CONTENT": "LOW",
-            "HARM_CATEGORY_HARASSMENT": "NEGLIGIBLE",
-            "HARM_CATEGORY_SEXUALLY_EXPLICIT": "NEGLIGIBLE",
-        }
-
-        return (
-            GeminiResponse(
-                output=output,
-                safety_ratings=safety_ratings,
-                finish_reason="STOP",
-                token_usage=token_usage,
-                raw_response={"mock": "response"},
-            ),
-            token_usage,
-        )
-
-
-@pytest.mark.asyncio
-async def test_gemini_response_with_metadata():
-    """Test that GeminiResponse correctly wraps output with safety ratings."""
-    strategy = MockGeminiStrategy(include_metadata=True)
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
-
-    async with ParallelBatchProcessor[str, str | GeminiResponse[str], None](
-        config=config
-    ) as processor:
-        await processor.add_work(
-            LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test prompt")
-        )
-
-        result = await processor.process_all()
-
-    assert result.succeeded == 1
-
-    # Check output is GeminiResponse
-    work_result = result.results[0]
-    assert isinstance(work_result.output, GeminiResponse)
-
-    # Check safety ratings
-    assert work_result.output.safety_ratings is not None
-    assert "HARM_CATEGORY_HATE_SPEECH" in work_result.output.safety_ratings
-    assert work_result.output.safety_ratings["HARM_CATEGORY_HATE_SPEECH"] == "NEGLIGIBLE"
-
-    # Check finish reason
-    assert work_result.output.finish_reason == "STOP"
-
-    # Check actual output
-    assert work_result.output.output == "Response: Test prompt"
-
-    # Check raw response is preserved
-    assert work_result.output.raw_response == {"mock": "response"}
-
-
-@pytest.mark.asyncio
-async def test_gemini_response_without_metadata():
-    """Test backward compatibility: include_metadata=False returns raw output."""
-    strategy = MockGeminiStrategy(include_metadata=False)
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
-
-    async with ParallelBatchProcessor[str, str, None](config=config) as processor:
-        await processor.add_work(
-            LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test prompt")
-        )
-
-        result = await processor.process_all()
-
-    assert result.succeeded == 1
-
-    # Check output is plain string (not wrapped)
-    work_result = result.results[0]
-    assert isinstance(work_result.output, str)
-    assert work_result.output == "Response: Test prompt"
-
-
-@pytest.mark.asyncio
-async def test_gemini_response_generic_type():
-    """Test that GeminiResponse works with different output types."""
-    from pydantic import BaseModel
-
-    class TestOutput(BaseModel):
-        value: str
-        count: int
-
-    class GenericGeminiStrategy(LLMCallStrategy[TestOutput]):
-        def __init__(self, include_metadata: bool = False):
-            self.include_metadata = include_metadata
-
-        async def execute(
-            self,
-            prompt: str,
-            attempt: int,
-            timeout: float,
-            state: RetryState | None = None,
-        ) -> tuple[TestOutput | GeminiResponse[TestOutput], TokenUsage]:
-            output = TestOutput(value=prompt, count=len(prompt))
-            token_usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
-
-            if not self.include_metadata:
-                return output, token_usage
-
-            return (
-                GeminiResponse(
-                    output=output,
-                    safety_ratings={"HARM_CATEGORY_HATE_SPEECH": "NEGLIGIBLE"},
-                    finish_reason="STOP",
-                    token_usage=token_usage,
-                    raw_response={},
-                ),
-                token_usage,
-            )
-
-    strategy = GenericGeminiStrategy(include_metadata=True)
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
-
-    async with ParallelBatchProcessor[str, TestOutput | GeminiResponse[TestOutput], None](
-        config=config
-    ) as processor:
-        await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
-
-        result = await processor.process_all()
-
-    assert result.succeeded == 1
-    work_result = result.results[0]
-    assert isinstance(work_result.output, GeminiResponse)
-    assert isinstance(work_result.output.output, TestOutput)
-    assert work_result.output.output.value == "Test"
-    assert work_result.output.output.count == 4
-
-
-# =============================================================================
 # Issue #6: Cache Tagging Tests (Unit tests for tag matching logic)
 # =============================================================================
 
@@ -399,7 +245,7 @@ def test_cache_tags_isolation():
         import google.genai as genai
         from google.genai.types import Content
 
-        from async_batch_llm.llm_strategies import GeminiCachedStrategy
+        from async_batch_llm.models import GeminiCachedModel
     except ImportError:
         pytest.skip("google-genai not installed")
 
@@ -411,29 +257,27 @@ def test_cache_tags_isolation():
 
     cached_content = [Content(role="user", parts=[{"text": "test"}])]
 
-    # Create two strategies with different tags
-    strategy_a = GeminiCachedStrategy(
+    # Create two models with different tags
+    model_a = GeminiCachedModel(
         model="gemini-2.0-flash-001",
         client=client,
-        response_parser=lambda x: str(x),
         cached_content=cached_content,
         cache_tags={"version": "v1", "experiment": "A"},
     )
 
-    strategy_b = GeminiCachedStrategy(
+    model_b = GeminiCachedModel(
         model="gemini-2.0-flash-001",
         client=client,
-        response_parser=lambda x: str(x),
         cached_content=cached_content,
         cache_tags={"version": "v1", "experiment": "B"},
     )
 
     # Verify tags are stored
-    assert strategy_a.cache_tags == {"version": "v1", "experiment": "A"}
-    assert strategy_b.cache_tags == {"version": "v1", "experiment": "B"}
+    assert model_a._cache_tags == {"version": "v1", "experiment": "A"}
+    assert model_b._cache_tags == {"version": "v1", "experiment": "B"}
 
     # Verify they have different cache identity
-    assert strategy_a.cache_tags != strategy_b.cache_tags
+    assert model_a._cache_tags != model_b._cache_tags
 
 
 def test_cache_tags_none_default():
@@ -442,7 +286,7 @@ def test_cache_tags_none_default():
         import google.genai as genai
         from google.genai.types import Content
 
-        from async_batch_llm.llm_strategies import GeminiCachedStrategy
+        from async_batch_llm.models import GeminiCachedModel
     except ImportError:
         pytest.skip("google-genai not installed")
 
@@ -454,82 +298,20 @@ def test_cache_tags_none_default():
 
     cached_content = [Content(role="user", parts=[{"text": "test"}])]
 
-    strategy = GeminiCachedStrategy(
+    model = GeminiCachedModel(
         model="gemini-2.0-flash-001",
         client=client,
-        response_parser=lambda x: str(x),
         cached_content=cached_content,
         # cache_tags not provided
     )
 
     # Should default to empty dict
-    assert strategy.cache_tags == {}
+    assert model._cache_tags == {}
 
 
 # =============================================================================
 # Integration Tests: Multiple features together
 # =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_retry_state_with_gemini_response():
-    """Test that RetryState and GeminiResponse work together."""
-
-    class CombinedStrategy(LLMCallStrategy[str]):
-        """Strategy using both RetryState and GeminiResponse."""
-
-        def __init__(self):
-            self.include_metadata = True
-
-        async def execute(
-            self,
-            prompt: str,
-            attempt: int,
-            timeout: float,
-            state: RetryState | None = None,
-        ) -> tuple[GeminiResponse[str], TokenUsage]:
-            if state is not None:
-                state.set("attempt", attempt)
-
-            # Fail first attempt to test retry with state
-            if attempt == 1:
-                raise RetryableTestError("First attempt fails")
-
-            output = "Success"
-            token_usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
-
-            return (
-                GeminiResponse(
-                    output=output,
-                    safety_ratings={"HARM_CATEGORY_HATE_SPEECH": "NEGLIGIBLE"},
-                    finish_reason="STOP",
-                    token_usage=token_usage,
-                    raw_response={},
-                ),
-                token_usage,
-            )
-
-        async def on_error(
-            self, exception: Exception, attempt: int, state: RetryState | None = None
-        ) -> None:
-            if state is not None:
-                state.set("error_seen", True)
-
-    strategy = CombinedStrategy()
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
-
-    async with ParallelBatchProcessor[str, GeminiResponse[str], None](config=config) as processor:
-        await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
-
-        result = await processor.process_all()
-
-    assert result.succeeded == 1
-
-    # Check we got GeminiResponse
-    work_result = result.results[0]
-    assert isinstance(work_result.output, GeminiResponse)
-    assert work_result.output.output == "Success"
-    assert work_result.output.safety_ratings["HARM_CATEGORY_HATE_SPEECH"] == "NEGLIGIBLE"
 
 
 @pytest.mark.asyncio

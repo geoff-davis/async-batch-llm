@@ -5,7 +5,8 @@ efficiently using a strategy pattern for provider-agnostic LLM integration.
 
 Key features:
 - Strategy pattern for any LLM provider (OpenAI, Anthropic, Google, LangChain, custom)
-- Built-in strategies: PydanticAIStrategy, GeminiStrategy, GeminiCachedStrategy
+- Built-in strategies: PydanticAIStrategy, GeminiStrategy
+- Built-in models: GeminiModel, GeminiCachedModel
 - Provider-agnostic error classification
 - Pluggable rate limit strategies
 - Middleware pipeline for extensibility
@@ -62,6 +63,7 @@ from typing import TypeVar
 from .base import (
     BatchProcessor,
     BatchResult,
+    LLMResponse,
     LLMWorkItem,
     PostProcessorFunc,
     ProcessingStats,
@@ -77,10 +79,11 @@ from .classifiers import GeminiErrorClassifier
 # Configuration
 from .core import ProcessorConfig, RateLimitConfig, RetryConfig
 
+# Protocols
+from .core.protocols import LLMModel, ManagedLLMModel
+
 # LLM call strategies
 from .llm_strategies import (
-    GeminiCachedStrategy,
-    GeminiResponse,
     GeminiStrategy,
     LLMCallStrategy,
     PydanticAIStrategy,
@@ -88,6 +91,9 @@ from .llm_strategies import (
 
 # Middleware
 from .middleware import BaseMiddleware, Middleware
+
+# Concrete models
+from .models import GeminiCachedModel, GeminiModel
 
 # Observers
 from .observers import BaseObserver, MetricsObserver, ProcessingEvent, ProcessorObserver
@@ -156,11 +162,16 @@ __all__ = [
     "RateLimitConfig",
     "RetryConfig",
     # LLM Strategies
-    "GeminiCachedStrategy",
-    "GeminiResponse",
     "GeminiStrategy",
     "LLMCallStrategy",
     "PydanticAIStrategy",
+    # Models
+    "GeminiModel",
+    "GeminiCachedModel",
+    # Protocols
+    "LLMModel",
+    "LLMResponse",
+    "ManagedLLMModel",
     # Error Classification Strategies
     "ErrorClassifier",
     "ErrorInfo",

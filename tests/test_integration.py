@@ -26,6 +26,7 @@ async def test_gemini_strategy_real_api():
     """Integration test with real Gemini API - basic generation."""
     from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
     from async_batch_llm.llm_strategies import GeminiStrategy
+    from async_batch_llm.models import GeminiModel
 
     try:
         import google.genai as genai
@@ -35,14 +36,15 @@ async def test_gemini_strategy_real_api():
     # Create client with API key
     client = genai.Client(api_key=GOOGLE_API_KEY)
 
-    # Simple response parser
+    # Create model and strategy
+    model = GeminiModel("gemini-2.0-flash-exp", client)
+
+    # Simple response parser - receives LLMResponse
     def parse_response(response):
         return response.text
 
-    # Create strategy
     strategy = GeminiStrategy(
-        model="gemini-2.0-flash-exp",
-        client=client,
+        model=model,
         response_parser=parse_response,
     )
 
@@ -64,16 +66,16 @@ async def test_gemini_strategy_real_api():
 
     # Verify results
     assert result.total_items == 3
-    assert (
-        result.succeeded == 3
-    ), f"Expected 3 successes, got {result.succeeded}. Errors: {[r.error for r in result.results if r.error]}"
+    assert result.succeeded == 3, (
+        f"Expected 3 successes, got {result.succeeded}. Errors: {[r.error for r in result.results if r.error]}"
+    )
     assert result.failed == 0
 
     # Verify token usage tracked
     for item_result in result.results:
         assert item_result.token_usage["total_tokens"] > 0, "Token usage should be tracked"
 
-    print(f"✅ Gemini integration test passed: {result.succeeded}/{result.total_items} items")
+    print(f"Gemini integration test passed: {result.succeeded}/{result.total_items} items")
 
 
 @pytest.mark.integration
@@ -82,10 +84,11 @@ async def test_gemini_strategy_real_api():
     reason="Requires GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable",
 )
 @pytest.mark.asyncio
-async def test_gemini_cached_strategy_real_api():
+async def test_gemini_cached_model_real_api():
     """Integration test with real Gemini API - context caching."""
     from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-    from async_batch_llm.llm_strategies import GeminiCachedStrategy
+    from async_batch_llm.llm_strategies import GeminiStrategy
+    from async_batch_llm.models import GeminiCachedModel
 
     try:
         import google.genai as genai
@@ -112,13 +115,17 @@ async def test_gemini_cached_strategy_real_api():
     def parse_response(response):
         return response.text.strip()
 
-    # Create strategy with caching
-    strategy = GeminiCachedStrategy(
+    # Create cached model and strategy
+    cached_model = GeminiCachedModel(
         model="gemini-2.0-flash-exp",
         client=client,
-        response_parser=parse_response,
         cached_content=cached_content,
         cache_ttl_seconds=300,  # 5 minutes
+    )
+
+    strategy = GeminiStrategy(
+        model=cached_model,
+        response_parser=parse_response,
     )
 
     config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
@@ -148,10 +155,11 @@ async def test_gemini_cached_strategy_real_api():
     assert cached_tokens_used > 0, "Should have used cached tokens"
 
     # Cleanup cache
-    await strategy.delete_cache()
+    await cached_model.delete_cache()
 
     print(
-        f"✅ Gemini cached integration test passed: {result.succeeded}/{result.total_items} items, {cached_tokens_used} cached tokens used"
+        f"Gemini cached integration test passed: {result.succeeded}/{result.total_items} items, "
+        f"{cached_tokens_used} cached tokens used"
     )
 
 
@@ -161,10 +169,11 @@ async def test_gemini_cached_strategy_real_api():
     reason="Requires GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable",
 )
 @pytest.mark.asyncio
-async def test_gemini_response_with_safety_ratings_real_api():
-    """Integration test for GeminiResponse with safety ratings (v0.3.0)."""
+async def test_gemini_response_metadata_real_api():
+    """Integration test for LLMResponse with safety ratings (v0.6.0)."""
     from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-    from async_batch_llm.llm_strategies import GeminiResponse, GeminiStrategy
+    from async_batch_llm.llm_strategies import GeminiStrategy
+    from async_batch_llm.models import GeminiModel
 
     try:
         import google.genai as genai
@@ -173,15 +182,25 @@ async def test_gemini_response_with_safety_ratings_real_api():
 
     client = genai.Client(api_key=GOOGLE_API_KEY)
 
+    # Create model and strategy
+    model = GeminiModel("gemini-2.0-flash-exp", client)
+
+    # Parser that preserves metadata from LLMResponse
+    metadata_store = {}
+
     def parse_response(response):
+        metadata_store["safety_ratings"] = (
+            response.metadata.get("safety_ratings") if response.metadata else None
+        )
+        metadata_store["finish_reason"] = (
+            response.metadata.get("finish_reason") if response.metadata else None
+        )
+        metadata_store["raw"] = response.raw
         return response.text
 
-    # Create strategy with metadata enabled
     strategy = GeminiStrategy(
-        model="gemini-2.0-flash-exp",
-        client=client,
+        model=model,
         response_parser=parse_response,
-        include_metadata=True,  # Enable safety ratings
     )
 
     config = ProcessorConfig(max_workers=1, timeout_per_item=30.0)
@@ -200,26 +219,20 @@ async def test_gemini_response_with_safety_ratings_real_api():
     # Verify results
     assert result.succeeded == 1
 
-    # Check that we got GeminiResponse with metadata
+    # Check that metadata was accessible in the parser
+    assert metadata_store.get("safety_ratings") is not None, "Safety ratings should be present"
+    assert len(metadata_store["safety_ratings"]) > 0, "Should have at least one safety rating"
+    assert metadata_store.get("finish_reason") is not None, "Finish reason should be present"
+    assert metadata_store.get("raw") is not None, "Raw response should be present"
+
+    # Output should be plain string (not wrapped)
     item_result = result.results[0]
-    assert isinstance(
-        item_result.output, GeminiResponse
-    ), "Should return GeminiResponse when include_metadata=True"
+    assert isinstance(item_result.output, str), "Parsed output should be a string"
+    assert len(item_result.output) > 0, "Should have generated text"
 
-    # Verify safety ratings are present
-    assert item_result.output.safety_ratings is not None, "Safety ratings should be present"
-    assert len(item_result.output.safety_ratings) > 0, "Should have at least one safety rating"
-
-    # Verify finish reason
-    assert item_result.output.finish_reason is not None, "Finish reason should be present"
-
-    # Verify output is accessible
-    assert isinstance(item_result.output.output, str), "Parsed output should be accessible"
-    assert len(item_result.output.output) > 0, "Should have generated text"
-
-    print("✅ Gemini safety ratings test passed")
-    print(f"   Safety ratings: {item_result.output.safety_ratings}")
-    print(f"   Finish reason: {item_result.output.finish_reason}")
+    print("Gemini metadata test passed")
+    print(f"   Safety ratings: {metadata_store['safety_ratings']}")
+    print(f"   Finish reason: {metadata_store['finish_reason']}")
 
 
 @pytest.mark.integration
@@ -281,9 +294,9 @@ async def test_retry_on_real_validation_error():
     assert result.total_items == 1
     # May succeed on first try or after retries
     if result.succeeded == 1:
-        print("✅ Validation test passed on attempt")
+        print("Validation test passed on attempt")
     else:
-        print(f"⚠️ Validation test failed after all retries: {result.results[0].error}")
+        print(f"Validation test failed after all retries: {result.results[0].error}")
 
 
 @pytest.mark.integration
@@ -294,19 +307,19 @@ async def test_integration_suite_summary():
     missing_keys = []
 
     if GOOGLE_API_KEY:
-        available_tests.append("✅ Google Gemini API tests (GOOGLE_API_KEY detected)")
+        available_tests.append("Google Gemini API tests (GOOGLE_API_KEY detected)")
     else:
-        missing_keys.append("❌ GOOGLE_API_KEY (or legacy GEMINI_API_KEY) not set")
+        missing_keys.append("GOOGLE_API_KEY (or legacy GEMINI_API_KEY) not set")
 
     if OPENAI_API_KEY:
-        available_tests.append("✅ OpenAI API tests (not yet implemented)")
+        available_tests.append("OpenAI API tests (not yet implemented)")
     else:
-        missing_keys.append("❌ OPENAI_API_KEY not set")
+        missing_keys.append("OPENAI_API_KEY not set")
 
     if ANTHROPIC_API_KEY:
-        available_tests.append("✅ Anthropic API tests (not yet implemented)")
+        available_tests.append("Anthropic API tests (not yet implemented)")
     else:
-        missing_keys.append("❌ ANTHROPIC_API_KEY not set")
+        missing_keys.append("ANTHROPIC_API_KEY not set")
 
     print("\n" + "=" * 60)
     print("Integration Test Suite Configuration")

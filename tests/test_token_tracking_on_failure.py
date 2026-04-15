@@ -91,12 +91,12 @@ async def test_tokens_tracked_on_validation_failure():
         assert not item_result.success
         assert item_result.error is not None
         # Check that error message contains ValidationError
-        assert (
-            "ValidationError" in item_result.error
-        ), f"Expected ValidationError in error: {item_result.error}"
-        assert (
-            "required_field" in item_result.error
-        ), f"Expected 'required_field' in error: {item_result.error}"
+        assert "ValidationError" in item_result.error, (
+            f"Expected ValidationError in error: {item_result.error}"
+        )
+        assert "required_field" in item_result.error, (
+            f"Expected 'required_field' in error: {item_result.error}"
+        )
 
 
 @pytest.mark.asyncio
@@ -141,6 +141,6 @@ async def test_cached_tokens_tracked_on_failure():
     assert result.failed == 1
     # Default retry config is 3 attempts; ensure cached tokens are counted for every attempt
     expected_cached_tokens = strategy.calls * 7
-    assert (
-        result.total_cached_tokens == expected_cached_tokens
-    ), f"Expected cached tokens {expected_cached_tokens}, got {result.total_cached_tokens}"
+    assert result.total_cached_tokens == expected_cached_tokens, (
+        f"Expected cached tokens {expected_cached_tokens}, got {result.total_cached_tokens}"
+    )

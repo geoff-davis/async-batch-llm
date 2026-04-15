@@ -5,7 +5,7 @@
 repos:
   # Ruff - Fast Python linter (replaces flake8, isort, etc.)
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    rev: v0.14.5
     hooks:
       # Run the linter
       - id: ruff
@@ -17,7 +17,7 @@ repos:
 
   # Mypy - Static type checking
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.13.0
+    rev: v1.18.2
     hooks:
       - id: mypy
         args: [--ignore-missing-imports]
@@ -26,9 +26,24 @@ repos:
           - types-aiofiles
         files: ^src/async_batch_llm/
 
+  # Ty - Additional static type checking
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty
+        entry: ty check src
+        language: python
+        additional_dependencies:
+          - "ty>=0.0.1a16"
+          - "pydantic>=2.0.0"
+          - "google-genai>=1.46.0"
+          - "pydantic-ai>=0.0.1"
+          - "aiolimiter>=1.2.1"
+        pass_filenames: false
+
   # General code quality checks
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       # Check for files that would conflict in case-insensitive filesystems
       - id: check-case-conflict
@@ -51,7 +66,7 @@ repos:
 
   # Markdown linting
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.15.0
+    rev: v0.19.0
     hooks:
       - id: markdownlint-cli2
         args: [--fix]

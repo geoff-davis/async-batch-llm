@@ -57,9 +57,9 @@ async def test_shared_strategy_prepare_called_once():
     assert result.failed == 0
 
     # prepare() should be called exactly once despite 20 work items
-    assert (
-        strategy.prepare_count == 1
-    ), f"Expected prepare() to be called once, but it was called {strategy.prepare_count} times"
+    assert strategy.prepare_count == 1, (
+        f"Expected prepare() to be called once, but it was called {strategy.prepare_count} times"
+    )
 
     # execute() should be called 20 times (once per work item)
     assert strategy.execute_count == 20

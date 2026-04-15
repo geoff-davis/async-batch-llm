@@ -132,6 +132,47 @@ class TokenUsage(TypedDict, total=False):
 
 
 @dataclass
+class LLMResponse:
+    """
+    Normalized response from any LLM provider.
+
+    Returned by LLMModel.generate(). Provides a provider-agnostic interface
+    so strategies don't need to know about Gemini, OpenAI, etc. response formats.
+
+    Attributes:
+        text: The response text content.
+        input_tokens: Number of input/prompt tokens.
+        output_tokens: Number of output/completion tokens.
+        total_tokens: Total tokens used.
+        cached_input_tokens: Input tokens served from cache (0 if no caching).
+        metadata: Provider-specific metadata (safety ratings, finish reason, etc.).
+        raw: The raw provider response object, for edge cases.
+
+    Added in v0.6.0.
+    """
+
+    text: str
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    cached_input_tokens: int = 0
+    metadata: dict[str, Any] | None = None
+    raw: Any = None
+
+    @property
+    def token_usage(self) -> TokenUsage:
+        """Return token counts as a TokenUsage dict."""
+        result: TokenUsage = {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+        }
+        if self.cached_input_tokens:
+            result["cached_input_tokens"] = self.cached_input_tokens
+        return result
+
+
+@dataclass
 class LLMWorkItem(Generic[TInput, TOutput, TContext]):
     """
     Represents a single work item to be processed by an LLM strategy.
@@ -567,7 +608,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 current_item,
             )
 
-        callback_task: asyncio.Task[None] = asyncio.create_task(callback_awaitable)  # type: ignore[arg-type]
+        callback_task: asyncio.Task[None] = asyncio.create_task(callback_awaitable)  # type: ignore[arg-type, invalid-argument-type]  # ty:ignore[invalid-argument-type]
         self._track_progress_task(callback_task, log_exceptions=True)
 
         if self.progress_callback_timeout is not None:

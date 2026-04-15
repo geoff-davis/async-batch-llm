@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "async-batch-llm"
-version = "0.5.0"
+version = "0.6.0"
 description = "Provider-agnostic framework for high-throughput LLM processing with async workers, automatic retries, rate limiting, and intelligent validation recovery."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -76,6 +76,7 @@ dev = [
     "pytest-cov>=4.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
+    "ty>=0.0.1a16",
     "pydantic-ai>=0.0.1",  # Required for tests
     "google-genai>=1.46.0",  # Required for Gemini tests
     "pre-commit>=3.0.0",

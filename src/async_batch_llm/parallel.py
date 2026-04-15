@@ -710,7 +710,7 @@ class ParallelBatchProcessor(
                 if hasattr(cause, "result"):
                     result = cause.result
                     if hasattr(result, "usage") and callable(result.usage):
-                        usage = result.usage()
+                        usage = result.usage()  # ty:ignore[call-top-callable]
                         if usage:
                             return {
                                 "input_tokens": getattr(usage, "request_tokens", 0),
@@ -722,7 +722,7 @@ class ParallelBatchProcessor(
             if hasattr(exception, "usage"):
                 usage = exception.usage
                 if callable(usage):
-                    usage = usage()
+                    usage = usage()  # ty:ignore[call-top-callable]
                 if usage:
                     return {
                         "input_tokens": getattr(
@@ -899,14 +899,14 @@ class ParallelBatchProcessor(
         """Get the LLM call strategy for this work item."""
         return work_item.strategy
 
-    async def _process_item(  # type: ignore[override]
+    async def _process_item(  # type: ignore[override, invalid-method-override]
         self,
         work_item: LLMWorkItem[TInput, TOutput, TContext],
         worker_id: int,
         attempt_number: int = 1,
         strategy: LLMCallStrategy[TOutput] | None = None,
         retry_state: RetryState | None = None,
-    ) -> WorkItemResult[TOutput, TContext]:
+    ) -> WorkItemResult[TOutput, TContext]:  # ty:ignore[invalid-method-override]
         """Process a single work item using the provided strategy."""
         start_time = time.time()
 

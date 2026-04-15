@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-15
+
+**BREAKING**: Separates model/client management from strategy logic via LLMModel protocol.
+
+### Added
+
+- **`LLMResponse`** dataclass — normalized response from any LLM provider with `.text`,
+  `.input_tokens`, `.output_tokens`, `.total_tokens`, `.cached_input_tokens`, `.metadata`,
+  `.raw`, and `.token_usage` property
+- **`LLMModel`** protocol — minimal interface for LLM model instances (`generate()`)
+- **`ManagedLLMModel`** protocol — extends `LLMModel` with lifecycle (`prepare()`, `cleanup()`)
+- **`GeminiModel`** — concrete `LLMModel` wrapping a `genai.Client` + model name
+- **`GeminiCachedModel`** — concrete `ManagedLLMModel` with Gemini context caching
+  (cache find/create/renew/delete lifecycle, same behavior as old `GeminiCachedStrategy`)
+- **`MockLLMModel`** in testing utilities for easy strategy testing
+
+### Changed
+
+- **`GeminiStrategy`** now accepts an `LLMModel` and `Callable[[LLMResponse], TOutput]`
+  instead of `(model: str, client: genai.Client, response_parser: Callable[[Any], TOutput])`.
+  It delegates lifecycle calls to the model if it implements `ManagedLLMModel`.
+- **`response_parser`** functions now receive `LLMResponse` instead of raw provider response
+
+### Removed
+
+- **`GeminiCachedStrategy`** — use `GeminiStrategy(model=GeminiCachedModel(...))` instead
+- **`GeminiResponse`** dataclass — metadata is now always available in `LLMResponse.metadata`
+- **`include_metadata`** parameter — no longer needed
+- **`_extract_safety_ratings()`** module-level helper — moved into `GeminiModel`
+
+### Migration
+
+```python
+# Before (v0.5.0)
+strategy = GeminiStrategy(
+    model="gemini-2.5-flash", client=client,
+    response_parser=lambda r: r.text,
+)
+
+# After (v0.6.0)
+model = GeminiModel("gemini-2.5-flash", client)
+strategy = GeminiStrategy(model, response_parser=lambda r: r.text)
+
+# Before (cached)
+strategy = GeminiCachedStrategy(
+    model="gemini-2.5-flash", client=client,
+    response_parser=lambda r: r.text,
+    cached_content=[...],
+)
+
+# After (cached)
+model = GeminiCachedModel("gemini-2.5-flash", client, cached_content=[...])
+strategy = GeminiStrategy(model, response_parser=lambda r: r.text)
+```
+
 ## [0.5.0] - 2025-11-25
 
 Release focused on developer experience improvements and code quality.

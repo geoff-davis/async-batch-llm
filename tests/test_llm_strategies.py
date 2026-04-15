@@ -13,12 +13,13 @@ from async_batch_llm import (
     RetryConfig,
     RetryState,
 )
+from async_batch_llm.base import LLMResponse
 from async_batch_llm.llm_strategies import (
-    GeminiCachedStrategy,
     GeminiStrategy,
     LLMCallStrategy,
     PydanticAIStrategy,
 )
+from async_batch_llm.models import GeminiCachedModel
 from async_batch_llm.testing import MockAgent
 
 
@@ -164,23 +165,22 @@ async def test_pydantic_ai_strategy():
 
 @pytest.mark.asyncio
 async def test_gemini_strategy_mock():
-    """Test GeminiStrategy with mocked client."""
-
-    # Create mock response
-    mock_response = MagicMock()
-    mock_response.usage_metadata.prompt_token_count = 10
-    mock_response.usage_metadata.candidates_token_count = 20
-    mock_response.usage_metadata.total_token_count = 30
-
-    # Create mock client
-    mock_client = MagicMock()
-    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+    """Test GeminiStrategy with mocked model."""
+    # Create a mock LLMModel
+    mock_model = AsyncMock()
+    mock_model.generate = AsyncMock(
+        return_value=LLMResponse(
+            text="Gemini response",
+            input_tokens=10,
+            output_tokens=20,
+            total_tokens=30,
+        )
+    )
 
     # Create strategy
     strategy = GeminiStrategy(
-        model="gemini-test",
-        client=mock_client,
-        response_parser=lambda r: TestOutput(text="Gemini response"),
+        model=mock_model,
+        response_parser=lambda r: TestOutput(text=r.text),
     )
 
     # Test execute
@@ -193,8 +193,8 @@ async def test_gemini_strategy_mock():
 
 
 @pytest.mark.asyncio
-async def test_gemini_cached_strategy_lifecycle():
-    """Test GeminiCachedStrategy prepare/execute/cleanup lifecycle (v0.2.0)."""
+async def test_gemini_cached_model_lifecycle():
+    """Test GeminiCachedModel prepare/generate/cleanup/delete lifecycle (v0.6.0)."""
 
     # Create mock cache
     mock_cache = MagicMock()
@@ -202,9 +202,13 @@ async def test_gemini_cached_strategy_lifecycle():
 
     # Create mock response
     mock_response = MagicMock()
+    mock_response.text = "Cached response"
+    mock_response.usage_metadata = MagicMock()
     mock_response.usage_metadata.prompt_token_count = 10
     mock_response.usage_metadata.candidates_token_count = 20
     mock_response.usage_metadata.total_token_count = 30
+    mock_response.usage_metadata.cached_content_token_count = 0
+    mock_response.candidates = []
 
     # Create mock client
     mock_client = MagicMock()
@@ -214,36 +218,35 @@ async def test_gemini_cached_strategy_lifecycle():
     mock_client.aio.caches.delete = AsyncMock()
     mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-    # Create strategy
-    strategy = GeminiCachedStrategy(
+    # Create cached model
+    cached_model = GeminiCachedModel(
         model="gemini-test",
         client=mock_client,
-        response_parser=lambda r: TestOutput(text="Cached response"),
         cached_content=[],
         cache_ttl_seconds=3600,
     )
 
     # Test prepare
-    await strategy.prepare()
+    await cached_model.prepare()
     mock_client.aio.caches.create.assert_called_once()
 
-    # Test execute
-    output, tokens = await strategy.execute("Test prompt", 1, 10.0)
-    assert output.text == "Cached response"
-    assert tokens["total_tokens"] == 30
+    # Test generate
+    llm_response = await cached_model.generate("Test prompt")
+    assert llm_response.text == "Cached response"
+    assert llm_response.total_tokens == 30
 
-    # Test cleanup (v0.2.0: preserves cache by default)
-    await strategy.cleanup()
+    # Test cleanup (v0.6.0: preserves cache by default)
+    await cached_model.cleanup()
     mock_client.aio.caches.delete.assert_not_called()  # Should NOT delete
 
     # Test explicit deletion
-    await strategy.delete_cache()
+    await cached_model.delete_cache()
     mock_client.aio.caches.delete.assert_called_once_with(name="test-cache")
 
 
 @pytest.mark.asyncio
-async def test_gemini_cached_strategy_auto_renewal():
-    """Test automatic cache renewal when close to expiring (v0.2.0)."""
+async def test_gemini_cached_model_auto_renewal():
+    """Test automatic cache renewal when close to expiring (v0.6.0)."""
 
     # Create mock caches
     mock_cache1 = MagicMock()
@@ -254,9 +257,13 @@ async def test_gemini_cached_strategy_auto_renewal():
 
     # Create mock response
     mock_response = MagicMock()
+    mock_response.text = "Cached response"
+    mock_response.usage_metadata = MagicMock()
     mock_response.usage_metadata.prompt_token_count = 10
     mock_response.usage_metadata.candidates_token_count = 20
     mock_response.usage_metadata.total_token_count = 30
+    mock_response.usage_metadata.cached_content_token_count = 0
+    mock_response.candidates = []
 
     # Create mock client - returns different caches on subsequent creates
     mock_client = MagicMock()
@@ -265,11 +272,10 @@ async def test_gemini_cached_strategy_auto_renewal():
     mock_client.aio.caches.list = AsyncMock(return_value=[])  # No existing caches
     mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-    # Create strategy with short TTL and renewal buffer
-    strategy = GeminiCachedStrategy(
+    # Create cached model with short TTL and renewal buffer
+    cached_model = GeminiCachedModel(
         model="gemini-test",
         client=mock_client,
-        response_parser=lambda r: TestOutput(text="Cached response"),
         cached_content=[],
         cache_ttl_seconds=2,  # 2 second TTL
         cache_renewal_buffer_seconds=1,  # Renew when 1 second remains
@@ -277,22 +283,22 @@ async def test_gemini_cached_strategy_auto_renewal():
     )
 
     # Test prepare
-    await strategy.prepare()
+    await cached_model.prepare()
     assert mock_client.aio.caches.create.call_count == 1
 
-    # First execute - no renewal needed (just created, 2s remaining > 1s buffer)
-    await strategy.execute("Test prompt 1", 1, 10.0)
+    # First generate - no renewal needed (just created, 2s remaining > 1s buffer)
+    await cached_model.generate("Test prompt 1")
     assert mock_client.aio.caches.create.call_count == 1  # Still 1
 
     # Wait until within renewal buffer (>1s elapsed, <1s remaining)
     await asyncio.sleep(1.2)
 
-    # Second execute - should trigger auto-renewal (only 0.8s remaining < 1s buffer)
-    await strategy.execute("Test prompt 2", 1, 10.0)
+    # Second generate - should trigger auto-renewal (only 0.8s remaining < 1s buffer)
+    await cached_model.generate("Test prompt 2")
     assert mock_client.aio.caches.create.call_count == 2  # New cache created
 
     # Cleanup
-    await strategy.cleanup()
+    await cached_model.cleanup()
 
 
 @pytest.mark.asyncio

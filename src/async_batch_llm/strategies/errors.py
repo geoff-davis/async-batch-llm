@@ -1,7 +1,13 @@
 """Error classification for different LLM providers."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from async_batch_llm.base import TokenUsage
 
 # Common error pattern constants
 RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota", "rate limit")
@@ -31,7 +37,7 @@ class TokenTrackingError(Exception):
         ...     raise wrapped from e
     """
 
-    def __init__(self, message: str, *, token_usage: dict[str, int] | None = None):
+    def __init__(self, message: str, *, token_usage: TokenUsage | dict[str, int] | None = None):
         """
         Initialize TokenTrackingError.
 

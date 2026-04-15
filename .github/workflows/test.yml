@@ -43,9 +43,14 @@ jobs:
       run: |
         uv run ruff check src/
 
-    - name: Run type checker
+    - name: Run type checker (mypy)
       run: |
         uv run mypy src/async_batch_llm/ --ignore-missing-imports
+
+    - name: Run type checker (ty)
+      if: matrix.python-version == '3.12'
+      run: |
+        uv run ty check src/
 
     - name: Coverage comment
       uses: py-cov-action/python-coverage-comment-action@v3

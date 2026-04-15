@@ -5,9 +5,9 @@ import pytest
 
 def test_api_version_detection():
     """Test that API version detection works correctly."""
-    from async_batch_llm.llm_strategies import GeminiCachedStrategy
+    from async_batch_llm.models import GeminiCachedModel
 
-    version = GeminiCachedStrategy._detect_google_genai_version()
+    version = GeminiCachedModel._detect_google_genai_version()
 
     # Should detect one of the three supported versions
     assert version in ["v1.45", "v1.46-v1.48", "v1.49+"], f"Unexpected API version: {version}"
@@ -15,9 +15,9 @@ def test_api_version_detection():
 
 def test_api_version_matches_installed_package():
     """Test that detected version matches what's actually installed."""
-    from async_batch_llm.llm_strategies import GeminiCachedStrategy
+    from async_batch_llm.models import GeminiCachedModel
 
-    version = GeminiCachedStrategy._detect_google_genai_version()
+    version = GeminiCachedModel._detect_google_genai_version()
 
     # Try to import the new API type
     try:
@@ -30,32 +30,28 @@ def test_api_version_matches_installed_package():
         ], f"CreateCachedContentConfig is importable but version detection returned {version}"
     except ImportError:
         # If import fails, we should detect v1.45
-        assert (
-            version == "v1.45"
-        ), f"CreateCachedContentConfig is not importable but version detection returned {version}"
+        assert version == "v1.45", (
+            f"CreateCachedContentConfig is not importable but version detection returned {version}"
+        )
 
 
 @pytest.mark.asyncio
-async def test_gemini_cached_strategy_initialization_includes_version():
-    """Test that GeminiCachedStrategy stores API version on init."""
+async def test_gemini_cached_model_initialization_includes_version():
+    """Test that GeminiCachedModel stores API version on init."""
     from unittest.mock import MagicMock
 
-    from async_batch_llm.llm_strategies import GeminiCachedStrategy
+    from async_batch_llm.models import GeminiCachedModel
 
     # Create a mock client (won't actually use it in this test)
     mock_client = MagicMock()
 
-    def mock_parser(response):
-        return "parsed"
-
-    strategy = GeminiCachedStrategy(
+    model = GeminiCachedModel(
         model="gemini-2.5-flash",
         client=mock_client,
-        response_parser=mock_parser,
         cached_content=[],
         cache_ttl_seconds=3600,
     )
 
     # Check that _api_version was set during init
-    assert hasattr(strategy, "_api_version")
-    assert strategy._api_version in ["v1.45", "v1.46-v1.48", "v1.49+"]
+    assert hasattr(model, "_api_version")
+    assert model._api_version in ["v1.45", "v1.46-v1.48", "v1.49+"]

@@ -71,14 +71,14 @@ class ExponentialBackoffStrategy(RateLimitStrategy):
         self.slow_start_initial_delay = slow_start_initial_delay
         self.slow_start_final_delay = slow_start_final_delay
 
-    async def on_rate_limit(self, worker_id: int, consecutive_count: int) -> float:
+    async def on_rate_limit(self, worker_id: int, consecutive_limit_count: int) -> float:
         """Calculate exponential backoff cooldown."""
         cooldown = min(
-            self.initial_cooldown * (self.backoff_multiplier ** (consecutive_count - 1)),
+            self.initial_cooldown * (self.backoff_multiplier ** (consecutive_limit_count - 1)),
             self.max_cooldown,
         )
         logger.info(
-            f"Worker {worker_id} hit rate limit #{consecutive_count}, "
+            f"Worker {worker_id} hit rate limit #{consecutive_limit_count}, "
             f"cooling down for {cooldown:.1f}s"
         )
         return cooldown
@@ -112,7 +112,7 @@ class FixedDelayStrategy(RateLimitStrategy):
         self.cooldown = cooldown
         self.delay = delay_between_requests
 
-    async def on_rate_limit(self, worker_id: int, consecutive_count: int) -> float:
+    async def on_rate_limit(self, worker_id: int, consecutive_limit_count: int) -> float:
         """Return fixed cooldown duration."""
         logger.info(f"Worker {worker_id} hit rate limit, cooling down for {self.cooldown:.1f}s")
         return self.cooldown

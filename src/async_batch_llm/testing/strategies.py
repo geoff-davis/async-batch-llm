@@ -31,4 +31,4 @@ def mock_strategy(mock_agent: MockAgent[TOutput]) -> PydanticAIStrategy[TOutput]
         >>> strategy = mock_strategy(mock_agent)
         >>> work_item = LLMWorkItem(item_id="test", strategy=strategy, prompt="Hello")
     """
-    return PydanticAIStrategy(agent=mock_agent)  # type: ignore[arg-type]
+    return PydanticAIStrategy(agent=mock_agent)  # type: ignore[arg-type, invalid-argument-type, invalid-return-type]  # ty:ignore[invalid-argument-type, invalid-return-type]

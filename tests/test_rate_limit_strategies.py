@@ -13,19 +13,19 @@ async def test_exponential_backoff_strategy_consecutive_limits():
     )
 
     # First rate limit
-    cooldown1 = await strategy.on_rate_limit(worker_id=1, consecutive_count=1)
+    cooldown1 = await strategy.on_rate_limit(worker_id=1, consecutive_limit_count=1)
     assert cooldown1 == 60.0  # initial_cooldown
 
     # Second consecutive rate limit
-    cooldown2 = await strategy.on_rate_limit(worker_id=1, consecutive_count=2)
+    cooldown2 = await strategy.on_rate_limit(worker_id=1, consecutive_limit_count=2)
     assert cooldown2 == 120.0  # 60.0 * 2^1
 
     # Third consecutive rate limit
-    cooldown3 = await strategy.on_rate_limit(worker_id=1, consecutive_count=3)
+    cooldown3 = await strategy.on_rate_limit(worker_id=1, consecutive_limit_count=3)
     assert cooldown3 == 240.0  # 60.0 * 2^2
 
     # Fourth consecutive rate limit
-    cooldown4 = await strategy.on_rate_limit(worker_id=1, consecutive_count=4)
+    cooldown4 = await strategy.on_rate_limit(worker_id=1, consecutive_limit_count=4)
     assert cooldown4 == 480.0  # 60.0 * 2^3
 
 
@@ -38,7 +38,7 @@ async def test_exponential_backoff_strategy_max_cooldown():
 
     # 10 consecutive rate limits should hit max
     for count in range(1, 11):
-        cooldown = await strategy.on_rate_limit(worker_id=1, consecutive_count=count)
+        cooldown = await strategy.on_rate_limit(worker_id=1, consecutive_limit_count=count)
         assert cooldown <= 300.0  # Never exceeds max
 
 
@@ -94,13 +94,13 @@ async def test_fixed_delay_strategy_consistent_cooldown():
     strategy = FixedDelayStrategy(cooldown=300.0, delay_between_requests=1.0)
 
     # Should return same cooldown regardless of consecutive count
-    cooldown1 = await strategy.on_rate_limit(worker_id=1, consecutive_count=1)
+    cooldown1 = await strategy.on_rate_limit(worker_id=1, consecutive_limit_count=1)
     assert cooldown1 == 300.0
 
-    cooldown2 = await strategy.on_rate_limit(worker_id=1, consecutive_count=5)
+    cooldown2 = await strategy.on_rate_limit(worker_id=1, consecutive_limit_count=5)
     assert cooldown2 == 300.0
 
-    cooldown3 = await strategy.on_rate_limit(worker_id=1, consecutive_count=10)
+    cooldown3 = await strategy.on_rate_limit(worker_id=1, consecutive_limit_count=10)
     assert cooldown3 == 300.0
 
 
@@ -131,13 +131,13 @@ async def test_exponential_backoff_custom_multiplier():
     )
 
     # Test with 3x multiplier
-    cooldown1 = await strategy.on_rate_limit(worker_id=1, consecutive_count=1)
+    cooldown1 = await strategy.on_rate_limit(worker_id=1, consecutive_limit_count=1)
     assert cooldown1 == 10.0  # 10 * 3^0
 
-    cooldown2 = await strategy.on_rate_limit(worker_id=1, consecutive_count=2)
+    cooldown2 = await strategy.on_rate_limit(worker_id=1, consecutive_limit_count=2)
     assert cooldown2 == 30.0  # 10 * 3^1
 
-    cooldown3 = await strategy.on_rate_limit(worker_id=1, consecutive_count=3)
+    cooldown3 = await strategy.on_rate_limit(worker_id=1, consecutive_limit_count=3)
     assert cooldown3 == 90.0  # 10 * 3^2
 
 
