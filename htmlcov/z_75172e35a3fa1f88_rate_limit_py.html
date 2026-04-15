@@ -3,9 +3,9 @@
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <title>Coverage for src/async_batch_llm/strategies/rate_limit.py: 100.00%</title>
-    <link rel="icon" sizes="32x32" href="favicon_32_cb_58284776.png">
-    <link rel="stylesheet" href="style_cb_8432e98f.css" type="text/css">
-    <script src="coverage_html_cb_bcae5fc4.js" defer></script>
+    <link rel="icon" sizes="32x32" href="favicon_32_cb_c827f16f.png">
+    <link rel="stylesheet" href="style_cb_9ff733b0.css" type="text/css">
+    <script src="coverage_html_cb_dd2e7eb5.js" defer></script>
 </head>
 <body class="pyfile">
 <header>
@@ -17,7 +17,7 @@
         <aside id="help_panel_wrapper">
             <input id="help_panel_state" type="checkbox">
             <label for="help_panel_state">
-                <img id="keyboard_icon" src="keybd_closed_cb_ce680311.png" alt="Show/hide keyboard shortcuts">
+                <img id="keyboard_icon" src="keybd_closed_cb_900cfef5.png" alt="Show/hide keyboard shortcuts">
             </label>
             <div id="help_panel">
                 <p class="legend">Shortcuts on this page</p>
@@ -66,8 +66,8 @@
             <a id="indexLink" class="nav" href="index.html">&Hat; index</a> &nbsp; &nbsp;
             <a id="nextFileLink" class="nav" href="index.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
-            <a class="nav" href="https://coverage.readthedocs.io/en/7.12.0">coverage.py v7.12.0</a>,
-            created at 2025-11-26 00:07 +0000
+            <a class="nav" href="https://coverage.readthedocs.io/en/7.13.5">coverage.py v7.13.5</a>,
+            created at 2026-04-15 23:06 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -155,14 +155,14 @@
     <p class="run"><span class="n"><a id="t71" href="#t71">71</a></span><span class="t">        <span class="nam">self</span><span class="op">.</span><span class="nam">slow_start_initial_delay</span> <span class="op">=</span> <span class="nam">slow_start_initial_delay</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t72" href="#t72">72</a></span><span class="t">        <span class="nam">self</span><span class="op">.</span><span class="nam">slow_start_final_delay</span> <span class="op">=</span> <span class="nam">slow_start_final_delay</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t73" href="#t73">73</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t74" href="#t74">74</a></span><span class="t">    <span class="key">async</span> <span class="key">def</span> <span class="nam">on_rate_limit</span><span class="op">(</span><span class="nam">self</span><span class="op">,</span> <span class="nam">worker_id</span><span class="op">:</span> <span class="nam">int</span><span class="op">,</span> <span class="nam">consecutive_count</span><span class="op">:</span> <span class="nam">int</span><span class="op">)</span> <span class="op">-></span> <span class="nam">float</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t74" href="#t74">74</a></span><span class="t">    <span class="key">async</span> <span class="key">def</span> <span class="nam">on_rate_limit</span><span class="op">(</span><span class="nam">self</span><span class="op">,</span> <span class="nam">worker_id</span><span class="op">:</span> <span class="nam">int</span><span class="op">,</span> <span class="nam">consecutive_limit_count</span><span class="op">:</span> <span class="nam">int</span><span class="op">)</span> <span class="op">-></span> <span class="nam">float</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t75" href="#t75">75</a></span><span class="t">        <span class="str">"""Calculate exponential backoff cooldown."""</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t76" href="#t76">76</a></span><span class="t">        <span class="nam">cooldown</span> <span class="op">=</span> <span class="nam">min</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t77" href="#t77">77</a></span><span class="t">            <span class="nam">self</span><span class="op">.</span><span class="nam">initial_cooldown</span> <span class="op">*</span> <span class="op">(</span><span class="nam">self</span><span class="op">.</span><span class="nam">backoff_multiplier</span> <span class="op">**</span> <span class="op">(</span><span class="nam">consecutive_count</span> <span class="op">-</span> <span class="num">1</span><span class="op">)</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t77" href="#t77">77</a></span><span class="t">            <span class="nam">self</span><span class="op">.</span><span class="nam">initial_cooldown</span> <span class="op">*</span> <span class="op">(</span><span class="nam">self</span><span class="op">.</span><span class="nam">backoff_multiplier</span> <span class="op">**</span> <span class="op">(</span><span class="nam">consecutive_limit_count</span> <span class="op">-</span> <span class="num">1</span><span class="op">)</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t78" href="#t78">78</a></span><span class="t">            <span class="nam">self</span><span class="op">.</span><span class="nam">max_cooldown</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t79" href="#t79">79</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t80" href="#t80">80</a></span><span class="t">        <span class="nam">logger</span><span class="op">.</span><span class="nam">info</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t81" href="#t81">81</a></span><span class="t">            <span class="fst">f"</span><span class="fst">Worker </span><span class="op">{</span><span class="nam">worker_id</span><span class="op">}</span><span class="fst"> hit rate limit #</span><span class="op">{</span><span class="nam">consecutive_count</span><span class="op">}</span><span class="fst">, </span><span class="fst">"</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t81" href="#t81">81</a></span><span class="t">            <span class="fst">f"</span><span class="fst">Worker </span><span class="op">{</span><span class="nam">worker_id</span><span class="op">}</span><span class="fst"> hit rate limit #</span><span class="op">{</span><span class="nam">consecutive_limit_count</span><span class="op">}</span><span class="fst">, </span><span class="fst">"</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t82" href="#t82">82</a></span><span class="t">            <span class="fst">f"</span><span class="fst">cooling down for </span><span class="op">{</span><span class="nam">cooldown</span><span class="op">:</span><span class="fst">.1f</span><span class="op">}</span><span class="fst">s</span><span class="fst">"</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t83" href="#t83">83</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t84" href="#t84">84</a></span><span class="t">        <span class="key">return</span> <span class="nam">cooldown</span>&nbsp;</span><span class="r"></span></p>
@@ -196,7 +196,7 @@
     <p class="run"><span class="n"><a id="t112" href="#t112">112</a></span><span class="t">        <span class="nam">self</span><span class="op">.</span><span class="nam">cooldown</span> <span class="op">=</span> <span class="nam">cooldown</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t113" href="#t113">113</a></span><span class="t">        <span class="nam">self</span><span class="op">.</span><span class="nam">delay</span> <span class="op">=</span> <span class="nam">delay_between_requests</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t114" href="#t114">114</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t115" href="#t115">115</a></span><span class="t">    <span class="key">async</span> <span class="key">def</span> <span class="nam">on_rate_limit</span><span class="op">(</span><span class="nam">self</span><span class="op">,</span> <span class="nam">worker_id</span><span class="op">:</span> <span class="nam">int</span><span class="op">,</span> <span class="nam">consecutive_count</span><span class="op">:</span> <span class="nam">int</span><span class="op">)</span> <span class="op">-></span> <span class="nam">float</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t115" href="#t115">115</a></span><span class="t">    <span class="key">async</span> <span class="key">def</span> <span class="nam">on_rate_limit</span><span class="op">(</span><span class="nam">self</span><span class="op">,</span> <span class="nam">worker_id</span><span class="op">:</span> <span class="nam">int</span><span class="op">,</span> <span class="nam">consecutive_limit_count</span><span class="op">:</span> <span class="nam">int</span><span class="op">)</span> <span class="op">-></span> <span class="nam">float</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t116" href="#t116">116</a></span><span class="t">        <span class="str">"""Return fixed cooldown duration."""</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t117" href="#t117">117</a></span><span class="t">        <span class="nam">logger</span><span class="op">.</span><span class="nam">info</span><span class="op">(</span><span class="fst">f"</span><span class="fst">Worker </span><span class="op">{</span><span class="nam">worker_id</span><span class="op">}</span><span class="fst"> hit rate limit, cooling down for </span><span class="op">{</span><span class="nam">self</span><span class="op">.</span><span class="nam">cooldown</span><span class="op">:</span><span class="fst">.1f</span><span class="op">}</span><span class="fst">s</span><span class="fst">"</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t118" href="#t118">118</a></span><span class="t">        <span class="key">return</span> <span class="nam">self</span><span class="op">.</span><span class="nam">cooldown</span>&nbsp;</span><span class="r"></span></p>
@@ -212,8 +212,8 @@
             <a class="nav" href="index.html">&Hat; index</a> &nbsp; &nbsp;
             <a class="nav" href="index.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
-            <a class="nav" href="https://coverage.readthedocs.io/en/7.12.0">coverage.py v7.12.0</a>,
-            created at 2025-11-26 00:07 +0000
+            <a class="nav" href="https://coverage.readthedocs.io/en/7.13.5">coverage.py v7.13.5</a>,
+            created at 2026-04-15 23:06 +0000
         </p>
     </div>
 </footer>
