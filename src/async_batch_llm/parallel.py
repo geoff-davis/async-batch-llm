@@ -6,6 +6,7 @@ import time
 import weakref
 from typing import Any, Generic, cast
 
+from ._internal.event_dispatcher import EventDispatcher
 from .base import (
     BatchProcessor,
     LLMWorkItem,
@@ -32,9 +33,6 @@ from .strategies import (
 from .token_extractor import TokenExtractor
 
 logger = logging.getLogger(__name__)
-
-# Timeout constants (seconds)
-OBSERVER_CALLBACK_TIMEOUT = 5.0  # Observer events should complete quickly
 
 # Maximum length for error messages in logs / result payloads.
 # Longer errors get truncated to keep logs readable.
@@ -153,6 +151,12 @@ class ParallelBatchProcessor(
         # Set up middleware and observers
         self.middlewares = middlewares or []
         self.observers = observers or []
+
+        # Event + middleware dispatch. Delegates observer emits and the
+        # middleware chain (before/after/on_error) to a stateless helper.
+        self._events: EventDispatcher[TInput, TOutput, TContext] = EventDispatcher(
+            observers=self.observers, middlewares=self.middlewares
+        )
 
         # Rate limit coordination
         self._rate_limit_event = asyncio.Event()
@@ -325,74 +329,23 @@ class ParallelBatchProcessor(
         )
 
     async def _emit_event(self, event: ProcessingEvent, data: dict | None = None) -> None:
-        """Emit event to all observers."""
-        if not self.observers:
-            return
-
-        event_data = data or {}
-        for observer in self.observers:
-            try:
-                await asyncio.wait_for(
-                    observer.on_event(event, event_data),
-                    timeout=OBSERVER_CALLBACK_TIMEOUT,
-                )
-            except asyncio.CancelledError:
-                raise
-            except TimeoutError:
-                logger.warning(
-                    f"[WARN]Observer callback timed out after {OBSERVER_CALLBACK_TIMEOUT}s for event {event.name}"
-                )
-            except Exception as e:
-                logger.warning(f"[WARN]Observer error: {e}")
+        """Delegate to EventDispatcher (see _internal/event_dispatcher.py)."""
+        await self._events.emit(event, data)
 
     async def _run_middlewares_before(
         self, work_item: LLMWorkItem[TInput, TOutput, TContext]
     ) -> LLMWorkItem[TInput, TOutput, TContext] | None:
-        """Run before_process on all middlewares."""
-        current_item = work_item
-        for middleware in self.middlewares:
-            try:
-                result = await middleware.before_process(current_item)
-                if result is None:
-                    return None  # Skip this item
-                current_item = result
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(
-                    f"[WARN]Middleware before_process error for {work_item.item_id}: {e}"
-                )
-        return current_item
+        return await self._events.run_before(work_item)
 
     async def _run_middlewares_after(
         self, result: WorkItemResult[TOutput, TContext]
     ) -> WorkItemResult[TOutput, TContext]:
-        """Run after_process on all middlewares in reverse order (onion pattern)."""
-        current_result = result
-        # Run in reverse order to maintain onion-style middleware pattern
-        for middleware in reversed(self.middlewares):
-            try:
-                current_result = await middleware.after_process(current_result)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"[WARN]Middleware after_process error for {result.item_id}: {e}")
-        return current_result
+        return await self._events.run_after(result)
 
     async def _run_middlewares_on_error(
         self, work_item: LLMWorkItem[TInput, TOutput, TContext], error: Exception
     ) -> WorkItemResult[TOutput, TContext] | None:
-        """Run on_error on all middlewares."""
-        for middleware in self.middlewares:
-            try:
-                result = await middleware.on_error(work_item, error)
-                if result is not None:
-                    return result  # Middleware handled the error
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"[WARN]Middleware on_error error for {work_item.item_id}: {e}")
-        return None
+        return await self._events.run_on_error(work_item, error)
 
     async def _worker(self, worker_id: int):
         """Worker coroutine that processes items from the queue."""
