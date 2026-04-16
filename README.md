@@ -109,7 +109,8 @@ Built-in strategies for common providers:
 
 - **`PydanticAIStrategy`** - PydanticAI agents with structured output
 - **`GeminiStrategy`** - Direct Google Gemini API calls
-- **`GeminiCachedStrategy`** - Gemini with context caching via the explicit cache API (more predictable than implicit caching)
+- **`GeminiStrategy(model=GeminiCachedModel(...))`** - Gemini with context caching via the explicit cache API
+  (more predictable than implicit caching)
 
 Create custom strategies for any provider:
 
@@ -192,27 +193,29 @@ resume to prevent immediate re-limiting.
 Share a single cached strategy across all work items to avoid paying for the same context repeatedly:
 
 ```python
-from async_batch_llm import GeminiCachedStrategy
+from async_batch_llm import GeminiCachedModel, GeminiStrategy
 from google import genai
 
 client = genai.Client(api_key="your-api-key")
 
-# Create one cached strategy using the explicit cache API (see https://ai.google.dev/gemini-api/docs/caching?lang=python); implicit caching exists but is harder to control
-strategy = GeminiCachedStrategy(
+# v0.6.0+: wrap a cached model in GeminiStrategy. Create ONE cached
+# model and share it across all work items — constructing a new model
+# per item would defeat caching and can cost 10x more.
+cached_model = GeminiCachedModel(
     model="gemini-2.0-flash",
     client=client,
     cached_content=[
         genai.types.Content(
             role="user",
-            parts=[genai.types.Part(text="Large document context...")]
+            parts=[genai.types.Part(text="Large document context...")],
         )
     ],
     cache_ttl_seconds=3600,  # 1 hour
     auto_renew=True,         # Automatic renewal for long pipelines
 )
+strategy = GeminiStrategy(model=cached_model)
 
 async with ParallelBatchProcessor(config=config) as processor:
-    # Reuse the same strategy for all items
     for item in items:
         await processor.add_work(
             LLMWorkItem(
@@ -224,10 +227,10 @@ async with ParallelBatchProcessor(config=config) as processor:
 
     result = await processor.process_all()
 
-# Framework calls prepare() once per shared strategy (creates cache)
-# All items share the cache (90% discount on cached tokens)
-# Cleanup now runs once when the processor context exits, so the Gemini cache
-# stays alive (unless you call delete_cache()) across the whole batch
+# Framework calls prepare() once per shared strategy (creates cache).
+# All items share the cache (cached tokens are billed at 10% of the normal rate).
+# Cleanup runs once when the processor context exits; the Gemini cache stays
+# alive until TTL expiry unless you call cached_model.delete_cache().
 ```
 
 **Cost Example:**
@@ -371,23 +374,24 @@ async with ParallelBatchProcessor(config=config) as processor:
 Process queries against large document context with caching:
 
 ```python
-from async_batch_llm import GeminiCachedStrategy
+from async_batch_llm import GeminiCachedModel, GeminiStrategy
 from google import genai
 
 client = genai.Client(api_key="your-api-key")
 
 # Cache the large document context once via the explicit API; see also https://developers.googleblog.com/en/gemini-2-5-models-now-support-implicit-caching/
-strategy = GeminiCachedStrategy(
+cached_model = GeminiCachedModel(
     model="gemini-2.0-flash",
     client=client,
     cached_content=[
         genai.types.Content(
             role="user",
-            parts=[genai.types.Part(text=large_document_corpus)]
+            parts=[genai.types.Part(text=large_document_corpus)],
         )
     ],
     cache_ttl_seconds=3600,
 )
+strategy = GeminiStrategy(model=cached_model)
 
 async with ParallelBatchProcessor(config=config) as processor:
     # Process multiple queries against the cached context
@@ -596,6 +600,7 @@ config = ProcessorConfig(
     # Core Settings
     max_workers=5,              # Number of parallel workers
     timeout_per_item=120.0,     # Max seconds per item (including retries)
+    post_processor_timeout=90.0,  # Max seconds for each post-processor call
 
     # Retry Configuration
     retry=RetryConfig(
