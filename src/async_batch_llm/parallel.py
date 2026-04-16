@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Generic, cast
 
+from ._internal.error_logging import log_retryable_error, log_validation_error
 from ._internal.event_dispatcher import EventDispatcher
 from ._internal.rate_limit_coordinator import RateLimitCoordinator
 from ._internal.strategy_lifecycle import StrategyLifecycle
@@ -925,40 +926,8 @@ class ParallelBatchProcessor(
         attempt_number: int,
         failed_token_usage: dict[str, int],
     ) -> None:
-        """
-        Log detailed information about retryable errors.
-
-        For validation errors, this extracts field-level details from Pydantic
-        ValidationErrors. For other retryable errors, logs basic info.
-
-        Args:
-            exception: The exception that was raised
-            work_item: The work item being processed
-            attempt_number: Current attempt number
-            failed_token_usage: Token usage extracted from the failed attempt
-        """
-        error_name = type(exception).__name__
-        error_msg = str(exception)
-
-        # Log token usage for failed attempt if we have it
-        token_msg = ""
-        if failed_token_usage:
-            token_msg = f" ({failed_token_usage.get('total_tokens', 0)} tokens consumed)"
-
-        # For validation errors, try to extract field-level details
-        # PydanticAI wraps validation errors in UnexpectedModelBehavior
-        is_validation_type = (
-            "validation" in error_name.lower()
-            or "unexpectedmodelbehavior" in error_name.lower()
-            or "result validation" in error_msg.lower()
-        )
-
-        if is_validation_type:
-            self._log_validation_error(exception, work_item, attempt_number, token_msg)
-        else:
-            logger.debug(
-                f"Retryable {error_name} on attempt {attempt_number} for {work_item.item_id}: {error_msg[:300]}"
-            )
+        """Delegate to :func:`_internal.error_logging.log_retryable_error`."""
+        log_retryable_error(exception, work_item.item_id, attempt_number, failed_token_usage)
 
     def _log_validation_error(
         self,
@@ -967,114 +936,8 @@ class ParallelBatchProcessor(
         attempt_number: int,
         token_msg: str,
     ) -> None:
-        """
-        Log detailed validation error information.
-
-        Walks the exception chain to find Pydantic ValidationError and extracts
-        field-level error details and raw LLM responses.
-
-        Args:
-            exception: The exception that was raised
-            work_item: The work item being processed
-            attempt_number: Current attempt number
-            token_msg: Formatted token usage message
-        """
-        error_name = type(exception).__name__
-        error_msg = str(exception)
-
-        # Try to extract raw LLM response and underlying ValidationError
-        raw_response = None
-        underlying_validation_error = None
-
-        try:
-            # Walk the exception chain to find ValidationError and raw response
-            exc_chain_current = exception
-            depth = 0
-            while exc_chain_current and depth < 10:
-                # Try to extract raw response
-                if hasattr(exc_chain_current, "response"):
-                    raw_response = str(exc_chain_current.response)[:1000]
-                if hasattr(exc_chain_current, "messages"):
-                    try:
-                        raw_response = str(exc_chain_current.messages)[:1000]
-                    except Exception:
-                        pass
-
-                # Check if this is a ValidationError
-                from pydantic import ValidationError
-
-                if isinstance(exc_chain_current, ValidationError):
-                    underlying_validation_error = exc_chain_current
-                    break
-
-                # Move to cause
-                next_cause = getattr(exc_chain_current, "__cause__", None)
-                if next_cause is None or not isinstance(next_cause, BaseException):
-                    break
-                exc_chain_current = next_cause
-                depth += 1
-        except Exception:
-            pass
-
-        # Try to parse Pydantic ValidationError for field details
-        try:
-            from pydantic import ValidationError
-
-            if underlying_validation_error or isinstance(exception, ValidationError):
-                validation_err = cast(ValidationError, underlying_validation_error or exception)
-                error_details = []
-                for err in validation_err.errors():
-                    field_path = " -> ".join(str(loc) for loc in err["loc"])
-                    error_details.append(
-                        f"    Field: {field_path}\n"
-                        f"      Type: {err['type']}\n"
-                        f"      Message: {err['msg']}\n"
-                        f"      Input: {str(err.get('input', 'N/A'))[:100]}"
-                    )
-
-                log_msg = (
-                    f"[FAIL]Validation error on attempt {attempt_number} for {work_item.item_id}{token_msg}:\n"
-                    f"  Error type: {error_name}\n"
-                    f"  Field-level errors:\n" + "\n".join(error_details)
-                )
-                if raw_response:
-                    log_msg += f"\n  Raw LLM response (first 1000 chars):\n{raw_response}"
-                logger.error(log_msg)
-            else:
-                # Not a Pydantic ValidationError, log full error with more context
-                log_msg = (
-                    f"[FAIL]Validation error on attempt {attempt_number} for {work_item.item_id}{token_msg}:\n"
-                    f"  Error type: {error_name}\n"
-                    f"  Full error message: {error_msg}\n"
-                    f"  Exception chain:"
-                )
-                # Show exception chain for debugging
-                current: BaseException | None = exception
-                depth = 0
-                while current and depth < 5:
-                    log_msg += (
-                        f"\n    {depth}: {type(current).__name__}: "
-                        f"{str(current)[:ERROR_MESSAGE_MAX_LENGTH]}"
-                    )
-                    next_cause = getattr(current, "__cause__", None)
-                    if next_cause is None or not isinstance(next_cause, BaseException):
-                        break
-                    current = next_cause
-                    depth += 1
-                if raw_response:
-                    log_msg += f"\n  Raw LLM response (first 1000 chars):\n{raw_response}"
-                logger.error(log_msg)
-        except Exception as parse_error:
-            # Fallback if we can't parse the error
-            log_msg = (
-                f"[FAIL]Validation error on attempt {attempt_number} for {work_item.item_id}{token_msg}:\n"
-                f"  Error type: {error_name}\n"
-                f"  Full error: {error_msg}\n"
-                f"  (Failed to parse error details: {parse_error})"
-            )
-            if raw_response:
-                log_msg += f"\n  Raw LLM response (first 1000 chars):\n{raw_response}"
-            logger.error(log_msg)
+        """Delegate to :func:`_internal.error_logging.log_validation_error`."""
+        log_validation_error(exception, work_item.item_id, attempt_number, token_msg)
 
     async def shutdown(self):
         """Clean up resources: flush observers and cancel pending tasks."""
