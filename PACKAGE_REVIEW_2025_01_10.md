@@ -1,5 +1,10 @@
 # batch-llm Package Review - January 10, 2025
 
+> **Status (2026-04-16):** Superseded. A follow-up review in April 2026 surfaced
+> additional items (processor decomposition, delete_cache race, stale docs) that
+> were addressed across v0.7.0. See commit log around the `_internal/` package
+> split and `tests/test_shared_strategy_stress.py` for details.
+
 **Version Reviewed:** 0.3.0
 **Overall Score:** 8/10 - Production-ready with minor polish opportunities
 **Lines Reviewed:** ~3,800 lines production code, 14 test files, comprehensive documentation

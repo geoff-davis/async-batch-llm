@@ -53,7 +53,10 @@ def _extract_metadata(response: Any) -> dict[str, Any] | None:
             if hasattr(candidate, "finish_reason") and candidate.finish_reason:
                 metadata["finish_reason"] = str(candidate.finish_reason)
     except Exception as e:
-        logger.warning(f"Failed to extract response metadata: {e}")
+        # Metadata extraction is best-effort; missing/partial attributes on the
+        # provider response shouldn't break the call. Keep `except Exception` so
+        # KeyboardInterrupt still propagates.
+        logger.warning(f"Failed to extract response metadata: {e}", exc_info=True)
 
     return metadata or None
 
@@ -66,6 +69,10 @@ def _extract_tokens(response: Any) -> tuple[int, int, int, int]:
     """
     usage_metadata = getattr(response, "usage_metadata", None)
     if usage_metadata is None:
+        logger.debug(
+            "No usage_metadata on response (%s); token counts will be zero.",
+            type(response).__name__,
+        )
         return 0, 0, 0, 0
 
     input_tokens = getattr(usage_metadata, "prompt_token_count", 0) or 0
@@ -193,8 +200,14 @@ class GeminiCachedModel:
     ManagedLLMModel protocol: call prepare() before first use, cleanup()
     when done.
 
-    Create ONE instance and reuse across all work items to share the cache.
-    This provides 70-90% cost savings.
+    IMPORTANT — share one instance across work items.
+        Create ONE GeminiCachedModel and reuse it across every LLMWorkItem that
+        should share the cached context. Constructing a new instance per item
+        defeats caching entirely and can cost 10× more. The framework calls
+        prepare() exactly once per unique instance, so sharing is the intended
+        lifecycle. See examples/example_gemini_cached.py for the pattern.
+
+    This provides 70-90% cost savings when shared correctly.
 
     Example:
         >>> model = GeminiCachedModel(
@@ -255,6 +268,17 @@ class GeminiCachedModel:
                 stacklevel=2,
             )
 
+        if cache_renewal_buffer_seconds < 60:
+            import warnings
+
+            warnings.warn(
+                f"cache_renewal_buffer_seconds ({cache_renewal_buffer_seconds}) is less than "
+                f"60 seconds. Small buffers risk renewing on every call if generation takes "
+                f"longer than the buffer. Recommended minimum: 60 seconds.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         self._model = model
         self._client = client
         self._cached_content = cached_content
@@ -302,18 +326,45 @@ class GeminiCachedModel:
             )
 
     async def delete_cache(self) -> None:
-        """Explicitly delete the cache."""
-        if self._cache:
+        """Explicitly delete the cache.
+
+        Safe to call concurrently: the cache lock serializes delete attempts
+        so the provider API fires at most once, and late callers that arrive
+        after the cache is cleared return silently.
+        """
+        if self._cache is None:
+            return
+
+        import asyncio as _asyncio
+
+        if getattr(self, "_cache_lock", None) is None:
+            self._cache_lock = _asyncio.Lock()
+
+        async with self._cache_lock:
+            cache = self._cache
+            if cache is None:
+                # A concurrent caller already finished the delete.
+                return
+
+            # Capture the name up front so log messages don't depend on
+            # self._cache still existing after concurrent callers clear it.
+            cache_name = cache.name
+            # Clear state BEFORE the API call so concurrent tasks that
+            # re-enter see an empty cache and no-op.
+            self._cache = None
+            self._cache_created_at = None
+            self._prepared = False
+
             try:
-                await self._client.aio.caches.delete(name=self._cache.name)
-                logger.info(f"Deleted Gemini cache: {self._cache.name}")
-                self._cache = None
-                self._cache_created_at = None
-                self._prepared = False
+                await self._client.aio.caches.delete(name=cache_name)
+                logger.info(f"Deleted Gemini cache: {cache_name}")
             except Exception as e:
+                # Keep Exception (not BaseException) so KeyboardInterrupt still propagates;
+                # cache-delete failures are best-effort — caches expire on their own.
                 logger.warning(
-                    f"Failed to delete Gemini cache '{self._cache.name}': {e}. "  # ty:ignore[unresolved-attribute]
-                    "Cache may have already expired or been deleted."
+                    f"Failed to delete Gemini cache '{cache_name}': {e}. "
+                    "Cache may have already expired or been deleted.",
+                    exc_info=True,
                 )
 
     # ── Generate ────────────────────────────────────────────────
@@ -464,7 +515,7 @@ class GeminiCachedModel:
         if self._cache_tags:
             config_kwargs["metadata"] = self._cache_tags
 
-        self._cache = await self._client.aio.caches.create(  # type: ignore[call-arg]
+        self._cache = await self._client.aio.caches.create(
             model=self._model,
             config=CreateCachedContentConfig(**config_kwargs),
         )

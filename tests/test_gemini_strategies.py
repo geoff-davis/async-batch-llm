@@ -505,8 +505,12 @@ class TestGeminiCachedModel:
                 cache_renewal_buffer_seconds=5,
             )
 
-        assert len(record) == 1
-        assert "less than 60 seconds" in str(record[0].message)
+        messages = [str(w.message) for w in record]
+        # Both the short-TTL and short-renewal-buffer warnings should fire.
+        assert any("cache_ttl_seconds" in m and "60 seconds" in m for m in messages), messages
+        assert any(
+            "cache_renewal_buffer_seconds" in m and "60 seconds" in m for m in messages
+        ), messages
 
     def test_no_warning_for_test_ttl(self):
         """Test no warning for very short TTLs (< 10s, for testing)."""
@@ -525,8 +529,8 @@ class TestGeminiCachedModel:
                 cache_renewal_buffer_seconds=1,
             )
 
-            # Filter for UserWarning about TTL
-            ttl_warnings = [x for x in w if "less than 60 seconds" in str(x.message)]
+            # TTL warning only fires for 10 <= ttl < 60; at ttl=5 it should NOT fire.
+            ttl_warnings = [x for x in w if "cache_ttl_seconds" in str(x.message)]
             assert len(ttl_warnings) == 0
 
     @pytest.mark.asyncio

@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-16
+
+Internal refactor release. Public API (`async_batch_llm/__init__.py`) is unchanged —
+all new code lives behind underscore-prefixed internal modules. Includes one real
+bug fix in `GeminiCachedModel.delete_cache()`.
+
+### Added
+
+- `ProcessorConfig.post_processor_timeout` — previously hardcoded at 90s; now configurable
+  (typical 30–120s).
+- Input validation on `LLMWorkItem` (rejects `strategy=None`, non-string prompts) with
+  actionable error messages.
+- Warning when `GeminiCachedModel.cache_renewal_buffer_seconds < 60` — small buffers risk
+  renewing on every call if generation takes longer than the buffer.
+- `TokenExtractor` class for centralized token-usage extraction from exceptions
+  (PydanticAI-style `__cause__.result.usage()`, direct `.usage` attribute, framework-attached
+  `_failed_token_usage`).
+- New `_internal/` package containing `EventDispatcher`, `StrategyLifecycle`,
+  `RateLimitCoordinator`, and `error_logging` helpers. Underscore-prefixed — not public API.
+- New test modules: `test_input_validation.py`, `test_cleanup_errors.py`,
+  `test_token_extractor.py`, `test_shared_strategy_stress.py` (15 new tests total).
+
+### Changed
+
+- Error-message truncation now uses `ERROR_MESSAGE_MAX_LENGTH` (200) and
+  `ERROR_MESSAGE_DETAILED_LENGTH` (500) constants instead of scattered magic numbers.
+- Best-effort cleanup / metadata / delete paths now log with `exc_info=True` so tracebacks
+  are visible for debugging.
+- `GeminiCachedModel` docstring strengthens the "share one instance" guidance (10× cost
+  impact if violated).
+- DEBUG log emitted when `_extract_tokens()` receives a response without `usage_metadata`
+  so users can diagnose empty token counts.
+
+### Fixed
+
+- **Race in `GeminiCachedModel.delete_cache()`**: concurrent callers could observe
+  `self._cache` as `None` mid-operation and raise `AttributeError` from the logger. Now
+  serialized under the cache lock with the cache name captured upfront; exactly one API
+  delete is issued per cache, late callers return silently.
+
+### Refactored
+
+- `ParallelBatchProcessor` decomposed from 1,323 → 945 lines (-29%). Four collaborators
+  extracted under `_internal/`: `EventDispatcher` (observer/middleware dispatch),
+  `StrategyLifecycle` (prepare/cleanup with double-checked locking), `RateLimitCoordinator`
+  (generation-counter state machine), and `error_logging` (validation error formatting).
+  Public API unchanged; read-only property shims preserve back-compat for tests that
+  introspect internal state.
+- Token-usage extraction moved from inline processor method into `TokenExtractor` class.
+- Removed 7 obsolete `# type: ignore` codes; mypy now clean under `--warn-unused-ignores`.
+
+### Documentation
+
+- Removed stale `RATE_LIMIT_FIX_PLAN.md`. A diagnostic run showed the three
+  `test_worst_case_rate_limit.py` scenarios pass reliably (5/5 consecutive runs); the
+  proposed re-architecture was unnecessary. The current generation-counter design is the
+  shipped behavior.
+- README: replaced removed `GeminiCachedStrategy` with
+  `GeminiStrategy(model=GeminiCachedModel(...))` in the Cost Optimization and RAG examples.
+- CLAUDE.md: extended Version History past v0.1.0 with v0.3.0, v0.6.0, v0.7.0 entries.
+- PACKAGE_REVIEW_2025_01_10.md: added "superseded" banner referencing the April 2026
+  follow-up.
+
 ## [0.6.0] - 2026-04-15
 
 **BREAKING**: Separates model/client management from strategy logic via LLMModel protocol.

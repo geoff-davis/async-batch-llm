@@ -759,13 +759,27 @@ assert len(result.results) == result.total_items
 
 ## Version History
 
-- **v0.0.1.x** - Initial development versions (PydanticAI agent support)
+- **v0.0.1.x** - Initial development (PydanticAI agent support)
 - **v0.0.2.x** - Added direct API call support, fixed race conditions
-- **v0.1.0** - Strategy pattern refactor (current)
+- **v0.1.0** - Strategy pattern refactor
   - Breaking: Replaced `agent=`, `agent_factory=`, `direct_call=` with `strategy=`
   - Added `LLMCallStrategy` abstract base class
   - Framework-level timeout enforcement
   - Built-in strategies: `PydanticAIStrategy`, `GeminiStrategy`, `GeminiCachedStrategy`
+- **v0.3.0** - Added `RetryState` for cross-attempt persistence (smart retry, model escalation)
+- **v0.6.0** - Model abstraction
+  - Added `LLMModel` / `ManagedLLMModel` protocols
+  - New: `GeminiModel`, `GeminiCachedModel` (replaces `GeminiCachedStrategy`)
+  - Strategies accept a model instead of raw client + model name
+- **v0.7.0** - Internal refactor (current)
+  - Decomposed `ParallelBatchProcessor`; collaborators live in `_internal/`
+    (`EventDispatcher`, `StrategyLifecycle`, `RateLimitCoordinator`, `error_logging`)
+  - Added `TokenExtractor` for centralized token-usage extraction
+  - `ProcessorConfig.post_processor_timeout` is now configurable
+  - Fixed race in `GeminiCachedModel.delete_cache()` under concurrent callers
+  - Stronger input validation on `LLMWorkItem` and `ProcessorConfig`
+  - Public API (`__init__.py`) unchanged — all refactoring is behind underscore-prefixed
+    internal modules
 
 ---
 
