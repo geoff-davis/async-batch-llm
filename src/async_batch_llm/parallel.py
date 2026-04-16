@@ -6,6 +6,7 @@ import time
 from typing import Generic, cast
 
 from ._internal.event_dispatcher import EventDispatcher
+from ._internal.rate_limit_coordinator import RateLimitCoordinator
 from ._internal.strategy_lifecycle import StrategyLifecycle
 from .base import (
     BatchProcessor,
@@ -158,20 +159,18 @@ class ParallelBatchProcessor(
             observers=self.observers, middlewares=self.middlewares
         )
 
-        # Rate limit coordination
-        self._rate_limit_event = asyncio.Event()
-        self._rate_limit_event.set()  # Start in "not paused" state
-        self._in_cooldown = False
-        self._cooldown_generation = 0  # Track which cooldown cycle we're in (fixes race condition)
-        self._cooldown_complete_generation = 0
-        self._current_generation_event: asyncio.Event = asyncio.Event()
-        self._current_generation_event.set()
-        self._items_since_resume = 0
-        self._slow_start_active = False
-        self._consecutive_rate_limits = 0
+        # Rate-limit coordination (extracted in v0.7.0).
+        self._rate_limit_coord = RateLimitCoordinator(
+            rate_limit_strategy=self.rate_limit_strategy,
+            events=self._events,
+        )
+        # Back-compat aliases — existing private methods and some tests
+        # reach into these attributes directly.
+        self._rate_limit_event = self._rate_limit_coord._rate_limit_event
+        self._current_generation_event = self._rate_limit_coord._current_generation_event
+        self._rate_limit_lock = self._rate_limit_coord._lock
 
-        # Thread safety locks
-        self._rate_limit_lock = asyncio.Lock()
+        # Thread safety locks (stats + results remain processor-owned).
         self._stats_lock = asyncio.Lock()
         self._results_lock = asyncio.Lock()
 
@@ -207,6 +206,33 @@ class ParallelBatchProcessor(
     @_strategies_cleaned_up.setter
     def _strategies_cleaned_up(self, value: bool) -> None:
         self._strategy_lifecycle._cleaned_up = value
+
+    # Back-compat attribute accessors for tests and subclasses that read
+    # the rate-limit coordinator's state directly.
+
+    @property
+    def _in_cooldown(self) -> bool:
+        return self._rate_limit_coord._in_cooldown
+
+    @property
+    def _cooldown_generation(self) -> int:
+        return self._rate_limit_coord._cooldown_generation
+
+    @property
+    def _cooldown_complete_generation(self) -> int:
+        return self._rate_limit_coord._cooldown_complete_generation
+
+    @property
+    def _consecutive_rate_limits(self) -> int:
+        return self._rate_limit_coord._consecutive_rate_limits
+
+    @property
+    def _slow_start_active(self) -> bool:
+        return self._rate_limit_coord._slow_start_active
+
+    @property
+    def _items_since_resume(self) -> int:
+        return self._rate_limit_coord._items_since_resume
 
     async def _cleanup_strategies(self) -> None:
         """Delegate to StrategyLifecycle (see _internal/strategy_lifecycle.py)."""
@@ -328,26 +354,10 @@ class ParallelBatchProcessor(
 
             logger.info(f"[INFO][Worker {worker_id}] Picked up {work_item.item_id} from queue")
 
-            # Wait if we're in rate limit cooldown
-            await self._rate_limit_event.wait()
-
-            # Slow start after rate limit recovery (thread-safe)
-            should_delay = False
-            delay = 0.0
-
-            async with self._rate_limit_lock:
-                if self._slow_start_active:
-                    should_delay, delay = self.rate_limit_strategy.should_apply_slow_start(
-                        self._items_since_resume
-                    )
-                    if should_delay:
-                        self._items_since_resume += 1
-                    else:
-                        # Slow-start window finished; reset counters until next rate limit
-                        self._slow_start_active = False
-                        self._items_since_resume = 0
-
-            if should_delay:
+            # Wait if we're in rate limit cooldown, then apply slow-start ramp.
+            await self._rate_limit_coord.wait_if_paused()
+            delay = await self._rate_limit_coord.apply_slow_start()
+            if delay > 0:
                 await asyncio.sleep(delay)
 
             # Process the item
@@ -489,128 +499,15 @@ class ParallelBatchProcessor(
                     f"{error_breakdown} | {calls_per_sec:.2f} calls/sec{token_summary}"
                 )
 
-    async def _handle_rate_limit(self, worker_id: int, observed_generation: int | None = None):
-        """Handle rate limit by pausing all workers and coordinating cooldown."""
-        # Use generation counter to track cooldown cycles and prevent race conditions.
-        # Workers that detect a rate limit while another cooldown is active simply wait
-        # for that generation's completion event instead of attempting to coordinate again.
-
-        if observed_generation is None:
-            observed_generation = self._cooldown_generation
-
-        async with self._rate_limit_lock:
-            current_generation = self._cooldown_generation
-            generation_event = self._current_generation_event
-            if self._in_cooldown or observed_generation < current_generation:
-                # Another worker already coordinating this (or a newer) cooldown cycle
-                logger.debug(
-                    f"Worker {worker_id} waiting for cooldown gen {current_generation} (obs={observed_generation})"
-                )
-                should_wait = True
-                generation = current_generation
-            else:
-                # We're the coordinator for this cooldown
-                self._in_cooldown = True
-                self._cooldown_generation += 1  # Increment generation for new cooldown cycle
-                generation = self._cooldown_generation
-                self._slow_start_active = True
-                self._consecutive_rate_limits += 1
-                self._rate_limit_event.clear()  # Pause all workers
-                self._current_generation_event = asyncio.Event()
-                generation_event = self._current_generation_event
-                consecutive = self._consecutive_rate_limits
-                should_wait = False
-
-        if should_wait:
-            await generation_event.wait()
-            logger.debug(f"Worker {worker_id} resumed after cooldown gen {generation}")
-            return
-
-        # We're the coordinator - perform the cooldown
-
-        pause_started_at = time.time()
-        cooldown_error: Exception | None = None
-
-        try:
-            cooldown = await self.rate_limit_strategy.on_rate_limit(worker_id, consecutive)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            cooldown_error = exc
-            cooldown = 0.0
-            logger.warning(
-                "[WARN]Rate limit strategy failed to determine cooldown: %s. "
-                "Resuming workers immediately.",
-                exc,
-            )
-
-        await self._emit_event(
-            ProcessingEvent.COOLDOWN_STARTED,
-            {
-                "worker_id": worker_id,
-                "duration": cooldown,
-                "consecutive": consecutive,
-            },
-        )
-
-        if cooldown_error is None and cooldown > 0:
-            logger.warning(
-                "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). Pausing all workers for %.1fs...",
-                worker_id,
-                generation,
-                cooldown,
-            )
-        else:
-            logger.warning(
-                "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). Skipping cooldown due to prior error.",
-                worker_id,
-                generation,
-            )
-
-        try:
-            if cooldown > 0:
-                await asyncio.sleep(cooldown)
-        except asyncio.CancelledError:
-            await asyncio.shield(self._finalize_cooldown(pause_started_at, None))
-            raise
-        except Exception as exc:
-            logger.warning(
-                "[WARN]Cooldown sleep interrupted for worker %s: %s. Resuming immediately.",
-                worker_id,
-                exc,
-            )
-            cooldown_error = cooldown_error or exc
-            await self._finalize_cooldown(pause_started_at, cooldown_error)
-            return
-
-        await self._finalize_cooldown(pause_started_at, cooldown_error)
+    async def _handle_rate_limit(
+        self, worker_id: int, observed_generation: int | None = None
+    ) -> None:
+        """Delegate to RateLimitCoordinator."""
+        await self._rate_limit_coord.handle_rate_limit(worker_id, observed_generation)
 
     async def _finalize_cooldown(self, start_time: float, error: Exception | None) -> None:
-        """Resume workers after cooldown and emit completion event."""
-        actual_duration = max(0.0, time.time() - start_time)
-
-        # Reset state and resume all workers atomically
-        async with self._rate_limit_lock:
-            self._items_since_resume = 0
-            self._in_cooldown = False
-            # Track completion so late reporters don't start a new cycle
-            self._cooldown_complete_generation = self._cooldown_generation
-            self._rate_limit_event.set()  # Resume all workers
-            self._current_generation_event.set()
-
-        payload: dict[str, float | str] = {"duration": actual_duration}
-        if error is not None:
-            payload["error"] = str(error)[:ERROR_MESSAGE_MAX_LENGTH]
-
-        await self._emit_event(ProcessingEvent.COOLDOWN_ENDED, payload)
-
-        if error is not None:
-            logger.warning(
-                "[WARN]Cooldown ended early due to error: %s. Workers resumed immediately.",
-                error,
-            )
-        else:
-            logger.info("[OK]Cooldown complete. Resuming with slow-start...")
+        """Delegate to RateLimitCoordinator._finalize_cooldown (kept for subclass overrides)."""
+        await self._rate_limit_coord._finalize_cooldown(start_time, error)
 
     def _should_retry_error(self, exception: Exception) -> bool:
         """Determine if error should be retried using error classifier."""
@@ -900,9 +797,8 @@ class ParallelBatchProcessor(
                 },
             )
 
-            # Reset consecutive rate limit counter on success (thread-safe)
-            async with self._rate_limit_lock:
-                self._consecutive_rate_limits = 0
+            # Reset consecutive rate limit counter on success (thread-safe).
+            await self._rate_limit_coord.on_item_success()
 
             return work_result
 
@@ -975,7 +871,7 @@ class ParallelBatchProcessor(
             )
 
             # Handle rate limit (cooldown) - this will pause all workers
-            observed_generation = self._cooldown_generation
+            observed_generation = self._rate_limit_coord.current_generation
             await self._handle_rate_limit(worker_id, observed_generation)
 
             # Re-raise the original exception to trigger retry logic
