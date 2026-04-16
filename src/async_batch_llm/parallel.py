@@ -34,7 +34,12 @@ logger = logging.getLogger(__name__)
 
 # Timeout constants (seconds)
 OBSERVER_CALLBACK_TIMEOUT = 5.0  # Observer events should complete quickly
-POST_PROCESSOR_TIMEOUT = 90.0  # Post-processors may do database/IO work
+
+# Maximum length for error messages in logs / result payloads.
+# Longer errors get truncated to keep logs readable.
+ERROR_MESSAGE_MAX_LENGTH = 200
+# Larger truncation used for detailed diagnostic logs (final attempt, validation traces).
+ERROR_MESSAGE_DETAILED_LENGTH = 500
 
 
 class ParallelBatchProcessor(
@@ -446,7 +451,7 @@ class ParallelBatchProcessor(
 
                 logger.error(
                     f"[FAIL]Worker {worker_id} failed to process {work_item.item_id} after all retries: "
-                    f"{type(e).__name__}: {str(e)[:200]}{token_msg}"
+                    f"{type(e).__name__}: {str(e)[:ERROR_MESSAGE_MAX_LENGTH]}{token_msg}"
                 )
 
                 # Try middleware error handlers
@@ -457,7 +462,7 @@ class ParallelBatchProcessor(
                     result = WorkItemResult(
                         item_id=work_item.item_id,
                         success=False,
-                        error=f"{type(e).__name__}: {str(e)[:200]}",
+                        error=f"{type(e).__name__}: {str(e)[:ERROR_MESSAGE_MAX_LENGTH]}",
                         context=work_item.context,
                         token_usage=cast(TokenUsage, failed_tokens),
                     )
@@ -514,7 +519,8 @@ class ParallelBatchProcessor(
             # save failed items (e.g., dedupe_authors saves failed clusters as singletons)
             try:
                 await asyncio.wait_for(
-                    self._run_post_processor(result), timeout=POST_PROCESSOR_TIMEOUT
+                    self._run_post_processor(result),
+                    timeout=self.config.post_processor_timeout,
                 )
             except TimeoutError:
                 logger.error(f"⏱ Post-processor exceeded timeout for {work_item.item_id}")
@@ -673,7 +679,7 @@ class ParallelBatchProcessor(
 
         payload: dict[str, float | str] = {"duration": actual_duration}
         if error is not None:
-            payload["error"] = str(error)[:200]
+            payload["error"] = str(error)[:ERROR_MESSAGE_MAX_LENGTH]
 
         await self._emit_event(ProcessingEvent.COOLDOWN_ENDED, payload)
 
@@ -829,7 +835,7 @@ class ParallelBatchProcessor(
                         f"[FAIL]ALL {self.config.retry.max_attempts} ATTEMPTS EXHAUSTED "
                         f"for {work_item.item_id}:\n"
                         f"  Final error type: {type(e).__name__}\n"
-                        f"  Final error message: {error_msg[:500]}{token_summary}"
+                        f"  Final error message: {error_msg[:ERROR_MESSAGE_DETAILED_LENGTH]}{token_summary}"
                     )
                     # Attach token usage to exception so it can be included in failed result
                     if hasattr(e, "__dict__"):
@@ -870,7 +876,8 @@ class ParallelBatchProcessor(
                         wait_time = wait_time * (0.5 + random.random() * 0.5)
 
                 # Log retry attempt
-                error_snippet = str(e)[:150]
+                # Brief snippet for retry logs (shorter than the detailed final-failure log)
+                error_snippet = str(e)[:ERROR_MESSAGE_MAX_LENGTH]
                 error_type = type(e).__name__
                 if is_validation_error:
                     logger.warning(
@@ -1145,7 +1152,7 @@ class ParallelBatchProcessor(
         logger.error(
             f"[FAIL]PERMANENT FAILURE for {work_item.item_id}:\n"
             f"  Error type: {error_name}\n"
-            f"  Error message: {error_msg[:500]}\n"
+            f"  Error message: {error_msg[:ERROR_MESSAGE_DETAILED_LENGTH]}\n"
             f"  This error will NOT be retried (not retryable){token_summary}"
         )
 
@@ -1157,7 +1164,7 @@ class ParallelBatchProcessor(
         return WorkItemResult(
             item_id=work_item.item_id,
             success=False,
-            error=f"{error_name}: {error_msg[:500]}",
+            error=f"{error_name}: {error_msg[:ERROR_MESSAGE_DETAILED_LENGTH]}",
             context=work_item.context,
             token_usage=cast(TokenUsage, failed_token_usage),
         )
@@ -1296,7 +1303,10 @@ class ParallelBatchProcessor(
                 current: BaseException | None = exception
                 depth = 0
                 while current and depth < 5:
-                    log_msg += f"\n    {depth}: {type(current).__name__}: {str(current)[:200]}"
+                    log_msg += (
+                        f"\n    {depth}: {type(current).__name__}: "
+                        f"{str(current)[:ERROR_MESSAGE_MAX_LENGTH]}"
+                    )
                     next_cause = getattr(current, "__cause__", None)
                     if next_cause is None or not isinstance(next_cause, BaseException):
                         break

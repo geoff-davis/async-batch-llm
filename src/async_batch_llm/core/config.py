@@ -89,6 +89,9 @@ class ProcessorConfig:
 
     max_workers: int = 5
     timeout_per_item: float = 120.0
+    # Timeout for user-supplied post-processor functions (seconds).
+    # Post-processors may do database/IO work; leave generous but bounded.
+    post_processor_timeout: float = 90.0
 
     retry: RetryConfig = field(default_factory=RetryConfig)
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
@@ -124,6 +127,11 @@ class ProcessorConfig:
             raise ValueError(
                 f"timeout_per_item must be > 0 (got {self.timeout_per_item}). "
                 f"Set config.timeout_per_item to a positive number in seconds (typical: 60-300)."
+            )
+        if self.post_processor_timeout <= 0:
+            raise ValueError(
+                f"post_processor_timeout must be > 0 (got {self.post_processor_timeout}). "
+                f"Set config.post_processor_timeout to a positive number in seconds (typical: 30-120)."
             )
         if self.progress_interval < 1:
             raise ValueError(

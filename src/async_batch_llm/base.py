@@ -201,6 +201,17 @@ class LLMWorkItem(Generic[TInput, TOutput, TContext]):
                 f"item_id cannot be whitespace only (got {repr(self.item_id)}). "
                 f"Provide a non-whitespace string identifier."
             )
+        if self.strategy is None:
+            raise ValueError(
+                "strategy must not be None. "
+                "Pass an LLMCallStrategy instance (e.g., PydanticAIStrategy, GeminiStrategy, "
+                "or your custom subclass)."
+            )
+        if not isinstance(self.prompt, str):
+            raise TypeError(
+                f"prompt must be a string (got {type(self.prompt).__name__}: {repr(self.prompt)[:80]}). "
+                f"If you need to pass structured data, serialize it to a string first."
+            )
 
 
 @dataclass

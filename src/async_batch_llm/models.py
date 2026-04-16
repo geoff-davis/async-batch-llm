@@ -193,8 +193,14 @@ class GeminiCachedModel:
     ManagedLLMModel protocol: call prepare() before first use, cleanup()
     when done.
 
-    Create ONE instance and reuse across all work items to share the cache.
-    This provides 70-90% cost savings.
+    IMPORTANT — share one instance across work items.
+        Create ONE GeminiCachedModel and reuse it across every LLMWorkItem that
+        should share the cached context. Constructing a new instance per item
+        defeats caching entirely and can cost 10× more. The framework calls
+        prepare() exactly once per unique instance, so sharing is the intended
+        lifecycle. See examples/example_gemini_cached.py for the pattern.
+
+    This provides 70-90% cost savings when shared correctly.
 
     Example:
         >>> model = GeminiCachedModel(
@@ -251,6 +257,17 @@ class GeminiCachedModel:
                 f"cache_ttl_seconds ({cache_ttl_seconds}) is less than 60 seconds. "
                 f"Very short TTLs defeat the purpose of caching. "
                 f"Recommended minimum: 300 seconds (5 minutes).",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        if cache_renewal_buffer_seconds < 60:
+            import warnings
+
+            warnings.warn(
+                f"cache_renewal_buffer_seconds ({cache_renewal_buffer_seconds}) is less than "
+                f"60 seconds. Small buffers risk renewing on every call if generation takes "
+                f"longer than the buffer. Recommended minimum: 60 seconds.",
                 UserWarning,
                 stacklevel=2,
             )
