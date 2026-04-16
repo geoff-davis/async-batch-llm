@@ -205,9 +205,12 @@ class ParallelBatchProcessor(
                     )
                     await strategy.cleanup()
                 except Exception as e:
-                    # Log but don't fail the batch - cleanup failures shouldn't invalidate work
+                    # Log but don't fail the batch - cleanup failures shouldn't invalidate work.
+                    # Scoped to Exception (not BaseException) so KeyboardInterrupt / SystemExit
+                    # still propagate and abort the process.
                     logger.warning(
-                        f"[WARN]Strategy cleanup failed for {strategy.__class__.__name__}: {e}"
+                        f"[WARN]Strategy cleanup failed for {strategy.__class__.__name__}: {e}",
+                        exc_info=True,
                     )
 
         self._strategies_cleaned_up = True

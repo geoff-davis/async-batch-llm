@@ -53,7 +53,10 @@ def _extract_metadata(response: Any) -> dict[str, Any] | None:
             if hasattr(candidate, "finish_reason") and candidate.finish_reason:
                 metadata["finish_reason"] = str(candidate.finish_reason)
     except Exception as e:
-        logger.warning(f"Failed to extract response metadata: {e}")
+        # Metadata extraction is best-effort; missing/partial attributes on the
+        # provider response shouldn't break the call. Keep `except Exception` so
+        # KeyboardInterrupt still propagates.
+        logger.warning(f"Failed to extract response metadata: {e}", exc_info=True)
 
     return metadata or None
 
@@ -66,6 +69,10 @@ def _extract_tokens(response: Any) -> tuple[int, int, int, int]:
     """
     usage_metadata = getattr(response, "usage_metadata", None)
     if usage_metadata is None:
+        logger.debug(
+            "No usage_metadata on response (%s); token counts will be zero.",
+            type(response).__name__,
+        )
         return 0, 0, 0, 0
 
     input_tokens = getattr(usage_metadata, "prompt_token_count", 0) or 0
@@ -328,9 +335,12 @@ class GeminiCachedModel:
                 self._cache_created_at = None
                 self._prepared = False
             except Exception as e:
+                # Keep Exception (not BaseException) so KeyboardInterrupt still propagates;
+                # cache-delete failures are best-effort — caches expire on their own.
                 logger.warning(
                     f"Failed to delete Gemini cache '{self._cache.name}': {e}. "  # ty:ignore[unresolved-attribute]
-                    "Cache may have already expired or been deleted."
+                    "Cache may have already expired or been deleted.",
+                    exc_info=True,
                 )
 
     # ── Generate ────────────────────────────────────────────────
