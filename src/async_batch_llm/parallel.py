@@ -29,6 +29,7 @@ from .strategies import (
     FrameworkTimeoutError,
     RateLimitStrategy,
 )
+from .token_extractor import TokenExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,9 @@ class ParallelBatchProcessor(
             self._proactive_rate_limiter = None
 
         self._strategies_cleaned_up = False
+
+        # Centralized token-usage extraction across all exception shapes.
+        self._token_extractor = TokenExtractor()
 
     async def _cleanup_strategies(self) -> None:
         """Cleanup all prepared strategies exactly once."""
@@ -700,70 +704,13 @@ class ParallelBatchProcessor(
         return error_info.is_retryable
 
     def _extract_token_usage(self, exception: Exception) -> dict[str, int]:
+        """Extract token usage from a failed LLM call exception.
+
+        Thin wrapper around :class:`TokenExtractor`; retained as a method
+        for subclass override points. See ``token_extractor.py`` for the
+        three extraction strategies.
         """
-        Extract token usage from a failed LLM call exception.
-
-        Attempts multiple strategies to extract token usage from different provider
-        exception structures. Returns empty dict if extraction fails.
-
-        Args:
-            exception: The exception from which to extract token usage
-
-        Returns:
-            Dictionary with input_tokens, output_tokens, total_tokens (or empty dict)
-        """
-        try:
-            # Strategy 1: PydanticAI-style exception with result in __cause__
-            if hasattr(exception, "__cause__") and exception.__cause__:
-                cause = exception.__cause__
-                if hasattr(cause, "result"):
-                    result = cause.result
-                    if hasattr(result, "usage") and callable(result.usage):
-                        usage = result.usage()  # ty:ignore[call-top-callable]
-                        if usage:
-                            return {
-                                "input_tokens": getattr(usage, "request_tokens", 0),
-                                "output_tokens": getattr(usage, "response_tokens", 0),
-                                "total_tokens": getattr(usage, "total_tokens", 0),
-                            }
-
-            # Strategy 2: Direct usage attribute on exception
-            if hasattr(exception, "usage"):
-                usage = exception.usage
-                if callable(usage):
-                    usage = usage()  # ty:ignore[call-top-callable]
-                if usage:
-                    return {
-                        "input_tokens": getattr(
-                            usage, "request_tokens", getattr(usage, "input_tokens", 0)
-                        ),
-                        "output_tokens": getattr(
-                            usage, "response_tokens", getattr(usage, "output_tokens", 0)
-                        ),
-                        "total_tokens": getattr(usage, "total_tokens", 0),
-                    }
-
-            # Strategy 3: Custom _failed_token_usage attribute (set by this framework)
-            if hasattr(exception, "__dict__") and "_failed_token_usage" in exception.__dict__:
-                failed_usage = exception.__dict__["_failed_token_usage"]
-                if isinstance(failed_usage, dict):
-                    return failed_usage
-
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            # Extraction failed - log for debugging and return empty dict
-            logger.debug(
-                f"Failed to extract token usage from {type(exception).__name__}: {e}. "
-                "Returning 0 tokens. This is normal for non-LLM exceptions."
-            )
-
-        return {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "cached_input_tokens": 0,
-        }
+        return self._token_extractor.extract_from_exception(exception)
 
     async def _process_item_with_retries(
         self, work_item: LLMWorkItem[TInput, TOutput, TContext], worker_id: int
@@ -806,21 +753,10 @@ class ParallelBatchProcessor(
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                # Try to extract token usage from this failed attempt using robust extraction
+                # Accumulate token usage across retry attempts so users see
+                # the true cost of a failure, not just the final attempt.
                 attempt_tokens = self._extract_token_usage(e)
-                if attempt_tokens:
-                    cumulative_failed_tokens["input_tokens"] += attempt_tokens.get(
-                        "input_tokens", 0
-                    )
-                    cumulative_failed_tokens["output_tokens"] += attempt_tokens.get(
-                        "output_tokens", 0
-                    )
-                    cumulative_failed_tokens["total_tokens"] += attempt_tokens.get(
-                        "total_tokens", 0
-                    )
-                    cumulative_failed_tokens["cached_input_tokens"] += attempt_tokens.get(
-                        "cached_input_tokens", 0
-                    )
+                self._token_extractor.accumulate(cumulative_failed_tokens, attempt_tokens)
 
                 if not self._should_retry_error(e):
                     logger.debug(f"Error not retryable: {type(e).__name__}")
