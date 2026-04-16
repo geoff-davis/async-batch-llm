@@ -175,7 +175,7 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
         - Returns string "[DRY-RUN] Mock output" as output
         - Returns mock token usage: 100 input, 50 output, 150 total
         """
-        mock_output: TOutput = f"[DRY-RUN] Mock output for prompt: {prompt[:50]}..."  # type: ignore[assignment, invalid-assignment]  # ty:ignore[invalid-assignment]
+        mock_output: TOutput = f"[DRY-RUN] Mock output for prompt: {prompt[:50]}..."  # ty:ignore[invalid-assignment]
         mock_tokens: TokenUsage = {
             "input_tokens": 100,
             "output_tokens": 50,
@@ -338,13 +338,13 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
         try:
             from pydantic import BaseModel
 
-            result_type = self.agent.result_type  # type: ignore[attr-defined, unresolved-attribute]  # ty:ignore[unresolved-attribute]
+            result_type = self.agent.result_type  # ty:ignore[unresolved-attribute]
 
             # If result_type is a Pydantic model, try to create an instance
             if isinstance(result_type, type) and issubclass(result_type, BaseModel):
                 # Use model_construct to create instance without validation
                 # This allows creating instances even with required fields
-                mock_output: TOutput = result_type.model_construct()  # type: ignore[assignment]
+                mock_output: TOutput = result_type.model_construct()
             else:
                 # For non-Pydantic types, use base class default
                 return await super().dry_run(prompt)

@@ -657,7 +657,7 @@ class ParallelBatchProcessor(
         """Get the LLM call strategy for this work item."""
         return work_item.strategy
 
-    async def _process_item(  # type: ignore[override, invalid-method-override]
+    async def _process_item(  # type: ignore[override]  # ty:ignore[invalid-method-override]
         self,
         work_item: LLMWorkItem[TInput, TOutput, TContext],
         worker_id: int,

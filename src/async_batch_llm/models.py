@@ -491,7 +491,7 @@ class GeminiCachedModel:
         if self._cache_tags:
             config_kwargs["metadata"] = self._cache_tags
 
-        self._cache = await self._client.aio.caches.create(  # type: ignore[call-arg]
+        self._cache = await self._client.aio.caches.create(
             model=self._model,
             config=CreateCachedContentConfig(**config_kwargs),
         )

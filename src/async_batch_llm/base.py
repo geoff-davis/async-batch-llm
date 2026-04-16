@@ -619,7 +619,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 current_item,
             )
 
-        callback_task: asyncio.Task[None] = asyncio.create_task(callback_awaitable)  # type: ignore[arg-type, invalid-argument-type]  # ty:ignore[invalid-argument-type]
+        callback_task: asyncio.Task[None] = asyncio.create_task(callback_awaitable)  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
         self._track_progress_task(callback_task, log_exceptions=True)
 
         if self.progress_callback_timeout is not None:
