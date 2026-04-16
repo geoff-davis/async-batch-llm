@@ -3,10 +3,10 @@
 import asyncio
 import logging
 import time
-import weakref
-from typing import Any, Generic, cast
+from typing import Generic, cast
 
 from ._internal.event_dispatcher import EventDispatcher
+from ._internal.strategy_lifecycle import StrategyLifecycle
 from .base import (
     BatchProcessor,
     LLMWorkItem,
@@ -175,10 +175,13 @@ class ParallelBatchProcessor(
         self._stats_lock = asyncio.Lock()
         self._results_lock = asyncio.Lock()
 
-        # Strategy lifecycle management (v0.2.0)
-        # Track which strategy instances have been prepared to avoid duplicate prepare() calls
-        self._prepared_strategies: weakref.WeakSet[LLMCallStrategy[Any]] = weakref.WeakSet()
-        self._strategy_lock = asyncio.Lock()  # Protect strategy initialization
+        # Strategy lifecycle management (v0.2.0, extracted in v0.7.0).
+        # Tracks prepared strategies via a WeakSet so sharing one instance
+        # across work items invokes prepare() exactly once.
+        self._strategy_lifecycle: StrategyLifecycle[TOutput] = StrategyLifecycle()
+        # Back-compat aliases used by existing private methods and tests.
+        self._prepared_strategies = self._strategy_lifecycle._prepared
+        self._strategy_lock = self._strategy_lifecycle._lock
 
         # Proactive rate limiting (prevents hitting rate limits)
         if config.max_requests_per_minute:
@@ -194,66 +197,24 @@ class ParallelBatchProcessor(
         else:
             self._proactive_rate_limiter = None
 
-        self._strategies_cleaned_up = False
-
         # Centralized token-usage extraction across all exception shapes.
         self._token_extractor = TokenExtractor()
 
+    @property
+    def _strategies_cleaned_up(self) -> bool:
+        return self._strategy_lifecycle._cleaned_up
+
+    @_strategies_cleaned_up.setter
+    def _strategies_cleaned_up(self, value: bool) -> None:
+        self._strategy_lifecycle._cleaned_up = value
+
     async def _cleanup_strategies(self) -> None:
-        """Cleanup all prepared strategies exactly once."""
-        if self._strategies_cleaned_up:
-            return
-
-        # Iterate over copy of set since cleanup may modify it
-        for strategy in list(self._prepared_strategies):
-            if hasattr(strategy, "cleanup") and callable(strategy.cleanup):
-                try:
-                    logger.debug(
-                        f"Cleaning up strategy {strategy.__class__.__name__} (id={id(strategy)})"
-                    )
-                    await strategy.cleanup()
-                except Exception as e:
-                    # Log but don't fail the batch - cleanup failures shouldn't invalidate work.
-                    # Scoped to Exception (not BaseException) so KeyboardInterrupt / SystemExit
-                    # still propagate and abort the process.
-                    logger.warning(
-                        f"[WARN]Strategy cleanup failed for {strategy.__class__.__name__}: {e}",
-                        exc_info=True,
-                    )
-
-        self._strategies_cleaned_up = True
+        """Delegate to StrategyLifecycle (see _internal/strategy_lifecycle.py)."""
+        await self._strategy_lifecycle.cleanup_all()
 
     async def _ensure_strategy_prepared(self, strategy: LLMCallStrategy[TOutput]) -> None:
-        """
-        Ensure strategy is prepared exactly once, even with concurrent calls.
-
-        When the same strategy instance is shared across multiple work items
-        (e.g., for caching cost optimization), this method ensures prepare()
-        is called only once per unique strategy instance.
-
-        Thread-safe via double-checked locking pattern.
-
-        Args:
-            strategy: The LLM call strategy to prepare
-        """
-        # Fast path: already prepared (no lock needed for read)
-        if strategy in self._prepared_strategies:
-            return
-
-        # Slow path: acquire lock and prepare
-        async with self._strategy_lock:
-            # Double-check after acquiring lock (another worker may have prepared)
-            if strategy in self._prepared_strategies:
-                return
-
-            strategy_id = id(strategy)
-            logger.debug(f"Preparing strategy {strategy.__class__.__name__} (id={strategy_id})")
-            await strategy.prepare()
-            self._prepared_strategies.add(strategy)
-            self._strategies_cleaned_up = False
-            logger.debug(
-                f"Strategy {strategy.__class__.__name__} prepared successfully (id={strategy_id})"
-            )
+        """Delegate to StrategyLifecycle.ensure_prepared."""
+        await self._strategy_lifecycle.ensure_prepared(strategy)
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """
