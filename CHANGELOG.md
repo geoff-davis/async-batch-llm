@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `GeminiCachedModel.prepare()` no longer crashes with `CreateCachedContentConfig`'s
+  `extra_forbidden` ValidationError when `cache_tags` is non-empty. google-genai's
+  `CreateCachedContentConfig` has no `metadata` field in the 1.x line; tags are now
+  encoded into the cache's `display_name` with a sentinel prefix (`abl-tags:<json>`)
+  and decoded on lookup. Previously any `GeminiCachedModel` with a non-empty
+  `cache_tags=` dict failed every worker's prepare() on current google-genai versions.
+
+### Changed
+
+- `cache_tags` are persisted in `CachedContent.display_name` instead of `metadata`.
+  Tag values should stay short — Gemini's `display_name` has a 128-character limit.
+  Caches created outside async-batch-llm (no `abl-tags:` prefix on display_name) are
+  treated as untagged and won't match a `GeminiCachedModel` with `cache_tags` set.
+
 ## [0.7.0] - 2026-04-16
 
 Internal refactor release. Public API (`async_batch_llm/__init__.py`) is unchanged —

@@ -1,283 +1,256 @@
-"""Tests for cache tag matching logic (v0.3.0 feature)."""
+"""Tests for cache tag matching (v0.3 feature, post display_name encoding)."""
 
 import importlib.util
+import time
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 
-@pytest.mark.asyncio
-async def test_cache_tags_exact_match():
-    """Test that cache with exact matching tags is reused."""
+def _genai_or_skip() -> None:
     if importlib.util.find_spec("google.genai") is None:
         pytest.skip("google-genai not installed")
 
-    # Mock cache with metadata
-    class MockCache:
-        def __init__(self, model: str, metadata: dict | None = None):
-            self.model = f"projects/test/models/{model}"
-            self.metadata = metadata or {}
-            self.name = f"cache_{model}_{id(self)}"
 
-    # Create strategy with tags
-    strategy_tags = {"customer": "acme", "version": "v1", "environment": "prod"}
+class _AsyncIterList:
+    """Minimal async iterator wrapping a list — matches genai's `caches.list()` API."""
 
-    # Test: Exact match should succeed
-    cache = MockCache(
-        "gemini-2.0-flash", metadata={"customer": "acme", "version": "v1", "environment": "prod"}
+    def __init__(self, items: list[Any]) -> None:
+        self._items = items
+
+    def __aiter__(self) -> "_AsyncIterList":
+        self._iter = iter(self._items)
+        return self
+
+    async def __anext__(self) -> Any:
+        try:
+            return next(self._iter)
+        except StopIteration as exc:  # noqa: PERF203
+            raise StopAsyncIteration from exc
+
+
+def _make_mock_cache(name: str, *, display_name: str | None = None) -> Any:
+    cache = MagicMock()
+    cache.name = name
+    cache.model = "projects/test/models/gemini-test"
+    cache.display_name = display_name
+    cache.create_time = MagicMock()
+    cache.create_time.timestamp.return_value = time.time()
+    return cache
+
+
+def _make_mock_client(caches: list[Any]) -> Any:
+    client = MagicMock()
+    client.aio.caches.list = AsyncMock(return_value=_AsyncIterList(caches))
+    client.aio.caches.create = AsyncMock(return_value=_make_mock_cache("new-cache"))
+    client.aio.caches.delete = AsyncMock()
+    return client
+
+
+# ─── Encode/decode helpers ────────────────────────────────────────────
+
+
+def test_encode_decode_round_trip():
+    _genai_or_skip()
+    from async_batch_llm.models import (
+        _decode_tags_from_display_name,
+        _encode_tags_to_display_name,
     )
 
-    # Simulate the matching logic from _find_or_create_cache
-    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
+    tags = {"customer": "acme", "version": "v1", "environment": "prod"}
+    assert _decode_tags_from_display_name(_encode_tags_to_display_name(tags)) == tags
 
-    assert tags_match, "Exact tag match should succeed"
+
+def test_encode_is_deterministic_regardless_of_key_order():
+    """Equal tag sets must produce equal display_names — otherwise cache lookup
+    would miss tagged caches created in a different insertion order."""
+    _genai_or_skip()
+    from async_batch_llm.models import _encode_tags_to_display_name
+
+    a = _encode_tags_to_display_name({"a": "1", "b": "2"})
+    b = _encode_tags_to_display_name({"b": "2", "a": "1"})
+    assert a == b
+
+
+def test_decode_returns_none_for_unprefixed_display_name():
+    _genai_or_skip()
+    from async_batch_llm.models import _decode_tags_from_display_name
+
+    assert _decode_tags_from_display_name(None) is None
+    assert _decode_tags_from_display_name("") is None
+    assert _decode_tags_from_display_name("user-picked-name") is None
+
+
+def test_decode_returns_none_for_malformed_prefix_payload():
+    _genai_or_skip()
+    from async_batch_llm.models import _decode_tags_from_display_name
+
+    assert _decode_tags_from_display_name("abl-tags:not-json") is None
+    assert _decode_tags_from_display_name('abl-tags:["list","not","dict"]') is None
+
+
+def test_encoded_display_name_passes_genai_validation():
+    """Regression for the bug report: `metadata` was rejected by
+    CreateCachedContentConfig; `display_name` must be accepted."""
+    _genai_or_skip()
+    from google.genai.types import CreateCachedContentConfig
+
+    from async_batch_llm.models import _encode_tags_to_display_name
+
+    cfg = CreateCachedContentConfig(
+        contents=[],
+        ttl="60s",
+        display_name=_encode_tags_to_display_name({"prompt_version": "v1"}),
+    )
+    assert cfg.display_name == 'abl-tags:{"prompt_version":"v1"}'
+
+
+# ─── _find_or_create_cache tag matching via the real implementation ───
 
 
 @pytest.mark.asyncio
-async def test_cache_tags_subset_match():
-    """Test that cache with superset of tags is reused (strategy tags are subset)."""
-    if importlib.util.find_spec("google.genai") is None:
-        pytest.skip("google-genai not installed")
+async def test_find_existing_cache_via_display_name_tags():
+    _genai_or_skip()
+    from async_batch_llm.models import GeminiCachedModel, _encode_tags_to_display_name
 
-    # Mock cache with metadata
-    class MockCache:
-        def __init__(self, model: str, metadata: dict | None = None):
-            self.model = f"projects/test/models/{model}"
-            self.metadata = metadata or {}
-            self.name = f"cache_{model}_{id(self)}"
+    want = {"customer": "acme", "version": "v1"}
+    other = {"customer": "globex", "version": "v1"}
 
-    # Strategy wants subset of tags
-    strategy_tags = {"customer": "acme", "version": "v1"}
+    matching = _make_mock_cache("matching", display_name=_encode_tags_to_display_name(want))
+    mismatching = _make_mock_cache("mismatching", display_name=_encode_tags_to_display_name(other))
 
-    # Cache has superset (extra tags)
-    cache = MockCache(
-        "gemini-2.0-flash",
-        metadata={"customer": "acme", "version": "v1", "environment": "prod", "region": "us"},
+    model = GeminiCachedModel(
+        model="gemini-test",
+        client=_make_mock_client([mismatching, matching]),
+        cached_content=[],
+        cache_tags=want,
     )
 
-    # Simulate the matching logic
-    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
+    await model.prepare()
 
-    assert tags_match, "Cache with superset of tags should match strategy's subset"
-
-
-@pytest.mark.asyncio
-async def test_cache_tags_mismatch_value():
-    """Test that cache with different tag value is NOT reused."""
-    if importlib.util.find_spec("google.genai") is None:
-        pytest.skip("google-genai not installed")
-
-    # Mock cache with metadata
-    class MockCache:
-        def __init__(self, model: str, metadata: dict | None = None):
-            self.model = f"projects/test/models/{model}"
-            self.metadata = metadata or {}
-            self.name = f"cache_{model}_{id(self)}"
-
-    # Strategy wants specific tags
-    strategy_tags = {"customer": "acme", "version": "v1"}
-
-    # Cache has different value for one tag
-    cache = MockCache("gemini-2.0-flash", metadata={"customer": "globex", "version": "v1"})
-
-    # Simulate the matching logic
-    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
-
-    assert not tags_match, "Cache with different tag value should NOT match"
+    assert model._cache is matching
 
 
 @pytest.mark.asyncio
-async def test_cache_tags_missing_key():
-    """Test that cache missing required tag key is NOT reused."""
-    if importlib.util.find_spec("google.genai") is None:
-        pytest.skip("google-genai not installed")
+async def test_cache_without_display_name_tags_is_skipped_when_model_has_tags():
+    """A legacy cache (no abl-tags display_name) must NOT be reused by a tagged model —
+    otherwise we'd silently reuse a cache whose contents may not match the intended tags."""
+    _genai_or_skip()
+    from async_batch_llm.models import GeminiCachedModel
 
-    # Mock cache with metadata
-    class MockCache:
-        def __init__(self, model: str, metadata: dict | None = None):
-            self.model = f"projects/test/models/{model}"
-            self.metadata = metadata or {}
-            self.name = f"cache_{model}_{id(self)}"
+    legacy = _make_mock_cache("legacy", display_name=None)
+    client = _make_mock_client([legacy])
 
-    # Strategy wants specific tags
-    strategy_tags = {"customer": "acme", "version": "v1", "environment": "prod"}
-
-    # Cache is missing one required tag
-    cache = MockCache("gemini-2.0-flash", metadata={"customer": "acme", "version": "v1"})
-
-    # Simulate the matching logic
-    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
-
-    assert not tags_match, "Cache missing required tag should NOT match"
-
-
-@pytest.mark.asyncio
-async def test_cache_tags_empty_metadata():
-    """Test that cache with no metadata doesn't match strategy with tags."""
-    if importlib.util.find_spec("google.genai") is None:
-        pytest.skip("google-genai not installed")
-
-    # Mock cache with metadata
-    class MockCache:
-        def __init__(self, model: str, metadata: dict | None = None):
-            self.model = f"projects/test/models/{model}"
-            self.metadata = metadata or {}
-            self.name = f"cache_{model}_{id(self)}"
-
-    # Strategy wants tags
-    strategy_tags = {"customer": "acme"}
-
-    # Cache has no metadata
-    cache = MockCache("gemini-2.0-flash", metadata={})
-
-    # Simulate the matching logic
-    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
-
-    assert not tags_match, "Cache with no metadata should NOT match strategy with tags"
-
-
-@pytest.mark.asyncio
-async def test_cache_no_tags_matches_any():
-    """Test that strategy with no tags matches any cache (legacy behavior)."""
-    if importlib.util.find_spec("google.genai") is None:
-        pytest.skip("google-genai not installed")
-
-    # Mock cache with metadata
-    class MockCache:
-        def __init__(self, model: str, metadata: dict | None = None):
-            self.model = f"projects/test/models/{model}"
-            self.metadata = metadata or {}
-            self.name = f"cache_{model}_{id(self)}"
-
-    # Strategy has no tags (legacy behavior)
-    strategy_tags = {}
-
-    # Cache has tags
-    cache = MockCache("gemini-2.0-flash", metadata={"customer": "acme", "version": "v1"})
-
-    # Simulate the matching logic - empty dict means all() returns True
-    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
-
-    assert tags_match, "Strategy with no tags should match any cache (backward compatibility)"
-
-
-@pytest.mark.asyncio
-async def test_cache_tags_case_sensitive():
-    """Test that tag matching is case-sensitive."""
-    if importlib.util.find_spec("google.genai") is None:
-        pytest.skip("google-genai not installed")
-
-    # Mock cache with metadata
-    class MockCache:
-        def __init__(self, model: str, metadata: dict | None = None):
-            self.model = f"projects/test/models/{model}"
-            self.metadata = metadata or {}
-            self.name = f"cache_{model}_{id(self)}"
-
-    # Strategy wants lowercase
-    strategy_tags = {"customer": "acme"}
-
-    # Cache has uppercase
-    cache = MockCache("gemini-2.0-flash", metadata={"customer": "ACME"})
-
-    # Simulate the matching logic
-    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
-
-    assert not tags_match, "Tag matching should be case-sensitive"
-
-
-@pytest.mark.asyncio
-async def test_cache_tags_type_sensitivity():
-    """Test that tag matching is type-sensitive (string vs int)."""
-    if importlib.util.find_spec("google.genai") is None:
-        pytest.skip("google-genai not installed")
-
-    # Mock cache with metadata
-    class MockCache:
-        def __init__(self, model: str, metadata: dict | None = None):
-            self.model = f"projects/test/models/{model}"
-            self.metadata = metadata or {}
-            self.name = f"cache_{model}_{id(self)}"
-
-    # Strategy wants string "1"
-    strategy_tags = {"version": "1"}
-
-    # Cache has integer 1
-    cache = MockCache("gemini-2.0-flash", metadata={"version": 1})
-
-    # Simulate the matching logic
-    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
-
-    assert not tags_match, "Tag matching should be type-sensitive (string '1' != int 1)"
-
-
-@pytest.mark.asyncio
-async def test_cache_tags_multiple_caches_filtering():
-    """Test that tag matching correctly filters among multiple caches."""
-    if importlib.util.find_spec("google.genai") is None:
-        pytest.skip("google-genai not installed")
-
-    # Mock cache with metadata
-    class MockCache:
-        def __init__(self, model: str, metadata: dict | None = None):
-            self.model = f"projects/test/models/{model}"
-            self.metadata = metadata or {}
-            self.name = f"cache_{model}_{id(self)}"
-
-    # Strategy wants specific tags
-    strategy_tags = {"customer": "acme", "environment": "prod"}
-
-    # Create multiple caches with different tags
-    caches = [
-        MockCache("gemini-2.0-flash", metadata={"customer": "globex", "environment": "prod"}),
-        MockCache("gemini-2.0-flash", metadata={"customer": "acme", "environment": "dev"}),
-        MockCache(
-            "gemini-2.0-flash", metadata={"customer": "acme", "environment": "prod"}
-        ),  # Match!
-        MockCache("gemini-2.0-flash", metadata={"customer": "acme", "environment": "staging"}),
-    ]
-
-    # Find matching caches
-    matching_caches = []
-    for cache in caches:
-        tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
-        if tags_match:
-            matching_caches.append(cache)
-
-    assert len(matching_caches) == 1, "Should find exactly one matching cache"
-    assert matching_caches[0].metadata == {"customer": "acme", "environment": "prod"}
-
-
-@pytest.mark.asyncio
-async def test_cache_tags_special_characters():
-    """Test that tags can contain special characters."""
-    if importlib.util.find_spec("google.genai") is None:
-        pytest.skip("google-genai not installed")
-
-    # Mock cache with metadata
-    class MockCache:
-        def __init__(self, model: str, metadata: dict | None = None):
-            self.model = f"projects/test/models/{model}"
-            self.metadata = metadata or {}
-            self.name = f"cache_{model}_{id(self)}"
-
-    # Strategy with special characters in tags
-    strategy_tags = {
-        "git-sha": "abc123-def456",
-        "build.date": "2024-01-15",
-        "owner@company": "user@example.com",
-    }
-
-    # Cache with matching special characters
-    cache = MockCache(
-        "gemini-2.0-flash",
-        metadata={
-            "git-sha": "abc123-def456",
-            "build.date": "2024-01-15",
-            "owner@company": "user@example.com",
-        },
+    model = GeminiCachedModel(
+        model="gemini-test",
+        client=client,
+        cached_content=[],
+        cache_tags={"version": "v1"},
     )
 
-    # Simulate the matching logic
-    tags_match = all(cache.metadata.get(k) == v for k, v in strategy_tags.items())
+    await model.prepare()
 
-    assert tags_match, "Tags with special characters should match correctly"
+    # Legacy cache skipped → create must be called.
+    client.aio.caches.create.assert_called_once()
+    assert model._cache is not legacy
+
+
+@pytest.mark.asyncio
+async def test_model_without_tags_reuses_any_cache_regardless_of_display_name():
+    """Backward-compat: a model with no cache_tags matches any cache, just as before."""
+    _genai_or_skip()
+    from async_batch_llm.models import GeminiCachedModel, _encode_tags_to_display_name
+
+    tagged = _make_mock_cache(
+        "tagged", display_name=_encode_tags_to_display_name({"version": "v1"})
+    )
+
+    model = GeminiCachedModel(
+        model="gemini-test",
+        client=_make_mock_client([tagged]),
+        cached_content=[],
+        # no cache_tags
+    )
+
+    await model.prepare()
+    assert model._cache is tagged
+
+
+@pytest.mark.asyncio
+async def test_tag_match_is_case_and_type_sensitive():
+    _genai_or_skip()
+    from async_batch_llm.models import GeminiCachedModel, _encode_tags_to_display_name
+
+    # Cache encodes uppercase + numeric-string.
+    cache = _make_mock_cache(
+        "c", display_name=_encode_tags_to_display_name({"customer": "ACME", "version": "1"})
+    )
+    client = _make_mock_client([cache])
+
+    # Model wants lowercase + string "1".
+    model = GeminiCachedModel(
+        model="gemini-test",
+        client=client,
+        cached_content=[],
+        cache_tags={"customer": "acme", "version": "1"},
+    )
+
+    await model.prepare()
+
+    # Case mismatch → cache skipped, new one created.
+    client.aio.caches.create.assert_called_once()
+
+
+# ─── Write path: _create_new_cache passes display_name, not metadata ──
+
+
+@pytest.mark.asyncio
+async def test_create_cache_forwards_tags_as_display_name_only():
+    """Regression for the bug report: must NOT pass `metadata=` to
+    CreateCachedContentConfig (google-genai rejects it), but SHOULD pass
+    `display_name=` encoded with our sentinel prefix."""
+    _genai_or_skip()
+    from async_batch_llm.models import GeminiCachedModel, _encode_tags_to_display_name
+
+    tags = {"prompt_version": "v1"}
+
+    # No existing caches → will create.
+    client = _make_mock_client([])
+
+    model = GeminiCachedModel(
+        model="gemini-test",
+        client=client,
+        cached_content=[],
+        cache_tags=tags,
+    )
+
+    await model.prepare()
+
+    client.aio.caches.create.assert_called_once()
+    call_kwargs = client.aio.caches.create.call_args.kwargs
+    config = call_kwargs["config"]
+
+    # The fix: tags appear in display_name, never in a metadata kwarg.
+    assert config.display_name == _encode_tags_to_display_name(tags)
+    assert not hasattr(config, "metadata") or getattr(config, "metadata", None) is None
+
+
+@pytest.mark.asyncio
+async def test_create_cache_without_tags_leaves_display_name_unset():
+    _genai_or_skip()
+    from async_batch_llm.models import GeminiCachedModel
+
+    client = _make_mock_client([])
+
+    model = GeminiCachedModel(
+        model="gemini-test",
+        client=client,
+        cached_content=[],
+        # no cache_tags
+    )
+
+    await model.prepare()
+
+    config = client.aio.caches.create.call_args.kwargs["config"]
+    assert config.display_name is None
