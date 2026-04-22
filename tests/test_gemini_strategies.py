@@ -508,9 +508,9 @@ class TestGeminiCachedModel:
         messages = [str(w.message) for w in record]
         # Both the short-TTL and short-renewal-buffer warnings should fire.
         assert any("cache_ttl_seconds" in m and "60 seconds" in m for m in messages), messages
-        assert any(
-            "cache_renewal_buffer_seconds" in m and "60 seconds" in m for m in messages
-        ), messages
+        assert any("cache_renewal_buffer_seconds" in m and "60 seconds" in m for m in messages), (
+            messages
+        )
 
     def test_no_warning_for_test_ttl(self):
         """Test no warning for very short TTLs (< 10s, for testing)."""
@@ -557,16 +557,24 @@ class TestGeminiCachedModel:
 
     @pytest.mark.asyncio
     async def test_find_cache_with_matching_tags(self):
-        """Test cache matching with tags."""
-        # Cache with matching tags
+        """Test cache matching with tags (encoded via display_name)."""
+        from async_batch_llm.models import _encode_tags_to_display_name
+
+        # Cache with matching tags encoded in display_name.
         matching_cache = self._create_mock_cache(name="matching-cache", create_time=time.time())
-        matching_cache.metadata = {"version": "1.0", "type": "test"}
+        matching_cache.display_name = _encode_tags_to_display_name(
+            {"version": "1.0", "type": "test"}
+        )
 
-        # Cache without matching tags
+        # Cache with different tags.
         other_cache = self._create_mock_cache(name="other-cache", create_time=time.time())
-        other_cache.metadata = {"version": "2.0"}
+        other_cache.display_name = _encode_tags_to_display_name({"version": "2.0"})
 
-        mock_client = self._create_mock_client(caches=[other_cache, matching_cache])
+        # Cache with no abl-tags display_name at all — must be skipped.
+        untagged_cache = self._create_mock_cache(name="untagged", create_time=time.time())
+        untagged_cache.display_name = None
+
+        mock_client = self._create_mock_client(caches=[untagged_cache, other_cache, matching_cache])
 
         model = GeminiCachedModel(
             model="gemini-test",

@@ -7,11 +7,18 @@ without knowing about provider-specific details.
 Added in v0.6.0.
 """
 
+import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any
 
 from .base import LLMResponse
+
+# Sentinel prefix for encoding cache_tags into Gemini's CachedContent.display_name.
+# google-genai's CreateCachedContentConfig does not expose a metadata field, so we
+# round-trip tags through display_name, marked with this prefix so we can tell
+# async-batch-llm-tagged caches apart from caches with user-chosen display names.
+_TAG_DISPLAY_NAME_PREFIX = "abl-tags:"
 
 # Conditional imports for optional dependencies
 if TYPE_CHECKING:
@@ -28,6 +35,35 @@ else:
 logger = logging.getLogger(__name__)
 
 
+def _encode_tags_to_display_name(tags: dict[str, str]) -> str:
+    """Encode cache_tags as a deterministic string for the CachedContent display_name.
+
+    Uses sorted, compact JSON so equal tag sets always produce the same display_name —
+    critical for cache lookup to match. Prefixed with a sentinel so we can tell our
+    tag encoding apart from a user-assigned display name.
+    """
+    encoded = json.dumps(tags, sort_keys=True, separators=(",", ":"))
+    return f"{_TAG_DISPLAY_NAME_PREFIX}{encoded}"
+
+
+def _decode_tags_from_display_name(display_name: str | None) -> dict[str, str] | None:
+    """Decode cache_tags from a CachedContent display_name.
+
+    Returns None when the display_name is absent or was not produced by
+    _encode_tags_to_display_name. Callers should treat None as "this cache has no
+    tag metadata we can match against".
+    """
+    if not display_name or not display_name.startswith(_TAG_DISPLAY_NAME_PREFIX):
+        return None
+    try:
+        decoded = json.loads(display_name[len(_TAG_DISPLAY_NAME_PREFIX) :])
+    except ValueError:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    return decoded
+
+
 def _extract_metadata(response: Any) -> dict[str, Any] | None:
     """Extract safety ratings and finish reason from a Gemini response."""
     metadata: dict[str, Any] = {}
@@ -40,9 +76,7 @@ def _extract_metadata(response: Any) -> dict[str, Any] | None:
             if hasattr(candidate, "safety_ratings") and candidate.safety_ratings:
                 ratings: dict[str, str] = {}
                 for rating in candidate.safety_ratings:
-                    category = (
-                        str(rating.category) if hasattr(rating, "category") else "UNKNOWN"
-                    )
+                    category = str(rating.category) if hasattr(rating, "category") else "UNKNOWN"
                     probability = (
                         str(rating.probability) if hasattr(rating, "probability") else "UNKNOWN"
                     )
@@ -242,7 +276,10 @@ class GeminiCachedModel:
             cache_renewal_buffer_seconds: Renew this many seconds before expiry
                 (default: 300 = 5 minutes).
             auto_renew: Auto-renew expired caches in generate() (default: True).
-            cache_tags: Tags for precise cache matching.
+            cache_tags: Tags for precise cache matching. Encoded into the cache's
+                ``display_name`` at creation (google-genai ``CreateCachedContentConfig``
+                has no ``metadata`` field) and decoded on lookup. Keep tag values
+                short — Gemini's ``display_name`` has a 128-character limit.
             safety_settings: Default safety settings for all calls.
         """
         if genai is None:
@@ -292,7 +329,6 @@ class GeminiCachedModel:
         self._cache_created_at: float | None = None
         self._cache_lock: Any = None
         self._prepared = False
-
 
     @property
     def cache_name(self) -> str | None:
@@ -476,14 +512,20 @@ class GeminiCachedModel:
                     continue
 
                 if self._cache_tags:
-                    cache_metadata = getattr(cache, "metadata", {}) or {}
-                    tags_match = all(
-                        cache_metadata.get(k) == v for k, v in self._cache_tags.items()
+                    cache_tags = _decode_tags_from_display_name(
+                        getattr(cache, "display_name", None)
                     )
+                    if cache_tags is None:
+                        logger.debug(
+                            f"Skipping cache {cache.name}: no abl-tags display_name "
+                            f"(want {self._cache_tags})"
+                        )
+                        continue
+                    tags_match = all(cache_tags.get(k) == v for k, v in self._cache_tags.items())
                     if not tags_match:
                         logger.debug(
                             f"Skipping cache {cache.name}: tags don't match "
-                            f"(want {self._cache_tags}, has {cache_metadata})"
+                            f"(want {self._cache_tags}, has {cache_tags})"
                         )
                         continue
 
@@ -496,8 +538,7 @@ class GeminiCachedModel:
                 tag_info = f" with tags {self._cache_tags}" if self._cache_tags else ""
                 age = time.time() - self._cache_created_at
                 logger.info(
-                    f"Reusing existing Gemini cache: {self._cache.name}{tag_info} "
-                    f"(age: {age:.0f}s)"
+                    f"Reusing existing Gemini cache: {self._cache.name}{tag_info} (age: {age:.0f}s)"
                 )
                 return
         except Exception as e:
@@ -513,7 +554,9 @@ class GeminiCachedModel:
             "ttl": f"{self._cache_ttl_seconds}s",
         }
         if self._cache_tags:
-            config_kwargs["metadata"] = self._cache_tags
+            # google-genai's CreateCachedContentConfig has no `metadata` field —
+            # round-trip tags through `display_name` with a sentinel prefix.
+            config_kwargs["display_name"] = _encode_tags_to_display_name(self._cache_tags)
 
         self._cache = await self._client.aio.caches.create(
             model=self._model,
