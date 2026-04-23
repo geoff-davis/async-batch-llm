@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-04-22
+
+### Fixed
+
+- `GeminiCachedModel.generate()` no longer emits misleading "Cache expired" log
+  lines with a ~56-year age under concurrent workers. The log is now inside the
+  cache lock and after the double-check, so only the worker that actually renews
+  logs the message; losing-race workers stay silent. Age is rendered as
+  "unknown (cache not yet initialized)" when `_cache_created_at` is `None`
+  instead of being computed as `time.time() - 0`.
+
+### Security
+
+- Bumped transitive dependency `authlib` 1.6.10 → 1.7.0 to clear
+  [GHSA-jj8c-mmj3-mmgv](https://github.com/authlib/authlib/security/advisories/GHSA-jj8c-mmj3-mmgv)
+  (CSRF in Authlib's OAuth cache path, medium/CVSS 5.4). async-batch-llm does not
+  use Authlib directly — it reaches us via `pydantic-ai[fastmcp]` → `fastmcp` —
+  and the vulnerable code path is not exercised, but the bump clears the
+  Dependabot alert.
+
 ## [0.7.1] - 2026-04-22
 
 ### Fixed
