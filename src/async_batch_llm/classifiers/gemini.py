@@ -44,7 +44,7 @@ class GeminiErrorClassifier(ErrorClassifier):
             error_str = str(exception)
             is_rate_limit = self._matches_any_pattern(error_str, RATE_LIMIT_PATTERNS)
             return ErrorInfo(
-                is_retryable=not is_rate_limit,  # Don't retry rate limits with tenacity
+                is_retryable=True,
                 is_rate_limit=is_rate_limit,
                 is_timeout=False,
                 error_category="rate_limit" if is_rate_limit else "client_error",
@@ -81,7 +81,7 @@ class GeminiErrorClassifier(ErrorClassifier):
         # Check if it looks like a rate limit error (for mocks and other providers)
         if self._matches_any_pattern(error_str, RATE_LIMIT_PATTERNS):
             return ErrorInfo(
-                is_retryable=False,
+                is_retryable=True,
                 is_rate_limit=True,
                 is_timeout=False,
                 error_category="rate_limit",

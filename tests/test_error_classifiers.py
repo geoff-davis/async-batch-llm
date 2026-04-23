@@ -1,9 +1,19 @@
 """Tests for error classifiers."""
 
 import pytest
+from pydantic import BaseModel
 
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, PydanticAIStrategy
 from async_batch_llm.classifiers.gemini import GeminiErrorClassifier
+from async_batch_llm.core import RateLimitConfig, RetryConfig
 from async_batch_llm.strategies.errors import DefaultErrorClassifier, FrameworkTimeoutError
+from async_batch_llm.testing import MockAgent
+
+
+class ClassifierTestOutput(BaseModel):
+    """Structured output for classifier integration tests."""
+
+    value: str
 
 
 @pytest.mark.asyncio
@@ -83,7 +93,7 @@ async def test_gemini_classifier_rate_limit_patterns():
     error = Exception("429 RESOURCE_EXHAUSTED")
     info = classifier.classify(error)
     assert info.is_rate_limit is True
-    assert info.is_retryable is False
+    assert info.is_retryable is True
     assert info.error_category == "rate_limit"
     assert info.suggested_wait == 300.0
 
@@ -104,6 +114,50 @@ async def test_gemini_classifier_rate_limit_patterns():
     info = classifier.classify(error)
     assert info.is_rate_limit is True
     assert info.error_category == "rate_limit"
+
+
+@pytest.mark.asyncio
+async def test_gemini_classifier_rate_limit_retries_after_processor_cooldown():
+    """Gemini rate limits should pause workers and then retry the item."""
+
+    def mock_response(prompt: str) -> ClassifierTestOutput:
+        return ClassifierTestOutput(value=f"Response: {prompt}")
+
+    mock_agent = MockAgent(
+        response_factory=mock_response,
+        latency=0.001,
+        rate_limit_on_call=1,
+    )
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=1.0,
+        retry=RetryConfig(max_attempts=2, initial_wait=0.001, max_wait=0.001, jitter=False),
+        rate_limit=RateLimitConfig(
+            cooldown_seconds=0.001,
+            slow_start_items=0,
+            slow_start_initial_delay=0.0,
+            slow_start_final_delay=0.0,
+            backoff_multiplier=1.0,
+        ),
+    )
+    processor = ParallelBatchProcessor[str, ClassifierTestOutput, None](
+        config=config,
+        error_classifier=GeminiErrorClassifier(),
+    )
+
+    await processor.add_work(
+        LLMWorkItem(
+            item_id="gemini_rate_limit",
+            strategy=PydanticAIStrategy(agent=mock_agent),
+            prompt="Test",
+        )
+    )
+
+    result = await processor.process_all()
+
+    assert result.succeeded == 1
+    assert result.failed == 0
+    assert mock_agent.call_count == 2
 
 
 @pytest.mark.asyncio
