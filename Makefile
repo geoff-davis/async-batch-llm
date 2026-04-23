@@ -1,4 +1,4 @@
-.PHONY: help test coverage lint typecheck format check-all pre-commit clean
+.PHONY: help test test-ci coverage lint typecheck typecheck-ty format check-all pre-commit clean
 
 help:  ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -11,6 +11,9 @@ test-fast:  ## Run tests excluding slow tests (default)
 
 test-all:  ## Run all tests including slow ones
 	uv run pytest tests/ -v -m ''
+
+test-ci:  ## Run CI test suite with coverage reporting
+	uv run pytest tests/ -v --tb=short --cov --cov-report=term-missing --cov-report=xml
 
 coverage:  ## Run tests with coverage report
 	uv run pytest --cov=async_batch_llm --cov-report=term-missing --cov-report=html
@@ -32,6 +35,9 @@ format:  ## Format code with ruff
 typecheck:  ## Run mypy type checker
 	uv run mypy src/async_batch_llm/ --ignore-missing-imports
 
+typecheck-ty:  ## Run ty type checker
+	uv run ty check src/
+
 markdown-lint:  ## Check markdown files
 	npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md"
 
@@ -41,19 +47,23 @@ markdown-lint-fix:  ## Fix markdown issues
 check-all:  ## Run all checks (lint + typecheck + test)
 	@echo "==> Running linter..."
 	@$(MAKE) lint
-	@echo "\n==> Running type checker..."
+	@echo "\n==> Running mypy..."
 	@$(MAKE) typecheck
+	@echo "\n==> Running ty..."
+	@$(MAKE) typecheck-ty
 	@echo "\n==> Running tests..."
 	@$(MAKE) test-fast
 	@echo "\n==> All checks passed! ✓"
 
-ci:  ## Run CI checks (what GitHub Actions runs)
+ci:  ## Run local CI checks (lint + mypy + ty + coverage tests + markdown)
 	@echo "==> Running linter..."
 	@$(MAKE) lint
-	@echo "\n==> Running type checker..."
+	@echo "\n==> Running mypy..."
 	@$(MAKE) typecheck
-	@echo "\n==> Running tests..."
-	@$(MAKE) test
+	@echo "\n==> Running ty..."
+	@$(MAKE) typecheck-ty
+	@echo "\n==> Running tests with coverage..."
+	@$(MAKE) test-ci
 	@echo "\n==> Running markdown linter..."
 	@$(MAKE) markdown-lint
 	@echo "\n==> CI checks passed! ✓"
