@@ -58,8 +58,8 @@ class StrategyLifecycle(Generic[TOutput]):
             )
             await strategy.prepare()
             self._prepared.add(strategy)
-            # A new prepare resets the cleanup flag so a reused lifecycle
-            # re-enters the cleanup path.
+            # A new prepare resets the cleanup flag so explicit lower-level
+            # lifecycle reuse re-enters the cleanup path.
             self._cleaned_up = False
             logger.debug(
                 f"Strategy {strategy.__class__.__name__} prepared successfully "
@@ -105,5 +105,5 @@ class StrategyLifecycle(Generic[TOutput]):
         return strategy in self._prepared
 
     def reset_cleanup_flag(self) -> None:
-        """Re-arm the lifecycle for a subsequent batch on the same processor."""
+        """Re-arm cleanup for tests or custom owners that reuse this lifecycle helper."""
         self._cleaned_up = False

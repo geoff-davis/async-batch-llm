@@ -477,14 +477,16 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         """
         Process all work items in the queue.
 
+        Processor instances are one-shot: after processing starts, add_work()
+        raises RuntimeError. Create a new processor for additional batches.
+
         Returns:
             BatchResult containing all results and statistics
         """
         # Mark processing as started to prevent add_work() calls (v0.4.0)
         self._processing_started = True
 
-        # Clear results and reinitialize stats for this run
-        # This ensures each call to process_all() starts fresh
+        # Initialize result and stats containers for this one-shot batch.
         self._results = []
         self._stats = ProcessingStats(total=self._queue.qsize())
 
@@ -538,8 +540,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
 
         await self._on_batch_completed()
 
-        # Snapshot results before returning to prevent contamination if processor is reused
-        # Create a copy so the returned BatchResult is independent of future runs
+        # Snapshot results before returning so callers receive an independent list.
         results_snapshot = list(self._results)
         return BatchResult(results=results_snapshot)
 
