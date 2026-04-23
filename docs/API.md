@@ -549,22 +549,19 @@ Strategy for calling Google Gemini API directly (without caching).
 class GeminiStrategy(LLMCallStrategy[TOutput]):
     def __init__(
         self,
-        model: str,
-        client: genai.Client,
-        response_parser: Callable[[Any], TOutput],
-        config: GenerateContentConfig | None = None,
-        include_metadata: bool = False,
+        model: LLMModel,
+        response_parser: Callable[[LLMResponse], TOutput] | None = None,
+        *,
+        temperature: float = 0.0,
     )
 ```
 
 **Parameters:**
 
-- `model` (str): Model name (e.g., "gemini-2.5-flash")
-- `client` (genai.Client): Initialized Gemini client
-- `response_parser` (Callable): Function to parse response into TOutput
-- `config` (GenerateContentConfig | None): Optional generation config (temperature, etc.)
-- `include_metadata` (bool): If True, `execute()` returns `GeminiResponse[TOutput]`
-  so you can access safety ratings, finish reasons, and raw responses
+- `model` (LLMModel): Model wrapper such as `GeminiModel` or `GeminiCachedModel`
+- `response_parser` (Callable | None): Function to parse `LLMResponse` into `TOutput`.
+  Defaults to returning `response.text`.
+- `temperature` (float): Sampling temperature. Default: 0.0
 
 **Requires:** `pip install 'async-batch-llm[gemini]'`
 
@@ -574,18 +571,14 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
 **Example:**
 
 ```python
-from async_batch_llm import GeminiStrategy, LLMWorkItem
+from async_batch_llm import GeminiModel, GeminiStrategy, LLMWorkItem
 from google import genai
 
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
-
-def parse_response(response) -> str:
-    return response.text
+model = GeminiModel("gemini-2.5-flash", client)
 
 strategy = GeminiStrategy(
-    model="gemini-2.5-flash",
-    client=client,
-    response_parser=parse_response,
+    model=model,
 )
 
 work_item = LLMWorkItem(

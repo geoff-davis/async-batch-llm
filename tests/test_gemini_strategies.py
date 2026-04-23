@@ -307,6 +307,18 @@ class TestGeminiStrategy:
         assert tokens["total_tokens"] == 30
 
     @pytest.mark.asyncio
+    async def test_execute_defaults_to_response_text(self):
+        """GeminiStrategy defaults to returning LLMResponse.text."""
+        mock_model = self._create_mock_model(text="plain text output")
+
+        strategy = GeminiStrategy(model=mock_model)
+
+        output, tokens = await strategy.execute("test prompt", 1, 10.0)
+
+        assert output == "plain text output"
+        assert tokens["total_tokens"] == 30
+
+    @pytest.mark.asyncio
     async def test_execute_response_parser_receives_llm_response(self):
         """Test that response_parser receives LLMResponse object."""
         mock_model = self._create_mock_model(

@@ -108,7 +108,8 @@ asyncio.run(main())
 Built-in strategies for common providers:
 
 - **`PydanticAIStrategy`** - PydanticAI agents with structured output
-- **`GeminiStrategy`** - Direct Google Gemini API calls
+- **`GeminiStrategy`** - Direct Google Gemini API calls; returns response text by default or accepts a
+  `response_parser` for structured output
 - **`GeminiStrategy(model=GeminiCachedModel(...))`** - Gemini with context caching via the explicit cache API
   (more predictable than implicit caching)
 

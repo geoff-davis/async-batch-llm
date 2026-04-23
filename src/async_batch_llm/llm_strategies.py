@@ -11,7 +11,7 @@ v0.6.0: Strategies now accept an LLMModel instead of raw client + model name.
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from .base import LLMResponse, RetryState, TokenUsage
 from .core.protocols import ManagedLLMModel
@@ -208,7 +208,7 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
     def __init__(
         self,
         model: "LLMModel",
-        response_parser: Callable[[LLMResponse], TOutput],
+        response_parser: Callable[[LLMResponse], TOutput] | None = None,
         *,
         temperature: float = 0.0,
     ):
@@ -217,11 +217,11 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
 
         Args:
             model: An LLMModel instance (e.g., GeminiModel, GeminiCachedModel).
-            response_parser: Function to parse LLMResponse into TOutput.
+            response_parser: Function to parse LLMResponse into TOutput. Defaults to response.text.
             temperature: Default sampling temperature (overridable by subclasses).
         """
         self.model = model
-        self.response_parser = response_parser
+        self.response_parser = response_parser or (lambda response: cast(TOutput, response.text))
         self.temperature = temperature
 
     async def prepare(self) -> None:
