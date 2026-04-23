@@ -44,17 +44,18 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
     - Resource cleanup
 
     The framework calls:
-    1. prepare() once before any retries
+    1. prepare() once per unique strategy instance before its first execution
     2. execute() for each attempt (including retries)
-    3. cleanup() once after all attempts complete or fail
+    3. cleanup() once per prepared strategy when the processor exits or shuts down
     """
 
     async def prepare(self) -> None:
         """
         Initialize resources before making any LLM calls.
 
-        Called once per work item before any retry attempts.
-        Use this to set up caches, initialize clients, etc.
+        Called once per unique strategy instance before the first work item using
+        that instance executes. Use this to set up shared caches, clients, etc.
+        Per-item retry state belongs in execute()/on_error() via RetryState.
 
         Default: no-op
         """
@@ -90,9 +91,9 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
 
     async def cleanup(self) -> None:
         """
-        Clean up resources after all retry attempts complete.
+        Clean up resources when the processor exits or shuts down.
 
-        Called once per work item after processing finishes (success or failure).
+        Called once per prepared strategy instance, not once per work item.
 
         **Use this for:**
         - Closing connections/sessions
@@ -107,7 +108,7 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
         **Note on Caches (v0.2.0):**
         For reusable resources like Gemini caches with TTLs, consider letting
         them expire naturally to enable cost savings across multiple pipeline
-        runs. See `GeminiCachedStrategy` for an example.
+        runs. See `GeminiCachedModel` for an example.
 
         Default: no-op
         """
