@@ -101,6 +101,7 @@ include = [
     "/uv.lock",
     "/docs",
     "/examples",
+    "/tests",
 ]
 exclude = [
     "/.github",
@@ -114,7 +115,6 @@ exclude = [
     "/build",
     "/node_modules",
     "/.venv",
-    "/tests",
     "/docs/internal",
     "**/__pycache__",
     "**/*.pyc",
