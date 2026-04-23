@@ -19,7 +19,7 @@
 | src/async\_batch\_llm/llm\_strategies.py                     |       78 |       10 |       12 |        3 |     85.56% |28-29, 234-\>exit, 259-261, 326-328, 352-354 |
 | src/async\_batch\_llm/middleware/\_\_init\_\_.py             |        2 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/middleware/base.py                     |       11 |        1 |        0 |        0 |     90.91% |        82 |
-| src/async\_batch\_llm/models.py                              |      215 |       18 |       84 |       14 |     88.63% |31-33, 116-\>119, 191, 194, 213, 347-\>350, 352, 358-\>exit, 383, 444, 464, 467, 479-483, 512, 536 |
+| src/async\_batch\_llm/models.py                              |      216 |       18 |       84 |       14 |     88.67% |31-33, 116-\>119, 191, 194, 213, 347-\>350, 352, 358-\>exit, 383, 438, 468, 471, 483-487, 516, 540 |
 | src/async\_batch\_llm/observers/\_\_init\_\_.py              |        3 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/observers/base.py                      |       18 |        1 |        0 |        0 |     94.44% |        51 |
 | src/async\_batch\_llm/observers/metrics.py                   |       71 |        1 |       26 |        5 |     93.81% |16, 42-\>exit, 53-\>exit, 63-\>exit, 169-\>178 |
@@ -28,7 +28,7 @@
 | src/async\_batch\_llm/strategies/errors.py                   |       48 |        2 |       12 |        0 |     96.67% |   177-178 |
 | src/async\_batch\_llm/strategies/rate\_limit.py              |       31 |        0 |        2 |        0 |    100.00% |           |
 | src/async\_batch\_llm/token\_extractor.py                    |       47 |        2 |       20 |        4 |     91.04% |51-\>57, 53-\>57, 61-\>65, 66-\>83, 110-111 |
-| **TOTAL**                                                    | **1564** |  **186** |  **428** |   **66** | **86.24%** |           |
+| **TOTAL**                                                    | **1565** |  **186** |  **428** |   **66** | **86.25%** |           |
 
 
 ## Setup coverage badge
