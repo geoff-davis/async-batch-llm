@@ -432,12 +432,6 @@ class GeminiCachedModel:
 
         # Auto-renew if expired
         if self._auto_renew and self._is_cache_expired():
-            logger.info(
-                "Cache expired or about to expire, renewing before API call "
-                f"(age: {time.time() - (self._cache_created_at or 0):.0f}s, "
-                f"renewal buffer: {self._cache_renewal_buffer_seconds}s)"
-            )
-
             import asyncio
 
             if self._cache_lock is None:
@@ -445,6 +439,16 @@ class GeminiCachedModel:
 
             async with self._cache_lock:
                 if self._is_cache_expired():
+                    age_str = (
+                        f"{time.time() - self._cache_created_at:.0f}s"
+                        if self._cache_created_at is not None
+                        else "unknown (cache not yet initialized)"
+                    )
+                    logger.info(
+                        "Cache expired or about to expire, renewing before API call "
+                        f"(age: {age_str}, "
+                        f"renewal buffer: {self._cache_renewal_buffer_seconds}s)"
+                    )
                     self._cache = None
                     self._cache_created_at = None
                     self._prepared = False
