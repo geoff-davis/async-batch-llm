@@ -512,7 +512,7 @@ class GeminiCachedModel:
             caches = await self._client.aio.caches.list()
 
             async for cache in caches:
-                if not cache.model or not cache.model.endswith(self._model):  # ty:ignore[unresolved-attribute]
+                if not cache.model or not cache.model.endswith(self._model):
                     continue
 
                 if self._cache_tags:

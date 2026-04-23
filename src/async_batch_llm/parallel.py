@@ -664,7 +664,7 @@ class ParallelBatchProcessor(
         attempt_number: int = 1,
         strategy: LLMCallStrategy[TOutput] | None = None,
         retry_state: RetryState | None = None,
-    ) -> WorkItemResult[TOutput, TContext]:  # ty:ignore[invalid-method-override]
+    ) -> WorkItemResult[TOutput, TContext]:
         """Process a single work item using the provided strategy."""
         start_time = time.time()
 
