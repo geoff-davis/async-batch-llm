@@ -76,9 +76,14 @@ jobs:
         uv sync --all-extras
 
     - name: Python security audit
+      # Audit the project's locked runtime deps only, not pip-audit's own
+      # venv (which pulls in pip and would report CVEs in pip itself —
+      # those aren't vulnerabilities users of async-batch-llm are exposed to).
       run: |
+        uv export --frozen --format requirements.txt --no-dev \
+          --no-emit-project -o /tmp/abl-deps.txt
         uv tool install pip-audit
-        uv tool run pip-audit
+        uv tool run pip-audit --disable-pip --require-hashes -r /tmp/abl-deps.txt
 
     - name: Set up Node.js
       uses: actions/setup-node@v4
