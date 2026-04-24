@@ -11,7 +11,7 @@ v0.6.0: Strategies now accept an LLMModel instead of raw client + model name.
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
 
 from .base import LLMResponse, RetryState, TokenUsage
 from .core.protocols import ManagedLLMModel
@@ -44,17 +44,18 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
     - Resource cleanup
 
     The framework calls:
-    1. prepare() once before any retries
+    1. prepare() once per unique strategy instance before its first execution
     2. execute() for each attempt (including retries)
-    3. cleanup() once after all attempts complete or fail
+    3. cleanup() once per prepared strategy when the processor exits or shuts down
     """
 
     async def prepare(self) -> None:
         """
         Initialize resources before making any LLM calls.
 
-        Called once per work item before any retry attempts.
-        Use this to set up caches, initialize clients, etc.
+        Called once per unique strategy instance before the first work item using
+        that instance executes. Use this to set up shared caches, clients, etc.
+        Per-item retry state belongs in execute()/on_error() via RetryState.
 
         Default: no-op
         """
@@ -90,9 +91,9 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
 
     async def cleanup(self) -> None:
         """
-        Clean up resources after all retry attempts complete.
+        Clean up resources when the processor exits or shuts down.
 
-        Called once per work item after processing finishes (success or failure).
+        Called once per prepared strategy instance, not once per work item.
 
         **Use this for:**
         - Closing connections/sessions
@@ -107,7 +108,7 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
         **Note on Caches (v0.2.0):**
         For reusable resources like Gemini caches with TTLs, consider letting
         them expire naturally to enable cost savings across multiple pipeline
-        runs. See `GeminiCachedStrategy` for an example.
+        runs. See `GeminiCachedModel` for an example.
 
         Default: no-op
         """
@@ -205,23 +206,46 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
         >>> strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
     """
 
+    @overload
+    def __init__(
+        self: "GeminiStrategy[str]",
+        model: "LLMModel",
+        response_parser: None = None,
+        *,
+        temperature: float = 0.0,
+    ) -> None: ...
+
+    @overload
     def __init__(
         self,
         model: "LLMModel",
         response_parser: Callable[[LLMResponse], TOutput],
         *,
         temperature: float = 0.0,
-    ):
+    ) -> None: ...
+
+    def __init__(
+        self,
+        model: "LLMModel",
+        response_parser: Callable[[LLMResponse], TOutput] | None = None,
+        *,
+        temperature: float = 0.0,
+    ) -> None:
         """
         Initialize strategy.
 
         Args:
             model: An LLMModel instance (e.g., GeminiModel, GeminiCachedModel).
-            response_parser: Function to parse LLMResponse into TOutput.
+            response_parser: Function to parse LLMResponse into TOutput. Defaults to
+                returning response.text — only valid when TOutput is str. When
+                TOutput is any other type, pass a response_parser (enforced by
+                @overload signatures).
             temperature: Default sampling temperature (overridable by subclasses).
         """
         self.model = model
-        self.response_parser = response_parser
+        # The overloads restrict the None-parser path to TOutput=str, so the cast
+        # below is sound at static-analysis time.
+        self.response_parser = response_parser or (lambda response: cast(TOutput, response.text))
         self.temperature = temperature
 
     async def prepare(self) -> None:

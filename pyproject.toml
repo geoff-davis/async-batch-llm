@@ -55,13 +55,13 @@ dependencies = [
 
 [project.optional-dependencies]
 pydantic-ai = [
-    "pydantic-ai>=0.0.1",
+    "pydantic-ai>=1.0.0",
 ]
 gemini = [
     "google-genai>=1.49.0",
 ]
 all = [
-    "pydantic-ai>=0.0.1",
+    "pydantic-ai>=1.0.0",
     "google-genai>=1.49.0",
 ]
 docs = [
@@ -77,7 +77,7 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0.0",
     "ty>=0.0.1a16",
-    "pydantic-ai>=0.0.1",  # Required for tests
+    "pydantic-ai>=1.0.0",  # Required for tests
     "google-genai>=1.49.0",  # Required for Gemini tests
     "pre-commit>=3.0.0",
 ]
@@ -101,6 +101,7 @@ include = [
     "/uv.lock",
     "/docs",
     "/examples",
+    "/tests",
 ]
 exclude = [
     "/.github",
@@ -114,7 +115,6 @@ exclude = [
     "/build",
     "/node_modules",
     "/.venv",
-    "/tests",
     "/docs/internal",
     "**/__pycache__",
     "**/*.pyc",

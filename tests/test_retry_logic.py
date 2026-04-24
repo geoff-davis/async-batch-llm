@@ -194,7 +194,7 @@ async def test_error_classification_gemini():
     rate_limit_error = Exception("429 RESOURCE_EXHAUSTED")
     info = classifier.classify(rate_limit_error)
     assert info.is_rate_limit
-    assert not info.is_retryable
+    assert info.is_retryable
     assert info.error_category == "rate_limit"
 
     # Test timeout detection

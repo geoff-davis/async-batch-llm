@@ -1,8 +1,8 @@
 {
   "name": "async-batch-llm",
-  "version": "1.0.0",
-  "description": "**Provider-agnostic parallel LLM processing with automatic retries, rate limiting, and flexible strategies.**",
-  "main": "index.js",
+  "version": "0.7.2",
+  "private": true,
+  "description": "Markdown tooling for the async-batch-llm Python package.",
   "directories": {
     "doc": "docs",
     "example": "examples",
@@ -17,7 +17,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "bugs": {
     "url": "https://github.com/geoff-davis/async-batch-llm/issues"

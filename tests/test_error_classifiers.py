@@ -1,9 +1,46 @@
 """Tests for error classifiers."""
 
 import pytest
+from pydantic import BaseModel
 
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, PydanticAIStrategy
+from async_batch_llm.base import RetryState, TokenUsage
 from async_batch_llm.classifiers.gemini import GeminiErrorClassifier
+from async_batch_llm.core import RateLimitConfig, RetryConfig
+from async_batch_llm.llm_strategies import LLMCallStrategy
 from async_batch_llm.strategies.errors import DefaultErrorClassifier, FrameworkTimeoutError
+from async_batch_llm.testing import MockAgent
+
+
+class ClassifierTestOutput(BaseModel):
+    """Structured output for classifier integration tests."""
+
+    value: str
+
+
+class _PersistentRateLimitStrategy(LLMCallStrategy[ClassifierTestOutput]):
+    """Test helper: always raises a Gemini-shaped rate-limit error."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def execute(
+        self,
+        prompt: str,
+        attempt: int,
+        timeout: float,
+        state: RetryState | None = None,
+    ) -> tuple[ClassifierTestOutput, TokenUsage]:
+        self.call_count += 1
+
+        # Mirror the error shape MockAgent produces so GeminiErrorClassifier
+        # recognizes it as a rate limit (matches on class name + message).
+        class MockRateLimitError(Exception):
+            pass
+
+        error = MockRateLimitError("429 RESOURCE_EXHAUSTED")
+        error.__class__.__name__ = "ClientError"
+        raise error
 
 
 @pytest.mark.asyncio
@@ -83,7 +120,7 @@ async def test_gemini_classifier_rate_limit_patterns():
     error = Exception("429 RESOURCE_EXHAUSTED")
     info = classifier.classify(error)
     assert info.is_rate_limit is True
-    assert info.is_retryable is False
+    assert info.is_retryable is True
     assert info.error_category == "rate_limit"
     assert info.suggested_wait == 300.0
 
@@ -104,6 +141,169 @@ async def test_gemini_classifier_rate_limit_patterns():
     info = classifier.classify(error)
     assert info.is_rate_limit is True
     assert info.error_category == "rate_limit"
+
+
+@pytest.mark.asyncio
+async def test_gemini_classifier_rate_limit_retries_after_processor_cooldown():
+    """Gemini rate limits should pause workers and then retry the item."""
+
+    def mock_response(prompt: str) -> ClassifierTestOutput:
+        return ClassifierTestOutput(value=f"Response: {prompt}")
+
+    mock_agent = MockAgent(
+        response_factory=mock_response,
+        latency=0.001,
+        rate_limit_on_call=1,
+    )
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=1.0,
+        retry=RetryConfig(max_attempts=2, initial_wait=0.001, max_wait=0.001, jitter=False),
+        rate_limit=RateLimitConfig(
+            cooldown_seconds=0.001,
+            slow_start_items=0,
+            slow_start_initial_delay=0.0,
+            slow_start_final_delay=0.0,
+            backoff_multiplier=1.0,
+        ),
+    )
+    processor = ParallelBatchProcessor[str, ClassifierTestOutput, None](
+        config=config,
+        error_classifier=GeminiErrorClassifier(),
+    )
+
+    await processor.add_work(
+        LLMWorkItem(
+            item_id="gemini_rate_limit",
+            strategy=PydanticAIStrategy(agent=mock_agent),
+            prompt="Test",
+        )
+    )
+
+    result = await processor.process_all()
+
+    assert result.succeeded == 1
+    assert result.failed == 0
+    assert mock_agent.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_persistent_rate_limit_exhausts_max_attempts():
+    """A rate limit that never clears must respect retry.max_attempts and
+    record a permanent failure instead of looping forever.
+
+    Regression test for the is_retryable: False -> True change: before the
+    classifier flip, rate-limited items failed fast after one attempt; now
+    they retry, so we need to ensure the retry loop still terminates.
+    """
+    max_attempts = 3
+    strategy = _PersistentRateLimitStrategy()
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=1.0,
+        retry=RetryConfig(
+            max_attempts=max_attempts,
+            initial_wait=0.001,
+            max_wait=0.001,
+            jitter=False,
+        ),
+        rate_limit=RateLimitConfig(
+            cooldown_seconds=0.001,
+            slow_start_items=0,
+            slow_start_initial_delay=0.0,
+            slow_start_final_delay=0.0,
+            backoff_multiplier=1.0,
+        ),
+    )
+    processor = ParallelBatchProcessor[str, ClassifierTestOutput, None](
+        config=config,
+        error_classifier=GeminiErrorClassifier(),
+    )
+
+    await processor.add_work(
+        LLMWorkItem(
+            item_id="persistent_rl",
+            strategy=strategy,
+            prompt="Test",
+        )
+    )
+
+    result = await processor.process_all()
+
+    assert result.succeeded == 0
+    assert result.failed == 1
+    assert strategy.call_count == max_attempts, (
+        f"Expected exactly {max_attempts} attempts before giving up, "
+        f"got {strategy.call_count}."
+    )
+    failure = result.results[0]
+    assert failure.success is False
+    assert "429" in (failure.error or "") or "RESOURCE_EXHAUSTED" in (failure.error or "")
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_retry_does_not_add_exponential_backoff():
+    """Rate-limit retries should not add retry-loop exponential backoff on top of
+    the coordinated cooldown already applied by _handle_rate_limit().
+    """
+    import time
+
+    def mock_response(prompt: str) -> ClassifierTestOutput:
+        return ClassifierTestOutput(value=f"Response: {prompt}")
+
+    mock_agent = MockAgent(
+        response_factory=mock_response,
+        latency=0.001,
+        rate_limit_on_call=1,
+    )
+
+    # Cooldown is small; initial_wait is large. If the retry loop applies
+    # exponential backoff on top of the cooldown, elapsed time approaches
+    # initial_wait (0.5s). With the fix, total elapsed time stays close to
+    # the cooldown itself.
+    cooldown = 0.05
+    initial_wait = 0.5
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=2.0,
+        retry=RetryConfig(
+            max_attempts=2,
+            initial_wait=initial_wait,
+            max_wait=initial_wait,
+            jitter=False,
+        ),
+        rate_limit=RateLimitConfig(
+            cooldown_seconds=cooldown,
+            slow_start_items=0,
+            slow_start_initial_delay=0.0,
+            slow_start_final_delay=0.0,
+            backoff_multiplier=1.0,
+        ),
+    )
+    processor = ParallelBatchProcessor[str, ClassifierTestOutput, None](
+        config=config,
+        error_classifier=GeminiErrorClassifier(),
+    )
+
+    await processor.add_work(
+        LLMWorkItem(
+            item_id="no_double_wait",
+            strategy=PydanticAIStrategy(agent=mock_agent),
+            prompt="Test",
+        )
+    )
+
+    start = time.monotonic()
+    result = await processor.process_all()
+    elapsed = time.monotonic() - start
+
+    assert result.succeeded == 1
+    assert result.failed == 0
+    assert mock_agent.call_count == 2
+    assert elapsed < initial_wait, (
+        f"Rate-limit retry took {elapsed:.3f}s; expected well under {initial_wait}s "
+        f"(retry loop is adding exponential backoff on top of coordinated cooldown)."
+    )
 
 
 @pytest.mark.asyncio
