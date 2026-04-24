@@ -608,8 +608,11 @@ class ParallelBatchProcessor(
                     or error_info.error_category == "validation_error"
                 )
 
-                if is_validation_error:
-                    wait_time = 0.0  # No delay for validation - retry immediately
+                if is_validation_error or error_info.is_rate_limit:
+                    # Validation errors retry immediately — the strategy adjusts on retry.
+                    # Rate limits already waited inside _handle_rate_limit()'s coordinated
+                    # cooldown; adding exponential backoff here would double the delay.
+                    wait_time = 0.0
                 else:
                     # Calculate wait time with exponential backoff for network/timeout errors
                     wait_time = min(
@@ -630,18 +633,17 @@ class ParallelBatchProcessor(
                 # Brief snippet for retry logs (shorter than the detailed final-failure log)
                 error_snippet = str(e)[:ERROR_MESSAGE_MAX_LENGTH]
                 error_type = type(e).__name__
-                if is_validation_error:
-                    logger.warning(
-                        f"[WARN]Attempt {attempt}/{self.config.retry.max_attempts} failed for "
-                        f"{work_item.item_id}: {error_type} - {error_snippet}. "
-                        f"Retrying immediately..."
-                    )
+                if error_info.is_rate_limit:
+                    retry_desc = "immediately (cooldown already applied)"
+                elif wait_time == 0:
+                    retry_desc = "immediately"
                 else:
-                    logger.warning(
-                        f"[WARN]Attempt {attempt}/{self.config.retry.max_attempts} failed for "
-                        f"{work_item.item_id}: {error_type} - {error_snippet}. "
-                        f"Retrying in {wait_time:.1f}s..."
-                    )
+                    retry_desc = f"in {wait_time:.1f}s"
+                logger.warning(
+                    f"[WARN]Attempt {attempt}/{self.config.retry.max_attempts} failed for "
+                    f"{work_item.item_id}: {error_type} - {error_snippet}. "
+                    f"Retrying {retry_desc}..."
+                )
 
                 if wait_time > 0:
                     await asyncio.sleep(wait_time)
