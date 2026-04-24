@@ -4,8 +4,10 @@ import pytest
 from pydantic import BaseModel
 
 from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, PydanticAIStrategy
+from async_batch_llm.base import RetryState, TokenUsage
 from async_batch_llm.classifiers.gemini import GeminiErrorClassifier
 from async_batch_llm.core import RateLimitConfig, RetryConfig
+from async_batch_llm.llm_strategies import LLMCallStrategy
 from async_batch_llm.strategies.errors import DefaultErrorClassifier, FrameworkTimeoutError
 from async_batch_llm.testing import MockAgent
 
@@ -14,6 +16,31 @@ class ClassifierTestOutput(BaseModel):
     """Structured output for classifier integration tests."""
 
     value: str
+
+
+class _PersistentRateLimitStrategy(LLMCallStrategy[ClassifierTestOutput]):
+    """Test helper: always raises a Gemini-shaped rate-limit error."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def execute(
+        self,
+        prompt: str,
+        attempt: int,
+        timeout: float,
+        state: RetryState | None = None,
+    ) -> tuple[ClassifierTestOutput, TokenUsage]:
+        self.call_count += 1
+
+        # Mirror the error shape MockAgent produces so GeminiErrorClassifier
+        # recognizes it as a rate limit (matches on class name + message).
+        class MockRateLimitError(Exception):
+            pass
+
+        error = MockRateLimitError("429 RESOURCE_EXHAUSTED")
+        error.__class__.__name__ = "ClientError"
+        raise error
 
 
 @pytest.mark.asyncio
@@ -158,6 +185,60 @@ async def test_gemini_classifier_rate_limit_retries_after_processor_cooldown():
     assert result.succeeded == 1
     assert result.failed == 0
     assert mock_agent.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_persistent_rate_limit_exhausts_max_attempts():
+    """A rate limit that never clears must respect retry.max_attempts and
+    record a permanent failure instead of looping forever.
+
+    Regression test for the is_retryable: False -> True change: before the
+    classifier flip, rate-limited items failed fast after one attempt; now
+    they retry, so we need to ensure the retry loop still terminates.
+    """
+    max_attempts = 3
+    strategy = _PersistentRateLimitStrategy()
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=1.0,
+        retry=RetryConfig(
+            max_attempts=max_attempts,
+            initial_wait=0.001,
+            max_wait=0.001,
+            jitter=False,
+        ),
+        rate_limit=RateLimitConfig(
+            cooldown_seconds=0.001,
+            slow_start_items=0,
+            slow_start_initial_delay=0.0,
+            slow_start_final_delay=0.0,
+            backoff_multiplier=1.0,
+        ),
+    )
+    processor = ParallelBatchProcessor[str, ClassifierTestOutput, None](
+        config=config,
+        error_classifier=GeminiErrorClassifier(),
+    )
+
+    await processor.add_work(
+        LLMWorkItem(
+            item_id="persistent_rl",
+            strategy=strategy,
+            prompt="Test",
+        )
+    )
+
+    result = await processor.process_all()
+
+    assert result.succeeded == 0
+    assert result.failed == 1
+    assert strategy.call_count == max_attempts, (
+        f"Expected exactly {max_attempts} attempts before giving up, "
+        f"got {strategy.call_count}."
+    )
+    failure = result.results[0]
+    assert failure.success is False
+    assert "429" in (failure.error or "") or "RESOURCE_EXHAUSTED" in (failure.error or "")
 
 
 @pytest.mark.asyncio
