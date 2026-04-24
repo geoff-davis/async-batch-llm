@@ -1,5 +1,6 @@
 """Comprehensive tests for Gemini strategies and models to improve coverage."""
 
+import sys
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -318,6 +319,14 @@ class TestGeminiStrategy:
         assert output == "plain text output"
         assert tokens["total_tokens"] == 30
 
+    @pytest.mark.skipif(
+        sys.version_info < (3, 11),
+        reason=(
+            "typing.get_overloads was added in 3.11; on 3.10 typing.overload does "
+            "not register at runtime, so the structural check can't see them. The "
+            "static-analysis guarantee still holds on 3.10 via mypy."
+        ),
+    )
     def test_default_parser_is_restricted_to_str_via_overloads(self):
         """The default (no response_parser) path should only type-check when
         TOutput is str, so GeminiStrategy[SomeModel](model=m) — which at runtime
@@ -326,12 +335,7 @@ class TestGeminiStrategy:
 
         Verified structurally via @overload registration.
         """
-        # Python 3.11+ ships get_overloads in typing; fall back to typing_extensions
-        # for 3.10 so the test runs on the project's minimum supported Python.
-        try:
-            from typing import get_overloads
-        except ImportError:  # pragma: no cover - Python 3.10 path
-            from typing_extensions import get_overloads
+        from typing import get_overloads
 
         overloads = list(get_overloads(GeminiStrategy.__init__))
         assert len(overloads) == 2, (
