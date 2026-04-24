@@ -318,6 +318,49 @@ class TestGeminiStrategy:
         assert output == "plain text output"
         assert tokens["total_tokens"] == 30
 
+    def test_default_parser_is_restricted_to_str_via_overloads(self):
+        """The default (no response_parser) path should only type-check when
+        TOutput is str, so GeminiStrategy[SomeModel](model=m) — which at runtime
+        returns response.text — is a static-analysis error instead of a silent
+        footgun.
+
+        Verified structurally via @overload registration.
+        """
+        # Python 3.11+ ships get_overloads in typing; fall back to typing_extensions
+        # for 3.10 so the test runs on the project's minimum supported Python.
+        try:
+            from typing import get_overloads
+        except ImportError:  # pragma: no cover - Python 3.10 path
+            from typing_extensions import get_overloads
+
+        overloads = list(get_overloads(GeminiStrategy.__init__))
+        assert len(overloads) == 2, (
+            f"Expected 2 @overload signatures on GeminiStrategy.__init__, "
+            f"got {len(overloads)}. Without overloads, "
+            f"`GeminiStrategy[MyModel](model=m)` (no parser) is type-valid at "
+            f"static analysis while returning str at runtime."
+        )
+
+        # The optional-parser overload should bind Self to GeminiStrategy[str].
+        import inspect
+
+        optional_overload = next(
+            (
+                o
+                for o in overloads
+                if inspect.signature(o).parameters["response_parser"].default is None
+            ),
+            None,
+        )
+        assert optional_overload is not None, (
+            "Expected one overload where response_parser has a default of None."
+        )
+        self_annotation = inspect.signature(optional_overload).parameters["self"].annotation
+        assert "str" in str(self_annotation), (
+            f"Default-parser overload should bind self to GeminiStrategy[str]; "
+            f"got self: {self_annotation!r}."
+        )
+
     @pytest.mark.asyncio
     async def test_execute_response_parser_receives_llm_response(self):
         """Test that response_parser receives LLMResponse object."""

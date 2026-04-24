@@ -11,7 +11,7 @@ v0.6.0: Strategies now accept an LLMModel instead of raw client + model name.
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
 
 from .base import LLMResponse, RetryState, TokenUsage
 from .core.protocols import ManagedLLMModel
@@ -206,22 +206,45 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
         >>> strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
     """
 
+    @overload
+    def __init__(
+        self: "GeminiStrategy[str]",
+        model: "LLMModel",
+        response_parser: None = None,
+        *,
+        temperature: float = 0.0,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        model: "LLMModel",
+        response_parser: Callable[[LLMResponse], TOutput],
+        *,
+        temperature: float = 0.0,
+    ) -> None: ...
+
     def __init__(
         self,
         model: "LLMModel",
         response_parser: Callable[[LLMResponse], TOutput] | None = None,
         *,
         temperature: float = 0.0,
-    ):
+    ) -> None:
         """
         Initialize strategy.
 
         Args:
             model: An LLMModel instance (e.g., GeminiModel, GeminiCachedModel).
-            response_parser: Function to parse LLMResponse into TOutput. Defaults to response.text.
+            response_parser: Function to parse LLMResponse into TOutput. Defaults to
+                returning response.text — only valid when TOutput is str. When
+                TOutput is any other type, pass a response_parser (enforced by
+                @overload signatures).
             temperature: Default sampling temperature (overridable by subclasses).
         """
         self.model = model
+        # The overloads restrict the None-parser path to TOutput=str, so the cast
+        # below is sound at static-analysis time.
         self.response_parser = response_parser or (lambda response: cast(TOutput, response.text))
         self.temperature = temperature
 
