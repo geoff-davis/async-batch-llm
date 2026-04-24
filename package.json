@@ -1,6 +1,6 @@
 {
   "name": "async-batch-llm",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "private": true,
   "description": "Markdown tooling for the async-batch-llm Python package.",
   "directories": {
