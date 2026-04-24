@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Gemini rate-limit errors are now retryable. Previously `GeminiErrorClassifier`
+  marked rate limits with `is_retryable=False`, so the coordinated cooldown in
+  `_handle_rate_limit()` paused *other* workers but the work item that hit the
+  rate limit itself failed permanently. Rate-limited items now retry after the
+  cooldown completes.
+- Rate-limit retries no longer add exponential backoff on top of the coordinated
+  cooldown. `_handle_rate_limit()` already waits `rate_limit.cooldown_seconds`
+  before re-raising; the retry loop previously sleep()ed again using
+  `retry.initial_wait`, doubling the effective delay (default: 300s + 1s).
+
+### Changed
+
+- **Breaking for typed users:** `GeminiStrategy(model=...)` without a
+  `response_parser` is now restricted via `@overload` to `GeminiStrategy[str]`.
+  The default parser returns `LLMResponse.text`; using it with a non-str
+  `TOutput` was previously a silent runtime footgun (`cast(TOutput, response.text)`
+  returned a `str`). Code that was already passing a `response_parser` is
+  unaffected; code relying on the default with a non-str type parameter must
+  now pass a parser.
+- Minimum `pydantic-ai` version raised from `>=0.0.1` to `>=1.0.0` in the
+  `pydantic-ai`, `all`, and `dev` extras.
+
+### Packaging
+
+- `tests/` are now included in the source distribution (helpful for downstream
+  packagers who verify builds).
+- Node `package.json` marked `private: true` with the version/license aligned
+  to the Python package. This Node manifest exists only to pin the
+  markdownlint dev tool; it is not a publishable package.
+
 ## [0.7.2] - 2026-04-22
 
 ### Fixed
