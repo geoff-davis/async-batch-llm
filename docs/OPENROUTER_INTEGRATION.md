@@ -114,7 +114,23 @@ this section.**
 | Gemini explicit `CachedContent` | Not exposed via OpenRouter                               | Use `GeminiCachedModel` |
 
 `cached_input_tokens` is populated when the upstream cache hits;
-`BatchResult.total_cached_tokens` aggregates across the batch.
+`BatchResult.total_cached_tokens` aggregates across the batch. To estimate
+billable tokens, pass the matching rate from `CachedTokenRates`:
+
+```python
+from async_batch_llm import CachedTokenRates
+
+# Pick the rate for whichever upstream actually served your request
+# (visible in LLMResponse.metadata['provider']).
+billable = result.effective_input_tokens(CachedTokenRates.OPENAI)
+billable = result.effective_input_tokens(CachedTokenRates.ANTHROPIC_READ)
+billable = result.effective_input_tokens(CachedTokenRates.DEEPSEEK)
+```
+
+For mixed-provider batches, compute per-item billable counts using each
+item's `metadata['provider']` instead of one batch-wide rate. Anthropic
+also charges a 25% premium on cache *writes*, which this helper does not
+model.
 
 ### Anthropic prompt caching via OpenRouter
 

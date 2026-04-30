@@ -240,6 +240,47 @@ class WorkItemResult(Generic[TOutput, TContext]):
     gemini_safety_ratings: dict[str, str] | None = None
 
 
+class CachedTokenRates:
+    """Named cached-token price rates for the providers we support.
+
+    Each constant is the **fraction of the normal input-token price** you
+    pay for tokens served from cache (so 0.10 = "10% of normal" =
+    "90% discount"). Pass these to
+    :meth:`BatchResult.effective_input_tokens` to compute provider-aware
+    billable token estimates:
+
+    .. code-block:: python
+
+        result.effective_input_tokens(CachedTokenRates.OPENAI)
+
+    Rates are accurate as of v0.9.0 (early 2026); confirm with each
+    provider's pricing page before using these for invoicing.
+
+    Notes:
+        - **Anthropic prompt caching** is asymmetric: cache *reads* are at
+          ``ANTHROPIC_READ`` (10% of normal), but cache *writes* are billed
+          at a 25% premium over normal input price. This helper covers
+          read-side savings only; the write premium is a separate cost
+          best computed at billing time from your usage logs.
+        - **OpenRouter** routes to many upstream providers, each with its
+          own rate. Pick the constant for the upstream that actually
+          served your request (visible in ``LLMResponse.metadata['provider']``).
+    """
+
+    GEMINI: float = 0.10
+    """Gemini context cache: cached tokens cost 10% of normal."""
+
+    OPENAI: float = 0.50
+    """OpenAI prompt caching: cached tokens cost 50% of normal (chat completions)."""
+
+    ANTHROPIC_READ: float = 0.10
+    """Anthropic prompt cache reads: 10% of normal (cache writes are
+    billed at 1.25× normal — not modeled here)."""
+
+    DEEPSEEK: float = 0.10
+    """DeepSeek context cache: cached tokens cost 10% of normal."""
+
+
 @dataclass
 class BatchResult(Generic[TOutput, TContext]):
     """
@@ -286,17 +327,45 @@ class BatchResult(Generic[TOutput, TContext]):
             return 0.0
         return (self.total_cached_tokens / self.total_input_tokens) * 100.0
 
-    def effective_input_tokens(self) -> int:
+    def effective_input_tokens(self, cached_token_rate: float = CachedTokenRates.GEMINI) -> int:
         """
-        Calculate effective input tokens (actual cost after caching).
+        Estimate billable input tokens after the cache discount.
 
-        Gemini charges 10% of the normal price for cached tokens.
+        ``cached_token_rate`` is the fraction of the normal input-token price
+        you pay for tokens served from cache. For example, Gemini charges
+        10% of the normal price (rate = 0.10), so 1000 cached tokens cost
+        the same as 100 uncached tokens.
+
+        Use the named constants on :class:`CachedTokenRates` to avoid
+        hardcoding magic numbers:
+
+        .. code-block:: python
+
+            result.effective_input_tokens(CachedTokenRates.OPENAI)
+            result.effective_input_tokens(CachedTokenRates.GEMINI)
+
+        Args:
+            cached_token_rate: Fraction (0.0–1.0) of the normal input price
+                paid for cached tokens. Defaults to ``CachedTokenRates.GEMINI``
+                (0.10) for backward compatibility — pre-v0.9.0 versions
+                hardcoded this value. **Pass an explicit rate when working
+                with non-Gemini providers** to get accurate numbers.
 
         Returns:
-            Effective number of input tokens billed
+            Effective number of input tokens billed (rounded down).
+
+        Raises:
+            ValueError: If ``cached_token_rate`` is not in [0.0, 1.0].
         """
-        # Cached tokens cost 10% of normal, so discount is 90%
-        discount = int(self.total_cached_tokens * 0.9)
+        if not 0.0 <= cached_token_rate <= 1.0:
+            raise ValueError(
+                f"cached_token_rate must be in [0.0, 1.0]; got {cached_token_rate}. "
+                f"This is the fraction of normal price paid for cached tokens "
+                f"(0.0 = free, 1.0 = no discount). For named provider rates, "
+                f"use CachedTokenRates."
+            )
+        # cached_token_rate is what you PAY; (1 - rate) is the discount.
+        discount = int(self.total_cached_tokens * (1.0 - cached_token_rate))
         return self.total_input_tokens - discount
 
 

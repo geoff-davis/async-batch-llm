@@ -63,6 +63,7 @@ from typing import TypeVar
 from .base import (
     BatchProcessor,
     BatchResult,
+    CachedTokenRates,
     LLMResponse,
     LLMWorkItem,
     PostProcessorFunc,
@@ -162,6 +163,7 @@ __all__ = [
     # Core
     "BatchProcessor",
     "BatchResult",
+    "CachedTokenRates",
     "LLMWorkItem",
     "PostProcessorFunc",
     "ProcessingStats",

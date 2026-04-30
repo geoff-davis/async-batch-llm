@@ -94,18 +94,20 @@ client action is required — `cached_input_tokens` is populated on hits, and
 `BatchResult.total_cached_tokens` aggregates across the batch.
 
 ```python
+from async_batch_llm import CachedTokenRates
+
 result = await processor.process_all()
-hit_rate = result.cache_hit_rate()  # percent of input tokens served from cache
 print(f"input={result.total_input_tokens} cached={result.total_cached_tokens}")
+print(f"cache hit rate: {result.cache_hit_rate():.1f}%")
+# OpenAI charges 50% of normal for cached tokens — pass the matching rate.
+print(f"billable tokens: {result.effective_input_tokens(CachedTokenRates.OPENAI)}")
 ```
 
-> **Note on `BatchResult.effective_input_tokens()`:** that helper applies a
-> hardcoded 90% cached-token discount (Gemini's pricing model) and is
-> currently inaccurate for non-Gemini providers. OpenAI typically discounts
-> cached input tokens by 50%; Anthropic by 90% on cache reads but charges a
-> 25% premium on cache writes; DeepSeek by 90%. Compute pricing yourself
-> from `total_input_tokens` and `total_cached_tokens` until provider-aware
-> discounting lands.
+`effective_input_tokens()` defaults to `CachedTokenRates.GEMINI` (10% rate)
+for backward compatibility with pre-v0.9.0 versions — **always pass an
+explicit rate when working with OpenAI** to get accurate numbers. Note that
+Anthropic charges a 25% premium on cache *writes* over the normal input
+price; that write premium is not modeled by this helper.
 
 ## Error handling
 

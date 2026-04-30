@@ -788,9 +788,13 @@ assert len(result.results) == result.total_items
     internal modules
 - **v0.9.0** - First-class OpenAI and OpenRouter (current)
   - New `OpenAICompatibleModel` base (exported) for any OpenAI chat-completions
-    endpoint — subclass it for Together, Fireworks, vLLM, etc.
+    endpoint — subclass it for Together, Fireworks, vLLM, etc. Implements
+    `ManagedLLMModel`: `cleanup()` closes the underlying httpx client when
+    the model owns it (i.e. constructed via `from_api_key`)
   - New `OpenAIModel` and `OpenRouterModel` subclasses, each with a
-    `from_api_key(...)` convenience constructor
+    `from_api_key(...)` convenience constructor — `api_key` is optional
+    and falls back to env vars (`OPENAI_API_KEY` for OpenAI via the SDK;
+    `OPENROUTER_API_KEY` for OpenRouter, read directly)
   - New `OpenAIStrategy` and `OpenRouterStrategy` (thin shells over the model)
   - New `OpenAIErrorClassifier` and `OpenRouterErrorClassifier` (subclass)
     handling RateLimitError, APITimeoutError, APIConnectionError, status-code
@@ -799,6 +803,10 @@ assert len(result.results) == result.total_items
     `usage.prompt_tokens_details.cached_tokens` (OpenAI/Gemini-implicit/DeepSeek
     caching is automatic; Anthropic via OpenRouter requires explicit
     `cache_control` markers — see `docs/OPENROUTER_INTEGRATION.md`)
+  - New `CachedTokenRates` constants (`GEMINI=0.10`, `OPENAI=0.50`,
+    `ANTHROPIC_READ=0.10`, `DEEPSEEK=0.10`) for provider-aware billing.
+    `BatchResult.effective_input_tokens()` accepts a `cached_token_rate`
+    parameter; default stays at `GEMINI` rate for backward compat
   - New optional dep groups: `[openai]`, `[openrouter]`
   - New docs: `docs/OPENAI_INTEGRATION.md`, `docs/OPENROUTER_INTEGRATION.md`
   - Future phases noted (Anthropic native, DeepSeek, HuggingFace Providers,
