@@ -352,7 +352,12 @@ class BatchResult(Generic[TOutput, TContext]):
                 with non-Gemini providers** to get accurate numbers.
 
         Returns:
-            Effective number of input tokens billed (rounded down).
+            Effective input tokens billed. The discount is computed by
+            truncating ``cached_tokens * (1 - rate)`` toward zero with
+            ``int()``, which means the returned billable estimate is
+            rounded **up** when the discount would have a fractional
+            part — a deliberately conservative choice for cost reporting
+            (your real bill is at most this number, never more).
 
         Raises:
             ValueError: If ``cached_token_rate`` is not in [0.0, 1.0].
@@ -365,6 +370,8 @@ class BatchResult(Generic[TOutput, TContext]):
                 f"use CachedTokenRates."
             )
         # cached_token_rate is what you PAY; (1 - rate) is the discount.
+        # int() floors the discount toward zero -> conservative (over-)estimate
+        # of effective billable tokens. See the Returns docstring.
         discount = int(self.total_cached_tokens * (1.0 - cached_token_rate))
         return self.total_input_tokens - discount
 

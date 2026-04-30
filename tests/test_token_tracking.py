@@ -143,6 +143,34 @@ async def test_effective_input_tokens_provider_aware():
 
 
 @pytest.mark.asyncio
+async def test_effective_input_tokens_rounds_conservatively_up():
+    """When the discount has a fractional part, the billable estimate is
+    rounded UP (conservative). The implementation truncates the discount
+    toward zero with int(); the test pins this behavior so the docstring
+    guarantee can't drift silently.
+
+    Example: 99 cached at 0.5 rate
+        raw discount = 99 * 0.5 = 49.5
+        int(49.5) = 49
+        effective = total_input - 49 (rather than total_input - 50)
+        i.e. effective is 1 token HIGHER than perfectly-rounded math.
+    """
+    strategy = CachedTokenStrategy(
+        input_tokens=100,
+        output_tokens=10,
+        cached_tokens=99,  # produces a fractional discount at rate=0.5
+    )
+    config = ProcessorConfig(max_workers=1)
+
+    async with ParallelBatchProcessor[str, str, None](config=config) as processor:
+        await processor.add_work(LLMWorkItem(item_id="x", strategy=strategy, prompt="t"))
+        result = await processor.process_all()
+
+    assert result.total_cached_tokens == 99
+    assert result.effective_input_tokens(0.5) == 51  # 100 - int(99 * 0.5) = 100 - 49
+
+
+@pytest.mark.asyncio
 async def test_effective_input_tokens_rejects_out_of_range_rate():
     """Passing a rate outside [0, 1] raises ValueError."""
     strategy = CachedTokenStrategy(input_tokens=100, output_tokens=10, cached_tokens=50)
