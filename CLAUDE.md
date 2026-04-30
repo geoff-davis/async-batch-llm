@@ -630,11 +630,24 @@ src/async_batch_llm/
 
 1. **Distributed locks** - Support multi-process scenarios
 2. **Batch API support** - True batch API for 50% cost savings
-3. **More classifiers** - OpenAI, Anthropic, etc.
+3. **More classifiers** - Anthropic native (Phase 2), DeepSeek, HuggingFace
 4. **Persistent queue** - Redis/DB-backed queue
 5. **Prometheus metrics** - Built-in metrics export
 6. **Progress callbacks** - Real-time progress updates
 7. **Dynamic worker scaling** - Adjust workers based on load
+8. **Carry response metadata into `WorkItemResult`** ([#8]) -
+   `LLMResponse.metadata` (provider name, finish_reason, OpenRouter
+   routed-model, Gemini safety ratings) currently dies at the strategy
+   boundary; only `output` and `token_usage` survive. Threading it
+   through would make per-item provider-aware billing math native instead
+   of forcing users to write a custom `response_parser` that captures
+   metadata into the output type. Touches the `LLMCallStrategy.execute()`
+   return contract — likely a 3-tuple `(output, tokens, metadata)` or a
+   `RetryState`-mediated handoff to avoid breaking custom strategies.
+   See `docs/OPENROUTER_INTEGRATION.md` for the current parser-based
+   workaround.
+
+[#8]: https://github.com/geoff-davis/async-batch-llm/issues/8
 
 ---
 
