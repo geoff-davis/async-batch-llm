@@ -46,11 +46,11 @@ async def main():
         # Process all items
         result = await processor.process_all()
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Processed: {result.total_items} items")
         print(f"Succeeded: {result.succeeded}")
         print(f"Failed: {result.failed}")
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
 
     # Processor automatically cleaned up when exiting the context
 

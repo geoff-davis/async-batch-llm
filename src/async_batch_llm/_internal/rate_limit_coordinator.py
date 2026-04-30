@@ -76,9 +76,7 @@ class RateLimitCoordinator:
         async with self._lock:
             if not self._slow_start_active:
                 return 0.0
-            should_delay, delay = self._strategy.should_apply_slow_start(
-                self._items_since_resume
-            )
+            should_delay, delay = self._strategy.should_apply_slow_start(self._items_since_resume)
             if should_delay:
                 self._items_since_resume += 1
                 return float(delay)
@@ -200,9 +198,7 @@ class RateLimitCoordinator:
 
         await self._finalize_cooldown(pause_started_at, cooldown_error)
 
-    async def _finalize_cooldown(
-        self, start_time: float, error: Exception | None
-    ) -> None:
+    async def _finalize_cooldown(self, start_time: float, error: Exception | None) -> None:
         """Resume workers and emit COOLDOWN_ENDED."""
         actual_duration = max(0.0, time.time() - start_time)
 

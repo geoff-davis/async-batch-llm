@@ -161,7 +161,43 @@ def test_accumulate_adds_all_fields(extractor):
 def test_accumulate_ignores_missing_fields(extractor):
     acc = {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2, "cached_input_tokens": 0}
     extractor.accumulate(acc, {})  # no-op
-    assert acc == {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2, "cached_input_tokens": 0}
+    assert acc == {
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "total_tokens": 2,
+        "cached_input_tokens": 0,
+    }
+
+
+# ─── OpenAI/OpenRouter usage shape ────────────────────────────────────
+
+
+class _OpenAIPromptDetails:
+    cached_tokens = 32
+
+
+class _OpenAIUsage:
+    """Mimics the openai SDK's CompletionUsage shape."""
+
+    prompt_tokens = 12
+    completion_tokens = 7
+    total_tokens = 19
+    prompt_tokens_details = _OpenAIPromptDetails()
+
+
+class _ExceptionWithOpenAIUsage(Exception):
+    usage = _OpenAIUsage()
+
+
+def test_extract_from_openai_usage_shape(extractor):
+    """OpenAI / OpenRouter usage uses prompt_tokens / completion_tokens names
+    and surfaces cached counts via prompt_tokens_details.cached_tokens."""
+    e = _ExceptionWithOpenAIUsage("x")
+    result = extractor.extract_from_exception(e)
+    assert result["input_tokens"] == 12
+    assert result["output_tokens"] == 7
+    assert result["total_tokens"] == 19
+    assert result["cached_input_tokens"] == 32
 
 
 # ─── CancelledError propagates (never swallowed) ──────────────────────

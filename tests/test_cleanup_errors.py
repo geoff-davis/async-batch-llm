@@ -65,9 +65,9 @@ class _BadCleanupStrategy(_OkStrategy):
 @pytest.mark.asyncio
 async def test_cleanup_failure_does_not_crash_or_skip_siblings(caplog):
     """A strategy whose cleanup() raises Exception must:
-      - not crash the processor,
-      - log a WARNING naming the failing class,
-      - still allow sibling strategies to be cleaned up.
+    - not crash the processor,
+    - log a WARNING naming the failing class,
+    - still allow sibling strategies to be cleaned up.
     """
     caplog.set_level(logging.WARNING, logger="async_batch_llm.parallel")
 

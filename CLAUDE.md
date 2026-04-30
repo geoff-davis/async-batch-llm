@@ -38,7 +38,13 @@ for future AI assistants working on this codebase.
 
 - `PydanticAIStrategy` - Wraps PydanticAI agents
 - `GeminiStrategy` - Direct Google Gemini API calls
-- `GeminiCachedStrategy` - Gemini with context caching (great for RAG)
+- `OpenAIStrategy` - Direct OpenAI chat completions calls (v0.9.0)
+- `OpenRouterStrategy` - Multi-provider via OpenRouter's OpenAI-compatible API (v0.9.0)
+
+**Built-in Models:**
+
+- `GeminiModel`, `GeminiCachedModel` - Google Gemini (cached variant has lifecycle)
+- `OpenAICompatibleModel` (base), `OpenAIModel`, `OpenRouterModel` - OpenAI-shape providers (v0.9.0)
 
 **`LLMWorkItem[TInput, TOutput, TContext]`** - Work unit:
 
@@ -771,7 +777,7 @@ assert len(result.results) == result.total_items
   - Added `LLMModel` / `ManagedLLMModel` protocols
   - New: `GeminiModel`, `GeminiCachedModel` (replaces `GeminiCachedStrategy`)
   - Strategies accept a model instead of raw client + model name
-- **v0.7.0** - Internal refactor (current)
+- **v0.7.0** - Internal refactor
   - Decomposed `ParallelBatchProcessor`; collaborators live in `_internal/`
     (`EventDispatcher`, `StrategyLifecycle`, `RateLimitCoordinator`, `error_logging`)
   - Added `TokenExtractor` for centralized token-usage extraction
@@ -780,6 +786,23 @@ assert len(result.results) == result.total_items
   - Stronger input validation on `LLMWorkItem` and `ProcessorConfig`
   - Public API (`__init__.py`) unchanged — all refactoring is behind underscore-prefixed
     internal modules
+- **v0.9.0** - First-class OpenAI and OpenRouter (current)
+  - New `OpenAICompatibleModel` base (exported) for any OpenAI chat-completions
+    endpoint — subclass it for Together, Fireworks, vLLM, etc.
+  - New `OpenAIModel` and `OpenRouterModel` subclasses, each with a
+    `from_api_key(...)` convenience constructor
+  - New `OpenAIStrategy` and `OpenRouterStrategy` (thin shells over the model)
+  - New `OpenAIErrorClassifier` and `OpenRouterErrorClassifier` (subclass)
+    handling RateLimitError, APITimeoutError, APIConnectionError, status-code
+    branches, and OpenRouter's `no_provider_available` body marker
+  - Track-only caching: `cached_input_tokens` reads
+    `usage.prompt_tokens_details.cached_tokens` (OpenAI/Gemini-implicit/DeepSeek
+    caching is automatic; Anthropic via OpenRouter requires explicit
+    `cache_control` markers — see `docs/OPENROUTER_INTEGRATION.md`)
+  - New optional dep groups: `[openai]`, `[openrouter]`
+  - New docs: `docs/OPENAI_INTEGRATION.md`, `docs/OPENROUTER_INTEGRATION.md`
+  - Future phases noted (Anthropic native, DeepSeek, HuggingFace Providers,
+    OpenAI Responses API)
 
 ---
 

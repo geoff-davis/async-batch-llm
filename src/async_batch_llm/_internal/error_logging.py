@@ -46,8 +46,7 @@ def log_retryable_error(
         log_validation_error(exception, item_id, attempt_number, token_msg)
     else:
         logger.debug(
-            f"Retryable {error_name} on attempt {attempt_number} for {item_id}: "
-            f"{error_msg[:300]}"
+            f"Retryable {error_name} on attempt {attempt_number} for {item_id}: {error_msg[:300]}"
         )
 
 
@@ -67,9 +66,7 @@ def log_validation_error(
         from pydantic import ValidationError
 
         if underlying_validation_error or isinstance(exception, ValidationError):
-            validation_err = cast(
-                ValidationError, underlying_validation_error or exception
-            )
+            validation_err = cast(ValidationError, underlying_validation_error or exception)
             error_details = []
             for err in validation_err.errors():
                 field_path = " -> ".join(str(loc) for loc in err["loc"])

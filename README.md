@@ -41,6 +41,12 @@ pip install 'async-batch-llm[pydantic-ai]'
 # With Google Gemini support
 pip install 'async-batch-llm[gemini]'
 
+# With OpenAI support
+pip install 'async-batch-llm[openai]'
+
+# With OpenRouter support (multi-provider via one OpenAI-compatible API)
+pip install 'async-batch-llm[openrouter]'
+
 # With everything
 pip install 'async-batch-llm[all]'
 

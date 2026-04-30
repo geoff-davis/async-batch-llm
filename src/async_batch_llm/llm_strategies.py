@@ -290,6 +290,179 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
         return output, llm_response.token_usage
 
 
+class OpenAIStrategy(LLMCallStrategy[TOutput]):
+    """
+    Strategy for calling an OpenAI-compatible model and parsing the response.
+
+    Accepts an LLMModel (typically OpenAIModel) and an optional response
+    parser. The model handles the API call and token extraction; the
+    strategy handles response parsing and lifecycle delegation.
+
+    Added in v0.9.0.
+
+    Example:
+        >>> model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-...")
+        >>> strategy = OpenAIStrategy(model)
+        >>>
+        >>> # Structured output via response_parser:
+        >>> strategy = OpenAIStrategy(
+        ...     model,
+        ...     response_parser=lambda r: MyModel.model_validate_json(r.text),
+        ... )
+    """
+
+    @overload
+    def __init__(
+        self: "OpenAIStrategy[str]",
+        model: "LLMModel",
+        response_parser: None = None,
+        *,
+        temperature: float = 0.0,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        model: "LLMModel",
+        response_parser: Callable[[LLMResponse], TOutput],
+        *,
+        temperature: float = 0.0,
+    ) -> None: ...
+
+    def __init__(
+        self,
+        model: "LLMModel",
+        response_parser: Callable[[LLMResponse], TOutput] | None = None,
+        *,
+        temperature: float = 0.0,
+    ) -> None:
+        """
+        Args:
+            model: An LLMModel instance (e.g., OpenAIModel).
+            response_parser: Function to parse LLMResponse into TOutput.
+                Defaults to returning ``response.text`` — only valid when
+                TOutput is ``str``.
+            temperature: Default sampling temperature.
+        """
+        self.model = model
+        self.response_parser = response_parser or (lambda response: cast(TOutput, response.text))
+        self.temperature = temperature
+
+    async def prepare(self) -> None:
+        """Delegate to model.prepare() if model has lifecycle."""
+        if isinstance(self.model, ManagedLLMModel):
+            await self.model.prepare()
+
+    async def cleanup(self) -> None:
+        """Delegate to model.cleanup() if model has lifecycle."""
+        if isinstance(self.model, ManagedLLMModel):
+            await self.model.cleanup()
+
+    async def execute(
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+    ) -> tuple[TOutput, TokenUsage]:
+        """Execute LLM call via the model and parse the response."""
+        llm_response = await self.model.generate(prompt, temperature=self.temperature)
+
+        try:
+            output = self.response_parser(llm_response)
+        except Exception as e:
+            tokens = llm_response.token_usage
+            if not hasattr(e, "__dict__"):
+                wrapped = TokenTrackingError(str(e), token_usage=tokens)
+                wrapped.__cause__ = e
+                raise wrapped from e
+            else:
+                e.__dict__["_failed_token_usage"] = tokens
+                raise
+
+        return output, llm_response.token_usage
+
+
+class OpenRouterStrategy(LLMCallStrategy[TOutput]):
+    """
+    Strategy for calling an OpenRouter-backed model and parsing the response.
+
+    Functionally identical to :class:`OpenAIStrategy` (both delegate to an
+    ``LLMModel``); the separate class exists for provider-named symmetry with
+    :class:`GeminiStrategy` so users can pick the strategy named after the
+    provider they're using.
+
+    Added in v0.9.0.
+
+    Example:
+        >>> model = OpenRouterModel.from_api_key(
+        ...     "anthropic/claude-haiku-4-5", api_key="sk-or-...",
+        ... )
+        >>> strategy = OpenRouterStrategy(model)
+    """
+
+    @overload
+    def __init__(
+        self: "OpenRouterStrategy[str]",
+        model: "LLMModel",
+        response_parser: None = None,
+        *,
+        temperature: float = 0.0,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        model: "LLMModel",
+        response_parser: Callable[[LLMResponse], TOutput],
+        *,
+        temperature: float = 0.0,
+    ) -> None: ...
+
+    def __init__(
+        self,
+        model: "LLMModel",
+        response_parser: Callable[[LLMResponse], TOutput] | None = None,
+        *,
+        temperature: float = 0.0,
+    ) -> None:
+        """
+        Args:
+            model: An LLMModel instance (typically OpenRouterModel).
+            response_parser: Function to parse LLMResponse into TOutput.
+            temperature: Default sampling temperature.
+        """
+        self.model = model
+        self.response_parser = response_parser or (lambda response: cast(TOutput, response.text))
+        self.temperature = temperature
+
+    async def prepare(self) -> None:
+        """Delegate to model.prepare() if model has lifecycle."""
+        if isinstance(self.model, ManagedLLMModel):
+            await self.model.prepare()
+
+    async def cleanup(self) -> None:
+        """Delegate to model.cleanup() if model has lifecycle."""
+        if isinstance(self.model, ManagedLLMModel):
+            await self.model.cleanup()
+
+    async def execute(
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+    ) -> tuple[TOutput, TokenUsage]:
+        """Execute LLM call via the model and parse the response."""
+        llm_response = await self.model.generate(prompt, temperature=self.temperature)
+
+        try:
+            output = self.response_parser(llm_response)
+        except Exception as e:
+            tokens = llm_response.token_usage
+            if not hasattr(e, "__dict__"):
+                wrapped = TokenTrackingError(str(e), token_usage=tokens)
+                wrapped.__cause__ = e
+                raise wrapped from e
+            else:
+                e.__dict__["_failed_token_usage"] = tokens
+                raise
+
+        return output, llm_response.token_usage
+
+
 class PydanticAIStrategy(LLMCallStrategy[TOutput]):
     """
     Strategy for using PydanticAI agents.

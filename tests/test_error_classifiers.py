@@ -233,8 +233,7 @@ async def test_persistent_rate_limit_exhausts_max_attempts():
     assert result.succeeded == 0
     assert result.failed == 1
     assert strategy.call_count == max_attempts, (
-        f"Expected exactly {max_attempts} attempts before giving up, "
-        f"got {strategy.call_count}."
+        f"Expected exactly {max_attempts} attempts before giving up, got {strategy.call_count}."
     )
     failure = result.results[0]
     assert failure.success is False
@@ -452,3 +451,241 @@ async def test_gemini_classifier_case_insensitive():
     error = Exception("quota exceeded")
     info = classifier.classify(error)
     assert info.is_rate_limit is True
+
+
+# =============================================================================
+# OpenAI / OpenRouter classifier tests
+# =============================================================================
+
+
+def _make_openai_status_error(status_code: int, message: str = "boom"):
+    """Construct an openai.APIStatusError with the given status code."""
+    from openai import APIStatusError
+
+    request = httpx_request_or_none()
+    response = httpx_response_or_none(status_code, message)
+
+    if request is None or response is None:
+        # Fallback: build a minimal mock that satisfies isinstance() checks.
+        from unittest.mock import MagicMock
+
+        err = APIStatusError.__new__(APIStatusError)
+        err.status_code = status_code
+        err.response = MagicMock(status_code=status_code, text=message)
+        err.message = message
+        err.body = {}
+        err.request_id = None
+        Exception.__init__(err, message)
+        return err
+
+    return APIStatusError(message, response=response, body={})
+
+
+def httpx_request_or_none():
+    """Build an httpx.Request if httpx is available; else return None."""
+    try:
+        import httpx
+
+        return httpx.Request("POST", "https://api.example.com/v1/chat/completions")
+    except Exception:
+        return None
+
+
+def httpx_response_or_none(status_code: int, text: str):
+    """Build an httpx.Response if httpx is available; else return None."""
+    try:
+        import httpx
+
+        return httpx.Response(
+            status_code=status_code,
+            request=httpx.Request("POST", "https://api.example.com/v1/chat/completions"),
+            text=text,
+        )
+    except Exception:
+        return None
+
+
+class TestOpenAIErrorClassifier:
+    """Tests for OpenAIErrorClassifier across all branches."""
+
+    def test_framework_timeout(self):
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        classifier = OpenAIErrorClassifier()
+        info = classifier.classify(FrameworkTimeoutError("framework timeout"))
+        assert info.is_retryable is True
+        assert info.is_timeout is True
+        assert info.error_category == "framework_timeout"
+
+    def test_rate_limit_error(self):
+        from openai import RateLimitError
+
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+        from async_batch_llm.classifiers.openai import DEFAULT_RATE_LIMIT_WAIT
+
+        classifier = OpenAIErrorClassifier()
+
+        # Construct without network requirements — RateLimitError has a strict
+        # constructor; use __new__ to dodge it.
+        err = RateLimitError.__new__(RateLimitError)
+        err.status_code = 429
+        err.message = "rate limited"
+        Exception.__init__(err, "rate limited")
+
+        info = classifier.classify(err)
+        assert info.is_rate_limit is True
+        assert info.is_retryable is True
+        assert info.error_category == "rate_limit"
+        assert info.suggested_wait == DEFAULT_RATE_LIMIT_WAIT
+
+    def test_api_timeout_error(self):
+        from openai import APITimeoutError
+
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        classifier = OpenAIErrorClassifier()
+
+        err = APITimeoutError.__new__(APITimeoutError)
+        Exception.__init__(err, "timed out")
+
+        info = classifier.classify(err)
+        assert info.is_timeout is True
+        assert info.is_retryable is True
+        assert info.error_category == "api_timeout"
+
+    def test_api_connection_error(self):
+        from openai import APIConnectionError
+
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        classifier = OpenAIErrorClassifier()
+
+        err = APIConnectionError.__new__(APIConnectionError)
+        Exception.__init__(err, "connection refused")
+
+        info = classifier.classify(err)
+        assert info.is_retryable is True
+        assert info.is_rate_limit is False
+        assert info.is_timeout is False
+        assert info.error_category == "network_error"
+
+    def test_status_429_is_rate_limit(self):
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        classifier = OpenAIErrorClassifier()
+        info = classifier.classify(_make_openai_status_error(429, "too many"))
+        assert info.is_rate_limit is True
+        assert info.is_retryable is True
+
+    @pytest.mark.parametrize("status", [408, 425, 500, 502, 503, 504])
+    def test_retryable_5xx_codes(self, status):
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        classifier = OpenAIErrorClassifier()
+        info = classifier.classify(_make_openai_status_error(status))
+        assert info.is_retryable is True
+        assert info.error_category == "server_error"
+        assert info.is_timeout is (status == 504)
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+    def test_non_retryable_4xx_codes(self, status):
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        classifier = OpenAIErrorClassifier()
+        info = classifier.classify(_make_openai_status_error(status))
+        assert info.is_retryable is False
+        assert info.error_category == "client_error"
+
+    def test_pydantic_validation_error_retryable(self):
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        classifier = OpenAIErrorClassifier()
+        try:
+            from pydantic import BaseModel as PBM
+            from pydantic import ValidationError
+        except ImportError:
+            pytest.skip("pydantic not installed")
+
+        class _M(PBM):
+            v: int
+
+        try:
+            _M(v="not int")
+        except ValidationError as e:
+            info = classifier.classify(e)
+            assert info.is_retryable is True
+            assert info.error_category == "validation_error"
+
+    def test_logic_bugs_not_retryable(self):
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        classifier = OpenAIErrorClassifier()
+        for err in [
+            ValueError("x"),
+            TypeError("y"),
+            KeyError("k"),
+            IndexError("i"),
+        ]:
+            info = classifier.classify(err)
+            assert info.is_retryable is False
+            assert info.error_category == "logic_error"
+
+    def test_unknown_exception_retryable(self):
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        class _Custom(Exception):
+            pass
+
+        classifier = OpenAIErrorClassifier()
+        info = classifier.classify(_Custom("transient"))
+        assert info.is_retryable is True
+        assert info.error_category == "unknown"
+
+    def test_string_pattern_rate_limit_fallback(self):
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        classifier = OpenAIErrorClassifier()
+        info = classifier.classify(Exception("Too Many Requests"))
+        assert info.is_rate_limit is True
+        assert info.error_category == "rate_limit"
+
+
+class TestOpenRouterErrorClassifier:
+    """OpenRouter-specific overrides; everything else inherits from OpenAI."""
+
+    def test_no_provider_available_is_network_error(self):
+        from async_batch_llm.classifiers import OpenRouterErrorClassifier
+
+        classifier = OpenRouterErrorClassifier()
+        err = _make_openai_status_error(
+            502, "no_provider_available: every provider returned errors"
+        )
+        info = classifier.classify(err)
+        assert info.is_retryable is True
+        assert info.error_category == "network_error"
+
+    def test_falls_back_to_openai_for_normal_502(self):
+        from async_batch_llm.classifiers import OpenRouterErrorClassifier
+
+        classifier = OpenRouterErrorClassifier()
+        err = _make_openai_status_error(502, "Bad Gateway")
+        info = classifier.classify(err)
+        assert info.is_retryable is True
+        # Without the no_provider_available marker, parent behavior applies.
+        assert info.error_category == "server_error"
+
+    def test_inherits_429_handling(self):
+        from async_batch_llm.classifiers import OpenRouterErrorClassifier
+
+        classifier = OpenRouterErrorClassifier()
+        info = classifier.classify(_make_openai_status_error(429))
+        assert info.is_rate_limit is True
+        assert info.is_retryable is True
+
+    def test_inherits_logic_bug_handling(self):
+        from async_batch_llm.classifiers import OpenRouterErrorClassifier
+
+        classifier = OpenRouterErrorClassifier()
+        info = classifier.classify(ValueError("bad input"))
+        assert info.is_retryable is False
+        assert info.error_category == "logic_error"

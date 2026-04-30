@@ -5,8 +5,8 @@ efficiently using a strategy pattern for provider-agnostic LLM integration.
 
 Key features:
 - Strategy pattern for any LLM provider (OpenAI, Anthropic, Google, LangChain, custom)
-- Built-in strategies: PydanticAIStrategy, GeminiStrategy
-- Built-in models: GeminiModel, GeminiCachedModel
+- Built-in strategies: PydanticAIStrategy, GeminiStrategy, OpenAIStrategy, OpenRouterStrategy
+- Built-in models: GeminiModel, GeminiCachedModel, OpenAIModel, OpenRouterModel
 - Provider-agnostic error classification
 - Pluggable rate limit strategies
 - Middleware pipeline for extensibility
@@ -74,7 +74,11 @@ from .base import (
 )
 
 # Classifiers
-from .classifiers import GeminiErrorClassifier
+from .classifiers import (
+    GeminiErrorClassifier,
+    OpenAIErrorClassifier,
+    OpenRouterErrorClassifier,
+)
 
 # Configuration
 from .core import ProcessorConfig, RateLimitConfig, RetryConfig
@@ -86,6 +90,8 @@ from .core.protocols import LLMModel, ManagedLLMModel
 from .llm_strategies import (
     GeminiStrategy,
     LLMCallStrategy,
+    OpenAIStrategy,
+    OpenRouterStrategy,
     PydanticAIStrategy,
 )
 
@@ -93,7 +99,13 @@ from .llm_strategies import (
 from .middleware import BaseMiddleware, Middleware
 
 # Concrete models
-from .models import GeminiCachedModel, GeminiModel
+from .models import (
+    GeminiCachedModel,
+    GeminiModel,
+    OpenAICompatibleModel,
+    OpenAIModel,
+    OpenRouterModel,
+)
 
 # Observers
 from .observers import BaseObserver, MetricsObserver, ProcessingEvent, ProcessorObserver
@@ -164,10 +176,15 @@ __all__ = [
     # LLM Strategies
     "GeminiStrategy",
     "LLMCallStrategy",
+    "OpenAIStrategy",
+    "OpenRouterStrategy",
     "PydanticAIStrategy",
     # Models
     "GeminiModel",
     "GeminiCachedModel",
+    "OpenAICompatibleModel",
+    "OpenAIModel",
+    "OpenRouterModel",
     # Protocols
     "LLMModel",
     "LLMResponse",
@@ -191,6 +208,8 @@ __all__ = [
     "ProcessingEvent",
     # Classifiers
     "GeminiErrorClassifier",
+    "OpenAIErrorClassifier",
+    "OpenRouterErrorClassifier",
     # Processor
     "ParallelBatchProcessor",
     # Type aliases (convenience)

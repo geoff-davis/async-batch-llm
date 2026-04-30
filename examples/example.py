@@ -81,7 +81,7 @@ async def example_post_processor(result: WorkItemResult[BookSummary, EnrichmentC
     """
     if result.success and result.output:
         logging.info(
-            f"Post-processing {result.item_id}: " f"{result.output.title} ({result.output.genre})"
+            f"Post-processing {result.item_id}: {result.output.title} ({result.output.genre})"
         )
         # Could save to database here
         # await save_to_db(result.output, result.context)
@@ -240,7 +240,7 @@ async def example_with_context_and_postprocessor():
     # Show metrics from observer
     collected_metrics = await metrics.get_metrics()
     logging.info("\nMetrics from Observer:")
-    logging.info(f"  Success rate: {collected_metrics['success_rate']*100:.1f}%")
+    logging.info(f"  Success rate: {collected_metrics['success_rate'] * 100:.1f}%")
     logging.info(f"  Avg processing time: {collected_metrics['avg_processing_time']:.2f}s")
     logging.info(f"  Rate limits hit: {collected_metrics['rate_limits_hit']}")
 
@@ -387,7 +387,7 @@ async def example_testing_with_mocks():
     logging.info("\nMetrics from MockAgent test:")
     logging.info(f"  Mock agent calls: {mock_agent.call_count}")
     logging.info(f"  Rate limits hit: {collected_metrics['rate_limits_hit']}")
-    logging.info(f"  Success rate: {collected_metrics['success_rate']*100:.1f}%")
+    logging.info(f"  Success rate: {collected_metrics['success_rate'] * 100:.1f}%")
     logging.info("\nNote: This test ran without making any real LLM API calls!")
 
 
