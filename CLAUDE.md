@@ -409,7 +409,10 @@ src/async_batch_llm/
   per-upstream caching matrix and the Anthropic `cache_control` opt-in
   pattern.
 - `docs/API.md` — API reference.
-- `docs/MIGRATION_V0_4.md` — recent migration notes.
+- `docs/MIGRATION_V0_10.md` — most recent migration guide
+  (v0.8.x → v0.10.0; covers OpenAI/OpenRouter additions and the metadata
+  3-tuple contract change).
+- `docs/MIGRATION_V0_4.md` — earlier migration notes.
 - `docs/archive/` — historical migration guides and design plans.
 - `CHANGELOG.md` — release-by-release changes.
 - `CONTRIBUTING.md`, `PUBLISHING.md` — contributor docs.

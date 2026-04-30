@@ -67,6 +67,7 @@ nav:
     - Custom Strategies: examples/custom-strategies.md
     - Advanced Patterns: examples/advanced.md
   - Migration Guides:
+    - v0.10 Migration: MIGRATION_V0_10.md
     - v0.4 Migration: migration/v0.4.md
     - v0.1 Migration: migration/v0.1.md
   - API Reference:
