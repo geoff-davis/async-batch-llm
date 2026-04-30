@@ -49,6 +49,7 @@ class TestOpenRouterModelFromApiKey:
     def test_default_base_url_points_to_openrouter(self):
         model = OpenRouterModel.from_api_key("anthropic/claude-haiku-4-5", api_key="sk-or-fake")
         assert "openrouter.ai/api/v1" in str(model._client.base_url)
+        assert model._owns_client is True
 
     def test_referer_and_title_become_default_headers(self):
         model = OpenRouterModel.from_api_key(
@@ -73,6 +74,24 @@ class TestOpenRouterModelFromApiKey:
             "X-Other": "value",
             "HTTP-Referer": "https://x.example",
         }
+
+    def test_reads_openrouter_api_key_env_var(self, monkeypatch):
+        # The OpenAI SDK doesn't know about OPENROUTER_API_KEY; we read it
+        # ourselves. Make sure the env var ends up on the SDK client.
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-from-env")
+        model = OpenRouterModel.from_api_key("anthropic/claude-haiku-4-5")
+        assert model._client.api_key == "sk-or-from-env"
+
+    def test_raises_when_no_api_key_resolvable(self, monkeypatch):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+            OpenRouterModel.from_api_key("anthropic/claude-haiku-4-5")
+
+    def test_explicit_api_key_overrides_env(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "from-env")
+        model = OpenRouterModel.from_api_key("anthropic/claude-haiku-4-5", api_key="explicit-key")
+        assert model._client.api_key == "explicit-key"
 
 
 class TestOpenRouterMetadata:

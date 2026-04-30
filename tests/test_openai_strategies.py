@@ -17,6 +17,8 @@ class TestOpenAIModelFromApiKey:
         assert isinstance(model, OpenAIModel)
         # Underlying client has SDK default base URL (api.openai.com).
         assert "api.openai.com" in str(model._client.base_url)
+        # from_api_key takes ownership of the client.
+        assert model._owns_client is True
 
     def test_explicit_base_url_overrides(self):
         model = OpenAIModel.from_api_key(
@@ -25,6 +27,86 @@ class TestOpenAIModelFromApiKey:
             base_url="https://custom.example.com/v1",
         )
         assert "custom.example.com" in str(model._client.base_url)
+
+    def test_api_key_optional_lets_sdk_resolve_env_var(self, monkeypatch):
+        # When api_key is None, the SDK reads OPENAI_API_KEY itself.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
+        model = OpenAIModel.from_api_key("gpt-4o-mini")
+        assert model._client.api_key == "sk-from-env"
+
+    def test_direct_constructor_does_not_own_client(self):
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key="sk-test")
+        model = OpenAIModel("gpt-4o-mini", client)
+        assert model._owns_client is False
+
+
+class TestOpenAIModelLifecycle:
+    @pytest.mark.asyncio
+    async def test_cleanup_closes_owned_client(self):
+        # Build via from_api_key, then swap the client for a mock so we can
+        # verify .close() is awaited.
+        model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-test")
+        mock_client = MagicMock()
+        mock_client.close = AsyncMock()
+        model._client = mock_client
+
+        await model.cleanup()
+
+        mock_client.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_skips_user_provided_client(self):
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key="sk-test")
+        model = OpenAIModel("gpt-4o-mini", client)
+
+        # Spy on close so we can confirm we DON'T touch it.
+        original_close = client.close
+        close_called = False
+
+        async def tracked_close(*args, **kwargs):
+            nonlocal close_called
+            close_called = True
+            return await original_close(*args, **kwargs)
+
+        client.close = tracked_close  # type: ignore[method-assign]
+
+        await model.cleanup()
+
+        assert close_called is False, (
+            "cleanup() must not close clients that weren't created via from_api_key()"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cleanup_idempotent_when_close_fails(self, caplog):
+        import logging
+
+        model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-test")
+        mock_client = MagicMock()
+        mock_client.close = AsyncMock(side_effect=RuntimeError("boom"))
+        model._client = mock_client
+
+        caplog.set_level(logging.WARNING)
+        # Should not propagate — cleanup is best-effort.
+        await model.cleanup()
+        assert any("Failed to close" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_strategy_cleanup_delegates_to_model(self):
+        # OpenAICompatibleModel implements ManagedLLMModel (prepare + cleanup),
+        # so OpenAIStrategy.cleanup() should propagate to it.
+        model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-test")
+        mock_client = MagicMock()
+        mock_client.close = AsyncMock()
+        model._client = mock_client
+
+        strategy = OpenAIStrategy(model)
+        await strategy.cleanup()
+
+        mock_client.close.assert_awaited_once()
 
 
 class TestOpenAIStrategy:

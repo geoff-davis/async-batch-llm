@@ -589,10 +589,13 @@ class OpenAICompatibleModel:
     Wraps an ``AsyncOpenAI`` client pointed at any chat-completions endpoint
     (OpenAI itself, OpenRouter, DeepSeek, HuggingFace Inference Providers,
     Together, Fireworks, local vLLM, etc.). Subclasses customize the default
-    base URL, the install-extras hint, and optionally the token/metadata
-    extractors.
+    base URL, the install-extras hint, the env var read by
+    :meth:`from_api_key`, and optionally the token/metadata extractors.
 
-    Implements the LLMModel protocol via ``generate()``.
+    Implements the ``ManagedLLMModel`` protocol — :meth:`cleanup` closes the
+    underlying ``AsyncOpenAI`` client when this model owns it (i.e. it was
+    constructed via :meth:`from_api_key`). User-provided clients are left
+    alone.
 
     Added in v0.9.0.
     """
@@ -600,6 +603,11 @@ class OpenAICompatibleModel:
     # Subclasses override.
     _default_base_url: str | None = None
     _install_extras: str = "openai"
+    # Env var :meth:`from_api_key` reads when ``api_key`` is None.
+    # ``None`` means: let the OpenAI SDK pick up its own default
+    # (``OPENAI_API_KEY``); subclasses set it to read a different env var
+    # ourselves and forward to the SDK explicitly.
+    _api_key_env_var: str | None = None
 
     def __init__(
         self,
@@ -615,7 +623,9 @@ class OpenAICompatibleModel:
             model: Provider model id (e.g. "gpt-4o-mini" or
                 "anthropic/claude-haiku-4-5").
             client: Initialized AsyncOpenAI (point ``base_url`` at the desired
-                endpoint).
+                endpoint). The model does NOT take ownership of the client —
+                use :meth:`from_api_key` if you want the model to manage the
+                client's lifecycle.
             system_instruction: Default system message prepended to each call.
                 Per-call ``system_instruction`` argument takes precedence.
             extra_headers: Default headers forwarded on every call (e.g.
@@ -634,6 +644,9 @@ class OpenAICompatibleModel:
         self._default_system_instruction = system_instruction
         self._default_extra_headers = extra_headers
         self._default_extra_body = extra_body
+        # Set to True only by from_api_key(); cleanup() uses this to decide
+        # whether to close the underlying httpx connections.
+        self._owns_client: bool = False
 
     async def generate(
         self,
@@ -750,13 +763,42 @@ class OpenAICompatibleModel:
             logger.warning(f"Failed to extract response metadata: {e}", exc_info=True)
         return metadata or None
 
+    # ── Lifecycle ───────────────────────────────────────────────────────
+
+    async def prepare(self) -> None:
+        """No-op; OpenAI-compatible models have nothing to initialize."""
+        return
+
+    async def cleanup(self) -> None:
+        """Close the underlying AsyncOpenAI client if this model owns it.
+
+        Models constructed directly with ``OpenAIModel(model, client=...)``
+        do NOT own the client — the caller is expected to close it. Models
+        constructed via :meth:`from_api_key` do own the client and close
+        it here so repeated processor runs don't leak httpx connections.
+        """
+        if not self._owns_client or self._client is None:
+            return
+        close = getattr(self._client, "close", None)
+        if close is None:
+            return
+        try:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+        except Exception as e:
+            logger.warning(
+                f"Failed to close {type(self).__name__} client: {e}",
+                exc_info=True,
+            )
+
     # ── Convenience constructor ─────────────────────────────────────────
 
     @classmethod
     def from_api_key(
         cls,
         model: str,
-        api_key: str,
+        api_key: str | None = None,
         *,
         base_url: str | None = None,
         system_instruction: str | None = None,
@@ -766,9 +808,24 @@ class OpenAICompatibleModel:
     ) -> "OpenAICompatibleModel":
         """Build the model with a freshly-constructed AsyncOpenAI client.
 
+        The returned model owns the client — its connections are released
+        when the framework calls :meth:`cleanup` (typically when the
+        ``ParallelBatchProcessor`` exits).
+
         Uses ``base_url`` (if provided) or the class's ``_default_base_url``.
         Pass ``client_kwargs`` to forward additional kwargs (timeout,
         max_retries, http_client, etc.) to the SDK constructor.
+
+        Args:
+            model: Provider model id.
+            api_key: API key. If ``None``:
+
+                - For ``OpenAIModel`` the OpenAI SDK auto-reads
+                  ``OPENAI_API_KEY``.
+                - For ``OpenRouterModel`` (and other subclasses with
+                  ``_api_key_env_var`` set) we read the env var ourselves
+                  and forward it to the SDK explicitly.
+                - If neither path resolves, raises ``ValueError``.
         """
         if AsyncOpenAI is None:
             raise ImportError(
@@ -778,14 +835,35 @@ class OpenAICompatibleModel:
         effective_base_url = base_url or cls._default_base_url
         if effective_base_url is not None:
             client_kwargs.setdefault("base_url", effective_base_url)
-        client = AsyncOpenAI(api_key=api_key, **client_kwargs)
-        return cls(
+
+        resolved_key = api_key
+        if resolved_key is None and cls._api_key_env_var is not None:
+            import os as _os
+
+            resolved_key = _os.environ.get(cls._api_key_env_var)
+            if not resolved_key:
+                raise ValueError(
+                    f"No API key for {cls.__name__}: pass api_key= or set the "
+                    f"{cls._api_key_env_var} environment variable."
+                )
+
+        # When resolved_key is None and the SDK can self-resolve (OpenAIModel),
+        # don't pass api_key at all — letting the SDK raise its own clear
+        # error if neither path produces one.
+        if resolved_key is not None:
+            client = AsyncOpenAI(api_key=resolved_key, **client_kwargs)
+        else:
+            client = AsyncOpenAI(**client_kwargs)
+
+        instance = cls(
             model,
             client,
             system_instruction=system_instruction,
             extra_headers=extra_headers,
             extra_body=extra_body,
         )
+        instance._owns_client = True
+        return instance
 
 
 class OpenAIModel(OpenAICompatibleModel):
@@ -836,6 +914,7 @@ class OpenRouterModel(OpenAICompatibleModel):
 
     _default_base_url: str | None = "https://openrouter.ai/api/v1"
     _install_extras: str = "openrouter"
+    _api_key_env_var: str | None = "OPENROUTER_API_KEY"
 
     def _extract_metadata(self, response: Any) -> dict[str, Any] | None:
         """Add OpenRouter's ``provider`` field to the metadata."""
@@ -849,7 +928,7 @@ class OpenRouterModel(OpenAICompatibleModel):
     def from_api_key(  # type: ignore[override]
         cls,
         model: str,
-        api_key: str,
+        api_key: str | None = None,
         *,
         base_url: str | None = None,
         system_instruction: str | None = None,
@@ -860,6 +939,11 @@ class OpenRouterModel(OpenAICompatibleModel):
         **client_kwargs: Any,
     ) -> "OpenRouterModel":
         """Build an OpenRouterModel.
+
+        If ``api_key`` is None, reads ``OPENROUTER_API_KEY`` from the
+        environment and raises ``ValueError`` if neither is set. (The
+        OpenAI SDK doesn't know about ``OPENROUTER_API_KEY``, so we have
+        to read it ourselves rather than relying on the SDK's default.)
 
         ``referer`` and ``title`` map to OpenRouter's optional
         ``HTTP-Referer`` and ``X-Title`` headers (used for app attribution
