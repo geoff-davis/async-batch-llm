@@ -130,7 +130,7 @@ class TestOpenAIStrategy:
         model = self._mock_model(text="hello")
         strategy = OpenAIStrategy(model)
 
-        out, tokens = await strategy.execute("p", 1, 10.0)
+        out, tokens, _metadata = await strategy.execute("p", 1, 10.0)
 
         assert out == "hello"
         assert tokens["total_tokens"] == 15
@@ -145,7 +145,7 @@ class TestOpenAIStrategy:
         model = self._mock_model(text="parsed")
         strategy = OpenAIStrategy(model, response_parser=lambda r: Out(t=r.text))
 
-        out, _ = await strategy.execute("p", 1, 10.0)
+        out, _tokens, _metadata = await strategy.execute("p", 1, 10.0)
 
         assert isinstance(out, Out)
         assert out.t == "parsed"
@@ -183,6 +183,6 @@ class TestOpenAIStrategy:
         model = self._mock_model(text="x", cached=42)
         strategy = OpenAIStrategy(model)
 
-        _, tokens = await strategy.execute("p", 1, 10.0)
+        _output, tokens, _metadata = await strategy.execute("p", 1, 10.0)
 
         assert tokens["cached_input_tokens"] == 42

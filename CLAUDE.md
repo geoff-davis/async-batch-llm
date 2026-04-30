@@ -466,6 +466,8 @@ assert result.total_items == result.succeeded + result.failed
 
 ---
 
+[#8]: https://github.com/geoff-davis/async-batch-llm/issues/8
+
 ## Known limitations
 
 1. **Single-process only.** Designed for asyncio; no multi-process
@@ -487,17 +489,12 @@ assert result.total_items == result.succeeded + result.failed
 5. **Prometheus metrics** — built-in metrics export (we have
    `MetricsObserver`; this is about a Prometheus-format exporter on top).
 6. **Dynamic worker scaling** — adjust workers based on load.
-7. **Carry response metadata into `WorkItemResult`** ([#8]) —
-   `LLMResponse.metadata` (provider, finish_reason, OpenRouter routed
-   model, Gemini safety ratings) currently dies at the strategy boundary.
-   Threading it through would unlock per-item provider-aware billing
-   without a custom `response_parser`. Touches the
-   `LLMCallStrategy.execute()` contract — likely a 3-tuple
-   `(output, tokens, metadata)` or a `RetryState`-mediated handoff. See
-   `docs/OPENROUTER_INTEGRATION.md` for the current parser-based
-   workaround.
-
-[#8]: https://github.com/geoff-davis/async-batch-llm/issues/8
+7. **Drop the strategy 2-tuple compat shim.** v0.10.0 added a 3-tuple
+   `execute()` return shape `(output, tokens, metadata)` with a shim that
+   still accepts legacy 2-tuple. Schedule the shim removal for a future
+   minor or major release; once removed, also drop the
+   `gemini_safety_ratings` field on `WorkItemResult` (its content lives in
+   `metadata['safety_ratings']` now).
 
 ---
 
@@ -517,6 +514,17 @@ assert result.total_items == result.succeeded + result.failed
 
 Most recent first. See `CHANGELOG.md` for full per-release detail.
 
+- **v0.10.0** — response metadata reaches `WorkItemResult` ([#8]).
+  - `LLMCallStrategy.execute()` may now return a 3-tuple
+    `(output, tokens, metadata)`; legacy 2-tuple still accepted via
+    `_unpack_strategy_result` compat shim (slated for removal — see Future
+    Enhancements #7).
+  - All built-in strategies (`GeminiStrategy`, `OpenAIStrategy`,
+    `OpenRouterStrategy`, `PydanticAIStrategy`) updated to the 3-tuple
+    shape; provider metadata (provider name, finish_reason, routed model,
+    safety ratings) flows into `WorkItemResult.metadata`.
+  - `WorkItemResult.gemini_safety_ratings` deprecated; populated from
+    `metadata['safety_ratings']` for backward compat.
 - **v0.9.0** — first-class OpenAI and OpenRouter.
   - `OpenAICompatibleModel` base + `OpenAIModel` / `OpenRouterModel`
     subclasses, each with `from_api_key(...)` (optional `api_key`,

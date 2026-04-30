@@ -226,7 +226,16 @@ class WorkItemResult(Generic[TOutput, TContext]):
         error: Error message if failed, None if successful
         context: Context data from the work item
         token_usage: Token usage stats (input_tokens, output_tokens, total_tokens)
-        gemini_safety_ratings: Gemini API safety ratings if available
+        metadata: Provider-specific metadata returned alongside the response —
+            e.g. ``{"provider": "Anthropic", "finish_reason": "stop",
+            "model": "anthropic/claude-haiku-4-5"}``. Populated when the
+            strategy returns a 3-tuple ``(output, tokens, metadata)`` from
+            ``execute()``; ``None`` for legacy 2-tuple strategies.
+            Added in v0.10.0. (For Gemini safety ratings specifically, this
+            replaces the older ``gemini_safety_ratings`` field — see below.)
+        gemini_safety_ratings: **Deprecated.** Use ``metadata['safety_ratings']``
+            instead. Still populated when the underlying model surfaces them,
+            for backward compat. To be removed in a future release.
     """
 
     item_id: str
@@ -237,7 +246,22 @@ class WorkItemResult(Generic[TOutput, TContext]):
     token_usage: TokenUsage = field(
         default_factory=lambda: {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     )
+    metadata: dict[str, Any] | None = None
     gemini_safety_ratings: dict[str, str] | None = None
+
+    def __post_init__(self):
+        """Backfill ``gemini_safety_ratings`` from ``metadata['safety_ratings']``
+        for backward compatibility. Once ``gemini_safety_ratings`` is removed,
+        this method goes away.
+        """
+        if (
+            self.gemini_safety_ratings is None
+            and self.metadata is not None
+            and "safety_ratings" in self.metadata
+        ):
+            ratings = self.metadata["safety_ratings"]
+            if isinstance(ratings, dict):
+                self.gemini_safety_ratings = ratings
 
 
 class CachedTokenRates:
@@ -374,6 +398,40 @@ class BatchResult(Generic[TOutput, TContext]):
         # of effective billable tokens. See the Returns docstring.
         discount = int(self.total_cached_tokens * (1.0 - cached_token_rate))
         return self.total_input_tokens - discount
+
+
+def _unpack_strategy_result(
+    result: Any,
+) -> tuple[Any, "TokenUsage", dict[str, Any] | None]:
+    """Compat-shim for the LLMCallStrategy.execute() return contract.
+
+    Strategies may return either:
+
+    - ``(output, token_usage)`` — legacy 2-tuple shape (pre-v0.10.0).
+    - ``(output, token_usage, metadata)`` — current 3-tuple shape; ``metadata``
+      is forwarded into ``WorkItemResult.metadata``.
+
+    Returns the normalized 3-tuple. Raises ``ValueError`` for any other shape
+    (clearer than letting Python's tuple-unpacking error reach the caller).
+
+    The 2-tuple path will be removed in a future release; custom strategies
+    should migrate to the 3-tuple shape.
+    """
+    if not isinstance(result, tuple):
+        raise ValueError(
+            f"Strategy.execute() must return a tuple of (output, tokens) or "
+            f"(output, tokens, metadata); got {type(result).__name__}."
+        )
+    if len(result) == 3:
+        output, tokens, metadata = result
+        return output, tokens, metadata
+    if len(result) == 2:
+        output, tokens = result
+        return output, tokens, None
+    raise ValueError(
+        f"Strategy.execute() must return a 2- or 3-tuple "
+        f"(output, tokens [, metadata]); got a tuple of length {len(result)}."
+    )
 
 
 # Type alias for post-processor function

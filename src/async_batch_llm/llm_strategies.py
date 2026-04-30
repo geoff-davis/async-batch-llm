@@ -64,7 +64,7 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
     @abstractmethod
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: "RetryState | None" = None
-    ) -> tuple[TOutput, TokenUsage]:
+    ) -> tuple[TOutput, TokenUsage] | tuple[TOutput, TokenUsage, dict[str, Any] | None]:
         """
         Execute an LLM call for the given attempt.
 
@@ -75,9 +75,20 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
             state: Optional retry state that persists across attempts (v0.3.0)
 
         Returns:
-            Tuple of (output, token_usage)
-            where token_usage is a TokenUsage dict with optional keys:
-            input_tokens, output_tokens, total_tokens, cached_input_tokens
+            Either a 2-tuple ``(output, token_usage)`` or a 3-tuple
+            ``(output, token_usage, metadata)``.
+
+            - ``token_usage`` is a TokenUsage dict with optional keys:
+              ``input_tokens``, ``output_tokens``, ``total_tokens``,
+              ``cached_input_tokens``.
+            - ``metadata`` (v0.10.0) is a provider-specific dict forwarded
+              into ``WorkItemResult.metadata`` — typically ``finish_reason``,
+              ``model``, ``provider`` (OpenRouter), ``safety_ratings``
+              (Gemini). Pass ``None`` if you have nothing to surface.
+
+            The 2-tuple shape is supported for backward compatibility but
+            will be removed in a future release. Built-in strategies all
+            return the 3-tuple shape.
 
         Raises:
             Any exception to trigger retry (if retryable) or failure
@@ -260,7 +271,7 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
-    ) -> tuple[TOutput, TokenUsage]:
+    ) -> tuple[TOutput, TokenUsage, dict[str, Any] | None]:
         """Execute LLM call via the model and parse the response.
 
         Args:
@@ -270,7 +281,11 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
             state: Optional retry state for cross-attempt persistence.
 
         Returns:
-            Tuple of (parsed_output, token_usage).
+            3-tuple ``(parsed_output, token_usage, metadata)`` where
+            ``metadata`` is forwarded from ``LLMResponse.metadata``
+            (provider, finish_reason, safety_ratings, etc.). Added the
+            metadata slot in v0.10.0; the framework still accepts the
+            legacy 2-tuple shape from custom strategies via a compat shim.
         """
         llm_response = await self.model.generate(prompt, temperature=self.temperature)
 
@@ -287,7 +302,7 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
                 e.__dict__["_failed_token_usage"] = tokens
                 raise
 
-        return output, llm_response.token_usage
+        return output, llm_response.token_usage, llm_response.metadata
 
 
 class OpenAIStrategy(LLMCallStrategy[TOutput]):
@@ -360,8 +375,13 @@ class OpenAIStrategy(LLMCallStrategy[TOutput]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
-    ) -> tuple[TOutput, TokenUsage]:
-        """Execute LLM call via the model and parse the response."""
+    ) -> tuple[TOutput, TokenUsage, dict[str, Any] | None]:
+        """Execute LLM call via the model and parse the response.
+
+        Returns ``(output, token_usage, metadata)``; metadata is forwarded
+        from ``LLMResponse.metadata`` (finish_reason, model, etc.) into
+        ``WorkItemResult.metadata``. Added in v0.10.0.
+        """
         llm_response = await self.model.generate(prompt, temperature=self.temperature)
 
         try:
@@ -376,7 +396,7 @@ class OpenAIStrategy(LLMCallStrategy[TOutput]):
                 e.__dict__["_failed_token_usage"] = tokens
                 raise
 
-        return output, llm_response.token_usage
+        return output, llm_response.token_usage, llm_response.metadata
 
 
 class OpenRouterStrategy(LLMCallStrategy[TOutput]):
@@ -444,8 +464,15 @@ class OpenRouterStrategy(LLMCallStrategy[TOutput]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
-    ) -> tuple[TOutput, TokenUsage]:
-        """Execute LLM call via the model and parse the response."""
+    ) -> tuple[TOutput, TokenUsage, dict[str, Any] | None]:
+        """Execute LLM call via the model and parse the response.
+
+        Returns ``(output, token_usage, metadata)``; metadata is forwarded
+        from ``LLMResponse.metadata`` — for OpenRouter this typically
+        includes ``provider`` (the upstream that served the request),
+        ``model`` (the actually-routed model), and ``finish_reason``.
+        Added in v0.10.0.
+        """
         llm_response = await self.model.generate(prompt, temperature=self.temperature)
 
         try:
@@ -460,7 +487,7 @@ class OpenRouterStrategy(LLMCallStrategy[TOutput]):
                 e.__dict__["_failed_token_usage"] = tokens
                 raise
 
-        return output, llm_response.token_usage
+        return output, llm_response.token_usage, llm_response.metadata
 
 
 class PydanticAIStrategy(LLMCallStrategy[TOutput]):
@@ -491,7 +518,7 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
-    ) -> tuple[TOutput, TokenUsage]:
+    ) -> tuple[TOutput, TokenUsage, dict[str, Any] | None]:
         """Execute PydanticAI agent call.
 
         Note: timeout parameter is provided for information but timeout enforcement
@@ -502,6 +529,11 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
             attempt: Which retry attempt this is (1, 2, 3, ...)
             timeout: Maximum time to wait for response (seconds)
             state: Optional retry state (v0.3.0, unused by this strategy)
+
+        Returns:
+            3-tuple ``(output, token_usage, metadata)``. PydanticAI's result
+            object doesn't expose provider-side metadata uniformly, so
+            ``metadata`` is currently always ``None`` here. (v0.10.0)
         """
         result = await self.agent.run(prompt)
 
@@ -527,7 +559,7 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
                 e.__dict__["_failed_token_usage"] = tokens
                 raise
 
-        return output, tokens
+        return output, tokens, None
 
     async def dry_run(self, prompt: str) -> tuple[TOutput, TokenUsage]:
         """Return mock output based on agent's result_type for dry-run mode."""

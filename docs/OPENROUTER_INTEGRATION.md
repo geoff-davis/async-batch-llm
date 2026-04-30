@@ -132,17 +132,13 @@ does not model.
 
 ### Per-item provider metadata for mixed-provider batches
 
-`OpenRouterModel` extracts the upstream provider name into
-`LLMResponse.metadata['provider']`, but the default `OpenRouterStrategy`
-only forwards `output` and `token_usage` — the metadata is dropped before
-it reaches `WorkItemResult`. To compute per-item billable tokens for a
-mixed-provider batch, write a `response_parser` that captures the
-metadata into your output type, then use it in your post-processor or
-results loop:
+As of v0.10.0, `OpenRouterStrategy` (and the other built-in strategies)
+forwards `LLMResponse.metadata` straight through to
+`WorkItemResult.metadata`. For OpenRouter that includes the upstream
+provider name (`"Anthropic"`, `"OpenAI"`, `"DeepSeek"`, etc.), the
+actually-routed model, and `finish_reason`. No custom parser needed.
 
 ```python
-from dataclasses import dataclass
-
 from async_batch_llm import (
     CachedTokenRates,
     LLMWorkItem,
@@ -152,49 +148,58 @@ from async_batch_llm import (
     ProcessorConfig,
 )
 
-
-@dataclass
-class TaggedOutput:
-    text: str
-    provider: str | None  # e.g. "Anthropic", "OpenAI", "DeepSeek"
-
-
-def parse_with_provider(response):
-    return TaggedOutput(
-        text=response.text,
-        provider=(response.metadata or {}).get("provider"),
-    )
-
-
-# Per-provider rate lookup (extend as needed).
+# Per-provider rate lookup.
 PROVIDER_RATES = {
     "OpenAI": CachedTokenRates.OPENAI,
     "Anthropic": CachedTokenRates.ANTHROPIC_READ,
     "DeepSeek": CachedTokenRates.DEEPSEEK,
 }
 
-
-# Build the strategy with the metadata-preserving parser.
 model = OpenRouterModel.from_api_key("openrouter/auto")
-strategy = OpenRouterStrategy(model, response_parser=parse_with_provider)
+strategy = OpenRouterStrategy(model)
 
-# After process_all(), do per-item billing math:
+# After process_all():
 total_billable = 0
 for r in result.results:
-    if not r.success or r.output is None:
+    if not r.success:
         continue
-    rate = PROVIDER_RATES.get(r.output.provider, CachedTokenRates.OPENAI)
+    provider = (r.metadata or {}).get("provider")
+    rate = PROVIDER_RATES.get(provider, CachedTokenRates.OPENAI)
     cached = r.token_usage.get("cached_input_tokens", 0)
     inp = r.token_usage.get("input_tokens", 0)
     discount = int(cached * (1.0 - rate))
     total_billable += inp - discount
 ```
 
-`BatchResult.effective_input_tokens()` itself takes a single rate, so it's
-appropriate when every item in the batch uses the same upstream. For mixed
-batches, do the per-item arithmetic above. (A future release may carry
-`LLMResponse.metadata` through to `WorkItemResult` directly so this
-parser dance becomes optional.)
+`BatchResult.effective_input_tokens()` takes a single rate, so it's
+appropriate when every item in the batch uses the same upstream. For
+mixed batches, use the per-item arithmetic above.
+
+If you need the provider info inside your output type (e.g. to feed into a
+strict Pydantic model rather than read from `WorkItemResult.metadata`), a
+custom `response_parser` still works:
+
+```python
+from dataclasses import dataclass
+
+
+@dataclass
+class TaggedOutput:
+    text: str
+    provider: str | None
+
+
+strategy = OpenRouterStrategy(
+    model,
+    response_parser=lambda r: TaggedOutput(
+        text=r.text,
+        provider=(r.metadata or {}).get("provider"),
+    ),
+)
+```
+
+Both paths (reading `WorkItemResult.metadata` or capturing into a typed
+output) are fully supported.
 
 ### Anthropic prompt caching via OpenRouter
 

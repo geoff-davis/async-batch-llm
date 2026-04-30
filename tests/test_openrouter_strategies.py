@@ -136,7 +136,7 @@ class TestOpenRouterStrategy:
         )
         strategy = OpenRouterStrategy(m)
 
-        out, tokens = await strategy.execute("p", 1, 10.0)
+        out, tokens, _metadata = await strategy.execute("p", 1, 10.0)
 
         assert out == "hello"
         assert tokens["total_tokens"] == 15

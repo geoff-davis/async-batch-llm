@@ -20,6 +20,7 @@ from .base import (
     TokenUsage,
     TOutput,
     WorkItemResult,
+    _unpack_strategy_result,
 )
 from .core import ProcessorConfig
 from .llm_strategies import LLMCallStrategy
@@ -720,12 +721,16 @@ class ParallelBatchProcessor(
                 # Dry-run mode: use strategy's dry_run method instead of making API call
                 if self.config.dry_run:
                     logger.info(f"[DRY-RUN] Skipping API call for {work_item.item_id}")
-                    # Delegate to strategy's dry_run method for mock output
+                    # Delegate to strategy's dry_run method for mock output.
+                    # dry_run is fixed at 2-tuple — no metadata for mock data.
                     output, token_usage = await strategy.dry_run(work_item.prompt)
+                    response_metadata = None
                 else:
                     # Call strategy.execute() with prompt, attempt number, timeout, and retry state (v0.3.0)
-                    # Wrap in asyncio.wait_for to enforce timeout at framework level
-                    output, token_usage = await asyncio.wait_for(
+                    # Wrap in asyncio.wait_for to enforce timeout at framework level.
+                    # _unpack_strategy_result accepts both legacy 2-tuple and the
+                    # current 3-tuple (output, tokens, metadata) shape (v0.10.0).
+                    raw_result = await asyncio.wait_for(
                         strategy.execute(
                             work_item.prompt,
                             attempt_number,
@@ -734,6 +739,7 @@ class ParallelBatchProcessor(
                         ),
                         timeout=self.config.timeout_per_item,
                     )
+                    output, token_usage, response_metadata = _unpack_strategy_result(raw_result)
             except (TimeoutError, asyncio.TimeoutError) as timeout_exc:
                 elapsed = time.time() - llm_start_time
                 logger.error(
@@ -785,6 +791,7 @@ class ParallelBatchProcessor(
                 output=output,
                 context=work_item.context,
                 token_usage=token_usage,
+                metadata=response_metadata,
             )
 
             # Run after middlewares
