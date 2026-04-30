@@ -78,7 +78,9 @@ passing, post-processors, middleware, observers, error handling).
   `prompt: str`, optional `context`.
 - **`ParallelBatchProcessor`** (`parallel.py`) — worker pool, rate-limit
   coordination, retry/backoff, framework-level timeout via
-  `asyncio.wait_for()`.
+  `asyncio.wait_for()`. Optional `progress_callback(completed, total,
+  current_item_id)` for live progress (sync or async, with configurable
+  `progress_callback_timeout`).
 
 ### Built-in providers
 
@@ -117,20 +119,25 @@ Migration from the pre-strategy API at `docs/archive/MIGRATION_V0_1.md`.
 
 ### Rate-limiting coordination
 
+The rate-limit state machine lives on `RateLimitCoordinator`
+(`_internal/rate_limit_coordinator.py`) since the v0.7.0 decomposition.
+`ParallelBatchProcessor._in_cooldown` is a read-only property that
+delegates to the coordinator — don't try to assign it directly.
+
 When one worker hits a rate limit:
 
-1. Atomic check-and-set: only one worker triggers the cooldown.
-2. All workers pause via `asyncio.Event`.
-3. Slow-start ramp after cooldown (progressive delays).
-4. Consecutive rate limits trigger exponential backoff.
+1. Atomic check-and-set inside the coordinator's lock: only one worker
+   triggers the cooldown for a given generation. Stale callers (whose
+   observed generation predates the current cooldown) silently no-op.
+2. All workers pause via `asyncio.Event` (cleared on cooldown, set on
+   resume).
+3. Slow-start ramp after cooldown — progressive delays before workers
+   resume normal throughput.
+4. Consecutive rate limits trigger exponential backoff via the
+   configurable `RateLimitStrategy`.
 
-```python
-async with self._rate_limit_lock:
-    if self._in_cooldown:
-        return  # Another worker handling it
-    self._in_cooldown = True
-    self._rate_limit_event.clear()  # Pause all
-```
+The actual implementation is in `RateLimitCoordinator._handle_rate_limit`;
+read that file rather than copy a snippet here.
 
 ### Error-aware retry via `on_error()` (v0.1)
 
@@ -265,13 +272,23 @@ collected = await metrics.get_metrics()
 
 ### One-liner commands
 
+Prefer the `make` targets — they pin the right paths (notably **`examples/`
+is excluded from ruff** because example files intentionally check env vars
+before importing optional deps and would fail E402).
+
 ```bash
 make ci                      # full pipeline (lint + typecheck + test + markdown-lint)
+make lint                    # ruff check on src/ tests/
+make lint-fix                # ruff check --fix
+make format                  # ruff format on src/ tests/
+make typecheck               # mypy on src/async_batch_llm/
+make markdown-lint-fix       # markdownlint with --fix
 uv run pytest                # tests only
-uv run ruff format src/ tests/ examples/
-uv run ruff check src/ tests/ examples/ --fix
+
+# Equivalents if you need to run without make (note: do NOT add examples/):
+uv run ruff check src/ tests/ --fix
+uv run ruff format src/ tests/
 uv run mypy src/async_batch_llm/ --ignore-missing-imports
-npx markdownlint-cli2 "README.md" "docs/**/*.md" "CLAUDE.md" --fix
 ```
 
 ### Pre-commit hooks
@@ -467,10 +484,10 @@ assert result.total_items == result.succeeded + result.failed
 2. **Batch API support** — true batch APIs for ~50% cost savings.
 3. **More classifiers** — Anthropic native, DeepSeek, HuggingFace.
 4. **Persistent queue** — Redis/DB-backed.
-5. **Prometheus metrics** — built-in metrics export.
-6. **Progress callbacks** — real-time progress updates.
-7. **Dynamic worker scaling** — adjust workers based on load.
-8. **Carry response metadata into `WorkItemResult`** ([#8]) —
+5. **Prometheus metrics** — built-in metrics export (we have
+   `MetricsObserver`; this is about a Prometheus-format exporter on top).
+6. **Dynamic worker scaling** — adjust workers based on load.
+7. **Carry response metadata into `WorkItemResult`** ([#8]) —
    `LLMResponse.metadata` (provider, finish_reason, OpenRouter routed
    model, Gemini safety ratings) currently dies at the strategy boundary.
    Threading it through would unlock per-item provider-aware billing
