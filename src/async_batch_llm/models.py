@@ -10,7 +10,7 @@ Added in v0.6.0.
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from .base import LLMResponse
 
@@ -955,14 +955,21 @@ class OpenRouterModel(OpenAICompatibleModel):
         if title is not None:
             merged_headers.setdefault("X-Title", title)
 
-        return super().from_api_key(  # type: ignore[return-value]
-            model,
-            api_key,
-            base_url=base_url,
-            system_instruction=system_instruction,
-            extra_headers=merged_headers or None,
-            extra_body=extra_body,
-            **client_kwargs,
+        # super().from_api_key is typed as returning OpenAICompatibleModel,
+        # but at runtime it constructs cls(...) so we actually get an
+        # OpenRouterModel back. cast() asserts the runtime guarantee for
+        # both type checkers without using a checker-specific ignore comment.
+        return cast(
+            "OpenRouterModel",
+            super().from_api_key(
+                model,
+                api_key,
+                base_url=base_url,
+                system_instruction=system_instruction,
+                extra_headers=merged_headers or None,
+                extra_body=extra_body,
+                **client_kwargs,
+            ),
         )
 
 
