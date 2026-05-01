@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **First-class OpenAI and OpenRouter providers.** New `OpenAICompatibleModel`
+  base class plus `OpenAIModel` and `OpenRouterModel` subclasses, each with
+  a `from_api_key(...)` convenience constructor that accepts an optional
+  `api_key` and falls back to `OPENAI_API_KEY` / `OPENROUTER_API_KEY` env
+  vars. New `OpenAIStrategy` and `OpenRouterStrategy` (thin shells over the
+  model). New `OpenAIErrorClassifier` and `OpenRouterErrorClassifier`
+  (subclass with `no_provider_available` body-marker handling). New
+  optional dependency groups `[openai]` and `[openrouter]`. Models
+  implement `ManagedLLMModel`: `cleanup()` closes the underlying httpx
+  client when constructed via `from_api_key`. New docs at
+  `docs/OPENAI_INTEGRATION.md` and `docs/OPENROUTER_INTEGRATION.md`.
+- **`CachedTokenRates` constants** (`GEMINI=0.10`, `OPENAI=0.50`,
+  `ANTHROPIC_READ=0.10`, `DEEPSEEK=0.10`) for provider-aware billing
+  arithmetic. `BatchResult.effective_input_tokens()` accepts a
+  `cached_token_rate` parameter; default stays at the Gemini rate for
+  backward compatibility.
+- **Response metadata reaches `WorkItemResult`** ([#8]).
+  `LLMCallStrategy.execute()` now supports a 3-tuple return shape
+  `(output, tokens, metadata)`; legacy 2-tuple is still accepted via
+  `_unpack_strategy_result`. All built-in strategies forward
+  `LLMResponse.metadata` (provider, finish_reason, routed model, safety
+  ratings) into `WorkItemResult.metadata`. Per-item provider-aware
+  billing in mixed-provider OpenRouter batches no longer requires a
+  custom `response_parser` (parser path still supported).
+
+### Deprecated
+
+- `WorkItemResult.gemini_safety_ratings` — read
+  `WorkItemResult.metadata['safety_ratings']` instead. The named field is
+  still populated for backward compat; scheduled for removal alongside
+  the 2-tuple compat shim.
+
+[#8]: https://github.com/geoff-davis/async-batch-llm/issues/8
+
 ## [0.8.0] - 2026-04-24
 
 ### Fixed

@@ -64,7 +64,7 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
     @abstractmethod
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: "RetryState | None" = None
-    ) -> tuple[TOutput, TokenUsage]:
+    ) -> tuple[TOutput, TokenUsage] | tuple[TOutput, TokenUsage, dict[str, Any] | None]:
         """
         Execute an LLM call for the given attempt.
 
@@ -75,9 +75,20 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
             state: Optional retry state that persists across attempts (v0.3.0)
 
         Returns:
-            Tuple of (output, token_usage)
-            where token_usage is a TokenUsage dict with optional keys:
-            input_tokens, output_tokens, total_tokens, cached_input_tokens
+            Either a 2-tuple ``(output, token_usage)`` or a 3-tuple
+            ``(output, token_usage, metadata)``.
+
+            - ``token_usage`` is a TokenUsage dict with optional keys:
+              ``input_tokens``, ``output_tokens``, ``total_tokens``,
+              ``cached_input_tokens``.
+            - ``metadata`` (v0.10.0) is a provider-specific dict forwarded
+              into ``WorkItemResult.metadata`` — typically ``finish_reason``,
+              ``model``, ``provider`` (OpenRouter), ``safety_ratings``
+              (Gemini). Pass ``None`` if you have nothing to surface.
+
+            The 2-tuple shape is supported for backward compatibility but
+            will be removed in a future release. Built-in strategies all
+            return the 3-tuple shape.
 
         Raises:
             Any exception to trigger retry (if retryable) or failure
@@ -260,7 +271,7 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
-    ) -> tuple[TOutput, TokenUsage]:
+    ) -> tuple[TOutput, TokenUsage, dict[str, Any] | None]:
         """Execute LLM call via the model and parse the response.
 
         Args:
@@ -270,7 +281,11 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
             state: Optional retry state for cross-attempt persistence.
 
         Returns:
-            Tuple of (parsed_output, token_usage).
+            3-tuple ``(parsed_output, token_usage, metadata)`` where
+            ``metadata`` is forwarded from ``LLMResponse.metadata``
+            (provider, finish_reason, safety_ratings, etc.). Added the
+            metadata slot in v0.10.0; the framework still accepts the
+            legacy 2-tuple shape from custom strategies via a compat shim.
         """
         llm_response = await self.model.generate(prompt, temperature=self.temperature)
 
@@ -287,7 +302,192 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
                 e.__dict__["_failed_token_usage"] = tokens
                 raise
 
-        return output, llm_response.token_usage
+        return output, llm_response.token_usage, llm_response.metadata
+
+
+class OpenAIStrategy(LLMCallStrategy[TOutput]):
+    """
+    Strategy for calling an OpenAI-compatible model and parsing the response.
+
+    Accepts an LLMModel (typically OpenAIModel) and an optional response
+    parser. The model handles the API call and token extraction; the
+    strategy handles response parsing and lifecycle delegation.
+
+    Added in v0.9.0.
+
+    Example:
+        >>> model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-...")
+        >>> strategy = OpenAIStrategy(model)
+        >>>
+        >>> # Structured output via response_parser:
+        >>> strategy = OpenAIStrategy(
+        ...     model,
+        ...     response_parser=lambda r: MyModel.model_validate_json(r.text),
+        ... )
+    """
+
+    @overload
+    def __init__(
+        self: "OpenAIStrategy[str]",
+        model: "LLMModel",
+        response_parser: None = None,
+        *,
+        temperature: float = 0.0,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        model: "LLMModel",
+        response_parser: Callable[[LLMResponse], TOutput],
+        *,
+        temperature: float = 0.0,
+    ) -> None: ...
+
+    def __init__(
+        self,
+        model: "LLMModel",
+        response_parser: Callable[[LLMResponse], TOutput] | None = None,
+        *,
+        temperature: float = 0.0,
+    ) -> None:
+        """
+        Args:
+            model: An LLMModel instance (e.g., OpenAIModel).
+            response_parser: Function to parse LLMResponse into TOutput.
+                Defaults to returning ``response.text`` — only valid when
+                TOutput is ``str``.
+            temperature: Default sampling temperature.
+        """
+        self.model = model
+        self.response_parser = response_parser or (lambda response: cast(TOutput, response.text))
+        self.temperature = temperature
+
+    async def prepare(self) -> None:
+        """Delegate to model.prepare() if model has lifecycle."""
+        if isinstance(self.model, ManagedLLMModel):
+            await self.model.prepare()
+
+    async def cleanup(self) -> None:
+        """Delegate to model.cleanup() if model has lifecycle."""
+        if isinstance(self.model, ManagedLLMModel):
+            await self.model.cleanup()
+
+    async def execute(
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+    ) -> tuple[TOutput, TokenUsage, dict[str, Any] | None]:
+        """Execute LLM call via the model and parse the response.
+
+        Returns ``(output, token_usage, metadata)``; metadata is forwarded
+        from ``LLMResponse.metadata`` (finish_reason, model, etc.) into
+        ``WorkItemResult.metadata``. Added in v0.10.0.
+        """
+        llm_response = await self.model.generate(prompt, temperature=self.temperature)
+
+        try:
+            output = self.response_parser(llm_response)
+        except Exception as e:
+            tokens = llm_response.token_usage
+            if not hasattr(e, "__dict__"):
+                wrapped = TokenTrackingError(str(e), token_usage=tokens)
+                wrapped.__cause__ = e
+                raise wrapped from e
+            else:
+                e.__dict__["_failed_token_usage"] = tokens
+                raise
+
+        return output, llm_response.token_usage, llm_response.metadata
+
+
+class OpenRouterStrategy(LLMCallStrategy[TOutput]):
+    """
+    Strategy for calling an OpenRouter-backed model and parsing the response.
+
+    Functionally identical to :class:`OpenAIStrategy` (both delegate to an
+    ``LLMModel``); the separate class exists for provider-named symmetry with
+    :class:`GeminiStrategy` so users can pick the strategy named after the
+    provider they're using.
+
+    Added in v0.9.0.
+
+    Example:
+        >>> model = OpenRouterModel.from_api_key(
+        ...     "anthropic/claude-haiku-4-5", api_key="sk-or-...",
+        ... )
+        >>> strategy = OpenRouterStrategy(model)
+    """
+
+    @overload
+    def __init__(
+        self: "OpenRouterStrategy[str]",
+        model: "LLMModel",
+        response_parser: None = None,
+        *,
+        temperature: float = 0.0,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        model: "LLMModel",
+        response_parser: Callable[[LLMResponse], TOutput],
+        *,
+        temperature: float = 0.0,
+    ) -> None: ...
+
+    def __init__(
+        self,
+        model: "LLMModel",
+        response_parser: Callable[[LLMResponse], TOutput] | None = None,
+        *,
+        temperature: float = 0.0,
+    ) -> None:
+        """
+        Args:
+            model: An LLMModel instance (typically OpenRouterModel).
+            response_parser: Function to parse LLMResponse into TOutput.
+            temperature: Default sampling temperature.
+        """
+        self.model = model
+        self.response_parser = response_parser or (lambda response: cast(TOutput, response.text))
+        self.temperature = temperature
+
+    async def prepare(self) -> None:
+        """Delegate to model.prepare() if model has lifecycle."""
+        if isinstance(self.model, ManagedLLMModel):
+            await self.model.prepare()
+
+    async def cleanup(self) -> None:
+        """Delegate to model.cleanup() if model has lifecycle."""
+        if isinstance(self.model, ManagedLLMModel):
+            await self.model.cleanup()
+
+    async def execute(
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+    ) -> tuple[TOutput, TokenUsage, dict[str, Any] | None]:
+        """Execute LLM call via the model and parse the response.
+
+        Returns ``(output, token_usage, metadata)``; metadata is forwarded
+        from ``LLMResponse.metadata`` — for OpenRouter this typically
+        includes ``provider`` (the upstream that served the request),
+        ``model`` (the actually-routed model), and ``finish_reason``.
+        Added in v0.10.0.
+        """
+        llm_response = await self.model.generate(prompt, temperature=self.temperature)
+
+        try:
+            output = self.response_parser(llm_response)
+        except Exception as e:
+            tokens = llm_response.token_usage
+            if not hasattr(e, "__dict__"):
+                wrapped = TokenTrackingError(str(e), token_usage=tokens)
+                wrapped.__cause__ = e
+                raise wrapped from e
+            else:
+                e.__dict__["_failed_token_usage"] = tokens
+                raise
+
+        return output, llm_response.token_usage, llm_response.metadata
 
 
 class PydanticAIStrategy(LLMCallStrategy[TOutput]):
@@ -318,7 +518,7 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
-    ) -> tuple[TOutput, TokenUsage]:
+    ) -> tuple[TOutput, TokenUsage, dict[str, Any] | None]:
         """Execute PydanticAI agent call.
 
         Note: timeout parameter is provided for information but timeout enforcement
@@ -329,6 +529,11 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
             attempt: Which retry attempt this is (1, 2, 3, ...)
             timeout: Maximum time to wait for response (seconds)
             state: Optional retry state (v0.3.0, unused by this strategy)
+
+        Returns:
+            3-tuple ``(output, token_usage, metadata)``. PydanticAI's result
+            object doesn't expose provider-side metadata uniformly, so
+            ``metadata`` is currently always ``None`` here. (v0.10.0)
         """
         result = await self.agent.run(prompt)
 
@@ -354,7 +559,7 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
                 e.__dict__["_failed_token_usage"] = tokens
                 raise
 
-        return output, tokens
+        return output, tokens, None
 
     async def dry_run(self, prompt: str) -> tuple[TOutput, TokenUsage]:
         """Return mock output based on agent's result_type for dry-run mode."""

@@ -53,17 +53,14 @@ class StrategyLifecycle(Generic[TOutput]):
                 return
 
             strategy_id = id(strategy)
-            logger.debug(
-                f"Preparing strategy {strategy.__class__.__name__} (id={strategy_id})"
-            )
+            logger.debug(f"Preparing strategy {strategy.__class__.__name__} (id={strategy_id})")
             await strategy.prepare()
             self._prepared.add(strategy)
             # A new prepare resets the cleanup flag so explicit lower-level
             # lifecycle reuse re-enters the cleanup path.
             self._cleaned_up = False
             logger.debug(
-                f"Strategy {strategy.__class__.__name__} prepared successfully "
-                f"(id={strategy_id})"
+                f"Strategy {strategy.__class__.__name__} prepared successfully (id={strategy_id})"
             )
 
     async def cleanup_all(self) -> None:
@@ -84,16 +81,14 @@ class StrategyLifecycle(Generic[TOutput]):
             ):
                 try:
                     logger.debug(
-                        f"Cleaning up strategy {strategy.__class__.__name__} "
-                        f"(id={id(strategy)})"
+                        f"Cleaning up strategy {strategy.__class__.__name__} (id={id(strategy)})"
                     )
                     await strategy.cleanup()
                 except Exception as e:
                     # Keep `except Exception` (not BaseException) so
                     # KeyboardInterrupt / SystemExit still propagate.
                     logger.warning(
-                        f"[WARN]Strategy cleanup failed for "
-                        f"{strategy.__class__.__name__}: {e}",
+                        f"[WARN]Strategy cleanup failed for {strategy.__class__.__name__}: {e}",
                         exc_info=True,
                     )
 

@@ -184,8 +184,8 @@ async def test_gemini_strategy_mock():
         response_parser=lambda r: TestOutput(text=r.text),
     )
 
-    # Test execute
-    output, tokens = await strategy.execute("Test prompt", 1, 10.0)
+    # Test execute (3-tuple shape from v0.10.0; metadata not asserted here).
+    output, tokens, _metadata = await strategy.execute("Test prompt", 1, 10.0)
 
     assert output.text == "Gemini response"
     assert tokens["input_tokens"] == 10

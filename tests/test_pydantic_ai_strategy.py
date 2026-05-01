@@ -36,7 +36,7 @@ class TestPydanticAIStrategy:
         )
 
         strategy = PydanticAIStrategy(agent=mock_agent)
-        output, tokens = await strategy.execute("test prompt", 1, 10.0)
+        output, tokens, _metadata = await strategy.execute("test prompt", 1, 10.0)
 
         assert output.value == "Response: test prompt"
         assert tokens["total_tokens"] > 0
@@ -53,7 +53,7 @@ class TestPydanticAIStrategy:
         state = RetryState()
         state.set("key", "value")
 
-        output, tokens = await strategy.execute("test", 1, 10.0, state=state)
+        output, tokens, _metadata = await strategy.execute("test", 1, 10.0, state=state)
         assert output.value == "result"
 
     @pytest.mark.asyncio
@@ -167,7 +167,7 @@ class TestPydanticAIStrategyTokenTracking:
         mock_agent.run = AsyncMock(return_value=mock_result)
 
         strategy = PydanticAIStrategy(agent=mock_agent)
-        output, tokens = await strategy.execute("test", 1, 10.0)
+        output, tokens, _metadata = await strategy.execute("test", 1, 10.0)
 
         assert tokens["input_tokens"] == 0
         assert tokens["output_tokens"] == 0

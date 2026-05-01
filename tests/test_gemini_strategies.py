@@ -300,12 +300,14 @@ class TestGeminiStrategy:
             response_parser=lambda r: TestOutput(text=r.text),
         )
 
-        output, tokens = await strategy.execute("test prompt", 1, 10.0)
+        output, tokens, metadata = await strategy.execute("test prompt", 1, 10.0)
 
         assert output.text == "parsed output"
         assert tokens["input_tokens"] == 10
         assert tokens["output_tokens"] == 20
         assert tokens["total_tokens"] == 30
+        # GeminiStrategy forwards LLMResponse.metadata in the 3-tuple (v0.10.0).
+        assert metadata is None  # mock model returned metadata=None
 
     @pytest.mark.asyncio
     async def test_execute_defaults_to_response_text(self):
@@ -314,7 +316,7 @@ class TestGeminiStrategy:
 
         strategy = GeminiStrategy(model=mock_model)
 
-        output, tokens = await strategy.execute("test prompt", 1, 10.0)
+        output, tokens, _metadata = await strategy.execute("test prompt", 1, 10.0)
 
         assert output == "plain text output"
         assert tokens["total_tokens"] == 30

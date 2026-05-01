@@ -41,6 +41,12 @@ pip install 'async-batch-llm[pydantic-ai]'
 # With Google Gemini support
 pip install 'async-batch-llm[gemini]'
 
+# With OpenAI support
+pip install 'async-batch-llm[openai]'
+
+# With OpenRouter support (multi-provider via one OpenAI-compatible API)
+pip install 'async-batch-llm[openrouter]'
+
 # With everything
 pip install 'async-batch-llm[all]'
 
@@ -253,7 +259,10 @@ print(f"Output tokens: {result.total_output_tokens}")
 # Cache metrics
 print(f"Cached tokens: {result.total_cached_tokens}")
 print(f"Cache hit rate: {result.cache_hit_rate():.1f}%")
-print(f"Effective cost: {result.effective_input_tokens()} tokens")
+# Pass a per-provider rate from CachedTokenRates (GEMINI / OPENAI /
+# ANTHROPIC_READ / DEEPSEEK) for an accurate billable-token estimate.
+# Default rate is CachedTokenRates.GEMINI for backward compatibility.
+print(f"Billable cost: {result.effective_input_tokens()} tokens (Gemini rate)")
 ```
 
 ### Observability

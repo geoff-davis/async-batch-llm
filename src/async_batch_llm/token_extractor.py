@@ -93,14 +93,39 @@ class TokenExtractor:
 
 
 def _coerce_usage(usage: Any) -> dict[str, int]:
-    """Convert a provider-specific usage object into our dict shape."""
+    """Convert a provider-specific usage object into our dict shape.
+
+    Field-name aliasing covers the common providers:
+
+    - PydanticAI: ``request_tokens`` / ``response_tokens``
+    - Anthropic / our normalized shape: ``input_tokens`` / ``output_tokens``
+    - OpenAI / OpenRouter: ``prompt_tokens`` / ``completion_tokens``
+    """
+    input_tokens = _int(
+        getattr(
+            usage,
+            "request_tokens",
+            getattr(usage, "input_tokens", getattr(usage, "prompt_tokens", 0)),
+        )
+    )
+    output_tokens = _int(
+        getattr(
+            usage,
+            "response_tokens",
+            getattr(usage, "output_tokens", getattr(usage, "completion_tokens", 0)),
+        )
+    )
+    cached = _int(getattr(usage, "cached_input_tokens", 0))
+    if not cached:
+        # OpenAI surfaces cached prompt tokens nested under prompt_tokens_details.
+        details = getattr(usage, "prompt_tokens_details", None)
+        if details is not None:
+            cached = _int(getattr(details, "cached_tokens", 0))
     return {
-        "input_tokens": _int(getattr(usage, "request_tokens", getattr(usage, "input_tokens", 0))),
-        "output_tokens": _int(
-            getattr(usage, "response_tokens", getattr(usage, "output_tokens", 0))
-        ),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
         "total_tokens": _int(getattr(usage, "total_tokens", 0)),
-        "cached_input_tokens": _int(getattr(usage, "cached_input_tokens", 0)),
+        "cached_input_tokens": cached,
     }
 
 

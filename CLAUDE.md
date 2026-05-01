@@ -1,1062 +1,582 @@
 # Project Knowledge for Claude
 
-This document contains important information about the `async-batch-llm` project
-for future AI assistants working on this codebase.
+Project-specific context that future Claude sessions load on startup. Keep
+it tight — when in doubt, link to `docs/` rather than duplicate content
+here.
 
 ---
 
-## Project Overview
+## Project overview
 
-**async-batch-llm** is a Python package for processing multiple LLM requests efficiently using a **strategy pattern** (v0.1+).
+**async-batch-llm** processes batches of LLM requests in parallel using a
+**strategy pattern** — provider-agnostic at the framework level, with
+first-class support for several providers built in.
 
-**Current Version: v0.1.0** - Uses `LLMCallStrategy` for provider-agnostic LLM integration
+**Current version:** v0.9.0 work is on `main`; `pyproject.toml` still
+reads `0.8.0` until the release-prep flow bumps it.
 
-**Key Features:**
+**Key features:**
 
 - Parallel asyncio processing with configurable concurrency
 - Built-in rate limiting and exponential backoff retry logic
-- Thread-safe concurrent operations
-- Provider-agnostic through strategy pattern
+- Thread-safe concurrent operations (`asyncio.Lock`-based, no nesting)
+- Provider-agnostic core: bring your own strategy/model/classifier
+- Built-in Gemini, OpenAI, and OpenRouter support
 - Middleware and observer patterns for extensibility
-- MockAgent for testing without API calls
-- Support for ANY LLM provider (OpenAI, Anthropic, Google, LangChain, custom)
+- `MockAgent` for testing without API calls
 
 ---
 
-## Architecture (v0.1+ Strategy Pattern)
+## Quick reference
 
-### Core Components
-
-**`LLMCallStrategy[TOutput]`** - Abstract base for all LLM integrations:
-
-- `async def prepare()` - Initialize resources (caches, connections)
-- `async def execute(prompt, attempt, timeout)` - Make LLM call
-- `async def on_error(exception, attempt)` - Handle errors and adjust retry behavior
-- `async def cleanup()` - Clean up resources (delete caches)
-
-**Built-in Strategies:**
-
-- `PydanticAIStrategy` - Wraps PydanticAI agents
-- `GeminiStrategy` - Direct Google Gemini API calls
-- `GeminiCachedStrategy` - Gemini with context caching (great for RAG)
-
-**`LLMWorkItem[TInput, TOutput, TContext]`** - Work unit:
-
-- `item_id: str` - Unique identifier
-- `strategy: LLMCallStrategy[TOutput]` - How to call the LLM
-- `prompt: str` - The prompt/input
-- `context: TContext | None` - Optional context passed through
-
-**`ParallelBatchProcessor[TInput, TOutput, TContext]`** - Main processing engine:
-
-- Manages worker pool (default 5 workers)
-- Coordinates rate limiting across all workers
-- Handles retries with exponential backoff
-- Framework-level timeout enforcement with `asyncio.wait_for()`
-- Collects results and metrics
-
-**Thread Safety:**
-
-- Uses `asyncio.Lock` for all shared mutable state
-- Three locks: `_rate_limit_lock`, `_stats_lock`, `_results_lock`
-- All locks are independent (no nesting = no deadlocks)
-
----
-
-## Critical Design Decisions
-
-### 1. Strategy Pattern (v0.1+)
-
-**Why:** Decouple framework from specific LLM providers.
-
-**Benefits:**
-
-- Support any LLM provider (OpenAI, Anthropic, Google, LangChain, custom)
-- Each strategy encapsulates provider-specific logic
-- Framework handles retry, timeout, rate limiting uniformly
-- Easy to test with mock strategies
-- Resource lifecycle management (prepare/cleanup)
-
-**Migration from v0.0.x:**
+Minimal working example:
 
 ```python
-# v0.0.x (removed)
-work_item = LLMWorkItem(item_id="1", agent=agent, prompt="...")
-
-# v0.1+ (current)
-strategy = PydanticAIStrategy(agent=agent)
-work_item = LLMWorkItem(item_id="1", strategy=strategy, prompt="...")
-```
-
-See `docs/archive/MIGRATION_V0_1.md` for complete migration guide
-
-### 2. Rate Limiting Strategy
-
-**Problem:** Multiple workers hitting rate limits simultaneously.
-
-**Solution:**
-
-- One worker triggers cooldown via atomic check-and-set
-- All workers pause using `asyncio.Event`
-- Slow-start ramp after cooldown (progressive delays)
-- Consecutive rate limits trigger exponential backoff
-
-**Implementation:**
-
-```python
-async with self._rate_limit_lock:
-    if self._in_cooldown:
-        return  # Another worker handling it
-    self._in_cooldown = True
-    self._rate_limit_event.clear()  # Pause all
-```
-
-### 3. Progressive Temperature Retry (v0.1+)
-
-**Why:** LLMs may fail validation at low temperature but succeed at higher temps.
-
-**Implementation in v0.1:**
-
-```python
-class ProgressiveTempStrategy(LLMCallStrategy[Output]):
-    def __init__(self, client, temps=None):
-        self.client = client
-        self.temps = temps if temps is not None else [0.0, 0.5, 1.0]
-
-    async def execute(self, prompt: str, attempt: int, timeout: float):
-        temp = self.temps[min(attempt - 1, len(self.temps) - 1)]
-        # Make call with progressive temperature
-        response = await self.client.generate(prompt, temperature=temp)
-        return parsed_output, token_usage
-
-strategy = ProgressiveTempStrategy(client=client)
-work_item = LLMWorkItem(item_id="1", strategy=strategy, prompt="...")
-```
-
-See `examples/example_gemini_direct.py` for complete example.
-
-### 4. Token Usage Tracking
-
-**Challenge:** Track tokens even for failed attempts.
-
-**Solution:**
-
-- Extract usage from exception chain via `__cause__`
-- Accumulate across all retry attempts
-- Attach to final exception via `__dict__['_failed_token_usage']`
-- Include in `WorkItemResult.token_usage`
-
-### 5. Error-Aware Retry with on_error Callback (v0.1+)
-
-**Challenge:** Different error types require different retry strategies.
-
-**Problem:**
-
-- Validation errors mean LLM output quality issue → Should escalate to smarter model or adjust prompt
-- Network errors are transient → Should retry with same model
-- Rate limit errors need cooldown → Should retry with same model after waiting
-- Traditional retry logic can't distinguish these cases
-
-**Solution:** Use `on_error()` callback to track error types and adjust retry behavior.
-
-**Implementation:**
-
-```python
-from pydantic import ValidationError
-
-class SmartRetryStrategy(LLMCallStrategy[Output]):
-    def __init__(self, client):
-        self.client = client
-        self.validation_failures = 0
-        self.last_error = None
-
-    async def on_error(self, exception: Exception, attempt: int) -> None:
-        """Track error type for intelligent retry decisions."""
-        self.last_error = exception
-        if isinstance(exception, ValidationError):
-            self.validation_failures += 1
-
-    async def execute(self, prompt: str, attempt: int, timeout: float):
-        # Use validation_failures to make smart decisions
-        # e.g., only escalate model on validation errors
-        model_index = min(self.validation_failures, len(MODELS) - 1)
-        model = MODELS[model_index]
-        # Make call...
-```
-
-**Key Use Cases:**
-
-1. **Smart Model Escalation** - Only escalate to expensive models on validation errors
-   - Validation error → Use better model (quality issue)
-   - Network error → Retry same cheap model (transient issue)
-   - Rate limit error → Retry same cheap model (API quota issue)
-   - Result: 60-80% cost savings vs. always using best model
-
-2. **Smart Retry Prompts** - Build targeted retry prompts based on what failed
-   - Parse validation errors to see which fields succeeded vs. failed
-   - Create focused retry prompt telling LLM what to fix
-   - Higher success rate, lower token usage
-
-3. **Error Tracking** - Count different error types for analytics
-   - Track validation vs. network vs. rate limit errors separately
-   - Monitor patterns to optimize configuration
-   - Debug production issues with detailed error breakdown
-
-**Benefits:**
-
-- Framework automatically calls `on_error()` before retry logic
-- Exceptions in `on_error()` are caught and logged (won't crash)
-- Non-breaking: Default no-op implementation
-- Clean separation: Error handling separate from execution logic
-
----
-
-## Common Patterns (v0.1+)
-
-### Pattern 1: Using PydanticAI Strategy
-
-```python
-from async_batch_llm import PydanticAIStrategy, LLMWorkItem
-from pydantic_ai import Agent
-
-agent = Agent("gemini-2.0-flash", result_type=Output)
-strategy = PydanticAIStrategy(agent=agent)
-
-work_item = LLMWorkItem(
-    item_id="item_1",
-    strategy=strategy,
-    prompt="Your prompt here"
+from async_batch_llm import (
+    LLMWorkItem,
+    OpenAIModel,
+    OpenAIStrategy,
+    ParallelBatchProcessor,
+    ProcessorConfig,
 )
+
+model = OpenAIModel.from_api_key("gpt-4o-mini")  # reads OPENAI_API_KEY
+strategy = OpenAIStrategy(model)
+config = ProcessorConfig(max_workers=5, timeout_per_item=60.0)
+
+async with ParallelBatchProcessor[None, str, None](config=config) as processor:
+    for i, prompt in enumerate(prompts):
+        await processor.add_work(
+            LLMWorkItem(item_id=f"item_{i}", strategy=strategy, prompt=prompt)
+        )
+    result = await processor.process_all()
+
+print(f"Succeeded: {result.succeeded}/{result.total_items}")
 ```
 
-### Pattern 2: Custom Strategy for Any Provider
+See `examples/example.py` for the full-featured walkthrough (context
+passing, post-processors, middleware, observers, error handling).
+
+---
+
+## Architecture
+
+### Core abstractions
+
+- **`LLMCallStrategy[TOutput]`** (`llm_strategies.py`) — abstract base for
+  LLM integrations.
+  - `async prepare()` — initialize resources (caches, connections)
+  - `async execute(prompt, attempt, timeout, state=None)` — make the call
+  - `async on_error(exception, attempt, state=None)` — track error types
+  - `async cleanup()` — release resources
+- **`LLMModel` / `ManagedLLMModel`** (`core/protocols.py`) — provider-side
+  protocol. `ManagedLLMModel` adds `prepare`/`cleanup` for cache or client
+  lifecycle.
+- **`LLMResponse`** (`base.py`) — normalized response: `text`, token counts
+  (input/output/total/cached), provider metadata dict, raw response.
+- **`LLMWorkItem`** (`base.py`) — work unit: `item_id`, `strategy`,
+  `prompt: str`, optional `context`.
+- **`ParallelBatchProcessor`** (`parallel.py`) — worker pool, rate-limit
+  coordination, retry/backoff, framework-level timeout via
+  `asyncio.wait_for()`. Optional `progress_callback(completed, total,
+  current_item_id)` for live progress (sync or async, with configurable
+  `progress_callback_timeout`).
+
+### Built-in providers
+
+| Provider   | Model class                         | Strategy class       | Error classifier            | Optional dep      |
+|------------|-------------------------------------|----------------------|-----------------------------|-------------------|
+| Gemini     | `GeminiModel`, `GeminiCachedModel`  | `GeminiStrategy`     | `GeminiErrorClassifier`     | `[gemini]`        |
+| OpenAI     | `OpenAIModel`                       | `OpenAIStrategy`     | `OpenAIErrorClassifier`     | `[openai]`        |
+| OpenRouter | `OpenRouterModel`                   | `OpenRouterStrategy` | `OpenRouterErrorClassifier` | `[openrouter]`    |
+| PydanticAI | (any model wrapped)                 | `PydanticAIStrategy` | —                           | `[pydantic-ai]`   |
+
+`OpenAICompatibleModel` is the base for OpenAI/OpenRouter — subclass it
+for Together, Fireworks, vLLM, etc. by overriding `_default_base_url` and
+optionally `_extract_tokens`.
+
+For provider deep dives:
+
+- `docs/GEMINI_INTEGRATION.md`
+- `docs/OPENAI_INTEGRATION.md`
+- `docs/OPENROUTER_INTEGRATION.md`
+
+### Thread safety
+
+`ParallelBatchProcessor` uses three independent `asyncio.Lock` instances
+(`_rate_limit_lock`, `_stats_lock`, `_results_lock`). No nesting → no
+deadlocks. Sub-1% overhead in benchmarks.
+
+---
+
+## Critical design decisions
+
+### Strategy pattern (v0.1)
+
+Decouples framework from providers. Each strategy encapsulates how the
+call is made; framework handles retry/timeout/rate limiting uniformly.
+Migration from the pre-strategy API at `docs/archive/MIGRATION_V0_1.md`.
+
+### Rate-limiting coordination
+
+The rate-limit state machine lives on `RateLimitCoordinator`
+(`_internal/rate_limit_coordinator.py`) since the v0.7.0 decomposition.
+`ParallelBatchProcessor._in_cooldown` is a read-only property that
+delegates to the coordinator — don't try to assign it directly.
+
+When one worker hits a rate limit:
+
+1. Atomic check-and-set inside the coordinator's lock: only one worker
+   triggers the cooldown for a given generation. Stale callers (whose
+   observed generation predates the current cooldown) silently no-op.
+2. All workers pause via `asyncio.Event` (cleared on cooldown, set on
+   resume).
+3. Slow-start ramp after cooldown — progressive delays before workers
+   resume normal throughput.
+4. Consecutive rate limits trigger exponential backoff via the
+   configurable `RateLimitStrategy`.
+
+The actual implementation is in `RateLimitCoordinator._handle_rate_limit`;
+read that file rather than copy a snippet here.
+
+### Error-aware retry via `on_error()` (v0.1)
+
+Different error types want different retry strategies:
+
+- Validation error → escalate to smarter model (LLM quality issue)
+- Network error → retry same cheap model (transient)
+- Rate limit → retry same cheap model after cooldown (quota)
+
+Strategies override `on_error()` to track error categories; `execute()`
+reads counters to make per-attempt decisions. Common payoff: 60–80% cost
+reduction via smart model escalation. See
+`examples/example_smart_model_escalation.py`.
+
+### Token usage tracking on failure
+
+Tokens consumed by failed attempts are still tracked:
+
+- `TokenExtractor` (`token_extractor.py`) reads `__cause__.result.usage()`,
+  `.usage` attributes, or `__dict__["_failed_token_usage"]`.
+- Strategies attach `_failed_token_usage` to exceptions when the
+  underlying API has already billed but parsing fails.
+- Aggregated across retry attempts; surfaces in
+  `WorkItemResult.token_usage`.
+
+### Provider-aware billing (v0.9)
+
+`CachedTokenRates` constants (`GEMINI=0.10`, `OPENAI=0.50`,
+`ANTHROPIC_READ=0.10`, `DEEPSEEK=0.10`) encode the fraction of normal
+input price each provider charges for cached tokens. Pass to
+`BatchResult.effective_input_tokens(rate)` for accurate billable counts.
+Default is `GEMINI` for backward compat — non-Gemini callers must opt
+in. The math conservatively rounds the billable estimate UP via `int()`
+truncation of the discount.
+
+---
+
+## Common patterns
+
+### PydanticAI strategy
 
 ```python
-from async_batch_llm.llm_strategies import LLMCallStrategy
+agent = Agent("gemini-2.5-flash", result_type=Output)
+strategy = PydanticAIStrategy(agent=agent)
+work_item = LLMWorkItem(item_id="1", strategy=strategy, prompt="...")
+```
 
-class OpenAIStrategy(LLMCallStrategy[str]):
-    def __init__(self, client: AsyncOpenAI, model: str):
+### Built-in OpenAI / OpenRouter
+
+```python
+# OPENAI_API_KEY auto-resolved by SDK
+model = OpenAIModel.from_api_key("gpt-4o-mini")
+strategy = OpenAIStrategy(model)
+
+# OpenRouter — we read OPENROUTER_API_KEY ourselves (the SDK doesn't know
+# about that env var). Raises ValueError if neither is set.
+model = OpenRouterModel.from_api_key("anthropic/claude-haiku-4-5")
+strategy = OpenRouterStrategy(model)
+```
+
+### Custom strategy for any provider
+
+```python
+class MyStrategy(LLMCallStrategy[str]):
+    def __init__(self, client, model):
         self.client = client
         self.model = model
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        output = response.choices[0].message.content
+    async def execute(self, prompt, attempt, timeout, state=None):
+        response = await self.client.generate(prompt, model=self.model)
         tokens = {
-            "input_tokens": response.usage.prompt_tokens,
-            "output_tokens": response.usage.completion_tokens,
-            "total_tokens": response.usage.total_tokens
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+            "total_tokens": response.usage.total_tokens,
         }
-        return output, tokens
-
-strategy = OpenAIStrategy(client=openai_client, model="gpt-4o-mini")
-work_item = LLMWorkItem(item_id="1", strategy=strategy, prompt="...")
+        return response.text, tokens
 ```
 
-### Pattern 3: Post-Processing Results
+### Post-processing results
 
 ```python
 async def save_result(result: WorkItemResult):
     if result.success and result.context:
-        await db.save(result.context.id, result.output)
+        await db.save(result.context["id"], result.output)
 
-processor = ParallelBatchProcessor(
-    config=config,
-    post_processor=save_result
-)
+processor = ParallelBatchProcessor(config=config, post_processor=save_result)
 ```
 
-### Pattern 4: Observing Metrics
+### Observing metrics
 
 ```python
 metrics = MetricsObserver()
-processor = ParallelBatchProcessor(
-    config=config,
-    observers=[metrics]
-)
-
+processor = ParallelBatchProcessor(config=config, observers=[metrics])
 result = await processor.process_all()
-collected_metrics = await metrics.get_metrics()
+collected = await metrics.get_metrics()
 ```
 
 ---
 
-## Race Conditions Fixed (v2.0.1)
+## Common pitfalls
 
-### Issue History
+### API pitfalls
 
-**Original Problem:** Five critical race conditions in concurrent code:
+- **Forgetting to `await` async methods.** `ParallelBatchProcessor.get_stats()`
+  and `MetricsObserver.get_metrics()` are async.
+- **Forgetting to wrap an Agent in a strategy.** `LLMWorkItem.strategy`
+  expects a strategy instance, not a raw agent or model. Wrap:
+  `PydanticAIStrategy(agent=...)`, `GeminiStrategy(model=...)`, etc.
+- **Mutating results in post-processor.** Treat `result.output` as
+  read-only or build new objects — concurrent post-processors share state.
+- **Structured prompts.** `LLMWorkItem.prompt` is a string. For structured
+  message lists (e.g. Anthropic `cache_control` markers via OpenRouter),
+  build them inside a custom `execute()` and call
+  `model.generate(messages_list)` directly. See
+  `docs/OPENROUTER_INTEGRATION.md`.
 
-1. **Rate limit cooldown** - Multiple workers triggering multiple cooldowns
-2. **Stats dictionary** - Concurrent updates causing undercounting
-3. **Results list** - Potential result loss during concurrent appends
-4. **MetricsObserver** - Incorrect metrics under concurrent load
-5. **Slow-start counter** - Undercounting items processed
+### Workflow pitfalls
 
-**Fix:** Added three `asyncio.Lock` instances:
-
-- `_rate_limit_lock` - Rate limit coordination
-- `_stats_lock` - Stats updates
-- `_results_lock` - Results list appends
-
-**Impact:** <1% performance overhead, guaranteed correctness
-
-**Breaking Changes:**
-
-- `get_stats()` is now async
-- `MetricsObserver.get_metrics()` is now async
-
----
-
-## Testing Strategy
-
-### Test Files
-
-1. **`tests/test_basic.py`** - Basic functionality
-   - Simple processing
-   - Context passing
-   - Post-processors
-   - Metrics collection
-   - Timeout handling
-
-2. **`tests/test_concurrency.py`** - Thread safety
-   - Concurrent stats updates (100 items, 10 workers)
-   - Rate limit handling
-   - Metrics observer accuracy
-   - No result loss (200 items, 20 workers)
-   - Post-processor calls
-   - Stats snapshot consistency
-   - Slow-start counter accuracy
-
-### MockAgent Usage
-
-**Purpose:** Test without making real API calls.
-
-```python
-mock_agent = MockAgent(
-    response_factory=lambda p: YourOutput(...),
-    latency=0.01,  # Simulate processing time
-    rate_limit_on_call=5,  # Trigger rate limit on 5th call
-)
-```
+- **Use the right tool for file ops.** Read/Edit/Write/Glob/Grep — not
+  bash `cat`/`sed`/`awk`. Bash is for git, npm, pytest, etc.
+- **Read before editing.** The Edit tool requires a prior Read of the same
+  file in this conversation.
+- **Mutable defaults in Python.** Use `None` and initialize in the body:
+  `def __init__(self, temps=None): self.temps = temps if temps is not None else [...]`.
+- **`examples/` is excluded from ruff in pre-commit.** Examples
+  intentionally check env vars before importing optional deps (E402).
+  Don't try to "fix" them.
 
 ---
 
-## Development Workflow
+## Development workflow
 
-### Running Tests
+### One-liner commands
 
-```bash
-# Install dependencies
-uv sync --all-extras
-
-# Run all tests
-uv run pytest
-
-# Run specific test file
-uv run pytest tests/test_basic.py -v
-
-# Run concurrency tests
-uv run pytest tests/test_concurrency.py -v
-
-# With coverage
-uv run pytest --cov=async_batch_llm --cov-report=html
-```
-
-### Code Quality
-
-**IMPORTANT:** Always run linters after making significant code changes!
-
-#### Python Code Quality
+Prefer the `make` targets — they pin the right paths (notably **`examples/`
+is excluded from ruff** because example files intentionally check env vars
+before importing optional deps and would fail E402).
 
 ```bash
-# Format code
-uv run ruff format src/ tests/ examples/
+make ci                      # full pipeline (lint + typecheck + test + markdown-lint)
+make lint                    # ruff check on src/ tests/
+make lint-fix                # ruff check --fix
+make format                  # ruff format on src/ tests/
+make typecheck               # mypy on src/async_batch_llm/
+make markdown-lint-fix       # markdownlint with --fix
+uv run pytest                # tests only
 
-# Lint and auto-fix issues
-uv run ruff check src/ tests/ examples/ --fix
-
-# Verify all linting passes
-uv run ruff check src/ tests/ examples/
-
-# Type check
-uv run mypy src/async_batch_llm/ --ignore-missing-imports
-```
-
-**Workflow:** After any Python code changes, run `uv run ruff check src/ --fix` before committing.
-
-#### Markdown Documentation Quality
-
-```bash
-# First time setup: install markdownlint-cli2
-npm install
-
-# Lint markdown files (uses local installation via npx)
-npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md"
-
-# Auto-fix markdown issues
-npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md" --fix
-
-# Or use make targets (recommended - uses npx automatically)
-make markdown-lint
-make markdown-lint-fix
-```
-
-**Configuration:** `.markdownlint.json` with:
-
-- Line length: 120 chars (not 80)
-- Code blocks need language specifiers (use `text` for plain text/errors)
-- Blank lines required around lists and code fences
-- HTML allowed (MD033: false)
-- Multiple headers with same name allowed in different sections (MD024: siblings_only)
-
-**Workflow:** After any documentation changes, run `make markdown-lint-fix` before committing.
-
-#### All Quality Checks
-
-```bash
-# Run all checks (lint + typecheck + test + markdown-lint)
-make ci
-```
-
-### Automated Pre-Commit Hooks
-
-**NEW:** The project now uses pre-commit hooks to automatically run quality checks before each commit.
-
-#### Setup (One-time)
-
-```bash
-# Install pre-commit hooks
-uv run pre-commit install
-```
-
-#### What Gets Checked Automatically
-
-The pre-commit hooks will automatically run on staged files:
-
-1. **Ruff** - Code formatting and linting (with auto-fix)
-   - **Note:** `examples/` directory is excluded from ruff checks
-   - Examples intentionally check environment variables before imports
-2. **Mypy** - Type checking on `src/async_batch_llm/`
-3. **General checks**:
-   - Trailing whitespace removal
-   - End-of-file newline fixes
-   - YAML/TOML syntax validation
-   - Large file detection
-   - Prevents commits to main/master
-4. **Markdownlint** - Documentation linting (with auto-fix)
-
-#### Manual Pre-Commit Run
-
-```bash
-# Run on all files (not just staged)
-uv run pre-commit run --all-files
-
-# Run specific hook
-uv run pre-commit run ruff --all-files
-uv run pre-commit run mypy --all-files
-```
-
-#### Bypassing Hooks (NOT RECOMMENDED)
-
-```bash
-# Only if absolutely necessary
-git commit --no-verify -m "message"
-```
-
-### Documentation Website
-
-#### Building Documentation
-
-```bash
-# Install docs dependencies
-uv sync --extra docs
-
-# Serve docs locally at http://localhost:8000
-uv run mkdocs serve
-
-# Build static site
-uv run mkdocs build
-
-# Deploy to GitHub Pages (manual)
-uv run mkdocs gh-deploy
-```
-
-**Note:** Documentation is automatically built and deployed to GitHub Pages on every push to `main` via `.github/workflows/docs.yml`.
-
-#### GitHub Actions Workflows
-
-The project has two automated workflows:
-
-1. **`.github/workflows/test.yml`** - Runs on every push and PR:
-   - **Test job:** Tests on Python 3.10, 3.11, 3.12, 3.13, 3.14
-     - Runs `pytest`, `ruff`, and `mypy`
-     - Uses `uv` for dependency management
-   - **Security job:** Runs security audits
-     - `pip-audit` for Python dependencies
-     - `npm audit` for JavaScript dependencies
-     - Fails build on moderate+ severity vulnerabilities
-
-2. **`.github/workflows/docs.yml`** - Runs on push to `main`:
-   - Builds documentation with MkDocs
-   - Deploys to GitHub Pages automatically
-   - Documentation available at: <https://geoff-davis.github.io/async-batch-llm/>
-
-#### Documentation Structure
-
-```text
-docs/
-├── index.md                    # Home page (from README)
-├── getting-started.md          # Installation and basics
-├── examples/
-│   ├── basic.md               # Basic usage examples
-│   ├── custom-strategies.md   # Building custom strategies
-│   └── advanced.md            # Advanced patterns
-├── migration/
-│   ├── v0.4.md               # v0.4 migration guide
-│   └── v0.1.md               # v0.1 migration guide
-├── api/
-│   ├── core.md               # Core API reference
-│   ├── strategies.md         # Strategy API reference
-│   └── observers.md          # Observer API reference
-└── contributing.md            # Contribution guide
-```
-
-**Note:** API documentation is auto-generated from docstrings using `mkdocstrings`.
-
-### Pre-Commit Checklist
-
-**IMPORTANT:** With pre-commit hooks installed, most checks run automatically. But you can still run manually:
-
-```bash
-# 1. Run all tests
-uv run pytest
-
-# 2. Run linter and auto-fix issues
+# Equivalents if you need to run without make (note: do NOT add examples/):
 uv run ruff check src/ tests/ --fix
-
-# 3. Verify linter passes with no errors
-uv run ruff check src/ tests/
-
-# 4. Run type checker
+uv run ruff format src/ tests/
 uv run mypy src/async_batch_llm/ --ignore-missing-imports
-
-# 5. Lint markdown documentation
-npx markdownlint-cli2 "README.md" "docs/**/*.md" "CLAUDE.md"
-
-# Or run all checks at once
-make ci
-
-# Or use pre-commit
-uv run pre-commit run --all-files
 ```
 
-**Only proceed with commit if all checks pass.**
+### Pre-commit hooks
 
-### Building and Publishing
+`uv run pre-commit install` once. Hooks then run on every commit: ruff
+(format + lint, with `examples/` excluded), mypy, trailing whitespace,
+EOF newline, YAML/TOML validation, markdownlint, prevention of commits
+to `main`/`master`. Manual run on all files:
+`uv run pre-commit run --all-files`. Bypass with `--no-verify` only if
+you know what you're doing.
+
+### Markdown config
+
+`.markdownlint.json` relaxes line-length to 120 chars; code blocks need
+language specifiers (`text` for plain output); blank lines required
+around lists and code fences; HTML allowed.
+
+### Documentation site
+
+`uv sync --extra docs && uv run mkdocs serve` to preview locally. Pushes
+to `main` auto-deploy to GitHub Pages via `.github/workflows/docs.yml`.
+
+### Building / publishing
 
 ```bash
-# Build package
 uv build
-
-# Publish to TestPyPI
-export UV_PUBLISH_TOKEN="your-testpypi-token"
-uv publish --index-url https://test.pypi.org/legacy/
-
-# Publish to PyPI
-export UV_PUBLISH_TOKEN="your-pypi-token"
-uv publish
+export UV_PUBLISH_TOKEN=...
+uv publish [--index-url https://test.pypi.org/legacy/]
 ```
+
+There's also a `.github/workflows/publish.yml` that handles releases via
+the project's release-prep flow.
+
+### CI workflows
+
+- `test.yml` — pytest + ruff + mypy on Python 3.10–3.14; pip-audit +
+  npm-audit on every push/PR.
+- `docs.yml` — MkDocs build & GitHub Pages deploy on push to `main`.
+- `publish.yml` — release publishing.
 
 ---
 
-## Important Files
+## Testing strategy
 
-### Package Structure
+321 tests as of v0.9.0. Coverage spans happy paths, concurrency stress
+(100–200 items × 10–20 workers), edge cases, and per-provider
+integration with mocked SDKs. Real API calls live behind the
+`integration` pytest marker and are skipped by default.
+
+Key test files:
+
+- `test_basic.py` — basic processing, context, post-processors,
+  metrics, timeouts.
+- `test_concurrency.py` — thread safety: stats updates, rate limiting,
+  metrics observer, no result loss, slow-start counter.
+- `test_gemini_strategies.py` — `GeminiModel`, `GeminiCachedModel`,
+  `GeminiStrategy`.
+- `test_openai_compatible.py`, `test_openai_strategies.py`,
+  `test_openrouter_strategies.py` — OpenAI/OpenRouter (v0.9.0).
+- `test_error_classifiers.py` — every classifier branch.
+- `test_token_extractor.py`, `test_token_tracking.py`,
+  `test_token_tracking_on_failure.py` — token accounting.
+- `test_cache_expiration_multiworker.py`, `test_cache_tag_matching.py`
+  — Gemini cache lifecycle.
+
+`MockAgent` (`testing/mocks.py`) simulates rate limits, errors, and
+latency without API calls — much faster than real integration tests.
+
+---
+
+## Important files
+
+### Package layout
 
 ```text
 src/async_batch_llm/
 ├── __init__.py           # Public API exports
-├── base.py               # Core data models
-├── parallel.py           # Main processor (1000+ lines)
+├── base.py               # LLMWorkItem, WorkItemResult, BatchResult,
+│                         # LLMResponse, RetryState, CachedTokenRates
+├── parallel.py           # ParallelBatchProcessor (orchestration)
+├── llm_strategies.py     # LLMCallStrategy + built-in strategies
+├── models.py             # GeminiModel, GeminiCachedModel,
+│                         # OpenAICompatibleModel, OpenAIModel,
+│                         # OpenRouterModel
+├── token_extractor.py    # TokenExtractor (failure-path token recovery)
 ├── core/
-│   ├── config.py         # Configuration classes
-│   └── protocols.py      # Type protocols
+│   ├── config.py         # ProcessorConfig, RateLimitConfig, RetryConfig
+│   └── protocols.py      # LLMModel, ManagedLLMModel, AgentLike
 ├── strategies/
-│   ├── errors.py         # Error classification
-│   └── rate_limit.py     # Rate limit strategies
+│   ├── errors.py         # ErrorClassifier, ErrorInfo,
+│   │                     # TokenTrackingError, FrameworkTimeoutError
+│   └── rate_limit.py     # ExponentialBackoffStrategy, FixedDelayStrategy
+├── classifiers/
+│   ├── gemini.py         # GeminiErrorClassifier
+│   ├── openai.py         # OpenAIErrorClassifier
+│   └── openrouter.py     # OpenRouterErrorClassifier (extends OpenAI)
 ├── observers/
-│   ├── base.py           # Observer protocol
-│   └── metrics.py        # Metrics collection
+│   ├── base.py           # ProcessorObserver protocol
+│   └── metrics.py        # MetricsObserver
 ├── middleware/
 │   └── base.py           # Middleware protocol
-├── classifiers/
-│   └── gemini.py         # Gemini error classifier
+├── _internal/            # ParallelBatchProcessor collaborators (v0.7.0)
+│   ├── event_dispatcher.py
+│   ├── rate_limit_coordinator.py
+│   ├── strategy_lifecycle.py
+│   └── error_logging.py
 └── testing/
-    └── mocks.py          # MockAgent for testing
+    └── mocks.py          # MockAgent
 ```
 
 ### Documentation
 
-- `README.md` - User documentation
-- `RACE_CONDITION_ANALYSIS.md` - Original analysis
-- `RACE_CONDITION_FIXES.md` - Implementation details
-- `CONTRIBUTING.md` - Developer guide
-- `PUBLISHING.md` - Publishing instructions
-- `CHANGELOG.md` - Version history
-- `CLAUDE.md` - This file
+- `README.md` — user-facing intro.
+- `docs/getting-started.md` — installation + first batch.
+- `docs/GEMINI_INTEGRATION.md` — Gemini deep dive (caching lifecycle).
+- `docs/OPENAI_INTEGRATION.md` — OpenAI deep dive (v0.9.0).
+- `docs/OPENROUTER_INTEGRATION.md` — OpenRouter deep dive, including the
+  per-upstream caching matrix and the Anthropic `cache_control` opt-in
+  pattern.
+- `docs/API.md` — API reference.
+- `docs/MIGRATION_V0_10.md` — most recent migration guide
+  (v0.8.x → v0.10.0; covers OpenAI/OpenRouter additions and the metadata
+  3-tuple contract change).
+- `docs/MIGRATION_V0_4.md` — earlier migration notes.
+- `docs/archive/` — historical migration guides and design plans.
+- `CHANGELOG.md` — release-by-release changes.
+- `CONTRIBUTING.md`, `PUBLISHING.md` — contributor docs.
+- `CLAUDE.md` — this file.
+
+### Examples
+
+`examples/` directory — every pattern has a runnable script:
+
+- `example.py` — full-featured walkthrough.
+- `example_gemini_direct.py` — built-in Gemini.
+- `example_gemini_smart_retry.py` — smart retry with field-specific
+  feedback.
+- `example_smart_model_escalation.py` — cost-saving escalation pattern.
+- `example_openai.py` — built-in OpenAI (v0.9.0).
+- `example_openrouter.py` — built-in OpenRouter, including
+  Anthropic `cache_control` demo (v0.9.0).
+- `example_anthropic.py`, `example_langchain.py` — custom-strategy
+  references for providers without built-in support yet.
+- `example_llm_strategies.py` — custom-strategy patterns.
+- `example_context_manager.py` — async context manager usage.
+- `example_model_escalation.py` — earlier escalation example.
 
 ---
 
-## Known Limitations
+## Performance notes
 
-1. **No multi-process support** - Designed for single-process asyncio only
-2. **No true batch API** - Parallel individual calls, not batched API requests
-3. **Provider-specific classifiers** - Only Gemini classifier implemented
-4. **No persistent queue** - In-memory queue only (lost on crash)
-
----
-
-## Future Enhancements
-
-1. **Distributed locks** - Support multi-process scenarios
-2. **Batch API support** - True batch API for 50% cost savings
-3. **More classifiers** - OpenAI, Anthropic, etc.
-4. **Persistent queue** - Redis/DB-backed queue
-5. **Prometheus metrics** - Built-in metrics export
-6. **Progress callbacks** - Real-time progress updates
-7. **Dynamic worker scaling** - Adjust workers based on load
+- **Worker count.** I/O-bound LLM calls work well at 5–10 workers;
+  rate-limited endpoints start at 3–5. Don't use `cpu_count()` unless
+  you're CPU-bound, which you almost certainly aren't.
+- **Memory.** ~10–50 MB per 1000 items, depending on output size. Each
+  worker holds one item; results accumulate.
+- **Throughput.** ~5–10 items/sec for current Gemini Flash with 5
+  workers, mostly bounded by API latency (~200–500 ms/call).
 
 ---
 
-## Common Pitfalls (v0.1+)
-
-### ❌ Don't: Forget to await async methods
-
-```python
-# WRONG
-stats = processor.get_stats()
-
-# RIGHT
-stats = await processor.get_stats()
-```
-
-### ❌ Don't: Use old v0.0.x API
-
-```python
-# WRONG - v0.0.x API (removed)
-work_item = LLMWorkItem(
-    item_id="item_1",
-    agent=agent,  # No longer supported
-    prompt="..."
-)
-
-# RIGHT - v0.1 API (current)
-strategy = PydanticAIStrategy(agent=agent)
-work_item = LLMWorkItem(
-    item_id="item_1",
-    strategy=strategy,
-    prompt="..."
-)
-```
-
-### ❌ Don't: Forget to wrap agents in strategies
-
-```python
-# WRONG - agent is not a strategy
-work_item = LLMWorkItem(item_id="1", strategy=agent, prompt="...")
-
-# RIGHT - wrap agent in PydanticAIStrategy
-strategy = PydanticAIStrategy(agent=agent)
-work_item = LLMWorkItem(item_id="1", strategy=strategy, prompt="...")
-```
-
-### ❌ Don't: Mutate results in post-processor
-
-```python
-# WRONG - modifying shared state
-async def bad_post_processor(result):
-    result.output.field = "modified"  # Don't do this!
-
-# RIGHT - read-only or create new objects
-async def good_post_processor(result):
-    await db.save(result.output)  # Read and save
-```
-
-### ✅ Do: Use context for passing data through
-
-```python
-work_item = LLMWorkItem(
-    item_id="item_1",
-    agent=agent,
-    prompt="Your prompt",
-    context={"user_id": 123, "original_data": data}
-)
-
-# Access in post-processor
-async def post_process(result):
-    if result.success:
-        user_id = result.context["user_id"]
-        await save_for_user(user_id, result.output)
-```
-
----
-
-## Performance Notes
-
-### Optimal Worker Count
-
-- **CPU-bound:** Use `max_workers = cpu_count()`
-- **I/O-bound (LLM calls):** Use `max_workers = 5-10`
-- **Rate-limited:** Start with 3-5, increase gradually
-
-### Memory Usage
-
-- Each worker holds 1 item in memory
-- Results accumulate in memory (all items)
-- For 1000 items: ~10-50MB depending on output size
-
-### Throughput Estimates
-
-- **Gemini 2.0 Flash:** ~5-10 items/sec with 5 workers
-- Limited by API latency (~200-500ms per call)
-- Rate limits: ~10 requests/minute initially
-
----
-
-## Debugging Tips
-
-### Enable Debug Logging
+## Debugging
 
 ```python
 import logging
 logging.basicConfig(level=logging.DEBUG)
 ```
 
-### Check for Rate Limits
-
 ```python
 result = await processor.process_all()
 stats = await processor.get_stats()
-
 if stats["rate_limit_count"] > 0:
     print(f"Hit {stats['rate_limit_count']} rate limits")
-    print(f"Error breakdown: {stats['error_counts']}")
-```
+    print(f"Errors: {stats['error_counts']}")
 
-### Verify Stats Accuracy
-
-```python
-result = await processor.process_all()
 assert result.total_items == result.succeeded + result.failed
-assert len(result.results) == result.total_items
 ```
 
 ---
 
-## Version History
+[#8]: https://github.com/geoff-davis/async-batch-llm/issues/8
 
-- **v0.0.1.x** - Initial development (PydanticAI agent support)
-- **v0.0.2.x** - Added direct API call support, fixed race conditions
-- **v0.1.0** - Strategy pattern refactor
-  - Breaking: Replaced `agent=`, `agent_factory=`, `direct_call=` with `strategy=`
-  - Added `LLMCallStrategy` abstract base class
-  - Framework-level timeout enforcement
-  - Built-in strategies: `PydanticAIStrategy`, `GeminiStrategy`, `GeminiCachedStrategy`
-- **v0.3.0** - Added `RetryState` for cross-attempt persistence (smart retry, model escalation)
-- **v0.6.0** - Model abstraction
-  - Added `LLMModel` / `ManagedLLMModel` protocols
-  - New: `GeminiModel`, `GeminiCachedModel` (replaces `GeminiCachedStrategy`)
-  - Strategies accept a model instead of raw client + model name
-- **v0.7.0** - Internal refactor (current)
-  - Decomposed `ParallelBatchProcessor`; collaborators live in `_internal/`
-    (`EventDispatcher`, `StrategyLifecycle`, `RateLimitCoordinator`, `error_logging`)
-  - Added `TokenExtractor` for centralized token-usage extraction
-  - `ProcessorConfig.post_processor_timeout` is now configurable
-  - Fixed race in `GeminiCachedModel.delete_cache()` under concurrent callers
-  - Stronger input validation on `LLMWorkItem` and `ProcessorConfig`
-  - Public API (`__init__.py`) unchanged — all refactoring is behind underscore-prefixed
-    internal modules
+## Known limitations
+
+1. **Single-process only.** Designed for asyncio; no multi-process
+   coordination. See Future Enhancements #1.
+2. **No true batch API.** Parallel individual calls, not batched API
+   requests. See #2.
+3. **In-memory queue.** Lost on crash. See #4.
+4. **Provider classifiers are partial.** Gemini, OpenAI, OpenRouter are
+   covered; Anthropic native, DeepSeek, HuggingFace pending. See #3.
 
 ---
 
-## Advanced Retry Patterns (v0.1+)
+## Future enhancements
 
-### Smart Retry with Validation Feedback
-
-When Pydantic validation fails, use `on_error` to create targeted retry prompts:
-
-```python
-from pydantic import ValidationError
-
-class SmartRetryStrategy(LLMCallStrategy[PersonData]):
-    """On validation failure, tell LLM which fields succeeded vs failed."""
-
-    def __init__(self, client):
-        self.client = client
-        self.last_error = None
-        self.last_response = None
-
-    async def on_error(self, exception: Exception, attempt: int) -> None:
-        """Track validation errors for smart retry prompt generation."""
-        if isinstance(exception, ValidationError):
-            self.last_error = exception
-            # last_response saved in execute() before raising
-
-    async def execute(self, prompt: str, attempt: int, timeout: float):
-        if attempt == 1:
-            final_prompt = prompt
-        else:
-            # Use error information to create smart retry prompt
-            final_prompt = self._create_retry_prompt(prompt)
-
-        try:
-            response = await self.client.generate(final_prompt)
-            output = PersonData.model_validate_json(response.text)
-            return output, tokens
-        except ValidationError as e:
-            # Save response for retry prompt generation
-            self.last_response = response.text
-            raise  # Framework calls on_error, then retries
-
-    def _create_retry_prompt(self, original_prompt: str) -> str:
-        # Parse validation errors from self.last_error
-        # Create focused prompt with:
-        # - Fields that succeeded (keep these)
-        # - Fields that failed (fix these with specific error messages)
-        return retry_prompt
-```
-
-**Benefits:**
-
-- `on_error` cleanly captures failure context before retry
-- LLM knows exactly what went wrong
-- Higher success rate, lower token usage
-
-See `examples/example_gemini_smart_retry.py` for complete implementation.
-
-### Smart Model Escalation for Cost Optimization
-
-Start with cheap models, escalate **only on validation errors** (not network/rate limit errors):
-
-```python
-from pydantic import ValidationError
-
-class SmartModelEscalationStrategy(LLMCallStrategy[Analysis]):
-    """Escalate to smarter models ONLY on validation errors."""
-
-    MODELS = [
-        "gemini-2.5-flash-lite",  # Attempt 1: Cheapest
-        "gemini-2.5-flash",       # Attempt 2: Moderate
-        "gemini-2.5-pro",         # Attempt 3: Most capable
-    ]
-
-    def __init__(self, client):
-        self.client = client
-        self.validation_failures = 0  # Track validation errors only
-
-    async def on_error(self, exception: Exception, attempt: int) -> None:
-        """Only escalate model on validation errors, not network/rate limit errors."""
-        if isinstance(exception, ValidationError):
-            self.validation_failures += 1
-        # Network/rate limit errors don't increment counter
-
-    async def execute(self, prompt: str, attempt: int, timeout: float):
-        # Select model based on VALIDATION failures, not total attempts
-        model_index = min(self.validation_failures, len(self.MODELS) - 1)
-        model = self.MODELS[model_index]
-
-        # Network error on attempt 2? Retry with same (cheap) model
-        # Validation error on attempt 2? Escalate to better model
-        response = await self.client.generate(prompt, model=model)
-        return parsed_output, tokens
-```
-
-**Cost savings breakdown:**
-
-- Validation error → Escalate to smarter model ✅ (quality issue)
-- Network error → Retry same cheap model ✅ (transient issue)
-- Rate limit error → Retry same cheap model ✅ (API quota issue)
-- Result: **~60-80% cost reduction** vs always using best model
-
-See `examples/example_smart_model_escalation.py` for complete implementation with cost comparisons.
+1. **Distributed locks** — multi-process scenarios.
+2. **Batch API support** — true batch APIs for ~50% cost savings.
+3. **More classifiers** — Anthropic native, DeepSeek, HuggingFace.
+4. **Persistent queue** — Redis/DB-backed.
+5. **Prometheus metrics** — built-in metrics export (we have
+   `MetricsObserver`; this is about a Prometheus-format exporter on top).
+6. **Dynamic worker scaling** — adjust workers based on load.
+7. **Drop the strategy 2-tuple compat shim.** v0.10.0 added a 3-tuple
+   `execute()` return shape `(output, tokens, metadata)` with a shim that
+   still accepts legacy 2-tuple. Schedule the shim removal for a future
+   minor or major release; once removed, also drop the
+   `gemini_safety_ratings` field on `WorkItemResult` (its content lives in
+   `metadata['safety_ratings']` now).
 
 ---
 
-## Contact & Support
+## Where session-spanning context lives
 
-- GitHub: <https://github.com/geoff-davis/async-batch-llm>
-- Issues: <https://github.com/geoff-davis/async-batch-llm/issues>
-- PyPI: <https://pypi.org/project/async-batch-llm/>
-
----
-
-## Lessons Learned (For Future Claude Sessions)
-
-### Code Quality and Linting
-
-1. **CRITICAL: Always run quality checks before ANY commit:**
-   - Run tests: `uv run pytest`
-   - Run linter: `uv run ruff check src/ tests/ --fix`
-   - Run type checker: `uv run mypy src/async_batch_llm/ --ignore-missing-imports`
-   - Lint markdown: `npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md"`
-   - Or run all at once: `make ci`
-   - **All checks must pass with 0 errors before committing**
-
-2. **Common ruff issues to watch for:**
-   - Mutable default arguments: Use `None` and initialize in function body
-   - Unused imports: Remove them
-   - Unnecessary f-strings: Remove `f` prefix if no placeholders
-   - Import sorting: Let ruff auto-fix this
-
-3. **Common mypy issues to watch for:**
-   - Dynamic base classes like `class Foo(type(e))` are not supported
-   - Use static base classes like `class Foo(Exception)` instead
-   - Wrap exceptions with `str(e)` instead of `*e.args` if needed
-
-4. **Markdown linting config:**
-   - Created `.markdownlint.json` with line-length: 120
-   - Code blocks need language specifiers (use `text` for error messages)
-   - Blank lines required around lists and code fences
-
-### Documentation Best Practices
-
-1. **Example files are critical:**
-   - Users learn from examples more than docs
-   - Every new pattern needs a complete working example
-   - Examples should be runnable (handle missing API keys gracefully)
-
-2. **Keep docs in sync with code:**
-   - When refactoring API (like v0.0.x → v0.1), update ALL docs
-   - Search for old patterns: `agent=`, `agent_factory=`, `direct_call=`
-   - Update: README, docs/, examples/, CLAUDE.md
-
-3. **Migration guides are essential:**
-   - Breaking changes need migration docs
-   - Show before/after code examples
-   - Explain WHY the change was made
-
-### Testing Strategy
-
-1. **Test coverage is comprehensive:**
-   - 61 tests covering core functionality
-   - Concurrency tests with high worker counts (10-20)
-   - Edge cases (empty queues, timeouts, validation errors)
-
-2. **MockAgent is powerful:**
-   - Test without API calls
-   - Simulate rate limits, errors, latency
-   - Much faster than integration tests
-
-3. **Run tests in parallel when possible:**
-   - Multiple test files can run concurrently
-   - Use background bash shells for long-running tests
-
-### Development Workflow Insights
-
-1. **Strategy pattern benefits:**
-   - Decouples framework from providers
-   - Easy to add new providers (OpenAI, Anthropic examples)
-   - Resource lifecycle (prepare/cleanup) is powerful for caching
-
-2. **Advanced retry patterns are valuable:**
-   - Smart retry (field-specific feedback) reduces token usage
-   - Model escalation (cheap → expensive) saves 60-80% cost
-   - Progressive temperature helps with validation errors
-
-3. **Optional dependencies strategy:**
-   - Keep minimal: only `[pydantic-ai]` and `[gemini]`
-   - Don't add `[openai]`, `[anthropic]`, etc.
-   - Let users control their provider SDK versions
-   - Examples serve as documentation, not product features
-
-### Common Pitfalls to Avoid
-
-1. **Don't use bash for file operations:**
-   - Use Read, Edit, Write, Glob, Grep tools instead
-   - Bash is only for terminal operations (git, npm, pytest, etc.)
-
-2. **Always read files before editing:**
-   - Edit tool requires prior Read
-   - Prevents editing non-existent files
-
-3. **Watch for mutable defaults in Python:**
-   - `def __init__(self, temps=[0.0, 0.5, 1.0])` is wrong
-   - Use `temps=None` and initialize: `self.temps = temps if temps is not None else [0.0, 0.5, 1.0]`
-
-4. **Markdown line length:**
-   - 120 chars is reasonable (not 80)
-   - Long URLs and code examples need flexibility
-   - Use config file to relax rules
-
-### Project-Specific Knowledge
-
-1. **File structure:**
-   - Main code: `src/async_batch_llm/`
-   - Tests: `tests/`
-   - Examples: `examples/`
-   - Docs: `docs/` + `README.md`
-
-2. **Key files to update together:**
-   - API changes → Update: `README.md`, `docs/API.md`, `examples/*.py`
-   - New patterns → Update: `README.md` Advanced Usage, `examples/`, `CLAUDE.md`
-
-3. **Examples to reference:**
-   - `example_gemini_smart_retry.py` - Smart retry patterns
-   - `example_model_escalation.py` - Cost optimization
-   - `example_gemini_direct.py` - Direct Gemini API usage
-   - `example_openai.py`, `example_anthropic.py` - Other providers
-
-4. **Versioning:**
-   - Major version (v0.1+) for breaking API changes
-   - Document breaking changes in `docs/archive/MIGRATION_V0_1.md`
-   - Update version history in `CLAUDE.md`
+- **Plan-mode artifacts** — `~/.claude/plans/*.md`. Persist across
+  sessions; read these to pick up an in-progress design.
+- **GitHub issues** — `gh issue list -R geoff-davis/async-batch-llm`.
+  Cross-referenced from "Future Enhancements" above.
+- **`CHANGELOG.md`** — release-shipped changes.
+- **`~/.claude/projects/-home-geoff-Projects-personal-async-batch-llm/memory/`**
+  — auto-memory store; `MEMORY.md` is the index.
 
 ---
 
-## Quick Reference
+## Version history
 
-### Minimal Example (v0.1+)
+Most recent first. See `CHANGELOG.md` for full per-release detail.
 
-```python
-from async_batch_llm import ParallelBatchProcessor, LLMWorkItem, ProcessorConfig, PydanticAIStrategy
-from pydantic_ai import Agent
-from pydantic import BaseModel
+- **v0.10.0** — response metadata reaches `WorkItemResult` ([#8]).
+  - `LLMCallStrategy.execute()` may now return a 3-tuple
+    `(output, tokens, metadata)`; legacy 2-tuple still accepted via
+    `_unpack_strategy_result` compat shim (slated for removal — see Future
+    Enhancements #7).
+  - All built-in strategies (`GeminiStrategy`, `OpenAIStrategy`,
+    `OpenRouterStrategy`, `PydanticAIStrategy`) updated to the 3-tuple
+    shape; provider metadata (provider name, finish_reason, routed model,
+    safety ratings) flows into `WorkItemResult.metadata`.
+  - `WorkItemResult.gemini_safety_ratings` deprecated; populated from
+    `metadata['safety_ratings']` for backward compat.
+- **v0.9.0** — first-class OpenAI and OpenRouter.
+  - `OpenAICompatibleModel` base + `OpenAIModel` / `OpenRouterModel`
+    subclasses, each with `from_api_key(...)` (optional `api_key`,
+    falls back to `OPENAI_API_KEY` / `OPENROUTER_API_KEY`).
+  - `OpenAIStrategy`, `OpenRouterStrategy` (thin shells over the model).
+  - `OpenAIErrorClassifier` / `OpenRouterErrorClassifier` (with
+    `no_provider_available` handling).
+  - Track-only caching: reads `usage.prompt_tokens_details.cached_tokens`.
+  - `CachedTokenRates` constants for provider-aware billing;
+    `effective_input_tokens()` accepts a `cached_token_rate` parameter.
+  - Models implement `ManagedLLMModel`: `cleanup()` closes httpx clients
+    when constructed via `from_api_key`.
+  - New extras: `[openai]`, `[openrouter]`. New docs:
+    `docs/OPENAI_INTEGRATION.md`, `docs/OPENROUTER_INTEGRATION.md`.
+- **v0.8.0** — release prep, pip-audit scope fix.
+- **v0.7.0** — internal refactor: `_internal/` collaborators
+  (`EventDispatcher`, `StrategyLifecycle`, `RateLimitCoordinator`,
+  `error_logging`); `TokenExtractor`;
+  `ProcessorConfig.post_processor_timeout`. Public API unchanged.
+- **v0.6.0** — model abstraction: `LLMModel` / `ManagedLLMModel`
+  protocols; `GeminiModel` / `GeminiCachedModel` (replaces
+  `GeminiCachedStrategy`).
+- **v0.3.0** — `RetryState` for cross-attempt persistence.
+- **v0.1.0** — strategy pattern refactor (breaking).
+- **v0.0.x** — initial development; race condition fixes.
 
-class Output(BaseModel):
-    result: str
+---
 
-agent = Agent("gemini-2.5-flash", result_type=Output)
-strategy = PydanticAIStrategy(agent=agent)
-config = ProcessorConfig(max_workers=5, timeout_per_item=120.0)
+## Lessons from past sessions
 
-async with ParallelBatchProcessor[str, Output, None](config=config) as processor:
-    await processor.add_work(LLMWorkItem(
-        item_id="1",
-        strategy=strategy,
-        prompt="Hello"
-    ))
-
-    result = await processor.process_all()
-    print(f"Success: {result.succeeded}/{result.total_items}")
-```
-
-### Full-Featured Example
-
-See `examples/example.py` for complete examples including:
-
-- Context passing
-- Post-processors
-- Middleware
-- Observers
-- Error handling
-- MockAgent testing
+- **Run quality checks before every commit.** `make ci` covers
+  everything; pre-commit hooks catch most of it automatically. Don't
+  `--no-verify`.
+- **Optional dependency groups are fine.** Earlier guidance argued
+  against per-provider extras; v0.9.0 added `[openai]` and `[openrouter]`
+  and they work well. The right test is "does the user benefit from a
+  discoverable install hint" — usually yes.
+- **Don't promise behavior the framework can't deliver.** `WorkItemResult`
+  doesn't carry `LLMResponse.metadata` (see #8). Don't write docs that
+  claim it does.
+- **Keep examples runnable.** Every example file should handle missing
+  API keys gracefully and use the *current* built-in API, not custom
+  strategies that duplicate built-in functionality.
+- **When refactoring API, search for the old patterns and update
+  everywhere.** README, docs/, examples/, CLAUDE.md, and tests all need
+  to move together.
 
 ---
 
 ## License
 
-MIT License - See LICENSE file
+MIT — see `LICENSE`.

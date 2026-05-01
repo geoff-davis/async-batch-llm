@@ -60,9 +60,16 @@ pydantic-ai = [
 gemini = [
     "google-genai>=1.49.0",
 ]
+openai = [
+    "openai>=1.50.0",
+]
+openrouter = [
+    "openai>=1.50.0",
+]
 all = [
     "pydantic-ai>=1.0.0",
     "google-genai>=1.49.0",
+    "openai>=1.50.0",
 ]
 docs = [
     "mkdocs>=1.5.0",
@@ -79,6 +86,7 @@ dev = [
     "ty>=0.0.1a16",
     "pydantic-ai>=1.0.0",  # Required for tests
     "google-genai>=1.49.0",  # Required for Gemini tests
+    "openai>=1.50.0",  # Required for OpenAI/OpenRouter tests
     "pre-commit>=3.0.0",
 ]
 

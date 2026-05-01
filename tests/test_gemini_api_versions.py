@@ -8,9 +8,7 @@ def test_google_genai_version_sufficient():
     installed = version("google-genai")
     major, minor, *_ = installed.split(".")
     assert int(major) >= 1
-    assert int(major) > 1 or int(minor) >= 49, (
-        f"google-genai {installed} is below minimum 1.49.0"
-    )
+    assert int(major) > 1 or int(minor) >= 49, f"google-genai {installed} is below minimum 1.49.0"
 
 
 def test_create_cached_content_config_available():

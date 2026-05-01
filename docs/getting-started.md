@@ -16,6 +16,13 @@ pip install 'async-batch-llm[pydantic-ai]'
 # With Google Gemini support
 pip install 'async-batch-llm[gemini]'
 
+# With OpenAI support
+pip install 'async-batch-llm[openai]'
+
+# With OpenRouter support (any of OpenAI/Anthropic/Google/DeepSeek/etc.
+# behind one OpenAI-compatible API)
+pip install 'async-batch-llm[openrouter]'
+
 # With everything
 pip install 'async-batch-llm[all]'
 ```
@@ -118,6 +125,39 @@ cached_model = GeminiCachedModel(
 )
 strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
 ```
+
+### OpenAI Strategy
+
+Direct OpenAI API calls (added in v0.9.0):
+
+```python
+from async_batch_llm import OpenAIModel, OpenAIStrategy
+
+model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-...")
+strategy = OpenAIStrategy(model)
+```
+
+See [OpenAI Integration](OPENAI_INTEGRATION.md) for structured output,
+caching, and error handling.
+
+### OpenRouter Strategy
+
+Reach Anthropic, OpenAI, Google, DeepSeek, etc. through one OpenAI-compatible
+API (added in v0.9.0):
+
+```python
+from async_batch_llm import OpenRouterModel, OpenRouterStrategy
+
+model = OpenRouterModel.from_api_key(
+    "anthropic/claude-haiku-4-5",
+    api_key="sk-or-...",
+)
+strategy = OpenRouterStrategy(model)
+```
+
+See [OpenRouter Integration](OPENROUTER_INTEGRATION.md) for the
+per-upstream-provider caching matrix and the Anthropic `cache_control`
+opt-in pattern.
 
 ## Next Steps
 

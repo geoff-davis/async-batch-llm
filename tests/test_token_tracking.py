@@ -82,7 +82,11 @@ async def test_cache_hit_rate_calculation():
 
 @pytest.mark.asyncio
 async def test_effective_input_tokens_calculation():
-    """Test effective_input_tokens() method (cost after caching)."""
+    """Test effective_input_tokens() method (cost after caching).
+
+    Default behavior uses CachedTokenRates.GEMINI (10% pay rate, 90% discount)
+    for backward compatibility with pre-v0.9.0 versions.
+    """
     strategy = CachedTokenStrategy(
         input_tokens=500,
         output_tokens=100,
@@ -98,11 +102,88 @@ async def test_effective_input_tokens_calculation():
 
         result = await processor.process_all()
 
-    # Effective tokens = total_input - (cached * 0.9)
-    # = 5000 - (4500 * 0.9)
-    # = 5000 - 4050
-    # = 950
+    # Default = Gemini rate (0.10 = 10% pay, 90% discount):
+    # discount = cached * (1 - 0.10) = 4500 * 0.9 = 4050
+    # effective = 5000 - 4050 = 950
     assert result.effective_input_tokens() == 950
+
+
+@pytest.mark.asyncio
+async def test_effective_input_tokens_provider_aware():
+    """effective_input_tokens() accepts a per-provider rate."""
+    from async_batch_llm import CachedTokenRates
+
+    strategy = CachedTokenStrategy(
+        input_tokens=1000,
+        output_tokens=50,
+        cached_tokens=500,
+    )
+    config = ProcessorConfig(max_workers=1)
+
+    async with ParallelBatchProcessor[str, str, None](config=config) as processor:
+        await processor.add_work(LLMWorkItem(item_id="x", strategy=strategy, prompt="t"))
+        result = await processor.process_all()
+
+    # Single item: 1000 input, 500 cached.
+    assert result.total_input_tokens == 1000
+    assert result.total_cached_tokens == 500
+
+    # Gemini (10% pay): 500 + 500*0.10 = 550 effective
+    assert result.effective_input_tokens(CachedTokenRates.GEMINI) == 550
+    # OpenAI (50% pay): 500 + 500*0.50 = 750 effective
+    assert result.effective_input_tokens(CachedTokenRates.OPENAI) == 750
+    # Anthropic read (10% pay): same as Gemini
+    assert result.effective_input_tokens(CachedTokenRates.ANTHROPIC_READ) == 550
+    # DeepSeek: same as Gemini
+    assert result.effective_input_tokens(CachedTokenRates.DEEPSEEK) == 550
+
+    # Edge cases.
+    assert result.effective_input_tokens(0.0) == 500  # cached fully free
+    assert result.effective_input_tokens(1.0) == 1000  # no discount
+
+
+@pytest.mark.asyncio
+async def test_effective_input_tokens_rounds_conservatively_up():
+    """When the discount has a fractional part, the billable estimate is
+    rounded UP (conservative). The implementation truncates the discount
+    toward zero with int(); the test pins this behavior so the docstring
+    guarantee can't drift silently.
+
+    Example: 99 cached at 0.5 rate
+        raw discount = 99 * 0.5 = 49.5
+        int(49.5) = 49
+        effective = total_input - 49 (rather than total_input - 50)
+        i.e. effective is 1 token HIGHER than perfectly-rounded math.
+    """
+    strategy = CachedTokenStrategy(
+        input_tokens=100,
+        output_tokens=10,
+        cached_tokens=99,  # produces a fractional discount at rate=0.5
+    )
+    config = ProcessorConfig(max_workers=1)
+
+    async with ParallelBatchProcessor[str, str, None](config=config) as processor:
+        await processor.add_work(LLMWorkItem(item_id="x", strategy=strategy, prompt="t"))
+        result = await processor.process_all()
+
+    assert result.total_cached_tokens == 99
+    assert result.effective_input_tokens(0.5) == 51  # 100 - int(99 * 0.5) = 100 - 49
+
+
+@pytest.mark.asyncio
+async def test_effective_input_tokens_rejects_out_of_range_rate():
+    """Passing a rate outside [0, 1] raises ValueError."""
+    strategy = CachedTokenStrategy(input_tokens=100, output_tokens=10, cached_tokens=50)
+    config = ProcessorConfig(max_workers=1)
+
+    async with ParallelBatchProcessor[str, str, None](config=config) as processor:
+        await processor.add_work(LLMWorkItem(item_id="x", strategy=strategy, prompt="t"))
+        result = await processor.process_all()
+
+    with pytest.raises(ValueError, match=r"\[0\.0, 1\.0\]"):
+        result.effective_input_tokens(-0.1)
+    with pytest.raises(ValueError, match=r"\[0\.0, 1\.0\]"):
+        result.effective_input_tokens(1.5)
 
 
 @pytest.mark.asyncio

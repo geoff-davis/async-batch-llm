@@ -249,11 +249,13 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "google-genai" },
+    { name = "openai" },
     { name = "pydantic-ai" },
 ]
 dev = [
     { name = "google-genai" },
     { name = "mypy" },
+    { name = "openai" },
     { name = "pre-commit" },
     { name = "pydantic-ai" },
     { name = "pytest" },
@@ -271,6 +273,12 @@ docs = [
 gemini = [
     { name = "google-genai" },
 ]
+openai = [
+    { name = "openai" },
+]
+openrouter = [
+    { name = "openai" },
+]
 pydantic-ai = [
     { name = "pydantic-ai" },
 ]
@@ -285,6 +293,10 @@ requires-dist = [
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5.0" },
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.24.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
+    { name = "openai", marker = "extra == 'all'", specifier = ">=1.50.0" },
+    { name = "openai", marker = "extra == 'dev'", specifier = ">=1.50.0" },
+    { name = "openai", marker = "extra == 'openai'", specifier = ">=1.50.0" },
+    { name = "openai", marker = "extra == 'openrouter'", specifier = ">=1.50.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-ai", marker = "extra == 'all'", specifier = ">=1.0.0" },
@@ -297,7 +309,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a16" },
 ]
-provides-extras = ["pydantic-ai", "gemini", "all", "docs", "dev"]
+provides-extras = ["pydantic-ai", "gemini", "openai", "openrouter", "all", "docs", "dev"]
 
 [[package]]
 name = "async-timeout"

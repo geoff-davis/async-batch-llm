@@ -118,7 +118,7 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
             # Network/rate limit error - don't escalate
             error_type = type(exception).__name__
             if self.verbose:
-                print(f"  ⚠️  {error_type} on attempt {attempt} " f"(will retry same model)")
+                print(f"  ⚠️  {error_type} on attempt {attempt} (will retry same model)")
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float
@@ -139,9 +139,9 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
             if attempt == 1:
                 print(f"  Attempt {attempt}: Using {model}")
             elif self.last_error and self._is_validation_error(self.last_error):
-                print(f"  Attempt {attempt}: Escalating to {model} " f"(after validation error)")
+                print(f"  Attempt {attempt}: Escalating to {model} (after validation error)")
             else:
-                print(f"  Attempt {attempt}: Retrying with {model} " f"(network/rate limit error)")
+                print(f"  Attempt {attempt}: Retrying with {model} (network/rate limit error)")
 
         # Configure request
         config = GenerateContentConfig(

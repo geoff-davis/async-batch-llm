@@ -58,11 +58,16 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Provider Integrations:
+    - Gemini: GEMINI_INTEGRATION.md
+    - OpenAI: OPENAI_INTEGRATION.md
+    - OpenRouter: OPENROUTER_INTEGRATION.md
   - Examples:
     - Basic Usage: examples/basic.md
     - Custom Strategies: examples/custom-strategies.md
     - Advanced Patterns: examples/advanced.md
   - Migration Guides:
+    - v0.10 Migration: MIGRATION_V0_10.md
     - v0.4 Migration: migration/v0.4.md
     - v0.1 Migration: migration/v0.1.md
   - API Reference:
