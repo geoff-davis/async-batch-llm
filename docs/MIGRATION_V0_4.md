@@ -250,9 +250,12 @@ async with ParallelBatchProcessor(config=config) as processor:
 
 If you encounter issues during migration:
 
-1. Check the [CHANGELOG.md](../CHANGELOG.md) for detailed changes
-2. Review [test_strategy_lifecycle.py](../tests/test_strategy_lifecycle.py) for examples
+1. Check the [CHANGELOG.md][changelog] for detailed changes
+2. Review [test_strategy_lifecycle.py][test-lifecycle] for examples
 3. File an issue at <https://github.com/geoff-davis/async-batch-llm/issues>
+
+[changelog]: https://github.com/geoff-davis/async-batch-llm/blob/main/CHANGELOG.md
+[test-lifecycle]: https://github.com/geoff-davis/async-batch-llm/blob/main/tests/test_strategy_lifecycle.py
 
 ## Benefits of v0.4.0
 
