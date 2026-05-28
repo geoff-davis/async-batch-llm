@@ -18,14 +18,14 @@
 | src/async\_batch\_llm/core/\_\_init\_\_.py                   |        3 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/core/config.py                         |       86 |        1 |       42 |        2 |     97.66% |164, 201-\>exit |
 | src/async\_batch\_llm/core/protocols.py                      |       15 |        4 |        0 |        0 |     73.33% |22, 31, 35, 39 |
-| src/async\_batch\_llm/llm\_strategies.py                     |      138 |       26 |       36 |       11 |     75.29% |28-29, 221-\>exit, 230-\>exit, 269-\>exit, 298-300, 330-\>exit, 339-\>exit, 369, 392-394, 421-\>exit, 430-\>exit, 457-458, 462-463, 480-488, 555-557, 581-583 |
+| src/async\_batch\_llm/llm\_strategies.py                     |      138 |       26 |       36 |       11 |     75.29% |28-29, 218-\>exit, 227-\>exit, 266-\>exit, 295-297, 327-\>exit, 336-\>exit, 366, 389-391, 418-\>exit, 427-\>exit, 454-455, 459-460, 477-485, 552-554, 578-580 |
 | src/async\_batch\_llm/middleware/\_\_init\_\_.py             |        2 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/middleware/base.py                     |       11 |        1 |        0 |        0 |     90.91% |        82 |
 | src/async\_batch\_llm/models.py                              |      346 |       24 |      138 |       19 |     90.70% |32-34, 37-38, 121-\>124, 196, 199, 218, 352-\>355, 357, 363-\>exit, 388, 443, 473, 476, 488-492, 521, 545, 755-\>759, 757-\>759, 760-\>764, 762-763, 770, 784, 787-\>exit |
 | src/async\_batch\_llm/observers/\_\_init\_\_.py              |        3 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/observers/base.py                      |       18 |        1 |        0 |        0 |     94.44% |        51 |
 | src/async\_batch\_llm/observers/metrics.py                   |       71 |        1 |       26 |        5 |     93.81% |16, 42-\>exit, 53-\>exit, 63-\>exit, 169-\>178 |
-| src/async\_batch\_llm/parallel.py                            |      355 |       36 |       98 |       19 |     87.42% |94, 101, 108, 127, 129, 131, 206, 210, 221, 225, 229, 233, 237, 304-\>307, 347-349, 369, 393, 420-\>427, 458-459, 480-483, 512, 552, 575-579, 593-\>595, 626-\>635, 653, 708, 723-727, 820-\>832, 824, 901, 908-\>911, 949 |
+| src/async\_batch\_llm/parallel.py                            |      355 |       36 |       98 |       19 |     87.42% |97, 104, 111, 130, 132, 134, 209, 213, 224, 228, 232, 236, 240, 312-\>315, 355-357, 377, 401, 428-\>435, 466-467, 488-491, 520, 560, 583-587, 601-\>603, 634-\>643, 661, 716, 731-735, 828-\>840, 832, 909, 916-\>919, 957 |
 | src/async\_batch\_llm/strategies/\_\_init\_\_.py             |        3 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/strategies/errors.py                   |       48 |        2 |       12 |        0 |     96.67% |   177-178 |
 | src/async\_batch\_llm/strategies/rate\_limit.py              |       31 |        0 |        2 |        0 |    100.00% |           |
