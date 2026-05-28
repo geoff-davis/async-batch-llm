@@ -679,9 +679,9 @@ async def execute(self, prompt, attempt, timeout, state=None):
 
 ### Documentation
 
-- [README.md](../README.md) - Updated with v0.3.0 features
-- [docs/API.md](API.md) - Full API reference
-- [docs/GEMINI_INTEGRATION.md](GEMINI_INTEGRATION.md) - Gemini-specific guide
+- [README.md](https://github.com/geoff-davis/async-batch-llm/blob/main/README.md) - Updated with v0.3.0 features
+- [docs/API.md](../API.md) - Full API reference
+- [docs/GEMINI_INTEGRATION.md](../GEMINI_INTEGRATION.md) - Gemini-specific guide
 - [docs/IMPLEMENTATION_PLAN_V0_3.md](IMPLEMENTATION_PLAN_V0_3.md) - Technical details
 
 ### Examples

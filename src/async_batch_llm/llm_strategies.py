@@ -76,22 +76,19 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
 
         Returns:
             Either a 2-tuple ``(output, token_usage)`` or a 3-tuple
-            ``(output, token_usage, metadata)``.
-
-            - ``token_usage`` is a TokenUsage dict with optional keys:
-              ``input_tokens``, ``output_tokens``, ``total_tokens``,
-              ``cached_input_tokens``.
-            - ``metadata`` (v0.10.0) is a provider-specific dict forwarded
-              into ``WorkItemResult.metadata`` — typically ``finish_reason``,
-              ``model``, ``provider`` (OpenRouter), ``safety_ratings``
-              (Gemini). Pass ``None`` if you have nothing to surface.
-
-            The 2-tuple shape is supported for backward compatibility but
-            will be removed in a future release. Built-in strategies all
-            return the 3-tuple shape.
+            ``(output, token_usage, metadata)``. ``token_usage`` is a
+            TokenUsage dict with optional keys ``input_tokens``,
+            ``output_tokens``, ``total_tokens``, ``cached_input_tokens``.
+            ``metadata`` (v0.10.0) is a provider-specific dict forwarded into
+            ``WorkItemResult.metadata`` — typically ``finish_reason``,
+            ``model``, ``provider`` (OpenRouter), ``safety_ratings`` (Gemini);
+            pass ``None`` if you have nothing to surface. The 2-tuple shape is
+            supported for backward compatibility but will be removed in a
+            future release; built-in strategies all return the 3-tuple shape.
 
         Raises:
-            Any exception to trigger retry (if retryable) or failure
+            Exception: Any exception propagated to trigger a retry (if
+                retryable) or a permanent failure.
 
         Note (v0.3.0):
             The state parameter allows strategies to maintain state across retry

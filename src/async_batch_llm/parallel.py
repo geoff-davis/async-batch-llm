@@ -3,7 +3,10 @@
 import asyncio
 import logging
 import time
-from typing import Generic, cast
+from typing import TYPE_CHECKING, Generic, cast
+
+if TYPE_CHECKING:
+    from types import TracebackType
 
 from ._internal.error_logging import log_retryable_error, log_validation_error
 from ._internal.event_dispatcher import EventDispatcher
@@ -244,7 +247,12 @@ class ParallelBatchProcessor(
         """Delegate to StrategyLifecycle.ensure_prepared."""
         await self._strategy_lifecycle.ensure_prepared(strategy)
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: "TracebackType | None",
+    ) -> bool:
         """
         Context manager exit - ensures cleanup of strategies and resources.
 
