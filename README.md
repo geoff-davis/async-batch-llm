@@ -47,6 +47,9 @@ pip install 'async-batch-llm[openai]'
 # With OpenRouter support (multi-provider via one OpenAI-compatible API)
 pip install 'async-batch-llm[openrouter]'
 
+# With DeepSeek support (direct DeepSeek API, native cache-hit tracking)
+pip install 'async-batch-llm[deepseek]'
+
 # With everything
 pip install 'async-batch-llm[all]'
 
@@ -114,44 +117,48 @@ asyncio.run(main())
 Built-in strategies for common providers:
 
 - **`PydanticAIStrategy`** - PydanticAI agents with structured output
-- **`GeminiStrategy`** - Direct Google Gemini API calls; returns response text by default or accepts a
-  `response_parser` for structured output
-- **`GeminiStrategy(model=GeminiCachedModel(...))`** - Gemini with context caching via the explicit cache API
-  (more predictable than implicit caching)
+- **`GeminiStrategy`** - Google Gemini; returns response text by default or accepts a
+  `response_parser` for structured output. Wrap a `GeminiCachedModel` for context caching.
+- **`OpenAIStrategy`** - OpenAI (`OpenAIModel.from_api_key(...)`)
+- **`OpenRouterStrategy`** - OpenRouter, a single OpenAI-compatible API in front of Anthropic,
+  Google, DeepSeek, etc. (`OpenRouterModel.from_api_key(...)`)
+- **`DeepSeekStrategy`** - DeepSeek direct, with native cache-hit token tracking
+  (`DeepSeekModel.from_api_key(...)`)
 
-Create custom strategies for any provider:
+`OpenAIStrategy`/`OpenRouterStrategy`/`DeepSeekStrategy` are thin subclasses of `ModelStrategy`;
+their models all extend `OpenAICompatibleModel`, so any OpenAI-compatible endpoint (Together,
+Fireworks, vLLM, …) works by subclassing it. Built-in usage is a two-liner:
 
 ```python
-from async_batch_llm.llm_strategies import LLMCallStrategy
-from async_batch_llm import TokenUsage
+from async_batch_llm import OpenAIModel, OpenAIStrategy
 
-class OpenAIStrategy(LLMCallStrategy[str]):
-    def __init__(self, client, model: str = "gpt-4o-mini"):
+model = OpenAIModel.from_api_key("gpt-4o-mini")  # reads OPENAI_API_KEY
+strategy = OpenAIStrategy(model)
+```
+
+For a provider without a built-in, write a custom strategy:
+
+```python
+from async_batch_llm import LLMCallStrategy, TokenUsage
+
+class MyProviderStrategy(LLMCallStrategy[str]):
+    def __init__(self, client, model: str):
         self.client = client
         self.model = model
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        output = response.choices[0].message.content or ""
+    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
+        response = await self.client.generate(prompt, model=self.model)
         tokens: TokenUsage = {
-            "input_tokens": response.usage.prompt_tokens,
-            "output_tokens": response.usage.completion_tokens,
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
             "total_tokens": response.usage.total_tokens,
         }
-
-        return output, tokens
-
-# Use with async-batch-llm
-from openai import AsyncOpenAI
-client = AsyncOpenAI(api_key="...")
-strategy = OpenAIStrategy(client=client)
+        # 3-tuple (output, tokens, metadata); metadata may be None.
+        return response.text, tokens, None
 ```
 
-See [`examples/`](examples/) directory for OpenAI, Anthropic, LangChain, and more.
+See the [`examples/`](examples/) directory for OpenAI, OpenRouter, DeepSeek, Anthropic,
+LangChain, and more.
 
 ### Automatic Retries
 
@@ -261,8 +268,11 @@ print(f"Cached tokens: {result.total_cached_tokens}")
 print(f"Cache hit rate: {result.cache_hit_rate():.1f}%")
 # Pass a per-provider rate from CachedTokenRates (GEMINI / OPENAI /
 # ANTHROPIC_READ / DEEPSEEK) for an accurate billable-token estimate.
-# Default rate is CachedTokenRates.GEMINI for backward compatibility.
-print(f"Billable cost: {result.effective_input_tokens()} tokens (Gemini rate)")
+# Calling it without an explicit rate defaults to the Gemini rate AND warns
+# when cached tokens are present (the rate is wrong for other providers).
+from async_batch_llm import CachedTokenRates
+
+print(f"Billable cost: {result.effective_input_tokens(CachedTokenRates.OPENAI)} tokens")
 ```
 
 ### Observability
@@ -725,6 +735,8 @@ Check out the [`examples/`](examples/) directory for complete working examples:
 
 - [`example_llm_strategies.py`](examples/example_llm_strategies.py) - All built-in strategies
 - [`example_openai.py`](examples/example_openai.py) - OpenAI integration
+- [`example_openrouter.py`](examples/example_openrouter.py) - OpenRouter (multi-provider)
+- [`example_deepseek.py`](examples/example_deepseek.py) - DeepSeek with native cache-hit tracking
 - [`example_anthropic.py`](examples/example_anthropic.py) - Anthropic Claude
 - [`example_langchain.py`](examples/example_langchain.py) - LangChain & RAG
 - [`example_gemini_direct.py`](examples/example_gemini_direct.py) - Direct Gemini API

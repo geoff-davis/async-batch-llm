@@ -8,14 +8,19 @@ narrow and called out below.
 
 ## Summary of changes
 
-| Change                                               | Breaking? | Required action                                                    |
-|------------------------------------------------------|-----------|--------------------------------------------------------------------|
-| `LLMCallStrategy.execute()` return shape (3-tuple)   | Sometimes | Only if you call `.execute()` directly on a built-in strategy      |
-| `WorkItemResult.metadata` field added                | No        | None                                                               |
-| `WorkItemResult.gemini_safety_ratings` deprecated    | No        | Read `metadata['safety_ratings']` instead (eventually)             |
-| `CachedTokenRates` constants                         | No        | Pass to `effective_input_tokens()` for accurate non-Gemini billing |
-| `OpenAIModel`, `OpenRouterModel` and friends         | No        | Optional new providers; install `[openai]` / `[openrouter]` extras |
-| `OpenAIErrorClassifier`, `OpenRouterErrorClassifier` | No        | Optional; pass to `ParallelBatchProcessor` if you want them        |
+| Change                                                     | Breaking? | Required action                                                    |
+|------------------------------------------------------------|-----------|--------------------------------------------------------------------|
+| `LLMCallStrategy.execute()` return shape (3-tuple)         | Sometimes | Only if you call `.execute()` directly on a built-in strategy      |
+| `WorkItemResult.metadata` field added                      | No        | None                                                               |
+| `WorkItemResult.gemini_safety_ratings` deprecated          | No        | Read `metadata['safety_ratings']` instead (eventually)             |
+| `CachedTokenRates` constants                               | No        | Pass to `effective_input_tokens()` for accurate non-Gemini billing |
+| `OpenAIModel`, `OpenRouterModel` and friends               | No        | Optional new providers; install `[openai]` / `[openrouter]` extras |
+| `OpenAIErrorClassifier`, `OpenRouterErrorClassifier`       | No        | Optional; pass to `ParallelBatchProcessor` if you want them        |
+| `DeepSeekModel` / `DeepSeekStrategy`                       | No        | Optional new provider; install the `[deepseek]` extra              |
+| `ModelStrategy` base class                                 | No        | Internal dedupe; built-in strategies behave identically            |
+| `temperature=None` to omit the parameter                   | No        | Use it for OpenAI reasoning models (o1/o3) that reject temperature |
+| `effective_input_tokens()` warns on implicit default       | Sometimes | Pass an explicit `CachedTokenRates` rate to silence the warning    |
+| `ErrorInfo.suggested_wait` now honored as a cooldown floor | No        | None; only a parsed `Retry-After` sets it now                      |
 
 ## Breaking change: 3-tuple `execute()` return shape
 
@@ -138,10 +143,17 @@ billable = result.effective_input_tokens(CachedTokenRates.DEEPSEEK)
 The default rate is `CachedTokenRates.GEMINI` for backward compat — if
 you don't pass anything, you get exactly the same number as before.
 
+> **v0.10.0 behavior change:** calling `effective_input_tokens()` *without*
+> an explicit rate now emits a `UserWarning` **when cached tokens are
+> present** (the implicit Gemini rate is wrong for other providers). The
+> returned number is unchanged; pass an explicit `CachedTokenRates` constant
+> to silence the warning. The no-cache case stays silent.
+
 ### Migration required if
 
 You're using `effective_input_tokens()` with a non-Gemini provider and
-care about the accuracy of the result. Pass the matching constant.
+care about the accuracy of the result. Pass the matching constant (which
+also silences the new warning).
 
 ### Mixed-provider batches
 
@@ -205,16 +217,66 @@ and [`OPENROUTER_INTEGRATION.md`](OPENROUTER_INTEGRATION.md).
 Never required. The new providers are additive. Switch when convenient
 to drop the custom-strategy code.
 
+## New: built-in DeepSeek provider (v0.10.0)
+
+`DeepSeekModel` / `DeepSeekStrategy` call DeepSeek's API directly. Unlike a
+generic `OpenAICompatibleModel` pointed at DeepSeek, `DeepSeekModel` reads
+DeepSeek's native `prompt_cache_hit_tokens` field into `cached_input_tokens`
+(DeepSeek doesn't use OpenAI's nested `prompt_tokens_details.cached_tokens`),
+so cache telemetry is accurate.
+
+```python
+from async_batch_llm import CachedTokenRates, DeepSeekModel, DeepSeekStrategy
+
+model = DeepSeekModel.from_api_key("deepseek-chat")  # reads DEEPSEEK_API_KEY
+strategy = DeepSeekStrategy(model)
+# DeepSeek cache reads cost 10% of normal:
+billable = result.effective_input_tokens(CachedTokenRates.DEEPSEEK)
+```
+
+```bash
+pip install 'async-batch-llm[deepseek]'
+```
+
+DeepSeek is OpenAI-compatible, so reuse `OpenAIErrorClassifier` for its
+error handling.
+
+## New: `temperature=None` to omit the parameter (v0.10.0)
+
+The `LLMModel` protocol, all built-in models, and `ModelStrategy` now accept
+`temperature=None`, which **omits** the parameter from the API call so the
+provider uses its own default. This is required for OpenAI reasoning models
+(o1/o3/etc.) that reject an explicit `temperature`:
+
+```python
+model = OpenAIModel.from_api_key("o1-mini")
+strategy = OpenAIStrategy(model, temperature=None)  # don't send temperature
+```
+
+The default is still `0.0`, so existing code is unaffected.
+
+## Behavior change: `ErrorInfo.suggested_wait` is now honored (v0.10.0)
+
+`suggested_wait` was previously populated but unused. It is now applied by the
+`RateLimitCoordinator` as a **floor** on the cooldown (the `RateLimitStrategy`
+may wait longer, never shorter). To avoid a hardcoded constant silently
+overriding your configured cooldown, the field now carries **only genuine
+server signals**: `OpenAIErrorClassifier` parses the `Retry-After` header, and
+the old `DEFAULT_RATE_LIMIT_WAIT` fallbacks were removed (the `RateLimitStrategy`
+owns the default cooldown). No action required unless you built a custom
+classifier that relied on the old constant being surfaced.
+
 ## Compatibility cheatsheet
 
-| You wrote                                                   | After upgrade                                |
-|-------------------------------------------------------------|----------------------------------------------|
-| `out, toks = await s.execute(...)` (built-in)               | **Update to 3-tuple unpack**                 |
-| `out, toks = await s.execute(...)` (custom)                 | Still works (custom returns 2-tuple)         |
-| Custom `LLMCallStrategy.execute()` returning 2-tuple        | Still works; opt into 3-tuple for metadata   |
-| `result.output`, `result.token_usage`, `result.error`, etc. | Unchanged                                    |
-| `result.gemini_safety_ratings`                              | Still populated (deprecated)                 |
-| `result.effective_input_tokens()`                           | Still defaults to Gemini rate                |
+| You wrote                                                   | After upgrade                                                     |
+|-------------------------------------------------------------|-------------------------------------------------------------------|
+| `out, toks = await s.execute(...)` (built-in)               | **Update to 3-tuple unpack**                                      |
+| `out, toks = await s.execute(...)` (custom)                 | Still works (custom returns 2-tuple)                              |
+| Custom `LLMCallStrategy.execute()` returning 2-tuple        | Still works; opt into 3-tuple for metadata                        |
+| `result.output`, `result.token_usage`, `result.error`, etc. | Unchanged                                                         |
+| `result.gemini_safety_ratings`                              | Still populated (deprecated)                                      |
+| `result.effective_input_tokens()`                           | Still defaults to Gemini rate; **warns** if cached tokens present |
+| `temperature=0.0` (default)                                 | Unchanged; pass `None` to omit for reasoning models               |
 
 ## See also
 

@@ -4,6 +4,14 @@
 
 ::: async_batch_llm.LLMCallStrategy
 
+## ModelStrategy
+
+Shared base for the provider-named strategies below; delegates to an
+`LLMModel`. Use directly for a custom model you don't want a dedicated
+subclass for.
+
+::: async_batch_llm.ModelStrategy
+
 ## PydanticAIStrategy
 
 ::: async_batch_llm.PydanticAIStrategy
@@ -11,6 +19,18 @@
 ## GeminiStrategy
 
 ::: async_batch_llm.GeminiStrategy
+
+## OpenAIStrategy
+
+::: async_batch_llm.OpenAIStrategy
+
+## OpenRouterStrategy
+
+::: async_batch_llm.OpenRouterStrategy
+
+## DeepSeekStrategy
+
+::: async_batch_llm.DeepSeekStrategy
 
 ## Models
 
@@ -21,6 +41,22 @@
 ### GeminiCachedModel
 
 ::: async_batch_llm.GeminiCachedModel
+
+### OpenAICompatibleModel
+
+::: async_batch_llm.OpenAICompatibleModel
+
+### OpenAIModel
+
+::: async_batch_llm.OpenAIModel
+
+### OpenRouterModel
+
+::: async_batch_llm.OpenRouterModel
+
+### DeepSeekModel
+
+::: async_batch_llm.DeepSeekModel
 
 ## Protocols
 

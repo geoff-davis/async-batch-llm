@@ -40,6 +40,9 @@ pip install 'async-batch-llm[openai]'
 # With OpenRouter support
 pip install 'async-batch-llm[openrouter]'
 
+# With DeepSeek support
+pip install 'async-batch-llm[deepseek]'
+
 # With everything
 pip install 'async-batch-llm[all]'
 ```
