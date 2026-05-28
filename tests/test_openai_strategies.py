@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import urlparse
 
 import pytest
 
@@ -16,7 +17,9 @@ class TestOpenAIModelFromApiKey:
         model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-fake-key")
         assert isinstance(model, OpenAIModel)
         # Underlying client has SDK default base URL (api.openai.com).
-        assert "api.openai.com" in str(model._client.base_url)
+        # Parse and compare the host exactly rather than a substring check
+        # (a substring `in` test on a URL is bypass-prone — CWE-20).
+        assert urlparse(str(model._client.base_url)).hostname == "api.openai.com"
         # from_api_key takes ownership of the client.
         assert model._owns_client is True
 
@@ -26,7 +29,7 @@ class TestOpenAIModelFromApiKey:
             api_key="sk-fake-key",
             base_url="https://custom.example.com/v1",
         )
-        assert "custom.example.com" in str(model._client.base_url)
+        assert urlparse(str(model._client.base_url)).hostname == "custom.example.com"
 
     def test_api_key_optional_lets_sdk_resolve_env_var(self, monkeypatch):
         # When api_key is None, the SDK reads OPENAI_API_KEY itself.
