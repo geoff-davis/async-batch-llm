@@ -371,9 +371,9 @@ strategy = GeminiCachedStrategy(
 
 ### Documentation
 
-- [README.md](../README.md) - Updated examples and features
-- [docs/GEMINI_INTEGRATION.md](GEMINI_INTEGRATION.md) - Gemini-specific guide
-- [docs/API.md](API.md) - Full API reference
+- [README.md](https://github.com/geoff-davis/async-batch-llm/blob/main/README.md) - Updated examples and features
+- [docs/GEMINI_INTEGRATION.md](../GEMINI_INTEGRATION.md) - Gemini-specific guide
+- [docs/API.md](../API.md) - Full API reference
 - [IMPLEMENTATION_PLAN_V0_2.md](IMPLEMENTATION_PLAN_V0_2.md) - Technical details
 
 ### Examples

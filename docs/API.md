@@ -22,7 +22,7 @@ Complete API documentation for async-batch-llm v0.4.0.
   - [ErrorClassifier](#errorclassifier)
   - [ErrorInfo](#errorinfo)
   - [RateLimitStrategy](#ratelimitstrategy)
-- [Middleware & Observers](#middleware--observers)
+- [Middleware and Observers](#middleware-and-observers)
   - [Middleware](#middleware)
   - [ProcessorObserver](#processorobserver)
   - [MetricsObserver](#metricsobserver)
@@ -469,10 +469,13 @@ Called by the framework when `execute()` raises an exception, before deciding wh
 
 **See Also:**
 
-- [examples/example_smart_model_escalation.py](../examples/example_smart_model_escalation.py) - Complete
+- [examples/example_smart_model_escalation.py][ex-escalation] - Complete
   smart model escalation example
-- [examples/example_gemini_smart_retry.py](../examples/example_gemini_smart_retry.py) - Smart retry with
+- [examples/example_gemini_smart_retry.py][ex-smart-retry] - Smart retry with
   partial parsing
+
+[ex-escalation]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_smart_model_escalation.py
+[ex-smart-retry]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_gemini_smart_retry.py
 
 #### `async def cleanup() -> None`
 
@@ -912,7 +915,7 @@ class RateLimitStrategy(ABC):
 
 ---
 
-## Middleware & Observers
+## Middleware and Observers
 
 ### Middleware
 
@@ -1390,8 +1393,8 @@ if __name__ == "__main__":
 
 ## See Also
 
-- [README.md](../README.md) - Getting started guide
-- [MIGRATION_V0_1.md](./MIGRATION_V0_1.md) - Migration guide from v0.0.x (strategy pattern)
+- [README.md](https://github.com/geoff-davis/async-batch-llm/blob/main/README.md) - Getting started guide
+- [MIGRATION_V0_1.md](archive/MIGRATION_V0_1.md) - Migration guide from v0.0.x (strategy pattern)
 - [MIGRATION_V0_4.md](./MIGRATION_V0_4.md) - Migration guide to v0.4.0 (context managers)
 - [GEMINI_INTEGRATION.md](./GEMINI_INTEGRATION.md) - Detailed Gemini integration guide
-- [CHANGELOG.md](../CHANGELOG.md) - Version history
+- [CHANGELOG.md](https://github.com/geoff-davis/async-batch-llm/blob/main/CHANGELOG.md) - Version history

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import urlparse
 
 import pytest
 
@@ -48,7 +49,11 @@ def _build_client(response: MagicMock) -> MagicMock:
 class TestOpenRouterModelFromApiKey:
     def test_default_base_url_points_to_openrouter(self):
         model = OpenRouterModel.from_api_key("anthropic/claude-haiku-4-5", api_key="sk-or-fake")
-        assert "openrouter.ai/api/v1" in str(model._client.base_url)
+        # Parse and compare host + path exactly rather than a substring check
+        # (a substring `in` test on a URL is bypass-prone — CWE-20).
+        parsed = urlparse(str(model._client.base_url))
+        assert parsed.hostname == "openrouter.ai"
+        assert parsed.path.rstrip("/") == "/api/v1"
         assert model._owns_client is True
 
     def test_referer_and_title_become_default_headers(self):

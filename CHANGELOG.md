@@ -78,6 +78,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still populated for backward compat; scheduled for removal alongside
   the 2-tuple compat shim.
 
+### Security
+
+- Bumped transitive (lockfile-only) dependencies to clear open Dependabot
+  alerts. None are direct dependencies of async-batch-llm, and the affected
+  code paths are not exercised by the library — they reach us via
+  `pydantic-ai[fastmcp]` and the docs/HTTP toolchain — but the bumps clear
+  the alerts and keep the dev/CI environment current:
+  - `urllib3` 2.6.3 → 2.7.0 (GHSA-qccp-gfcp-xxvc cross-origin header leak on
+    proxied redirects; GHSA-mf9v-mfxr-j63j decompression-bomb bypass — both
+    high).
+  - `python-multipart` 0.0.26 → 0.0.29 (GHSA-pp6c-gr5w-3c5g DoS via unbounded
+    multipart part headers — high).
+  - `pydantic-ai` / `pydantic-ai-slim` 1.82.0 → 1.103.0 (GHSA-cqp8-fcvh-x7r3
+    SSRF cloud-metadata blocklist bypass).
+  - `idna` 3.11 → 3.17 (GHSA-65pc-fj4g-8rjx `idna.encode()` bypass).
+  - `authlib` 1.7.0 → 1.7.2 (GHSA-r95x-qfjj-fjj2 OIDC open redirect).
+  - `pymdown-extensions` 10.21.2 → 10.21.3 (GHSA-62q4-447f-wv8h snippets path
+    traversal — docs build only).
+
 [#8]: https://github.com/geoff-davis/async-batch-llm/issues/8
 
 ## [0.8.0] - 2026-04-24

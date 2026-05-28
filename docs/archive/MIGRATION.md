@@ -55,7 +55,7 @@ This directory contains migration guides for upgrading between major versions of
 
 ---
 
-### 🔄 [v0.0 → v0.1 Migration Guide (Strategy Pattern)](./MIGRATION_V3.md)
+### 🔄 [v0.0 → v0.1 Migration Guide (Strategy Pattern)](./MIGRATION_V0_1.md)
 
 **Status:** ✅ Complete
 **Breaking Changes:** Yes - Major API refactor
@@ -95,7 +95,7 @@ This directory contains migration guides for upgrading between major versions of
 
 ### "I'm on v0.0.x and want to upgrade to latest"
 
-1. Read [v0.0 → v0.1 Migration Guide](./MIGRATION_V3.md) **(Required - breaking changes)**
+1. Read [v0.0 → v0.1 Migration Guide](./MIGRATION_V0_1.md) **(Required - breaking changes)**
 2. Read [v0.1 → v0.2 Migration Guide](./MIGRATION_V0_2.md) (Optional - no breaking changes)
 3. Read [v0.2 → v0.3 Migration Guide](./MIGRATION_V0_3.md) (Optional - no breaking changes)
 
@@ -186,7 +186,7 @@ release section.
 
 ## Version History Reference
 
-For complete details on each release, see [CHANGELOG.md](../CHANGELOG.md).
+For complete details on each release, see [CHANGELOG.md](https://github.com/geoff-davis/async-batch-llm/blob/main/CHANGELOG.md).
 
 For current development roadmap, see [IMPROVEMENT_PLAN.md](./IMPROVEMENT_PLAN.md).
 
