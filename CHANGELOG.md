@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `OpenAICompatibleModel.from_api_key` is now generic over `cls` (a `TypeVar`
+  bound to `OpenAICompatibleModel`), so it returns the calling subclass type
+  (`OpenAIModel`/`OpenRouterModel`/`DeepSeekModel`) instead of the base. Subclass
+  overrides no longer need a `cast()` — `OpenRouterModel.from_api_key` drops its
+  workaround. (Closes #10.)
 - `BatchResult.effective_input_tokens()` now emits a `UserWarning` when called
   without an explicit `cached_token_rate` while cached tokens are present
   (the implicit Gemini default is wrong for other providers). Pass an explicit

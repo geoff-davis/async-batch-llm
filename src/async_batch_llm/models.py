@@ -10,7 +10,7 @@ Added in v0.6.0.
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from .base import LLMResponse
 
@@ -38,6 +38,10 @@ else:
         AsyncOpenAI = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
+
+# Bound to OpenAICompatibleModel so from_api_key() returns the calling
+# subclass type — subclass overrides don't need a cast(). See issue #10.
+TM = TypeVar("TM", bound="OpenAICompatibleModel")
 
 
 def _encode_tags_to_display_name(tags: dict[str, str]) -> str:
@@ -807,7 +811,7 @@ class OpenAICompatibleModel:
 
     @classmethod
     def from_api_key(
-        cls,
+        cls: type[TM],
         model: str,
         api_key: str | None = None,
         *,
@@ -816,7 +820,7 @@ class OpenAICompatibleModel:
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
         **client_kwargs: Any,
-    ) -> "OpenAICompatibleModel":
+    ) -> TM:
         """Build the model with a freshly-constructed AsyncOpenAI client.
 
         The returned model owns the client — its connections are released
@@ -966,21 +970,17 @@ class OpenRouterModel(OpenAICompatibleModel):
         if title is not None:
             merged_headers.setdefault("X-Title", title)
 
-        # super().from_api_key is typed as returning OpenAICompatibleModel,
-        # but at runtime it constructs cls(...) so we actually get an
-        # OpenRouterModel back. cast() asserts the runtime guarantee for
-        # both type checkers without using a checker-specific ignore comment.
-        return cast(
-            "OpenRouterModel",
-            super().from_api_key(
-                model,
-                api_key,
-                base_url=base_url,
-                system_instruction=system_instruction,
-                extra_headers=merged_headers or None,
-                extra_body=extra_body,
-                **client_kwargs,
-            ),
+        # super().from_api_key is generic over cls (returns the calling
+        # subclass type), so this returns OpenRouterModel directly — no cast
+        # needed. See issue #10.
+        return super().from_api_key(
+            model,
+            api_key,
+            base_url=base_url,
+            system_instruction=system_instruction,
+            extra_headers=merged_headers or None,
+            extra_body=extra_body,
+            **client_kwargs,
         )
 
 
