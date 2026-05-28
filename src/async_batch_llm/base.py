@@ -351,7 +351,7 @@ class BatchResult(Generic[TOutput, TContext]):
             return 0.0
         return (self.total_cached_tokens / self.total_input_tokens) * 100.0
 
-    def effective_input_tokens(self, cached_token_rate: float = CachedTokenRates.GEMINI) -> int:
+    def effective_input_tokens(self, cached_token_rate: float | None = None) -> int:
         """
         Estimate billable input tokens after the cache discount.
 
@@ -370,10 +370,13 @@ class BatchResult(Generic[TOutput, TContext]):
 
         Args:
             cached_token_rate: Fraction (0.0–1.0) of the normal input price
-                paid for cached tokens. Defaults to ``CachedTokenRates.GEMINI``
-                (0.10) for backward compatibility — pre-v0.9.0 versions
-                hardcoded this value. **Pass an explicit rate when working
-                with non-Gemini providers** to get accurate numbers.
+                paid for cached tokens. When omitted (``None``) it defaults to
+                ``CachedTokenRates.GEMINI`` (0.10) for backward compatibility —
+                pre-v0.9.0 versions hardcoded this value. **Pass an explicit
+                rate when working with non-Gemini providers** to get accurate
+                numbers; relying on the implicit default while cached tokens
+                are present emits a ``UserWarning``, since the Gemini rate is
+                wrong for e.g. OpenAI (~0.50).
 
         Returns:
             Effective input tokens billed. The discount is computed by
@@ -386,6 +389,24 @@ class BatchResult(Generic[TOutput, TContext]):
         Raises:
             ValueError: If ``cached_token_rate`` is not in [0.0, 1.0].
         """
+        if cached_token_rate is None:
+            # Implicit default. Only nudge when it actually changes the answer
+            # (i.e. there are cached tokens to discount) — silent for the common
+            # no-cache case so we don't cry wolf.
+            if self.total_cached_tokens > 0:
+                import warnings
+
+                warnings.warn(
+                    "effective_input_tokens() called without an explicit "
+                    "cached_token_rate; defaulting to the Gemini rate "
+                    "(CachedTokenRates.GEMINI = 0.10). This is wrong for other "
+                    "providers (OpenAI is ~0.50). Pass an explicit "
+                    "CachedTokenRates constant to silence this warning.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            cached_token_rate = CachedTokenRates.GEMINI
+
         if not 0.0 <= cached_token_rate <= 1.0:
             raise ValueError(
                 f"cached_token_rate must be in [0.0, 1.0]; got {cached_token_rate}. "

@@ -510,10 +510,15 @@ class ParallelBatchProcessor(
                 )
 
     async def _handle_rate_limit(
-        self, worker_id: int, observed_generation: int | None = None
+        self,
+        worker_id: int,
+        observed_generation: int | None = None,
+        suggested_wait: float | None = None,
     ) -> None:
         """Delegate to RateLimitCoordinator."""
-        await self._rate_limit_coord.handle_rate_limit(worker_id, observed_generation)
+        await self._rate_limit_coord.handle_rate_limit(
+            worker_id, observed_generation, suggested_wait
+        )
 
     async def _finalize_cooldown(self, start_time: float, error: Exception | None) -> None:
         """Delegate to RateLimitCoordinator._finalize_cooldown (kept for subclass overrides)."""
@@ -888,9 +893,11 @@ class ParallelBatchProcessor(
                 {"item_id": work_item.item_id, "worker_id": worker_id},
             )
 
-            # Handle rate limit (cooldown) - this will pause all workers
+            # Handle rate limit (cooldown) - this will pause all workers.
+            # Pass the classifier's suggested_wait (e.g. a parsed Retry-After)
+            # as a floor on the cooldown duration.
             observed_generation = self._rate_limit_coord.current_generation
-            await self._handle_rate_limit(worker_id, observed_generation)
+            await self._handle_rate_limit(worker_id, observed_generation, error_info.suggested_wait)
 
             # Re-raise the original exception to trigger retry logic
             # The retry loop will increment attempt and try again after cooldown

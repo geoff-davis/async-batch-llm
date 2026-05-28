@@ -11,7 +11,6 @@ if TYPE_CHECKING:
 
 # Common error pattern constants
 RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota", "rate limit")
-DEFAULT_RATE_LIMIT_WAIT = 300.0  # 5 minutes
 
 
 class TokenTrackingError(Exception):
@@ -88,7 +87,20 @@ class FrameworkTimeoutError(TimeoutError):
 
 @dataclass
 class ErrorInfo:
-    """Structured information about an error."""
+    """Structured information about an error.
+
+    Attributes:
+        is_retryable: Whether the framework should retry the call.
+        is_rate_limit: Whether this is a rate-limit error (triggers a
+            coordinated cooldown rather than per-item backoff).
+        is_timeout: Whether this is a timeout.
+        error_category: A short label for stats/logging.
+        suggested_wait: For rate limits, a server-suggested minimum wait in
+            seconds (e.g. parsed from a ``Retry-After`` header). The
+            ``RateLimitCoordinator`` honors this as a *floor* on the cooldown:
+            the backoff strategy may wait longer, but never shorter. ``None``
+            means "no suggestion; use the strategy's value as-is".
+    """
 
     is_retryable: bool
     is_rate_limit: bool
@@ -133,7 +145,6 @@ class DefaultErrorClassifier(ErrorClassifier):
                 is_rate_limit=True,
                 is_timeout=False,
                 error_category="rate_limit",
-                suggested_wait=DEFAULT_RATE_LIMIT_WAIT,
             )
 
         # Check for framework timeout (retryable but indicates timeout config may need adjustment)

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from async_batch_llm.models import (
+    DeepSeekModel,
     OpenAICompatibleModel,
     OpenAIModel,
     _coerce_to_messages,
@@ -195,6 +196,29 @@ class TestOpenAICompatibleGenerate:
         assert kwargs["extra_body"] == {"max_tokens": 200, "top_p": 0.9}
 
     @pytest.mark.asyncio
+    async def test_temperature_sent_by_default(self):
+        response = _build_response()
+        client = _build_client(response)
+
+        model = OpenAIModel("gpt-4o-mini", client)
+        await model.generate("hi")
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["temperature"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_temperature_none_omits_param(self):
+        # Reasoning models (o1/o3) reject an explicit temperature; None drops it.
+        response = _build_response()
+        client = _build_client(response)
+
+        model = OpenAIModel("o1-mini", client)
+        await model.generate("hi", temperature=None)
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert "temperature" not in kwargs
+
+    @pytest.mark.asyncio
     async def test_cached_tokens_extracted(self):
         response = _build_response(cached_tokens=42)
         client = _build_client(response)
@@ -272,6 +296,41 @@ class TestOpenAICompatibleGenerate:
         result = await model.generate("hi")
 
         assert result.metadata == {"custom": "metadata"}
+
+
+class TestDeepSeekModel:
+    """DeepSeek reports cache hits at the top level of usage, not nested."""
+
+    @pytest.mark.asyncio
+    async def test_reads_prompt_cache_hit_tokens(self):
+        # No nested prompt_tokens_details (cached_tokens=None), so the OpenAI
+        # path would report 0 cached — DeepSeek's override must pick up the
+        # top-level prompt_cache_hit_tokens instead.
+        response = _build_response(prompt_tokens=100)
+        response.usage.prompt_cache_hit_tokens = 30
+        response.usage.prompt_cache_miss_tokens = 70
+        client = _build_client(response)
+
+        model = DeepSeekModel("deepseek-chat", client)
+        result = await model.generate("hi")
+
+        assert result.input_tokens == 100
+        assert result.cached_input_tokens == 30
+
+    @pytest.mark.asyncio
+    async def test_no_cache_field_yields_zero(self):
+        response = _build_response()
+        response.usage.prompt_cache_hit_tokens = None
+        client = _build_client(response)
+
+        model = DeepSeekModel("deepseek-chat", client)
+        result = await model.generate("hi")
+
+        assert result.cached_input_tokens == 0
+
+    def test_base_url_and_env_var(self):
+        assert DeepSeekModel._default_base_url == "https://api.deepseek.com"
+        assert DeepSeekModel._api_key_env_var == "DEEPSEEK_API_KEY"
 
 
 class TestImportError:

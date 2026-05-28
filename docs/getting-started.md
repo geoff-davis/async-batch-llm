@@ -23,6 +23,9 @@ pip install 'async-batch-llm[openai]'
 # behind one OpenAI-compatible API)
 pip install 'async-batch-llm[openrouter]'
 
+# With DeepSeek support (direct DeepSeek API, native cache-hit tracking)
+pip install 'async-batch-llm[deepseek]'
+
 # With everything
 pip install 'async-batch-llm[all]'
 ```

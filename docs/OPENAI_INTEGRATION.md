@@ -56,6 +56,15 @@ serves: `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini`, etc. Reasoning models
 the [Responses API](https://platform.openai.com/docs/api-reference/responses)
 is a better fit; that's a future addition (`OpenAIResponsesModel`).
 
+> **Reasoning models reject an explicit `temperature`.** Pass
+> `temperature=None` (on the strategy or per `generate()` call) to omit the
+> parameter entirely so the model uses its default — otherwise the call fails:
+>
+> ```python
+> model = OpenAIModel.from_api_key("o1-mini")
+> strategy = OpenAIStrategy(model, temperature=None)
+> ```
+
 ## Structured output
 
 The simplest path is to ask for JSON in the prompt and parse it via
@@ -105,15 +114,21 @@ print(f"billable tokens: {result.effective_input_tokens(CachedTokenRates.OPENAI)
 
 `effective_input_tokens()` defaults to `CachedTokenRates.GEMINI` (10% rate)
 for backward compatibility with pre-v0.9.0 versions — **always pass an
-explicit rate when working with OpenAI** to get accurate numbers. Note that
-Anthropic charges a 25% premium on cache *writes* over the normal input
-price; that write premium is not modeled by this helper.
+explicit rate when working with OpenAI** to get accurate numbers. As of
+v0.10.0, calling it without an explicit rate while cached tokens are present
+emits a `UserWarning` for exactly this reason; passing
+`CachedTokenRates.OPENAI` silences it. Note that Anthropic charges a 25%
+premium on cache *writes* over the normal input price; that write premium is
+not modeled by this helper.
 
 ## Error handling
 
 `OpenAIErrorClassifier` understands the openai SDK's exception hierarchy:
 
-- `RateLimitError` → retryable, rate-limit category, 60s default cooldown.
+- `RateLimitError` → retryable, rate-limit category. If the response carries a
+  `Retry-After` header, it's parsed into `ErrorInfo.suggested_wait`, which the
+  `RateLimitCoordinator` honors as a *floor* on the cooldown (the
+  `RateLimitStrategy` still owns the default duration when there's no header).
 - `APITimeoutError` → retryable, timeout.
 - `APIConnectionError` → retryable, network.
 - `APIStatusError` → branches on `status_code`:
@@ -161,9 +176,16 @@ class TogetherModel(OpenAICompatibleModel):
     _install_extras = "openai"
 ```
 
+The built-in `DeepSeekModel` is exactly this pattern — it additionally
+overrides `_extract_tokens` to read DeepSeek's native cache-hit field. Read
+its source for a worked example of customizing token extraction.
+
 ## See also
 
 - [`docs/OPENROUTER_INTEGRATION.md`](OPENROUTER_INTEGRATION.md) — the
   multi-provider sibling.
+- `DeepSeekModel` / `DeepSeekStrategy` — direct DeepSeek access with native
+  cache-hit tracking (install `[deepseek]`); see
+  [`examples/example_deepseek.py`](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_deepseek.py).
 - [`examples/example_openai.py`](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_openai.py)
   — runnable example.

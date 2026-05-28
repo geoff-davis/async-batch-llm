@@ -99,12 +99,25 @@ class RateLimitCoordinator:
     # ── Cooldown coordination ────────────────────────────────────
 
     async def handle_rate_limit(
-        self, worker_id: int, observed_generation: int | None = None
+        self,
+        worker_id: int,
+        observed_generation: int | None = None,
+        suggested_wait: float | None = None,
     ) -> None:
         """Coordinate a cooldown among workers.
 
         Exactly one worker becomes the coordinator for each cycle; the rest
         wait on the current generation's event.
+
+        Args:
+            worker_id: The worker reporting the rate limit.
+            observed_generation: The cooldown generation this worker observed
+                before reporting, for the atomic check-and-set.
+            suggested_wait: A server-suggested minimum wait (e.g. parsed from a
+                ``Retry-After`` header by the error classifier). When provided,
+                it acts as a *floor* on the strategy-computed cooldown — the
+                backoff strategy can wait longer, but never shorter than the
+                server asked. Only the coordinating worker's value is applied.
         """
         if observed_generation is None:
             observed_generation = self._cooldown_generation
@@ -153,6 +166,17 @@ class RateLimitCoordinator:
                 "Resuming workers immediately.",
                 exc,
             )
+
+        # Respect a server-suggested wait (e.g. Retry-After) as a floor: the
+        # backoff strategy may ask for longer, but we never undershoot the
+        # server's request. Only applied when the strategy itself didn't error.
+        if cooldown_error is None and suggested_wait is not None and suggested_wait > cooldown:
+            logger.info(
+                "[RATE-LIMIT]Raising cooldown from %.1fs to server-suggested %.1fs.",
+                cooldown,
+                suggested_wait,
+            )
+            cooldown = suggested_wait
 
         await self._events.emit(
             ProcessingEvent.COOLDOWN_STARTED,

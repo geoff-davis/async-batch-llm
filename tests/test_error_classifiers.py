@@ -122,7 +122,9 @@ async def test_gemini_classifier_rate_limit_patterns():
     assert info.is_rate_limit is True
     assert info.is_retryable is True
     assert info.error_category == "rate_limit"
-    assert info.suggested_wait == 300.0
+    # No server signal (Retry-After) available from a bare string match, so
+    # suggested_wait stays None; the RateLimitStrategy owns the cooldown.
+    assert info.suggested_wait is None
 
     # Test "resource_exhausted" pattern
     error = Exception("API quota exceeded: RESOURCE_EXHAUSTED")
@@ -521,7 +523,6 @@ class TestOpenAIErrorClassifier:
         from openai import RateLimitError
 
         from async_batch_llm.classifiers import OpenAIErrorClassifier
-        from async_batch_llm.classifiers.openai import DEFAULT_RATE_LIMIT_WAIT
 
         classifier = OpenAIErrorClassifier()
 
@@ -536,7 +537,8 @@ class TestOpenAIErrorClassifier:
         assert info.is_rate_limit is True
         assert info.is_retryable is True
         assert info.error_category == "rate_limit"
-        assert info.suggested_wait == DEFAULT_RATE_LIMIT_WAIT
+        # No Retry-After header on this hand-built error, so no server signal.
+        assert info.suggested_wait is None
 
     def test_api_timeout_error(self):
         from openai import APITimeoutError
@@ -576,6 +578,37 @@ class TestOpenAIErrorClassifier:
         info = classifier.classify(_make_openai_status_error(429, "too many"))
         assert info.is_rate_limit is True
         assert info.is_retryable is True
+
+    def test_429_retry_after_header_seconds_used_as_suggested_wait(self):
+        import httpx
+        from openai import APIStatusError
+
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        request = httpx.Request("POST", "https://api.example.com/v1/chat/completions")
+        response = httpx.Response(
+            status_code=429, request=request, text="slow down", headers={"retry-after": "12"}
+        )
+        err = APIStatusError("slow down", response=response, body={})
+
+        info = OpenAIErrorClassifier().classify(err)
+        assert info.is_rate_limit is True
+        # The server's Retry-After becomes the suggested_wait floor.
+        assert info.suggested_wait == 12.0
+
+    def test_429_without_retry_after_has_no_suggested_wait(self):
+        import httpx
+        from openai import APIStatusError
+
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        request = httpx.Request("POST", "https://api.example.com/v1/chat/completions")
+        response = httpx.Response(status_code=429, request=request, text="slow down")
+        err = APIStatusError("slow down", response=response, body={})
+
+        info = OpenAIErrorClassifier().classify(err)
+        # No Retry-After header → no server signal; cooldown left to the strategy.
+        assert info.suggested_wait is None
 
     @pytest.mark.parametrize("status", [408, 425, 500, 502, 503, 504])
     def test_retryable_5xx_codes(self, status):

@@ -10,7 +10,7 @@ Added in v0.6.0.
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from .base import LLMResponse
 
@@ -38,6 +38,10 @@ else:
         AsyncOpenAI = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
+
+# Bound to OpenAICompatibleModel so from_api_key() returns the calling
+# subclass type — subclass overrides don't need a cast(). See issue #10.
+TM = TypeVar("TM", bound="OpenAICompatibleModel")
 
 
 def _encode_tags_to_display_name(tags: dict[str, str]) -> str:
@@ -170,7 +174,7 @@ class GeminiModel:
         self,
         prompt: str | list[Any],
         *,
-        temperature: float = 0.0,
+        temperature: float | None = 0.0,
         system_instruction: str | None = None,
         config: dict[str, Any] | None = None,
     ) -> LLMResponse:
@@ -178,7 +182,8 @@ class GeminiModel:
 
         Args:
             prompt: Text prompt or list of content parts (multimodal).
-            temperature: Sampling temperature.
+            temperature: Sampling temperature. Pass ``None`` to omit it and
+                use the model default.
             system_instruction: Override default system instruction.
             config: Additional provider-specific config entries.
 
@@ -186,7 +191,9 @@ class GeminiModel:
             Normalized LLMResponse.
         """
         # Build config dict
-        call_config: dict[str, Any] = {"temperature": temperature}
+        call_config: dict[str, Any] = {}
+        if temperature is not None:
+            call_config["temperature"] = temperature
 
         si = system_instruction or self._default_system_instruction
         if si is not None:
@@ -414,7 +421,7 @@ class GeminiCachedModel:
         self,
         prompt: str | list[Any],
         *,
-        temperature: float = 0.0,
+        temperature: float | None = 0.0,
         system_instruction: str | None = None,
         config: dict[str, Any] | None = None,
     ) -> LLMResponse:
@@ -422,7 +429,8 @@ class GeminiCachedModel:
 
         Args:
             prompt: Text prompt or multimodal content parts.
-            temperature: Sampling temperature.
+            temperature: Sampling temperature. Pass ``None`` to omit it and
+                use the model default.
             system_instruction: Not supported with caching — raises ValueError.
             config: Additional provider-specific config entries.
 
@@ -466,8 +474,9 @@ class GeminiCachedModel:
         # Build config with cache reference
         call_config: dict[str, Any] = {
             "cached_content": self._cache.name,
-            "temperature": temperature,
         }
+        if temperature is not None:
+            call_config["temperature"] = temperature
 
         if self._safety_settings:
             call_config["safety_settings"] = self._safety_settings
@@ -652,7 +661,7 @@ class OpenAICompatibleModel:
         self,
         prompt: str | list[Any],
         *,
-        temperature: float = 0.0,
+        temperature: float | None = 0.0,
         system_instruction: str | None = None,
         config: dict[str, Any] | None = None,
     ) -> LLMResponse:
@@ -663,7 +672,10 @@ class OpenAICompatibleModel:
                 OpenAI-shaped message dicts (passed through unchanged — used
                 for multimodal content and Anthropic-via-OpenRouter
                 ``cache_control`` markers).
-            temperature: Sampling temperature.
+            temperature: Sampling temperature. Pass ``None`` to omit the
+                parameter so the provider uses its own default — required for
+                OpenAI reasoning models (o1/o3/etc.) that reject an explicit
+                ``temperature``.
             system_instruction: Per-call override for the system message.
             config: Per-call extra kwargs forwarded to the SDK call (merged
                 over the instance's ``extra_body``). Use this to pass
@@ -687,8 +699,11 @@ class OpenAICompatibleModel:
         call_kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
-            "temperature": temperature,
         }
+        # Omit temperature entirely when None so providers that reject an
+        # explicit value (OpenAI reasoning models) use their own default.
+        if temperature is not None:
+            call_kwargs["temperature"] = temperature
         if extra_body:
             call_kwargs["extra_body"] = extra_body
         if self._default_extra_headers:
@@ -796,7 +811,7 @@ class OpenAICompatibleModel:
 
     @classmethod
     def from_api_key(
-        cls,
+        cls: type[TM],
         model: str,
         api_key: str | None = None,
         *,
@@ -805,7 +820,7 @@ class OpenAICompatibleModel:
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
         **client_kwargs: Any,
-    ) -> "OpenAICompatibleModel":
+    ) -> TM:
         """Build the model with a freshly-constructed AsyncOpenAI client.
 
         The returned model owns the client — its connections are released
@@ -955,22 +970,66 @@ class OpenRouterModel(OpenAICompatibleModel):
         if title is not None:
             merged_headers.setdefault("X-Title", title)
 
-        # super().from_api_key is typed as returning OpenAICompatibleModel,
-        # but at runtime it constructs cls(...) so we actually get an
-        # OpenRouterModel back. cast() asserts the runtime guarantee for
-        # both type checkers without using a checker-specific ignore comment.
-        return cast(
-            "OpenRouterModel",
-            super().from_api_key(
-                model,
-                api_key,
-                base_url=base_url,
-                system_instruction=system_instruction,
-                extra_headers=merged_headers or None,
-                extra_body=extra_body,
-                **client_kwargs,
-            ),
+        # super().from_api_key is generic over cls (returns the calling
+        # subclass type), so this returns OpenRouterModel directly — no cast
+        # needed. See issue #10.
+        return super().from_api_key(
+            model,
+            api_key,
+            base_url=base_url,
+            system_instruction=system_instruction,
+            extra_headers=merged_headers or None,
+            extra_body=extra_body,
+            **client_kwargs,
         )
+
+
+class DeepSeekModel(OpenAICompatibleModel):
+    """LLM model backed by DeepSeek's OpenAI-compatible API.
+
+    Points at ``https://api.deepseek.com`` and reads
+    ``DEEPSEEK_API_KEY`` in :meth:`from_api_key`. Model ids are bare DeepSeek
+    names, e.g. ``"deepseek-chat"`` or ``"deepseek-reasoner"``.
+
+    DeepSeek's automatic context cache reports hits at the **top level** of the
+    ``usage`` object (``prompt_cache_hit_tokens`` / ``prompt_cache_miss_tokens``)
+    rather than under OpenAI's nested ``prompt_tokens_details.cached_tokens`` —
+    so this subclass overrides :meth:`_extract_tokens` to surface them in
+    ``cached_input_tokens``. Use :attr:`CachedTokenRates.DEEPSEEK` (10%) when
+    computing billable tokens.
+
+    (Calling DeepSeek *through OpenRouter* uses :class:`OpenRouterModel`
+    instead; the native cache fields aren't reliably forwarded there, which is
+    why direct access via this class gives better cache telemetry.)
+
+    Example:
+        >>> model = DeepSeekModel.from_api_key("deepseek-chat", api_key="sk-...")
+        >>> response = await model.generate("Hello!")
+        >>> print(response.text, response.cached_input_tokens)
+
+    Added in v0.10.0.
+    """
+
+    _default_base_url: str | None = "https://api.deepseek.com"
+    _install_extras: str = "deepseek"
+    _api_key_env_var: str | None = "DEEPSEEK_API_KEY"
+
+    def _extract_tokens(self, response: Any) -> tuple[int, int, int, int]:
+        """Extract tokens, preferring DeepSeek's native cache-hit field.
+
+        Falls back to the OpenAI-shaped extraction for the
+        input/output/total counts, then overrides the cached count with
+        ``usage.prompt_cache_hit_tokens`` when DeepSeek provides it.
+        """
+        input_tokens, output_tokens, total_tokens, cached_tokens = super()._extract_tokens(response)
+
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            hit = getattr(usage, "prompt_cache_hit_tokens", None)
+            if hit is not None:
+                cached_tokens = int(hit or 0)
+
+        return input_tokens, output_tokens, total_tokens, cached_tokens
 
 
 def _coerce_to_messages(prompt: str | list[Any]) -> list[Any]:

@@ -89,11 +89,15 @@ passing, post-processors, middleware, observers, error handling).
 | Gemini     | `GeminiModel`, `GeminiCachedModel`  | `GeminiStrategy`     | `GeminiErrorClassifier`     | `[gemini]`        |
 | OpenAI     | `OpenAIModel`                       | `OpenAIStrategy`     | `OpenAIErrorClassifier`     | `[openai]`        |
 | OpenRouter | `OpenRouterModel`                   | `OpenRouterStrategy` | `OpenRouterErrorClassifier` | `[openrouter]`    |
+| DeepSeek   | `DeepSeekModel`                     | `DeepSeekStrategy`   | `OpenAIErrorClassifier`     | `[deepseek]`      |
 | PydanticAI | (any model wrapped)                 | `PydanticAIStrategy` | —                           | `[pydantic-ai]`   |
 
-`OpenAICompatibleModel` is the base for OpenAI/OpenRouter — subclass it
-for Together, Fireworks, vLLM, etc. by overriding `_default_base_url` and
-optionally `_extract_tokens`.
+`OpenAICompatibleModel` is the base for OpenAI/OpenRouter/DeepSeek — and all
+three model strategies are thin subclasses of `ModelStrategy` (shared
+`execute()`/lifecycle). Subclass `OpenAICompatibleModel` for Together,
+Fireworks, vLLM, etc. by overriding `_default_base_url` and optionally
+`_extract_tokens` (as `DeepSeekModel` does for its native
+`prompt_cache_hit_tokens` field).
 
 For provider deep dives:
 
@@ -372,7 +376,7 @@ src/async_batch_llm/
 ├── llm_strategies.py     # LLMCallStrategy + built-in strategies
 ├── models.py             # GeminiModel, GeminiCachedModel,
 │                         # OpenAICompatibleModel, OpenAIModel,
-│                         # OpenRouterModel
+│                         # OpenRouterModel, DeepSeekModel
 ├── token_extractor.py    # TokenExtractor (failure-path token recovery)
 ├── core/
 │   ├── config.py         # ProcessorConfig, RateLimitConfig, RetryConfig
@@ -430,6 +434,8 @@ src/async_batch_llm/
 - `example_openai.py` — built-in OpenAI (v0.9.0).
 - `example_openrouter.py` — built-in OpenRouter, including
   Anthropic `cache_control` demo (v0.9.0).
+- `example_deepseek.py` — built-in DeepSeek with native cache-hit
+  token tracking (v0.10.0).
 - `example_anthropic.py`, `example_langchain.py` — custom-strategy
   references for providers without built-in support yet.
 - `example_llm_strategies.py` — custom-strategy patterns.
@@ -479,7 +485,8 @@ assert result.total_items == result.succeeded + result.failed
    requests. See #2.
 3. **In-memory queue.** Lost on crash. See #4.
 4. **Provider classifiers are partial.** Gemini, OpenAI, OpenRouter are
-   covered; Anthropic native, DeepSeek, HuggingFace pending. See #3.
+   covered; DeepSeek reuses `OpenAIErrorClassifier` (it's OpenAI-compatible);
+   Anthropic native and HuggingFace pending. See #3.
 
 ---
 
@@ -487,7 +494,8 @@ assert result.total_items == result.succeeded + result.failed
 
 1. **Distributed locks** — multi-process scenarios.
 2. **Batch API support** — true batch APIs for ~50% cost savings.
-3. **More classifiers** — Anthropic native, DeepSeek, HuggingFace.
+3. **More classifiers** — Anthropic native, HuggingFace. (DeepSeek reuses
+   `OpenAIErrorClassifier`.)
 4. **Persistent queue** — Redis/DB-backed.
 5. **Prometheus metrics** — built-in metrics export (we have
    `MetricsObserver`; this is about a Prometheus-format exporter on top).
@@ -517,7 +525,8 @@ assert result.total_items == result.succeeded + result.failed
 
 Most recent first. See `CHANGELOG.md` for full per-release detail.
 
-- **v0.10.0** — response metadata reaches `WorkItemResult` ([#8]).
+- **v0.10.0** — response metadata reaches `WorkItemResult` ([#8]), plus
+  DeepSeek support, a strategy refactor, and rate-limit/temperature fixes.
   - `LLMCallStrategy.execute()` may now return a 3-tuple
     `(output, tokens, metadata)`; legacy 2-tuple still accepted via
     `_unpack_strategy_result` compat shim (slated for removal — see Future
@@ -528,6 +537,24 @@ Most recent first. See `CHANGELOG.md` for full per-release detail.
     safety ratings) flows into `WorkItemResult.metadata`.
   - `WorkItemResult.gemini_safety_ratings` deprecated; populated from
     `metadata['safety_ratings']` for backward compat.
+  - **`ModelStrategy` base** — `GeminiStrategy`/`OpenAIStrategy`/
+    `OpenRouterStrategy`/`DeepSeekStrategy` are now thin subclasses sharing
+    `execute()`, lifecycle delegation, and the token-on-parse-failure path
+    (`_attach_token_usage`). Behavior unchanged.
+  - **`DeepSeekModel` / `DeepSeekStrategy`** (`[deepseek]` extra) — direct
+    DeepSeek access; `_extract_tokens` reads DeepSeek's native
+    `prompt_cache_hit_tokens` into `cached_input_tokens`.
+  - **`temperature=None`** is now accepted everywhere (protocol, all models,
+    `ModelStrategy`) to omit the parameter — needed for OpenAI reasoning
+    models (o1/o3) that reject an explicit temperature.
+  - **`effective_input_tokens()`** now `warn`s when relying on the implicit
+    Gemini default while cached tokens are present (pass an explicit
+    `CachedTokenRates` constant to silence).
+  - **`ErrorInfo.suggested_wait`** is now honored: the `RateLimitCoordinator`
+    uses it as a *floor* on the cooldown. Only genuine server signals set it —
+    `OpenAIErrorClassifier` parses `Retry-After`; the old hardcoded
+    `DEFAULT_RATE_LIMIT_WAIT` fallbacks were removed (they're the
+    `RateLimitStrategy`'s job, not the classifier's).
 - **v0.9.0** — first-class OpenAI and OpenRouter.
   - `OpenAICompatibleModel` base + `OpenAIModel` / `OpenRouterModel`
     subclasses, each with `from_api_key(...)` (optional `api_key`,
