@@ -252,6 +252,9 @@ all = [
     { name = "openai" },
     { name = "pydantic-ai" },
 ]
+deepseek = [
+    { name = "openai" },
+]
 dev = [
     { name = "google-genai" },
     { name = "mypy" },
@@ -294,6 +297,7 @@ requires-dist = [
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.24.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "openai", marker = "extra == 'all'", specifier = ">=1.50.0" },
+    { name = "openai", marker = "extra == 'deepseek'", specifier = ">=1.50.0" },
     { name = "openai", marker = "extra == 'dev'", specifier = ">=1.50.0" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.50.0" },
     { name = "openai", marker = "extra == 'openrouter'", specifier = ">=1.50.0" },
@@ -309,7 +313,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a16" },
 ]
-provides-extras = ["pydantic-ai", "gemini", "openai", "openrouter", "all", "docs", "dev"]
+provides-extras = ["pydantic-ai", "gemini", "openai", "openrouter", "deepseek", "all", "docs", "dev"]
 
 [[package]]
 name = "async-timeout"

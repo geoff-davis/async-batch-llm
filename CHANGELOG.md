@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **First-class DeepSeek provider.** New `DeepSeekModel` (subclass of
+  `OpenAICompatibleModel`, base URL `https://api.deepseek.com`, reads
+  `DEEPSEEK_API_KEY`) and `DeepSeekStrategy`. `DeepSeekModel._extract_tokens`
+  reads DeepSeek's native `prompt_cache_hit_tokens` into `cached_input_tokens`
+  (DeepSeek doesn't use OpenAI's nested `prompt_tokens_details.cached_tokens`).
+  Use with `CachedTokenRates.DEEPSEEK`. New `[deepseek]` optional dependency
+  group.
+- **`ModelStrategy` base class** — shared base for `GeminiStrategy`,
+  `OpenAIStrategy`, `OpenRouterStrategy`, and `DeepSeekStrategy`, which are now
+  thin subclasses. Centralizes `execute()`, lifecycle delegation, and the
+  token-tracking-on-parse-failure path. Exported for custom model-backed
+  strategies.
+- **`temperature=None` support** across the `LLMModel` protocol, all built-in
+  models, and `ModelStrategy` — omits the `temperature` parameter entirely so
+  providers use their default. Required for OpenAI reasoning models (o1/o3)
+  that reject an explicit temperature.
+- **`Retry-After` parsing** in `OpenAIErrorClassifier`
+  (`ErrorInfo.suggested_wait`), now honored by the `RateLimitCoordinator` as a
+  *floor* on the cooldown duration.
+
+### Changed
+
+- `BatchResult.effective_input_tokens()` now emits a `UserWarning` when called
+  without an explicit `cached_token_rate` while cached tokens are present
+  (the implicit Gemini default is wrong for other providers). Pass an explicit
+  `CachedTokenRates` constant to silence it. The default behavior is otherwise
+  unchanged.
+- `ErrorInfo.suggested_wait` now carries **only genuine server signals**
+  (e.g. a parsed `Retry-After`); the previously-unused hardcoded
+  `DEFAULT_RATE_LIMIT_WAIT` fallbacks were removed from the classifiers (the
+  `RateLimitStrategy` owns the default cooldown).
+
 - **First-class OpenAI and OpenRouter providers.** New `OpenAICompatibleModel`
   base class plus `OpenAIModel` and `OpenRouterModel` subclasses, each with
   a `from_api_key(...)` convenience constructor that accepts an optional

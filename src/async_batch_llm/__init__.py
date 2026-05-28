@@ -89,8 +89,10 @@ from .core.protocols import LLMModel, ManagedLLMModel
 
 # LLM call strategies
 from .llm_strategies import (
+    DeepSeekStrategy,
     GeminiStrategy,
     LLMCallStrategy,
+    ModelStrategy,
     OpenAIStrategy,
     OpenRouterStrategy,
     PydanticAIStrategy,
@@ -101,6 +103,7 @@ from .middleware import BaseMiddleware, Middleware
 
 # Concrete models
 from .models import (
+    DeepSeekModel,
     GeminiCachedModel,
     GeminiModel,
     OpenAICompatibleModel,
@@ -176,12 +179,15 @@ __all__ = [
     "RateLimitConfig",
     "RetryConfig",
     # LLM Strategies
+    "DeepSeekStrategy",
     "GeminiStrategy",
     "LLMCallStrategy",
+    "ModelStrategy",
     "OpenAIStrategy",
     "OpenRouterStrategy",
     "PydanticAIStrategy",
     # Models
+    "DeepSeekModel",
     "GeminiModel",
     "GeminiCachedModel",
     "OpenAICompatibleModel",

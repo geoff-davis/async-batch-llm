@@ -2,7 +2,13 @@
 
 import pytest
 
-from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, RetryState
+from async_batch_llm import (
+    CachedTokenRates,
+    LLMWorkItem,
+    ParallelBatchProcessor,
+    ProcessorConfig,
+    RetryState,
+)
 from async_batch_llm.base import TokenUsage
 from async_batch_llm.llm_strategies import LLMCallStrategy
 
@@ -105,14 +111,16 @@ async def test_effective_input_tokens_calculation():
     # Default = Gemini rate (0.10 = 10% pay, 90% discount):
     # discount = cached * (1 - 0.10) = 4500 * 0.9 = 4050
     # effective = 5000 - 4050 = 950
-    assert result.effective_input_tokens() == 950
+    # Relying on the implicit default with cached tokens present warns.
+    with pytest.warns(UserWarning, match="cached_token_rate"):
+        assert result.effective_input_tokens() == 950
+    # Passing the rate explicitly is silent and gives the same answer.
+    assert result.effective_input_tokens(CachedTokenRates.GEMINI) == 950
 
 
 @pytest.mark.asyncio
 async def test_effective_input_tokens_provider_aware():
     """effective_input_tokens() accepts a per-provider rate."""
-    from async_batch_llm import CachedTokenRates
-
     strategy = CachedTokenStrategy(
         input_tokens=1000,
         output_tokens=50,
@@ -140,6 +148,25 @@ async def test_effective_input_tokens_provider_aware():
     # Edge cases.
     assert result.effective_input_tokens(0.0) == 500  # cached fully free
     assert result.effective_input_tokens(1.0) == 1000  # no discount
+
+
+@pytest.mark.asyncio
+async def test_effective_input_tokens_default_no_warning_without_cache():
+    """The implicit-default nudge stays silent when there are no cached tokens,
+    so the common no-cache case doesn't get a spurious warning.
+    """
+    import warnings
+
+    strategy = CachedTokenStrategy(input_tokens=500, output_tokens=100, cached_tokens=0)
+    config = ProcessorConfig(max_workers=2)
+
+    async with ParallelBatchProcessor[str, str, None](config=config) as processor:
+        await processor.add_work(LLMWorkItem(item_id="item_0", strategy=strategy, prompt="Test"))
+        result = await processor.process_all()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning becomes an error
+        assert result.effective_input_tokens() == 500
 
 
 @pytest.mark.asyncio
@@ -309,7 +336,7 @@ async def test_100_percent_cache_hit_rate():
     assert result.cache_hit_rate() == 100.0
 
     # Effective tokens = 5000 - (5000 * 0.9) = 500
-    assert result.effective_input_tokens() == 500
+    assert result.effective_input_tokens(CachedTokenRates.GEMINI) == 500
 
 
 @pytest.mark.asyncio

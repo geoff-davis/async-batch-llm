@@ -12,10 +12,6 @@ from __future__ import annotations
 
 from ..strategies.errors import ErrorClassifier, ErrorInfo, FrameworkTimeoutError
 
-# Conservative defaults — most OpenAI/OpenRouter rate-limit windows are short.
-# Override by passing a custom classifier with a different value.
-DEFAULT_RATE_LIMIT_WAIT = 60.0
-
 RATE_LIMIT_PATTERNS = (
     "429",
     "rate limit",
@@ -25,6 +21,37 @@ RATE_LIMIT_PATTERNS = (
 )
 TIMEOUT_PATTERNS = ("timeout", "504", "deadline", "request timed out")
 NETWORK_PATTERNS = ("connection", "network", "econnreset", "broken pipe")
+
+
+def _retry_after_seconds(exception: Exception) -> float | None:
+    """Parse a ``Retry-After`` header off an openai-SDK exception, if present.
+
+    The openai SDK attaches the underlying ``httpx`` response (with headers) to
+    ``RateLimitError`` / ``APIStatusError``. ``Retry-After`` may be either an
+    integer number of seconds or an HTTP-date; we handle both and return the
+    delay in seconds, or ``None`` when no usable header is present.
+    """
+    response = getattr(exception, "response", None)
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return None
+    raw = headers.get("retry-after") or headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        pass
+    # HTTP-date form: compute the delay relative to now.
+    try:
+        import time
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(raw)
+        delay = when.timestamp() - time.time()
+        return delay if delay > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 class OpenAIErrorClassifier(ErrorClassifier):
@@ -97,14 +124,14 @@ class OpenAIErrorClassifier(ErrorClassifier):
             )
 
         # String-pattern fallback for rate limits when the SDK isn't installed
-        # or for mocked test exceptions.
+        # or for mocked test exceptions. No response object to parse a
+        # Retry-After from, so no server-suggested wait.
         if self._matches_any_pattern(error_str, RATE_LIMIT_PATTERNS):
             return ErrorInfo(
                 is_retryable=True,
                 is_rate_limit=True,
                 is_timeout=False,
                 error_category="rate_limit",
-                suggested_wait=DEFAULT_RATE_LIMIT_WAIT,
             )
 
         # Logic bugs — deterministic; don't retry.
@@ -152,7 +179,7 @@ class OpenAIErrorClassifier(ErrorClassifier):
                 is_rate_limit=True,
                 is_timeout=False,
                 error_category="rate_limit",
-                suggested_wait=DEFAULT_RATE_LIMIT_WAIT,
+                suggested_wait=_retry_after_seconds(exception),
             )
 
         if isinstance(exception, APITimeoutError):
@@ -186,7 +213,7 @@ class OpenAIErrorClassifier(ErrorClassifier):
                 is_rate_limit=True,
                 is_timeout=False,
                 error_category="rate_limit",
-                suggested_wait=DEFAULT_RATE_LIMIT_WAIT,
+                suggested_wait=_retry_after_seconds(exception),
             )
 
         if isinstance(status_code, int) and status_code in self._RETRYABLE_STATUS:

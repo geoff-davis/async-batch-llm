@@ -6,9 +6,6 @@ from ..strategies.errors import ErrorClassifier, ErrorInfo, FrameworkTimeoutErro
 RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota", "rate limit")
 TIMEOUT_PATTERNS = ("timeout", "504", "deadline")
 
-# Default wait time for rate limit errors (seconds)
-DEFAULT_RATE_LIMIT_WAIT = 300.0  # 5 minutes
-
 
 class GeminiErrorClassifier(ErrorClassifier):
     """Google Gemini-specific error classification."""
@@ -48,7 +45,6 @@ class GeminiErrorClassifier(ErrorClassifier):
                 is_rate_limit=is_rate_limit,
                 is_timeout=False,
                 error_category="rate_limit" if is_rate_limit else "client_error",
-                suggested_wait=DEFAULT_RATE_LIMIT_WAIT if is_rate_limit else None,
             )
 
         if isinstance(exception, ServerError):
@@ -85,7 +81,6 @@ class GeminiErrorClassifier(ErrorClassifier):
                 is_rate_limit=True,
                 is_timeout=False,
                 error_category="rate_limit",
-                suggested_wait=DEFAULT_RATE_LIMIT_WAIT,
             )
 
         # Check if it looks like a timeout

@@ -253,8 +253,16 @@ DeepSeek's automatic cache uses native field names
 (`prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`) rather than OpenAI's
 `prompt_tokens_details.cached_tokens`. Whether OpenRouter normalizes those
 into `cached_tokens` depends on the upstream host and OpenRouter's current
-mapping. If you specifically want reliable DeepSeek cache telemetry, calling
-DeepSeek's API directly (an upcoming `DeepSeekModel`) is the better path.
+mapping. If you specifically want reliable DeepSeek cache telemetry, call
+DeepSeek's API directly with the built-in `DeepSeekModel` (v0.10.0), which
+reads those native fields into `cached_input_tokens`:
+
+```python
+from async_batch_llm import DeepSeekModel, DeepSeekStrategy
+
+model = DeepSeekModel.from_api_key("deepseek-chat")  # reads DEEPSEEK_API_KEY
+strategy = DeepSeekStrategy(model)
+```
 
 ## Cross-provider batches
 
