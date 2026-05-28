@@ -28,24 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Retry-After` parsing** in `OpenAIErrorClassifier`
   (`ErrorInfo.suggested_wait`), now honored by the `RateLimitCoordinator` as a
   *floor* on the cooldown duration.
-
-### Changed
-
-- `OpenAICompatibleModel.from_api_key` is now generic over `cls` (a `TypeVar`
-  bound to `OpenAICompatibleModel`), so it returns the calling subclass type
-  (`OpenAIModel`/`OpenRouterModel`/`DeepSeekModel`) instead of the base. Subclass
-  overrides no longer need a `cast()` — `OpenRouterModel.from_api_key` drops its
-  workaround. (Closes #10.)
-- `BatchResult.effective_input_tokens()` now emits a `UserWarning` when called
-  without an explicit `cached_token_rate` while cached tokens are present
-  (the implicit Gemini default is wrong for other providers). Pass an explicit
-  `CachedTokenRates` constant to silence it. The default behavior is otherwise
-  unchanged.
-- `ErrorInfo.suggested_wait` now carries **only genuine server signals**
-  (e.g. a parsed `Retry-After`); the previously-unused hardcoded
-  `DEFAULT_RATE_LIMIT_WAIT` fallbacks were removed from the classifiers (the
-  `RateLimitStrategy` owns the default cooldown).
-
 - **First-class OpenAI and OpenRouter providers.** New `OpenAICompatibleModel`
   base class plus `OpenAIModel` and `OpenRouterModel` subclasses, each with
   a `from_api_key(...)` convenience constructor that accepts an optional
@@ -70,6 +52,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ratings) into `WorkItemResult.metadata`. Per-item provider-aware
   billing in mixed-provider OpenRouter batches no longer requires a
   custom `response_parser` (parser path still supported).
+
+### Changed
+
+- `OpenAICompatibleModel.from_api_key` is now generic over `cls` (a `TypeVar`
+  bound to `OpenAICompatibleModel`), so it returns the calling subclass type
+  (`OpenAIModel`/`OpenRouterModel`/`DeepSeekModel`) instead of the base. Subclass
+  overrides no longer need a `cast()` — `OpenRouterModel.from_api_key` drops its
+  workaround. (Closes #10.)
+- `BatchResult.effective_input_tokens()` now emits a `UserWarning` when called
+  without an explicit `cached_token_rate` while cached tokens are present
+  (the implicit Gemini default is wrong for other providers). Pass an explicit
+  `CachedTokenRates` constant to silence it. The default behavior is otherwise
+  unchanged.
+- `ErrorInfo.suggested_wait` now carries **only genuine server signals**
+  (e.g. a parsed `Retry-After`); the previously-unused hardcoded
+  `DEFAULT_RATE_LIMIT_WAIT` fallbacks were removed from the classifiers (the
+  `RateLimitStrategy` owns the default cooldown).
 
 ### Deprecated
 
