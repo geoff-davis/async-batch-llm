@@ -24,7 +24,7 @@
   },
   "homepage": "https://github.com/geoff-davis/async-batch-llm#readme",
   "devDependencies": {
-    "markdownlint-cli2": "^0.22.0"
+    "markdownlint-cli2": "^0.22.1"
   },
   "overrides": {
     "smol-toml": "^1.6.1"
