@@ -333,6 +333,44 @@ class TestDeepSeekModel:
         assert DeepSeekModel._api_key_env_var == "DEEPSEEK_API_KEY"
 
 
+class TestJsonMode:
+    """json_mode=True injects response_format into extra_body (issue #26)."""
+
+    def test_json_mode_sets_response_format(self):
+        with patch("async_batch_llm.models.AsyncOpenAI"):
+            model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x", json_mode=True)
+        assert model._default_extra_body == {"response_format": {"type": "json_object"}}
+
+    def test_json_mode_off_by_default(self):
+        with patch("async_batch_llm.models.AsyncOpenAI"):
+            model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x")
+        assert model._default_extra_body is None
+
+    def test_explicit_response_format_wins_over_json_mode(self):
+        with patch("async_batch_llm.models.AsyncOpenAI"):
+            model = OpenAIModel.from_api_key(
+                "gpt-4o-mini",
+                api_key="sk-x",
+                json_mode=True,
+                extra_body={"response_format": {"type": "json_schema"}, "top_p": 0.9},
+            )
+        assert model._default_extra_body == {
+            "response_format": {"type": "json_schema"},
+            "top_p": 0.9,
+        }
+
+    @pytest.mark.asyncio
+    async def test_json_mode_forwarded_to_call(self):
+        response = _build_response()
+        client = _build_client(response)
+        with patch("async_batch_llm.models.AsyncOpenAI", return_value=client):
+            model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x", json_mode=True)
+        await model.generate("return json")
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["response_format"] == {"type": "json_object"}
+
+
 class TestImportError:
     def test_constructor_raises_when_sdk_missing(self):
         with patch("async_batch_llm.models.AsyncOpenAI", None):
@@ -360,9 +398,7 @@ class TestConnectionPoolSizing:
             OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x", max_connections=150)
 
         # Pool limits sized symmetrically from max_connections...
-        mock_limits.assert_called_once_with(
-            max_connections=150, max_keepalive_connections=150
-        )
+        mock_limits.assert_called_once_with(max_connections=150, max_keepalive_connections=150)
         # ...and the resulting http_client handed to the SDK constructor.
         mock_async_client.assert_called_once_with(limits=mock_limits.return_value)
         _, kwargs = mock_client_cls.call_args
@@ -396,8 +432,6 @@ class TestConnectionPoolSizing:
             patch("httpx.AsyncClient"),
         ):
             DeepSeekModel.from_api_key("deepseek-chat", api_key="sk-x", max_connections=300)
-        mock_limits.assert_called_once_with(
-            max_connections=300, max_keepalive_connections=300
-        )
+        mock_limits.assert_called_once_with(max_connections=300, max_keepalive_connections=300)
         _, kwargs = mock_client_cls.call_args
         assert "http_client" in kwargs

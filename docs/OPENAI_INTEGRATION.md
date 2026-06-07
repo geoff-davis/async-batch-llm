@@ -67,11 +67,16 @@ is a better fit; that's a future addition (`OpenAIResponsesModel`).
 
 ## Structured output
 
-The simplest path is to ask for JSON in the prompt and parse it via
-`response_parser`:
+Use the `json_mode=True` convenience to request JSON, and the built-in
+`pydantic_json_parser` helper to parse it. The parser strips markdown code
+fences before validating, so providers that wrap JSON in ```` ```json ... ``` ````
+(DeepSeek does this even in JSON mode) validate cleanly instead of burning
+retries on the fence characters:
 
 ```python
 from pydantic import BaseModel
+
+from async_batch_llm import OpenAIModel, OpenAIStrategy, pydantic_json_parser
 
 
 class Sentiment(BaseModel):
@@ -82,14 +87,16 @@ class Sentiment(BaseModel):
 model = OpenAIModel.from_api_key(
     "gpt-4o-mini",
     api_key="sk-...",
-    extra_body={"response_format": {"type": "json_object"}},
+    json_mode=True,  # adds response_format={"type": "json_object"}
     system_instruction='Respond with JSON: {"sentiment": ..., "confidence": ...}',
 )
-strategy = OpenAIStrategy(
-    model,
-    response_parser=lambda r: Sentiment.model_validate_json(r.text),
-)
+strategy = OpenAIStrategy(model, pydantic_json_parser(Sentiment))
 ```
+
+`json_mode=True` is shorthand for
+`extra_body={"response_format": {"type": "json_object"}}`; an explicit
+`response_format` you pass in `extra_body` takes precedence. Most providers
+still require the word "JSON" somewhere in the prompt for JSON mode to engage.
 
 For OpenAI specifically, `client.chat.completions.parse(response_format=...)`
 also works — wrap it in a custom strategy that calls `parse()` directly. Kept

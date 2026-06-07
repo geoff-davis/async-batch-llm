@@ -819,6 +819,7 @@ class OpenAICompatibleModel:
         system_instruction: str | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
+        json_mode: bool = False,
         max_connections: int | None = None,
         **client_kwargs: Any,
     ) -> TM:
@@ -842,6 +843,15 @@ class OpenAICompatibleModel:
                   ``_api_key_env_var`` set) we read the env var ourselves
                   and forward it to the SDK explicitly.
                 - If neither path resolves, raises ``ValueError``.
+            json_mode: When ``True``, request JSON output by adding
+                ``response_format={"type": "json_object"}`` to ``extra_body``
+                (forwarded on every call). A convenience over hand-passing it
+                yourself; an explicit ``response_format`` in ``extra_body``
+                takes precedence. Most providers still require the word "JSON"
+                somewhere in your prompt/system instruction for this to take
+                effect. Pair with :func:`async_batch_llm.pydantic_json_parser`
+                on the strategy, since some providers (DeepSeek) still wrap the
+                JSON in markdown fences even in JSON mode (issue #26).
             max_connections: Size of the underlying httpx connection pool
                 (both ``max_connections`` and ``max_keepalive_connections``).
                 **Set this to at least ``ProcessorConfig.max_workers``** — the
@@ -867,9 +877,7 @@ class OpenAICompatibleModel:
                     "limits there instead."
                 )
             if max_connections < 1:
-                raise ValueError(
-                    f"max_connections must be >= 1; got {max_connections}."
-                )
+                raise ValueError(f"max_connections must be >= 1; got {max_connections}.")
             import httpx
 
             client_kwargs["http_client"] = httpx.AsyncClient(
@@ -900,6 +908,14 @@ class OpenAICompatibleModel:
             client = AsyncOpenAI(api_key=resolved_key, **client_kwargs)
         else:
             client = AsyncOpenAI(**client_kwargs)
+
+        if json_mode:
+            # Inject a JSON response_format, letting any explicit caller-supplied
+            # response_format in extra_body win.
+            effective_extra_body: dict[str, Any] = {"response_format": {"type": "json_object"}}
+            if extra_body:
+                effective_extra_body.update(extra_body)
+            extra_body = effective_extra_body
 
         instance = cls(
             model,
@@ -980,6 +996,7 @@ class OpenRouterModel(OpenAICompatibleModel):
         system_instruction: str | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
+        json_mode: bool = False,
         max_connections: int | None = None,
         referer: str | None = None,
         title: str | None = None,
@@ -1012,6 +1029,7 @@ class OpenRouterModel(OpenAICompatibleModel):
             system_instruction=system_instruction,
             extra_headers=merged_headers or None,
             extra_body=extra_body,
+            json_mode=json_mode,
             max_connections=max_connections,
             **client_kwargs,
         )

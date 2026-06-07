@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **First-class structured output for OpenAI-compatible strategies** (#26).
+  `*Model.from_api_key(..., json_mode=True)` adds
+  `response_format={"type": "json_object"}` to `extra_body` (an explicit
+  caller-supplied `response_format` still wins). New
+  `async_batch_llm.pydantic_json_parser(Model)` builds a `response_parser`
+  that strips markdown code fences (```` ```json ... ``` ````) before
+  validating with Pydantic — so providers like DeepSeek that wrap JSON in
+  fences even in JSON mode no longer burn retries. Also exports the
+  underlying `strip_code_fences` helper.
 - **`max_connections` on `*Model.from_api_key`** (OpenAI-compatible models).
   Sizes the underlying `httpx.AsyncClient` connection pool (both
   `max_connections` and `max_keepalive_connections`) so it can keep up with
