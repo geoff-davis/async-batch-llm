@@ -1,12 +1,14 @@
 """Example demonstrating the new LLM call strategy pattern.
 
-This example shows how to use all three built-in strategy classes:
+This example shows how to use the built-in strategy classes:
 1. PydanticAIStrategy - For PydanticAI agents (structured output)
-2. GeminiStrategy - For direct Gemini API calls
-3. GeminiCachedStrategy - For Gemini API calls with context caching
+2. GeminiStrategy + GeminiModel - For direct Gemini API calls
+3. GeminiStrategy + GeminiCachedModel - For Gemini with context caching
 
 The strategy pattern provides a clean, flexible way to configure how LLM calls
-are made, including model selection, caching behavior, and response parsing.
+are made. Since v0.6.0 the model and the strategy are separate: a model
+(``GeminiModel`` / ``GeminiCachedModel``) handles the API call and token
+extraction, and ``GeminiStrategy`` handles response parsing and lifecycle.
 """
 
 import asyncio
@@ -17,11 +19,15 @@ from google import genai
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
-from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
-from async_batch_llm.llm_strategies import (
-    GeminiCachedStrategy,
+from async_batch_llm import (
+    GeminiCachedModel,
+    GeminiModel,
     GeminiStrategy,
+    LLMWorkItem,
+    ParallelBatchProcessor,
+    ProcessorConfig,
     PydanticAIStrategy,
+    TokenUsage,
 )
 
 GEMINI_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -93,16 +99,12 @@ async def example_gemini_strategy():
 
     # Create a response parser
     def parse_response(response: Any) -> str:
-        """Extract text from Gemini response."""
+        """Extract text from the normalized LLMResponse."""
         return response.text
 
-    # Create the strategy
-    strategy = GeminiStrategy(
-        model="gemini-2.5-flash",
-        client=client,
-        response_parser=parse_response,
-        config=genai.types.GenerateContentConfig(temperature=0.7),
-    )
+    # Create the model, then wrap it in the strategy.
+    model = GeminiModel("gemini-2.5-flash", client)
+    strategy = GeminiStrategy(model, response_parser=parse_response, temperature=0.7)
 
     # Configure the processor
     config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
@@ -132,7 +134,7 @@ async def example_gemini_strategy():
             print(f"  Answer: {item_result.output}")
 
 
-# Example 3: Using GeminiCachedStrategy for RAG-style workflows
+# Example 3: Using GeminiCachedModel for RAG-style workflows
 async def example_gemini_cached_strategy():
     """Example using Gemini with context caching for RAG-style workflows."""
     print("\n" + "=" * 60)
@@ -179,15 +181,16 @@ async def example_gemini_cached_strategy():
     def parse_response(response: Any) -> str:
         return response.text
 
-    # Create the cached strategy
-    strategy = GeminiCachedStrategy(
-        model="gemini-2.5-flash",
-        client=client,
-        response_parser=parse_response,
+    # Create ONE cached model and wrap it in the ordinary GeminiStrategy.
+    # Sharing the same instance across work items is what makes caching pay off.
+    cached_model = GeminiCachedModel(
+        "gemini-2.5-flash",
+        client,
         cached_content=cached_content,
         cache_ttl_seconds=3600,  # Cache for 1 hour
-        cache_refresh_threshold=0.1,  # Refresh if <10% TTL remaining
+        cache_renewal_buffer_seconds=300,  # Renew 5 min before expiry
     )
+    strategy = GeminiStrategy(cached_model, response_parser=parse_response)
 
     # Configure the processor
     config = ProcessorConfig(max_workers=3, timeout_per_item=30.0)

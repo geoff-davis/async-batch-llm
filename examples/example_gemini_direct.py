@@ -22,9 +22,10 @@ Get an API key from: https://aistudio.google.com/apikey
 
 ## Features Demonstrated
 
-1. Built-in GeminiStrategy for direct Gemini API calls
+1. Built-in GeminiStrategy (wrapping GeminiModel) for direct Gemini API calls
 2. Progressive temperature via custom strategy
-3. Structured output with Pydantic response_schema
+3. Structured output with Pydantic (parser-based for the built-in strategy;
+   response_schema-enforced via the custom strategy in Example 2)
 4. Token usage tracking
 5. Async batch processing with concurrency control
 6. Error handling and retries
@@ -44,8 +45,15 @@ from google import genai
 from google.genai.types import GenerateContentConfig
 from pydantic import BaseModel, Field
 
-from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
-from async_batch_llm.llm_strategies import GeminiStrategy, LLMCallStrategy
+from async_batch_llm import (
+    GeminiModel,
+    GeminiStrategy,
+    LLMWorkItem,
+    ParallelBatchProcessor,
+    ProcessorConfig,
+    TokenUsage,
+)
+from async_batch_llm.llm_strategies import LLMCallStrategy
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 
@@ -157,19 +165,17 @@ async def main():
     print("=" * 60 + "\n")
 
     def parse_response(response) -> SummaryOutput:
-        """Parse Gemini response into SummaryOutput."""
+        """Parse the normalized LLMResponse into SummaryOutput."""
         return SummaryOutput.model_validate_json(response.text)
 
-    strategy = GeminiStrategy(
-        model="gemini-2.5-flash",
-        client=client,
-        response_parser=parse_response,
-        config=GenerateContentConfig(
-            temperature=0.7,
-            response_mime_type="application/json",
-            response_schema=SummaryOutput,
-        ),
-    )
+    # The built-in GeminiStrategy wraps a GeminiModel; the response_parser turns
+    # the normalized LLMResponse into your Pydantic model. The built-in model
+    # doesn't thread Gemini's per-call generation config (response_schema /
+    # response_mime_type), so we ask for JSON in the prompt — for
+    # schema-enforced JSON, use a custom strategy that calls the client directly
+    # (see Example 2).
+    model = GeminiModel("gemini-2.5-flash", client)
+    strategy = GeminiStrategy(model, response_parser=parse_response, temperature=0.7)
 
     config = ProcessorConfig(max_workers=3, timeout_per_item=30.0)
 
@@ -179,7 +185,11 @@ async def main():
                 LLMWorkItem(
                     item_id=f"text_{i}",
                     strategy=strategy,
-                    prompt=f"Please summarize this text:\n\n{text}",
+                    prompt=(
+                        "Summarize this text. Respond with JSON matching "
+                        '{"summary": str, "key_points": [str, ...]}:\n\n'
+                        f"{text}"
+                    ),
                 )
             )
 

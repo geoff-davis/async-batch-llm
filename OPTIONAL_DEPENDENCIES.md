@@ -33,7 +33,7 @@ This installs only the core dependencies:
 **What requires extras**:
 
 - ❌ `PydanticAIStrategy` (requires `[pydantic-ai]`)
-- ❌ `GeminiStrategy` / `GeminiCachedStrategy` (requires `[gemini]`)
+- ❌ `GeminiStrategy` / `GeminiModel` / `GeminiCachedModel` (requires `[gemini]`)
 
 ### With PydanticAI Support
 
@@ -63,8 +63,8 @@ uv add 'async-batch-llm[gemini]'
 
 **Enables**:
 
-- `GeminiStrategy` for direct Gemini API calls
-- `GeminiCachedStrategy` for Gemini with context caching
+- `GeminiModel` + `GeminiStrategy` for direct Gemini API calls
+- `GeminiCachedModel` (wrapped in `GeminiStrategy`) for Gemini with context caching
 - `GeminiErrorClassifier` for Gemini-specific error handling
 
 ### With Everything
@@ -121,26 +121,24 @@ work_item = LLMWorkItem(
 ### Pattern 2: Gemini Strategies (requires `gemini`)
 
 ```python
-from async_batch_llm.llm_strategies import GeminiStrategy, GeminiCachedStrategy
+from async_batch_llm import GeminiModel, GeminiCachedModel, GeminiStrategy
 from google import genai
 
 client = genai.Client(api_key="your-api-key")
 
-# Simple Gemini strategy
-strategy = GeminiStrategy(
-    model="gemini-2.5-flash",
-    client=client,
-    response_parser=lambda r: r.text,
-)
+# Simple Gemini model + strategy
+model = GeminiModel("gemini-2.5-flash", client)
+strategy = GeminiStrategy(model, response_parser=lambda r: r.text)
 
-# OR cached strategy for RAG
-strategy = GeminiCachedStrategy(
-    model="gemini-2.5-flash",
-    client=client,
-    response_parser=lambda r: r.text,
+# OR a cached model for RAG (wrap it in the same GeminiStrategy).
+# Share ONE cached model across work items to actually benefit from caching.
+cached_model = GeminiCachedModel(
+    "gemini-2.5-flash",
+    client,
     cached_content=your_cached_content,
     cache_ttl_seconds=3600,
 )
+strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
 
 work_item = LLMWorkItem(
     item_id="item_1",

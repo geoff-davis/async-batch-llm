@@ -333,6 +333,96 @@ class TestDeepSeekModel:
         assert DeepSeekModel._api_key_env_var == "DEEPSEEK_API_KEY"
 
 
+class TestDeepSeekThinkingToggle:
+    """thinking=True/False maps to DeepSeek's extra_body field (issue #27)."""
+
+    def test_thinking_false_disables(self):
+        model = DeepSeekModel("deepseek-v4-flash", MagicMock(), thinking=False)
+        assert model._default_extra_body == {"thinking": {"type": "disabled"}}
+
+    def test_thinking_true_enables(self):
+        model = DeepSeekModel("deepseek-v4-flash", MagicMock(), thinking=True)
+        assert model._default_extra_body == {"thinking": {"type": "enabled"}}
+
+    def test_thinking_none_leaves_extra_body_untouched(self):
+        model = DeepSeekModel("deepseek-chat", MagicMock())
+        assert model._default_extra_body is None
+
+    def test_thinking_merges_with_existing_extra_body(self):
+        model = DeepSeekModel(
+            "deepseek-v4-flash",
+            MagicMock(),
+            extra_body={"max_tokens": 100},
+            thinking=False,
+        )
+        assert model._default_extra_body == {
+            "max_tokens": 100,
+            "thinking": {"type": "disabled"},
+        }
+
+    def test_explicit_thinking_in_extra_body_wins(self):
+        model = DeepSeekModel(
+            "deepseek-v4-flash",
+            MagicMock(),
+            extra_body={"thinking": {"type": "enabled"}},
+            thinking=False,
+        )
+        assert model._default_extra_body == {"thinking": {"type": "enabled"}}
+
+    def test_from_api_key_thinking_forwarded(self):
+        with patch("async_batch_llm.models.AsyncOpenAI"):
+            model = DeepSeekModel.from_api_key("deepseek-v4-flash", api_key="sk-x", thinking=False)
+        assert model._default_extra_body == {"thinking": {"type": "disabled"}}
+
+    @pytest.mark.asyncio
+    async def test_thinking_forwarded_to_call(self):
+        response = _build_response()
+        client = _build_client(response)
+        model = DeepSeekModel("deepseek-v4-flash", client, thinking=False)
+        await model.generate("hi")
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+
+
+class TestJsonMode:
+    """json_mode=True injects response_format into extra_body (issue #26)."""
+
+    def test_json_mode_sets_response_format(self):
+        with patch("async_batch_llm.models.AsyncOpenAI"):
+            model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x", json_mode=True)
+        assert model._default_extra_body == {"response_format": {"type": "json_object"}}
+
+    def test_json_mode_off_by_default(self):
+        with patch("async_batch_llm.models.AsyncOpenAI"):
+            model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x")
+        assert model._default_extra_body is None
+
+    def test_explicit_response_format_wins_over_json_mode(self):
+        with patch("async_batch_llm.models.AsyncOpenAI"):
+            model = OpenAIModel.from_api_key(
+                "gpt-4o-mini",
+                api_key="sk-x",
+                json_mode=True,
+                extra_body={"response_format": {"type": "json_schema"}, "top_p": 0.9},
+            )
+        assert model._default_extra_body == {
+            "response_format": {"type": "json_schema"},
+            "top_p": 0.9,
+        }
+
+    @pytest.mark.asyncio
+    async def test_json_mode_forwarded_to_call(self):
+        response = _build_response()
+        client = _build_client(response)
+        with patch("async_batch_llm.models.AsyncOpenAI", return_value=client):
+            model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x", json_mode=True)
+        await model.generate("return json")
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["response_format"] == {"type": "json_object"}
+
+
 class TestImportError:
     def test_constructor_raises_when_sdk_missing(self):
         with patch("async_batch_llm.models.AsyncOpenAI", None):
@@ -346,3 +436,54 @@ class TestImportError:
             with pytest.raises(ImportError) as exc_info:
                 OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x")
             assert "openai is required" in str(exc_info.value)
+
+
+class TestConnectionPoolSizing:
+    """max_connections sizes the underlying httpx pool (issue #25)."""
+
+    def test_max_connections_builds_sized_http_client(self):
+        with (
+            patch("async_batch_llm.models.AsyncOpenAI") as mock_client_cls,
+            patch("httpx.Limits") as mock_limits,
+            patch("httpx.AsyncClient") as mock_async_client,
+        ):
+            OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x", max_connections=150)
+
+        # Pool limits sized symmetrically from max_connections...
+        mock_limits.assert_called_once_with(max_connections=150, max_keepalive_connections=150)
+        # ...and the resulting http_client handed to the SDK constructor.
+        mock_async_client.assert_called_once_with(limits=mock_limits.return_value)
+        _, kwargs = mock_client_cls.call_args
+        assert kwargs["http_client"] is mock_async_client.return_value
+
+    def test_no_max_connections_leaves_http_client_unset(self):
+        with patch("async_batch_llm.models.AsyncOpenAI") as mock_client_cls:
+            OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x")
+        _, kwargs = mock_client_cls.call_args
+        assert "http_client" not in kwargs
+
+    def test_max_connections_and_http_client_conflict(self):
+        with patch("async_batch_llm.models.AsyncOpenAI"):
+            with pytest.raises(ValueError, match="not both"):
+                OpenAIModel.from_api_key(
+                    "gpt-4o-mini",
+                    api_key="sk-x",
+                    max_connections=150,
+                    http_client=MagicMock(),
+                )
+
+    def test_max_connections_must_be_positive(self):
+        with patch("async_batch_llm.models.AsyncOpenAI"):
+            with pytest.raises(ValueError, match=">= 1"):
+                OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x", max_connections=0)
+
+    def test_deepseek_max_connections_forwarded(self):
+        with (
+            patch("async_batch_llm.models.AsyncOpenAI") as mock_client_cls,
+            patch("httpx.Limits") as mock_limits,
+            patch("httpx.AsyncClient"),
+        ):
+            DeepSeekModel.from_api_key("deepseek-chat", api_key="sk-x", max_connections=300)
+        mock_limits.assert_called_once_with(max_connections=300, max_keepalive_connections=300)
+        _, kwargs = mock_client_cls.call_args
+        assert "http_client" in kwargs

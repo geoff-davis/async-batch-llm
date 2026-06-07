@@ -162,6 +162,52 @@ See [OpenRouter Integration](OPENROUTER_INTEGRATION.md) for the
 per-upstream-provider caching matrix and the Anthropic `cache_control`
 opt-in pattern.
 
+### DeepSeek Strategy
+
+Direct DeepSeek API access with native cache-hit token tracking (added in
+v0.10.0):
+
+```python
+from async_batch_llm import DeepSeekModel, DeepSeekStrategy
+
+model = DeepSeekModel.from_api_key(
+    "deepseek-v4-flash",     # reads DEEPSEEK_API_KEY
+    thinking=False,          # non-thinking: cheaper/faster for batch work
+    max_connections=200,     # see the high-concurrency note below
+)
+strategy = DeepSeekStrategy(model)
+```
+
+DeepSeek allows **thousands of concurrent connections** — far more than most
+providers — so it's a great fit for large parallel batches. To actually use
+that headroom, raise `ProcessorConfig(max_workers=...)` *and* pass a matching
+`max_connections` so the underlying httpx pool (default ~100) doesn't become
+the bottleneck. See the [DeepSeek quickstart in the
+README](https://github.com/geoff-davis/async-batch-llm#deepseek-quickstart)
+for the full pattern (thinking toggle, JSON mode, connection pool,
+fence-tolerant parser, and the prepaid-balance gotcha).
+
+### Structured (JSON) output
+
+For the OpenAI-compatible providers (OpenAI / OpenRouter / DeepSeek), request
+JSON with `from_api_key(..., json_mode=True)` and parse it with the built-in
+`pydantic_json_parser`, which strips markdown code fences before validating:
+
+```python
+from pydantic import BaseModel
+
+from async_batch_llm import DeepSeekModel, DeepSeekStrategy, pydantic_json_parser
+
+
+class Topic(BaseModel):
+    label: str
+    confidence: float
+
+
+model = DeepSeekModel.from_api_key("deepseek-chat", json_mode=True)
+strategy = DeepSeekStrategy(model, pydantic_json_parser(Topic))
+```
+
 ## Next Steps
 
 - [Basic Examples](examples/basic.md) - See more usage examples

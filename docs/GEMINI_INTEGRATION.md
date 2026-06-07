@@ -55,15 +55,22 @@ print(response.text)
 
 ## Usage with async-batch-llm
 
-async-batch-llm provides two built-in Gemini strategies:
+async-batch-llm provides one built-in Gemini strategy (`GeminiStrategy`) plus
+two models — `GeminiModel` (direct) and `GeminiCachedModel` (context caching).
+You pick caching by choosing the model; the strategy is the same either way.
 
-### 1. GeminiStrategy (Simple API Calls)
+### 1. GeminiModel (Simple API Calls)
 
 For direct Gemini API calls without caching:
 
 ```python
-from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-from async_batch_llm.llm_strategies import GeminiStrategy
+from async_batch_llm import (
+    GeminiModel,
+    GeminiStrategy,
+    LLMWorkItem,
+    ParallelBatchProcessor,
+    ProcessorConfig,
+)
 from google import genai
 from pydantic import BaseModel
 
@@ -77,20 +84,15 @@ client = genai.Client(api_key="your-api-key")
 
 # Create response parser
 def parse_response(response) -> SummaryOutput:
-    """Parse Gemini response into your output model."""
+    """Parse the normalized LLMResponse into your output model."""
     return SummaryOutput.model_validate_json(response.text)
 
-# Create strategy
-strategy = GeminiStrategy(
-    model="gemini-2.5-flash",
-    client=client,
-    response_parser=parse_response,
-    config=genai.types.GenerateContentConfig(
-        temperature=0.7,
-        response_mime_type="application/json",
-        response_schema=SummaryOutput,
-    ),
-)
+# Create the model, then wrap it in the strategy. The built-in model doesn't
+# thread Gemini's per-call generation config (response_schema /
+# response_mime_type), so ask for JSON in the prompt — for schema-enforced JSON,
+# use a custom strategy that calls the client directly.
+model = GeminiModel("gemini-2.5-flash", client)
+strategy = GeminiStrategy(model, response_parser=parse_response, temperature=0.7)
 
 # Configure processor
 config = ProcessorConfig(max_workers=5, timeout_per_item=30.0)
@@ -117,12 +119,15 @@ for item in result.results:
         print(f"  Tokens: {item.token_usage['total_tokens']}")
 ```
 
-### 2. GeminiCachedStrategy (With Context Caching)
+### 2. GeminiCachedModel (With Context Caching)
 
-Perfect for RAG applications with large shared context:
+Perfect for RAG applications with large shared context. Since v0.6.0, caching
+lives on a dedicated **model** — `GeminiCachedModel` — which you wrap in the
+ordinary `GeminiStrategy`. (The old `GeminiCachedStrategy` was removed; the
+model now owns the cache find/create/renew/delete lifecycle.)
 
 ```python
-from async_batch_llm.llm_strategies import GeminiCachedStrategy
+from async_batch_llm import GeminiCachedModel, GeminiStrategy
 from google import genai
 
 client = genai.Client(api_key="your-api-key")
@@ -137,19 +142,18 @@ cached_content = [
     )
 ]
 
-def parse_response(response) -> str:
-    return response.text
-
-# Create cached strategy
-strategy = GeminiCachedStrategy(
-    model="gemini-2.5-flash",
-    client=client,
-    response_parser=parse_response,
+# Create ONE cached model and share it across every work item that should
+# share this context — constructing a new instance per item defeats caching
+# entirely and can cost ~10x more.
+cached_model = GeminiCachedModel(
+    "gemini-2.5-flash",
+    client,
     cached_content=cached_content,
     cache_ttl_seconds=3600,             # Cache for 1 hour
-    cache_renewal_buffer_seconds=300,   # Renew 5 min before expiry (v0.2+)
+    cache_renewal_buffer_seconds=300,   # Renew 5 min before expiry
     auto_renew=True,
 )
+strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
 
 # Use in processor
 config = ProcessorConfig(max_workers=3, timeout_per_item=30.0)
@@ -172,10 +176,11 @@ async with ParallelBatchProcessor[str, str, None](config=config) as processor:
 
     result = await processor.process_all()
 
-# Cache lifecycle:
-# - Created on first use
-# - Renewed automatically when nearing expiry (auto_renew)
-# - Left active after processing (call delete_cache() to force removal)
+# Cache lifecycle (driven by the framework via GeminiCachedModel):
+# - prepare() finds or creates the cache once per shared instance
+# - generate() renews automatically when nearing expiry (auto_renew)
+# - cleanup() leaves the cache active for reuse across runs
+#   (call cached_model.delete_cache() to force removal)
 ```
 
 ## Advanced Features
@@ -444,14 +449,10 @@ work_item = LLMWorkItem(
 ### Direct Gemini Strategy
 
 ```python
-from async_batch_llm.llm_strategies import GeminiStrategy
+from async_batch_llm import GeminiModel, GeminiStrategy
 
-strategy = GeminiStrategy(
-    model="gemini-2.5-flash",
-    client=client,
-    response_parser=parse_response,
-    config=config,  # Full control
-)
+model = GeminiModel("gemini-2.5-flash", client)
+strategy = GeminiStrategy(model, response_parser=parse_response, temperature=0.7)
 
 work_item = LLMWorkItem(
     item_id="item_1",
@@ -472,7 +473,7 @@ work_item = LLMWorkItem(
 5. **Monitor token usage**: Track costs using `item.token_usage`
 6. **Respect rate limits**: Configure `rate_limit` settings appropriately
 7. **Choose right model**: Use flash for speed, pro for quality
-8. **Use caching for RAG**: `GeminiCachedStrategy` saves money on repeated context
+8. **Use caching for RAG**: `GeminiCachedModel` saves money on repeated context
 
 ## Troubleshooting
 

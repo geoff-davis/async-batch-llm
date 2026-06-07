@@ -67,11 +67,16 @@ is a better fit; that's a future addition (`OpenAIResponsesModel`).
 
 ## Structured output
 
-The simplest path is to ask for JSON in the prompt and parse it via
-`response_parser`:
+Use the `json_mode=True` convenience to request JSON, and the built-in
+`pydantic_json_parser` helper to parse it. The parser strips markdown code
+fences before validating, so providers that wrap JSON in ```` ```json ... ``` ````
+(DeepSeek does this even in JSON mode) validate cleanly instead of burning
+retries on the fence characters:
 
 ```python
 from pydantic import BaseModel
+
+from async_batch_llm import OpenAIModel, OpenAIStrategy, pydantic_json_parser
 
 
 class Sentiment(BaseModel):
@@ -82,14 +87,16 @@ class Sentiment(BaseModel):
 model = OpenAIModel.from_api_key(
     "gpt-4o-mini",
     api_key="sk-...",
-    extra_body={"response_format": {"type": "json_object"}},
+    json_mode=True,  # adds response_format={"type": "json_object"}
     system_instruction='Respond with JSON: {"sentiment": ..., "confidence": ...}',
 )
-strategy = OpenAIStrategy(
-    model,
-    response_parser=lambda r: Sentiment.model_validate_json(r.text),
-)
+strategy = OpenAIStrategy(model, pydantic_json_parser(Sentiment))
 ```
+
+`json_mode=True` is shorthand for
+`extra_body={"response_format": {"type": "json_object"}}`; an explicit
+`response_format` you pass in `extra_body` takes precedence. Most providers
+still require the word "JSON" somewhere in the prompt for JSON mode to engage.
 
 For OpenAI specifically, `client.chat.completions.parse(response_format=...)`
 also works — wrap it in a custom strategy that calls `parse()` directly. Kept
@@ -133,6 +140,10 @@ not modeled by this helper.
 - `APIConnectionError` → retryable, network.
 - `APIStatusError` → branches on `status_code`:
   - 429 → rate limit.
+  - 402 → not retryable, `insufficient_balance` category, with a remediation
+    hint ("top up your prepaid DeepSeek balance"). Auth has passed, so this
+    otherwise looks like a generic bug; the hint is logged at WARNING when the
+    item gives up. Stops a dead balance from silently burning every retry.
   - 408/425/500/502/503/504 → retryable server error.
   - 400/401/403/404/422 → not retryable (client error / auth / config).
 - Pydantic `ValidationError` → retryable (LLM may produce valid output on
@@ -158,9 +169,35 @@ OpenAIModel.from_api_key(
     system_instruction="...",     # default system message
     extra_headers={...},          # forwarded on every request
     extra_body={"response_format": {...}},  # default per-request kwargs
+    max_connections=50,           # size the httpx pool to match max_workers
     timeout=30.0,                 # forwarded to AsyncOpenAI
 )
 ```
+
+## Connection pool sizing (`max_connections`)
+
+The openai SDK uses httpx's default connection pool (~100 connections). If you
+raise `ProcessorConfig(max_workers=...)` above that, the extra workers just
+block waiting for a connection — **throughput plateaus with no warning**. This
+bites high-concurrency providers like DeepSeek hardest (it allows thousands of
+concurrent connections, so the ~100 default — not the API — is your ceiling).
+
+Pass `max_connections` to size the pool to your worker count:
+
+```python
+# Match the pool to max_workers (a little headroom doesn't hurt).
+model = OpenAIModel.from_api_key("gpt-4o-mini", max_connections=150)
+config = ProcessorConfig(max_workers=150, timeout_per_item=60.0)
+```
+
+`max_connections` sets both `max_connections` and `max_keepalive_connections`
+on the underlying `httpx.AsyncClient`. It's a convenience for the common case;
+if you need finer control, build your own `http_client=httpx.AsyncClient(...)`
+and pass that instead (the two are mutually exclusive).
+
+> **Slow-start, too.** Even with the pool raised, the default
+> `RateLimitConfig` slow-start ramp bounds *time-to-full-throughput* on the
+> first ~50 items. If you're chasing peak throughput, tune that as well.
 
 ## Subclassing for other OpenAI-compatible providers
 

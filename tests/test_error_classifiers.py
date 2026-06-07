@@ -682,6 +682,27 @@ class TestOpenAIErrorClassifier:
         assert info.is_rate_limit is True
         assert info.error_category == "rate_limit"
 
+    def test_402_insufficient_balance_not_retryable(self):
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        classifier = OpenAIErrorClassifier()
+        info = classifier.classify(_make_openai_status_error(402, "Insufficient Balance"))
+        assert info.is_retryable is False
+        assert info.is_rate_limit is False
+        assert info.error_category == "insufficient_balance"
+        assert info.hint is not None
+        assert "balance" in info.hint.lower()
+
+    def test_402_string_fallback_not_retryable(self):
+        from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+        classifier = OpenAIErrorClassifier()
+        # No openai SDK exception type — message-only path (e.g. mocked errors).
+        info = classifier.classify(Exception("Error code: 402 - Insufficient Balance"))
+        assert info.is_retryable is False
+        assert info.error_category == "insufficient_balance"
+        assert info.hint is not None
+
 
 class TestOpenRouterErrorClassifier:
     """OpenRouter-specific overrides; everything else inherits from OpenAI."""

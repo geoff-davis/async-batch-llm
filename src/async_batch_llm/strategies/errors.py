@@ -100,6 +100,10 @@ class ErrorInfo:
             ``RateLimitCoordinator`` honors this as a *floor* on the cooldown:
             the backoff strategy may wait longer, but never shorter. ``None``
             means "no suggestion; use the strategy's value as-is".
+        hint: Optional human-readable remediation hint for the operator
+            (e.g. "top up your prepaid balance" for a 402). Surfaced in the
+            logs when the error is non-retryable so a misconfiguration doesn't
+            look like a generic API bug. ``None`` means no extra guidance.
     """
 
     is_retryable: bool
@@ -107,6 +111,7 @@ class ErrorInfo:
     is_timeout: bool
     error_category: str
     suggested_wait: float | None = None
+    hint: str | None = None
 
 
 class ErrorClassifier(ABC):

@@ -117,6 +117,9 @@ from .observers import BaseObserver, MetricsObserver, ProcessingEvent, Processor
 # Main processor
 from .parallel import ParallelBatchProcessor
 
+# Structured-output parsing helpers
+from .parsing import pydantic_json_parser, strip_code_fences
+
 # Error classification and rate limit strategies
 from .strategies import (
     DefaultErrorClassifier,
@@ -220,6 +223,9 @@ __all__ = [
     "OpenRouterErrorClassifier",
     # Processor
     "ParallelBatchProcessor",
+    # Structured-output parsing helpers
+    "pydantic_json_parser",
+    "strip_code_fences",
     # Type aliases (convenience)
     "SimpleBatchProcessor",
     "SimpleWorkItem",

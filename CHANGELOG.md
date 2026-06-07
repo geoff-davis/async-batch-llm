@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **DeepSeek `thinking` toggle** (#27). `DeepSeekModel(..., thinking=False)`
+  and `DeepSeekModel.from_api_key(..., thinking=False)` force non-thinking
+  mode (`extra_body={"thinking": {"type": "disabled"}}`); `thinking=True`
+  forces it on; `None` (default) uses the model default. V4 models
+  (`deepseek-v4-flash`/`-pro`) default to thinking, which is expensive for
+  batch classification, so this avoids relying on the deprecating
+  `deepseek-chat`/`deepseek-reasoner` aliases. New DeepSeek quickstart in the
+  README ties together `thinking`, `json_mode`, `max_connections`, and the
+  fence-tolerant parser.
+- **`402 Insufficient Balance` is now classified as non-retryable** (#27).
+  `OpenAIErrorClassifier` maps HTTP 402 (and the `insufficient balance` /
+  `insufficient_quota` string patterns) to a new `insufficient_balance`
+  category with `is_retryable=False` and an `ErrorInfo.hint`. Previously 402
+  fell through to the "unknown status → retry" path and silently burned every
+  retry attempt. The processor logs the hint at WARNING when a non-retryable
+  error gives up. `ErrorInfo` gained an optional `hint` field.
+- **First-class structured output for OpenAI-compatible strategies** (#26).
+  `*Model.from_api_key(..., json_mode=True)` adds
+  `response_format={"type": "json_object"}` to `extra_body` (an explicit
+  caller-supplied `response_format` still wins). New
+  `async_batch_llm.pydantic_json_parser(Model)` builds a `response_parser`
+  that strips markdown code fences (```` ```json ... ``` ````) before
+  validating with Pydantic — so providers like DeepSeek that wrap JSON in
+  fences even in JSON mode no longer burn retries. Also exports the
+  underlying `strip_code_fences` helper.
+- **`max_connections` on `*Model.from_api_key`** (OpenAI-compatible models).
+  Sizes the underlying `httpx.AsyncClient` connection pool (both
+  `max_connections` and `max_keepalive_connections`) so it can keep up with
+  `ProcessorConfig.max_workers`. The openai SDK otherwise uses httpx's ~100
+  default pool, silently capping throughput when `max_workers` exceeds it —
+  the biggest high-concurrency footgun, especially for DeepSeek. Mutually
+  exclusive with passing your own `http_client` (#25).
 - **First-class DeepSeek provider.** New `DeepSeekModel` (subclass of
   `OpenAICompatibleModel`, base URL `https://api.deepseek.com`, reads
   `DEEPSEEK_API_KEY`) and `DeepSeekStrategy`. `DeepSeekModel._extract_tokens`

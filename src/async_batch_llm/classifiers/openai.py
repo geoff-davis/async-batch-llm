@@ -21,6 +21,17 @@ RATE_LIMIT_PATTERNS = (
 )
 TIMEOUT_PATTERNS = ("timeout", "504", "deadline", "request timed out")
 NETWORK_PATTERNS = ("connection", "network", "econnreset", "broken pipe")
+# 402 Payment Required: balance/credits exhausted. DeepSeek in particular
+# returns "402 Insufficient Balance" on a prepaid account that's run dry.
+INSUFFICIENT_BALANCE_PATTERNS = ("402", "insufficient balance", "insufficient_quota")
+
+# Operator-facing hint attached to 402 errors so an exhausted balance doesn't
+# read like a generic API/code bug. Auth has already passed at this point.
+_INSUFFICIENT_BALANCE_HINT = (
+    "402 Payment Required — your account balance/credits are exhausted "
+    "(e.g. top up your prepaid DeepSeek balance at "
+    "https://platform.deepseek.com/). Not retryable."
+)
 
 
 def _retry_after_seconds(exception: Exception) -> float | None:
@@ -123,6 +134,18 @@ class OpenAIErrorClassifier(ErrorClassifier):
                 error_category="network_error",
             )
 
+        # Insufficient balance / payment required (string fallback for when the
+        # SDK isn't installed or for mocked exceptions). Checked before the
+        # rate-limit fallback so "402" doesn't get swept up by a stray pattern.
+        if self._matches_any_pattern(error_str, INSUFFICIENT_BALANCE_PATTERNS):
+            return ErrorInfo(
+                is_retryable=False,
+                is_rate_limit=False,
+                is_timeout=False,
+                error_category="insufficient_balance",
+                hint=_INSUFFICIENT_BALANCE_HINT,
+            )
+
         # String-pattern fallback for rate limits when the SDK isn't installed
         # or for mocked test exceptions. No response object to parse a
         # Retry-After from, so no server-suggested wait.
@@ -214,6 +237,16 @@ class OpenAIErrorClassifier(ErrorClassifier):
                 is_timeout=False,
                 error_category="rate_limit",
                 suggested_wait=_retry_after_seconds(exception),
+            )
+
+        if status_code == 402:
+            # Payment required / balance exhausted — deterministic, don't retry.
+            return ErrorInfo(
+                is_retryable=False,
+                is_rate_limit=False,
+                is_timeout=False,
+                error_category="insufficient_balance",
+                hint=_INSUFFICIENT_BALANCE_HINT,
             )
 
         if isinstance(status_code, int) and status_code in self._RETRYABLE_STATUS:
