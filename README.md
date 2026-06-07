@@ -160,6 +160,72 @@ class MyProviderStrategy(LLMCallStrategy[str]):
 See the [`examples/`](examples/) directory for OpenAI, OpenRouter, DeepSeek, Anthropic,
 LangChain, and more.
 
+#### DeepSeek quickstart
+
+End-to-end batch with the gotchas handled. DeepSeek's V4 models
+(`deepseek-v4-flash` / `deepseek-v4-pro`) default to **thinking**, which is
+expensive for batch classification (multiples of the output tokens, cost, and
+latency), so we turn it off explicitly. The `deepseek-chat` (non-thinking) /
+`deepseek-reasoner` (thinking) aliases still work but are being deprecated —
+prefer the V4 ids plus `thinking=`.
+
+```python
+from pydantic import BaseModel
+
+from async_batch_llm import (
+    CachedTokenRates,
+    DeepSeekModel,
+    DeepSeekStrategy,
+    LLMWorkItem,
+    OpenAIErrorClassifier,
+    ParallelBatchProcessor,
+    ProcessorConfig,
+    pydantic_json_parser,
+)
+
+
+class Topic(BaseModel):
+    label: str
+    confidence: float
+
+
+model = DeepSeekModel.from_api_key(
+    "deepseek-v4-flash",     # reads DEEPSEEK_API_KEY
+    thinking=False,          # non-thinking: cheaper/faster for classification
+    json_mode=True,          # response_format={"type": "json_object"}
+    max_connections=150,     # size the httpx pool to max_workers (see below)
+    system_instruction='Classify the text. Respond with JSON: {"label": ..., "confidence": ...}',
+)
+# pydantic_json_parser strips markdown fences DeepSeek adds even in JSON mode.
+strategy = DeepSeekStrategy(model, pydantic_json_parser(Topic))
+config = ProcessorConfig(max_workers=150, timeout_per_item=60.0)
+
+async with ParallelBatchProcessor[None, Topic, None](
+    config=config,
+    error_classifier=OpenAIErrorClassifier(),  # classifies 402 as non-retryable
+) as processor:
+    for i, text in enumerate(texts):
+        await processor.add_work(LLMWorkItem(item_id=f"t{i}", strategy=strategy, prompt=text))
+    result = await processor.process_all()
+
+# DeepSeek cache reads cost 10% of normal — bill cached tokens at that rate.
+print(result.effective_input_tokens(CachedTokenRates.DEEPSEEK))
+```
+
+Gotchas this handles:
+
+- **Connection pool (`max_connections`).** The openai SDK uses httpx's ~100
+  default pool, so raising `max_workers` above that gives no extra throughput —
+  workers just block. DeepSeek allows thousands of concurrent connections, so
+  the pool, not the API, is your ceiling. Set `max_connections` to your
+  `max_workers`.
+- **Markdown fences.** DeepSeek wraps JSON in ```` ```json ... ``` ````
+  even in JSON mode; `pydantic_json_parser` strips them before validating, so
+  you don't burn retries on the fence characters.
+- **Prepaid balance.** A `402 Insufficient Balance` (auth still passes) is
+  classified as non-retryable with a "top up your balance" hint — it won't
+  silently burn all your retry attempts looking like a generic bug.
+
 ### Automatic Retries
 
 Configure retry behavior with exponential backoff and jitter:

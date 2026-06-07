@@ -1035,6 +1035,23 @@ class OpenRouterModel(OpenAICompatibleModel):
         )
 
 
+def _merge_thinking(
+    extra_body: dict[str, Any] | None, thinking: bool | None
+) -> dict[str, Any] | None:
+    """Fold a DeepSeek ``thinking`` toggle into an ``extra_body`` dict.
+
+    ``thinking=None`` leaves ``extra_body`` untouched (use the model's default).
+    ``True``/``False`` map to DeepSeek's ``{"thinking": {"type": "enabled"}}`` /
+    ``{"type": "disabled"}`` request field. An explicit ``thinking`` key already
+    present in ``extra_body`` wins.
+    """
+    if thinking is None:
+        return extra_body
+    merged = dict(extra_body) if extra_body else {}
+    merged.setdefault("thinking", {"type": "enabled" if thinking else "disabled"})
+    return merged
+
+
 class DeepSeekModel(OpenAICompatibleModel):
     """LLM model backed by DeepSeek's OpenAI-compatible API.
 
@@ -1053,8 +1070,19 @@ class DeepSeekModel(OpenAICompatibleModel):
     instead; the native cache fields aren't reliably forwarded there, which is
     why direct access via this class gives better cache telemetry.)
 
+    **Thinking mode.** DeepSeek's V4 models (``deepseek-v4-flash`` /
+    ``deepseek-v4-pro``) default to *thinking*, which for a batch
+    classification job is a surprising, expensive default — thinking can emit
+    several times the output tokens (and cost, and latency) of non-thinking.
+    Pass ``thinking=False`` to force non-thinking mode explicitly rather than
+    relying on the ``deepseek-chat`` (non-thinking) / ``deepseek-reasoner``
+    (thinking) aliases, which DeepSeek is deprecating. Under the hood this sends
+    ``extra_body={"thinking": {"type": "disabled"}}``.
+
     Example:
-        >>> model = DeepSeekModel.from_api_key("deepseek-chat", api_key="sk-...")
+        >>> model = DeepSeekModel.from_api_key(
+        ...     "deepseek-v4-flash", api_key="sk-...", thinking=False
+        ... )
         >>> response = await model.generate("Hello!")
         >>> print(response.text, response.cached_input_tokens)
 
@@ -1064,6 +1092,57 @@ class DeepSeekModel(OpenAICompatibleModel):
     _default_base_url: str | None = "https://api.deepseek.com"
     _install_extras: str = "deepseek"
     _api_key_env_var: str | None = "DEEPSEEK_API_KEY"
+
+    def __init__(
+        self,
+        model: str,
+        client: "AsyncOpenAI",
+        *,
+        system_instruction: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+        extra_body: dict[str, Any] | None = None,
+        thinking: bool | None = None,
+    ):
+        """See :class:`OpenAICompatibleModel`; adds the DeepSeek ``thinking``
+        toggle (``True``/``False`` to force thinking on/off, ``None`` for the
+        model default)."""
+        super().__init__(
+            model,
+            client,
+            system_instruction=system_instruction,
+            extra_headers=extra_headers,
+            extra_body=_merge_thinking(extra_body, thinking),
+        )
+
+    @classmethod
+    def from_api_key(  # type: ignore[override]
+        cls,
+        model: str,
+        api_key: str | None = None,
+        *,
+        base_url: str | None = None,
+        system_instruction: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+        extra_body: dict[str, Any] | None = None,
+        json_mode: bool = False,
+        max_connections: int | None = None,
+        thinking: bool | None = None,
+        **client_kwargs: Any,
+    ) -> "DeepSeekModel":
+        """Build a DeepSeekModel; reads ``DEEPSEEK_API_KEY`` when ``api_key`` is
+        None. Adds the ``thinking`` toggle (see the class docstring) on top of
+        the shared :meth:`OpenAICompatibleModel.from_api_key` arguments."""
+        return super().from_api_key(
+            model,
+            api_key,
+            base_url=base_url,
+            system_instruction=system_instruction,
+            extra_headers=extra_headers,
+            extra_body=_merge_thinking(extra_body, thinking),
+            json_mode=json_mode,
+            max_connections=max_connections,
+            **client_kwargs,
+        )
 
     def _extract_tokens(self, response: Any) -> tuple[int, int, int, int]:
         """Extract tokens, preferring DeepSeek's native cache-hit field.

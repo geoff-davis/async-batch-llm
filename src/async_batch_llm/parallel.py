@@ -585,7 +585,14 @@ class ParallelBatchProcessor(
                 self._token_extractor.accumulate(cumulative_failed_tokens, attempt_tokens)
 
                 if not self._should_retry_error(e):
-                    logger.debug(f"Error not retryable: {type(e).__name__}")
+                    # Surface an operator hint (e.g. a 402 insufficient-balance
+                    # remediation) at WARNING so a misconfiguration doesn't read
+                    # like a generic API/code bug; otherwise a quiet debug line.
+                    hint = self.error_classifier.classify(e).hint
+                    if hint:
+                        logger.warning(f"[FAIL]Non-retryable error for {work_item.item_id}: {hint}")
+                    else:
+                        logger.debug(f"Error not retryable: {type(e).__name__}")
                     # Attach token usage to exception so it can be included in failed result
                     if hasattr(e, "__dict__"):
                         e.__dict__["_failed_token_usage"] = cumulative_failed_tokens

@@ -140,6 +140,10 @@ not modeled by this helper.
 - `APIConnectionError` → retryable, network.
 - `APIStatusError` → branches on `status_code`:
   - 429 → rate limit.
+  - 402 → not retryable, `insufficient_balance` category, with a remediation
+    hint ("top up your prepaid DeepSeek balance"). Auth has passed, so this
+    otherwise looks like a generic bug; the hint is logged at WARNING when the
+    item gives up. Stops a dead balance from silently burning every retry.
   - 408/425/500/502/503/504 → retryable server error.
   - 400/401/403/404/422 → not retryable (client error / auth / config).
 - Pydantic `ValidationError` → retryable (LLM may produce valid output on

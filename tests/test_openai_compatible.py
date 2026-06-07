@@ -333,6 +333,58 @@ class TestDeepSeekModel:
         assert DeepSeekModel._api_key_env_var == "DEEPSEEK_API_KEY"
 
 
+class TestDeepSeekThinkingToggle:
+    """thinking=True/False maps to DeepSeek's extra_body field (issue #27)."""
+
+    def test_thinking_false_disables(self):
+        model = DeepSeekModel("deepseek-v4-flash", MagicMock(), thinking=False)
+        assert model._default_extra_body == {"thinking": {"type": "disabled"}}
+
+    def test_thinking_true_enables(self):
+        model = DeepSeekModel("deepseek-v4-flash", MagicMock(), thinking=True)
+        assert model._default_extra_body == {"thinking": {"type": "enabled"}}
+
+    def test_thinking_none_leaves_extra_body_untouched(self):
+        model = DeepSeekModel("deepseek-chat", MagicMock())
+        assert model._default_extra_body is None
+
+    def test_thinking_merges_with_existing_extra_body(self):
+        model = DeepSeekModel(
+            "deepseek-v4-flash",
+            MagicMock(),
+            extra_body={"max_tokens": 100},
+            thinking=False,
+        )
+        assert model._default_extra_body == {
+            "max_tokens": 100,
+            "thinking": {"type": "disabled"},
+        }
+
+    def test_explicit_thinking_in_extra_body_wins(self):
+        model = DeepSeekModel(
+            "deepseek-v4-flash",
+            MagicMock(),
+            extra_body={"thinking": {"type": "enabled"}},
+            thinking=False,
+        )
+        assert model._default_extra_body == {"thinking": {"type": "enabled"}}
+
+    def test_from_api_key_thinking_forwarded(self):
+        with patch("async_batch_llm.models.AsyncOpenAI"):
+            model = DeepSeekModel.from_api_key("deepseek-v4-flash", api_key="sk-x", thinking=False)
+        assert model._default_extra_body == {"thinking": {"type": "disabled"}}
+
+    @pytest.mark.asyncio
+    async def test_thinking_forwarded_to_call(self):
+        response = _build_response()
+        client = _build_client(response)
+        model = DeepSeekModel("deepseek-v4-flash", client, thinking=False)
+        await model.generate("hi")
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+
+
 class TestJsonMode:
     """json_mode=True injects response_format into extra_body (issue #26)."""
 

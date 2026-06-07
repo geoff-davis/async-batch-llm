@@ -22,11 +22,16 @@ export DEEPSEEK_API_KEY=sk-...
 ## Features demonstrated
 
 1. ``DeepSeekModel.from_api_key`` (reads ``DEEPSEEK_API_KEY``).
-2. ``DeepSeekStrategy`` with the default text-passthrough parser.
-3. Native cache-hit token tracking + provider-aware billing via
+2. ``thinking=False`` to force non-thinking mode (cheaper/faster for batch
+   classification; V4 models default to thinking).
+3. ``max_connections`` to size the httpx pool to ``max_workers`` so high
+   concurrency isn't bottlenecked at httpx's ~100 default.
+4. ``DeepSeekStrategy`` with the default text-passthrough parser.
+5. Native cache-hit token tracking + provider-aware billing via
    ``CachedTokenRates.DEEPSEEK``.
-4. ``OpenAIErrorClassifier`` (DeepSeek is OpenAI-compatible, so the OpenAI
-   classifier handles its errors).
+6. ``OpenAIErrorClassifier`` (DeepSeek is OpenAI-compatible, so the OpenAI
+   classifier handles its errors — including 402 Insufficient Balance as a
+   clear non-retryable error).
 """
 
 import asyncio
@@ -48,7 +53,11 @@ async def main() -> None:
         print("Set DEEPSEEK_API_KEY before running this example.")
         return
 
-    model = DeepSeekModel.from_api_key("deepseek-chat")
+    model = DeepSeekModel.from_api_key(
+        "deepseek-chat",
+        thinking=False,  # non-thinking: cheaper and faster for this workload
+        max_connections=3,  # match max_workers below (scale both together)
+    )
     strategy = DeepSeekStrategy(model)
     config = ProcessorConfig(max_workers=3, timeout_per_item=60.0)
 
