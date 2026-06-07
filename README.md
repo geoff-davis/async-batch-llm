@@ -162,6 +162,13 @@ LangChain, and more.
 
 #### DeepSeek quickstart
 
+DeepSeek is a standout fit for this library: it allows **thousands of
+concurrent connections** (far more than most providers), so a single
+asyncio batch can drive very high throughput — as long as you size the
+connection pool to match (see `max_connections` below). Combined with its
+cheap cache-hit tier, it's well suited to large classification/extraction
+jobs.
+
 End-to-end batch with the gotchas handled. DeepSeek's V4 models
 (`deepseek-v4-flash` / `deepseek-v4-pro`) default to **thinking**, which is
 expensive for batch classification (multiples of the output tokens, cost, and
@@ -214,11 +221,14 @@ print(result.effective_input_tokens(CachedTokenRates.DEEPSEEK))
 
 Gotchas this handles:
 
-- **Connection pool (`max_connections`).** The openai SDK uses httpx's ~100
-  default pool, so raising `max_workers` above that gives no extra throughput —
-  workers just block. DeepSeek allows thousands of concurrent connections, so
-  the pool, not the API, is your ceiling. Set `max_connections` to your
-  `max_workers`.
+- **Connection pool (`max_connections`) — the key to DeepSeek's concurrency.**
+  DeepSeek allows thousands of concurrent connections, but the openai SDK uses
+  httpx's ~100 default pool, so raising `max_workers` above that gives no extra
+  throughput — workers just block on the pool, which silently becomes your
+  ceiling instead of the API. Set `max_connections` to your `max_workers` to
+  unlock the headroom; both scale together. (Even then, the default
+  `RateLimitConfig` slow-start ramp bounds time-to-full-throughput on the first
+  ~50 items — tune it too if you're chasing peak speed.)
 - **Markdown fences.** DeepSeek wraps JSON in ```` ```json ... ``` ````
   even in JSON mode; `pydantic_json_parser` strips them before validating, so
   you don't burn retries on the fence characters.

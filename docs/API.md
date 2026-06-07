@@ -853,6 +853,7 @@ class ErrorInfo:
     is_timeout: bool
     error_category: str
     suggested_wait: float | None = None
+    hint: str | None = None
 ```
 
 **Fields:**
@@ -865,11 +866,15 @@ class ErrorInfo:
   - `"api_timeout"` - API-level timeout
   - `"rate_limit"` - Rate limit error
   - `"validation_error"` - Pydantic validation error
+  - `"insufficient_balance"` - 402 Payment Required / balance exhausted (non-retryable)
   - `"client_error"` - 4xx client error
   - `"server_error"` - 5xx server error
   - `"connection_error"` - Network connection error
   - `"unknown"` - Unclassified error
 - `suggested_wait` (float | None): Suggested wait time before retry (seconds). Used for rate limits.
+- `hint` (str | None): Optional operator-facing remediation hint, surfaced in
+  the logs at WARNING when a non-retryable error gives up (e.g. the 402
+  "top up your prepaid balance" guidance). `None` means no extra guidance.
 
 **Example:**
 
