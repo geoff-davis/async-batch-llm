@@ -819,6 +819,7 @@ class OpenAICompatibleModel:
         system_instruction: str | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
+        max_connections: int | None = None,
         **client_kwargs: Any,
     ) -> TM:
         """Build the model with a freshly-constructed AsyncOpenAI client.
@@ -841,11 +842,41 @@ class OpenAICompatibleModel:
                   ``_api_key_env_var`` set) we read the env var ourselves
                   and forward it to the SDK explicitly.
                 - If neither path resolves, raises ``ValueError``.
+            max_connections: Size of the underlying httpx connection pool
+                (both ``max_connections`` and ``max_keepalive_connections``).
+                **Set this to at least ``ProcessorConfig.max_workers``** — the
+                openai SDK otherwise uses httpx's default pool (~100), so
+                raising ``max_workers`` above that gives no extra throughput;
+                the excess workers just block waiting for a connection (see
+                issue #25). High-concurrency providers like DeepSeek (which
+                allow thousands of concurrent connections) hit this ceiling
+                first. Mutually exclusive with passing your own
+                ``http_client``; raises ``ValueError`` if you pass both.
         """
         if AsyncOpenAI is None:
             raise ImportError(
                 f"openai is required for {cls.__name__}. "
                 f"Install with: pip install 'async-batch-llm[{cls._install_extras}]'"
+            )
+        if max_connections is not None:
+            if "http_client" in client_kwargs:
+                raise ValueError(
+                    "Pass either max_connections or http_client, not both. "
+                    "max_connections is a convenience for sizing the default "
+                    "httpx pool; if you build your own http_client, set its "
+                    "limits there instead."
+                )
+            if max_connections < 1:
+                raise ValueError(
+                    f"max_connections must be >= 1; got {max_connections}."
+                )
+            import httpx
+
+            client_kwargs["http_client"] = httpx.AsyncClient(
+                limits=httpx.Limits(
+                    max_connections=max_connections,
+                    max_keepalive_connections=max_connections,
+                )
             )
         effective_base_url = base_url or cls._default_base_url
         if effective_base_url is not None:
@@ -949,6 +980,7 @@ class OpenRouterModel(OpenAICompatibleModel):
         system_instruction: str | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
+        max_connections: int | None = None,
         referer: str | None = None,
         title: str | None = None,
         **client_kwargs: Any,
@@ -980,6 +1012,7 @@ class OpenRouterModel(OpenAICompatibleModel):
             system_instruction=system_instruction,
             extra_headers=merged_headers or None,
             extra_body=extra_body,
+            max_connections=max_connections,
             **client_kwargs,
         )
 

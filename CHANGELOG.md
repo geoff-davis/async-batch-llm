@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`max_connections` on `*Model.from_api_key`** (OpenAI-compatible models).
+  Sizes the underlying `httpx.AsyncClient` connection pool (both
+  `max_connections` and `max_keepalive_connections`) so it can keep up with
+  `ProcessorConfig.max_workers`. The openai SDK otherwise uses httpx's ~100
+  default pool, silently capping throughput when `max_workers` exceeds it —
+  the biggest high-concurrency footgun, especially for DeepSeek. Mutually
+  exclusive with passing your own `http_client` (#25).
 - **First-class DeepSeek provider.** New `DeepSeekModel` (subclass of
   `OpenAICompatibleModel`, base URL `https://api.deepseek.com`, reads
   `DEEPSEEK_API_KEY`) and `DeepSeekStrategy`. `DeepSeekModel._extract_tokens`

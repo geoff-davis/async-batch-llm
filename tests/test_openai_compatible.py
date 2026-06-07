@@ -346,3 +346,58 @@ class TestImportError:
             with pytest.raises(ImportError) as exc_info:
                 OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x")
             assert "openai is required" in str(exc_info.value)
+
+
+class TestConnectionPoolSizing:
+    """max_connections sizes the underlying httpx pool (issue #25)."""
+
+    def test_max_connections_builds_sized_http_client(self):
+        with (
+            patch("async_batch_llm.models.AsyncOpenAI") as mock_client_cls,
+            patch("httpx.Limits") as mock_limits,
+            patch("httpx.AsyncClient") as mock_async_client,
+        ):
+            OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x", max_connections=150)
+
+        # Pool limits sized symmetrically from max_connections...
+        mock_limits.assert_called_once_with(
+            max_connections=150, max_keepalive_connections=150
+        )
+        # ...and the resulting http_client handed to the SDK constructor.
+        mock_async_client.assert_called_once_with(limits=mock_limits.return_value)
+        _, kwargs = mock_client_cls.call_args
+        assert kwargs["http_client"] is mock_async_client.return_value
+
+    def test_no_max_connections_leaves_http_client_unset(self):
+        with patch("async_batch_llm.models.AsyncOpenAI") as mock_client_cls:
+            OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x")
+        _, kwargs = mock_client_cls.call_args
+        assert "http_client" not in kwargs
+
+    def test_max_connections_and_http_client_conflict(self):
+        with patch("async_batch_llm.models.AsyncOpenAI"):
+            with pytest.raises(ValueError, match="not both"):
+                OpenAIModel.from_api_key(
+                    "gpt-4o-mini",
+                    api_key="sk-x",
+                    max_connections=150,
+                    http_client=MagicMock(),
+                )
+
+    def test_max_connections_must_be_positive(self):
+        with patch("async_batch_llm.models.AsyncOpenAI"):
+            with pytest.raises(ValueError, match=">= 1"):
+                OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x", max_connections=0)
+
+    def test_deepseek_max_connections_forwarded(self):
+        with (
+            patch("async_batch_llm.models.AsyncOpenAI") as mock_client_cls,
+            patch("httpx.Limits") as mock_limits,
+            patch("httpx.AsyncClient"),
+        ):
+            DeepSeekModel.from_api_key("deepseek-chat", api_key="sk-x", max_connections=300)
+        mock_limits.assert_called_once_with(
+            max_connections=300, max_keepalive_connections=300
+        )
+        _, kwargs = mock_client_cls.call_args
+        assert "http_client" in kwargs

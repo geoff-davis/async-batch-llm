@@ -158,9 +158,35 @@ OpenAIModel.from_api_key(
     system_instruction="...",     # default system message
     extra_headers={...},          # forwarded on every request
     extra_body={"response_format": {...}},  # default per-request kwargs
+    max_connections=50,           # size the httpx pool to match max_workers
     timeout=30.0,                 # forwarded to AsyncOpenAI
 )
 ```
+
+## Connection pool sizing (`max_connections`)
+
+The openai SDK uses httpx's default connection pool (~100 connections). If you
+raise `ProcessorConfig(max_workers=...)` above that, the extra workers just
+block waiting for a connection — **throughput plateaus with no warning**. This
+bites high-concurrency providers like DeepSeek hardest (it allows thousands of
+concurrent connections, so the ~100 default — not the API — is your ceiling).
+
+Pass `max_connections` to size the pool to your worker count:
+
+```python
+# Match the pool to max_workers (a little headroom doesn't hurt).
+model = OpenAIModel.from_api_key("gpt-4o-mini", max_connections=150)
+config = ProcessorConfig(max_workers=150, timeout_per_item=60.0)
+```
+
+`max_connections` sets both `max_connections` and `max_keepalive_connections`
+on the underlying `httpx.AsyncClient`. It's a convenience for the common case;
+if you need finer control, build your own `http_client=httpx.AsyncClient(...)`
+and pass that instead (the two are mutually exclusive).
+
+> **Slow-start, too.** Even with the pool raised, the default
+> `RateLimitConfig` slow-start ramp bounds *time-to-full-throughput* on the
+> first ~50 items. If you're chasing peak throughput, tune that as well.
 
 ## Subclassing for other OpenAI-compatible providers
 
