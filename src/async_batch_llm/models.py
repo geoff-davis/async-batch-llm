@@ -251,7 +251,7 @@ class GeminiCachedModel:
         should share the cached context. Constructing a new instance per item
         defeats caching entirely and can cost 10× more. The framework calls
         prepare() exactly once per unique instance, so sharing is the intended
-        lifecycle. See examples/example_gemini_cached.py for the pattern.
+        lifecycle. See examples/example_llm_strategies.py for the pattern.
 
     This provides 70-90% cost savings when shared correctly.
 

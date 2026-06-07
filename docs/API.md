@@ -13,7 +13,7 @@ Complete API documentation for async-batch-llm v0.4.0.
   - [LLMCallStrategy (Abstract)](#llmcallstrategy)
   - [PydanticAIStrategy](#pydanticaistrategy)
   - [GeminiStrategy](#geministrategy)
-  - [GeminiCachedStrategy](#geminicachedstrategy)
+  - [GeminiCachedModel](#geminicachedmodel)
 - [Configuration](#configuration)
   - [ProcessorConfig](#processorconfig)
   - [RetryConfig](#retryconfig)
@@ -555,7 +555,7 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
         model: LLMModel,
         response_parser: Callable[[LLMResponse], TOutput] | None = None,
         *,
-        temperature: float = 0.0,
+        temperature: float | None = 0.0,
     )
 ```
 
@@ -564,7 +564,8 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
 - `model` (LLMModel): Model wrapper such as `GeminiModel` or `GeminiCachedModel`
 - `response_parser` (Callable | None): Function to parse `LLMResponse` into `TOutput`.
   Defaults to returning `response.text`.
-- `temperature` (float): Sampling temperature. Default: 0.0
+- `temperature` (float | None): Sampling temperature. Default: 0.0. Pass `None` to
+  omit the parameter and use the provider default.
 
 **Requires:** `pip install 'async-batch-llm[gemini]'`
 
@@ -593,25 +594,26 @@ work_item = LLMWorkItem(
 
 ---
 
-### GeminiCachedStrategy
+### GeminiCachedModel
 
-Strategy for calling Google Gemini API with context caching.
+Model for calling Google Gemini with context caching. Since v0.6.0, caching is
+a property of the **model**, not the strategy — wrap a `GeminiCachedModel` in
+the ordinary `GeminiStrategy`. (The old `GeminiCachedStrategy` was removed; the
+model now owns the cache find/create/renew/delete lifecycle.)
 
 ```python
-class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
+class GeminiCachedModel:
     def __init__(
         self,
         model: str,
         client: genai.Client,
-        response_parser: Callable[[Any], TOutput],
         cached_content: list[Content],
+        *,
         cache_ttl_seconds: int = 3600,
-        cache_refresh_threshold: float = 0.1,
         cache_renewal_buffer_seconds: int = 300,
         auto_renew: bool = True,
-        include_metadata: bool = False,
         cache_tags: dict[str, str] | None = None,
-        config: GenerateContentConfig | None = None,
+        safety_settings: list[dict[str, Any]] | None = None,
     )
 ```
 
@@ -619,31 +621,33 @@ class GeminiCachedStrategy(LLMCallStrategy[TOutput]):
 
 - `model` (str): Model name
 - `client` (genai.Client): Initialized Gemini client
-- `response_parser` (Callable): Function to parse response
 - `cached_content` (list[Content]): Content to cache (system instructions, documents)
 - `cache_ttl_seconds` (int): Cache TTL in seconds. Default: 3600 (1 hour)
-- `cache_refresh_threshold` (float): Legacy refresh fraction parameter (kept for compatibility)
 - `cache_renewal_buffer_seconds` (int): Renew caches this many seconds before expiry (default 300)
 - `auto_renew` (bool): Automatically renew caches when they near expiry. Default: True
-- `include_metadata` (bool): Wrap outputs in `GeminiResponse[TOutput]` when True
-- `cache_tags` (dict[str, str] | None): Optional metadata for cache matching/versioning
-- `config` (GenerateContentConfig | None): Optional generation config
+- `cache_tags` (dict[str, str] | None): Optional metadata for precise cache matching/versioning
+  (encoded into the cache's `display_name`)
+- `safety_settings` (list[dict] | None): Optional default safety settings for all calls
 
-**Lifecycle:**
+**Lifecycle** (driven by the framework via `GeminiStrategy`):
 
-- `prepare()`: Finds or creates the Gemini cache
-- `execute()`: Uses the cache and auto-renews when enabled
+- `prepare()`: Finds or creates the Gemini cache (once per shared instance)
+- `generate()`: Uses the cache and auto-renews when enabled
 - `cleanup()`: Runs once when the processor exits; by default caches are left alive so
   future batches can reuse them (call `delete_cache()` to remove immediately)
 
 **Requires:** `pip install 'async-batch-llm[gemini]'`
 
 > **API key:** Same as above – `GOOGLE_API_KEY` is preferred, `GEMINI_API_KEY` also works.
+>
+> **Share one instance.** Create a single `GeminiCachedModel` and reuse it
+> across every work item that should share the cached context. Constructing a
+> new instance per item defeats caching entirely and can cost ~10x more.
 
 **Example:**
 
 ```python
-from async_batch_llm import GeminiCachedStrategy, LLMWorkItem
+from async_batch_llm import GeminiCachedModel, GeminiStrategy, LLMWorkItem
 from google import genai
 from google.genai.types import Content
 
@@ -655,15 +659,15 @@ cached_content = [
     Content(role="user", parts=[{"text": large_document}]),
 ]
 
-strategy = GeminiCachedStrategy(
-    model="gemini-2.5-flash",
-    client=client,
-    response_parser=lambda r: r.text,
+cached_model = GeminiCachedModel(
+    "gemini-2.5-flash",
+    client,
     cached_content=cached_content,
     cache_ttl_seconds=3600,
 )
+strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
 
-# Reuse strategy across multiple work items to benefit from caching
+# Reuse the same strategy/model across work items to benefit from caching
 for i in range(100):
     work_item = LLMWorkItem(
         item_id=f"task_{i}",
@@ -1137,35 +1141,28 @@ attempt’s context without relying on global variables.
 
 ---
 
-### GeminiResponse
+### Response metadata (`WorkItemResult.metadata`)
 
-Container object returned when `include_metadata=True` on `GeminiStrategy` or `GeminiCachedStrategy`.
-It lets you access Gemini-specific metadata while still receiving the parsed output.
+Provider metadata (Gemini safety ratings and finish reason, OpenRouter
+provider/routed model, etc.) flows into `WorkItemResult.metadata` — a plain
+`dict[str, Any] | None`. The parsed output stays in `WorkItemResult.output`;
+you no longer wrap it in a separate response object.
 
-```python
-@dataclass
-class GeminiResponse(Generic[TOutput]):
-    output: TOutput
-    safety_ratings: dict[str, str] | None
-    finish_reason: str | None
-    token_usage: dict[str, int]
-    raw_response: Any  # google-genai response object
-```
+> **Removed:** the old `GeminiResponse` wrapper and the `include_metadata`
+> opt-in were removed in v0.6.0. Read metadata off `result.metadata` instead.
+> For Gemini safety ratings specifically, `result.metadata["safety_ratings"]`
+> carries them (the deprecated `result.gemini_safety_ratings` field is still
+> backfilled for compatibility).
 
 **Usage:**
 
 ```python
 result = await processor.process_all()
 first = result.results[0]
-if isinstance(first.output, GeminiResponse):
-    parsed = first.output.output
-    ratings = first.output.safety_ratings
-    if ratings and ratings.get("HARM_CATEGORY_HATE_SPEECH") == "HIGH":
-        log_flagged_content(parsed)
+ratings = (first.metadata or {}).get("safety_ratings")
+if ratings and ratings.get("HARM_CATEGORY_HATE_SPEECH") == "HIGH":
+    log_flagged_content(first.output)
 ```
-
-If you do not opt into metadata (`include_metadata=False`), the strategies return the plain
-`TOutput` to avoid type checking overhead.
 
 ---
 
