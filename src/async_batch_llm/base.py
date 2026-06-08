@@ -301,8 +301,10 @@ class CachedTokenRates:
     """Anthropic prompt cache reads: 10% of normal (cache writes are
     billed at 1.25× normal — not modeled here)."""
 
-    DEEPSEEK: float = 0.10
-    """DeepSeek context cache: cached tokens cost 10% of normal."""
+    DEEPSEEK: float = 0.02
+    """DeepSeek context cache: cached tokens cost ~2% of normal (V4 Flash
+    bills cache hits at $0.0028/M vs $0.14/M cache-miss input, a price drop
+    that took effect April 2026; earlier the discount was ~10%)."""
 
 
 @dataclass

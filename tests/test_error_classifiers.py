@@ -112,6 +112,37 @@ async def test_gemini_classifier_logic_bugs_not_retryable():
 
 
 @pytest.mark.asyncio
+async def test_gemini_classifier_server_errors_retryable():
+    """5xx ServerErrors are transient and retryable (aligns with OpenAI 5xx)."""
+    pytest.importorskip("google.genai.errors")
+    from google.genai.errors import ServerError
+
+    classifier = GeminiErrorClassifier()
+
+    # 503 overload / UNAVAILABLE — the common transient case (regression: this
+    # used to be dropped as non-retryable because it isn't a "timeout").
+    err = ServerError(
+        503, {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}}
+    )
+    info = classifier.classify(err)
+    assert info.is_retryable is True
+    assert info.is_rate_limit is False
+    assert info.error_category == "server_error"
+
+    # 500 internal error — also retryable.
+    info = classifier.classify(ServerError(500, {"error": {"code": 500, "message": "internal"}}))
+    assert info.is_retryable is True
+
+    # 504 deadline — retryable and flagged as a timeout.
+    info = classifier.classify(
+        ServerError(504, {"error": {"code": 504, "message": "deadline exceeded"}})
+    )
+    assert info.is_retryable is True
+    assert info.is_timeout is True
+    assert info.error_category == "server_timeout"
+
+
+@pytest.mark.asyncio
 async def test_gemini_classifier_rate_limit_patterns():
     """Test GeminiErrorClassifier detects rate limit patterns."""
     classifier = GeminiErrorClassifier()

@@ -51,7 +51,11 @@ class GeminiErrorClassifier(ErrorClassifier):
             error_str = str(exception)
             is_timeout = self._matches_any_pattern(error_str, TIMEOUT_PATTERNS)
             return ErrorInfo(
-                is_retryable=is_timeout,  # Only retry server timeouts
+                # 5xx are transient server-side problems (503 overload/UNAVAILABLE,
+                # 500, 502, 504). All retryable — backoff + rate-limit cooldown
+                # keep retries from hammering. Matches OpenAIErrorClassifier's 5xx
+                # handling (the two used to disagree: Gemini retried only timeouts).
+                is_retryable=True,
                 is_rate_limit=False,
                 is_timeout=is_timeout,
                 error_category="server_timeout" if is_timeout else "server_error",

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`GeminiErrorClassifier` now retries 5xx `ServerError`s** (503
+  overload/UNAVAILABLE, 500, 502, 504), not just server *timeouts*. A transient
+  503 ("high demand, try again later") was previously classified non-retryable
+  and failed the item permanently — inconsistent with `OpenAIErrorClassifier`,
+  which already retries all 5xx. Backoff + rate-limit cooldown still prevent
+  hammering.
+
+### Changed
+
+- **`CachedTokenRates.DEEPSEEK` corrected to `0.02`** (was `0.10`). DeepSeek V4
+  Flash bills cache hits at $0.0028/M vs $0.14/M cache-miss input (~2%), after
+  a price drop that took effect April 2026. `effective_input_tokens(
+  CachedTokenRates.DEEPSEEK)` now reflects the larger cache discount.
+
+### Added
+
+- **`examples/example_batch_benchmark.py`** — flagship bulk-processing demo.
+  Runs the GSM8K benchmark through DeepSeek Flash (`deepseek-v4-flash`) vs
+  Gemini 3.1 Flash-Lite (`gemini-3.1-flash-lite`) vs Gemini 2.5 Flash-Lite
+  (`gemini-2.5-flash-lite`) with no-thinking→thinking escalation, a per-provider
+  3-way wall-time race (sequential vs `asyncio.gather` vs `ParallelBatchProcessor`),
+  async gzip I/O via `aiogzip` (a single-consumer queue writer for results),
+  token/cost reporting, and an OpenAI LLM-as-judge fallback grader.
+  `examples/download_gsm8k.py`
+  fetches the data; walkthrough at `docs/examples/bulk-benchmark.md`.
+
 ## [0.10.0] - 2026-06-07
 
 ### Added

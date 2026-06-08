@@ -1063,7 +1063,7 @@ class DeepSeekModel(OpenAICompatibleModel):
     ``usage`` object (``prompt_cache_hit_tokens`` / ``prompt_cache_miss_tokens``)
     rather than under OpenAI's nested ``prompt_tokens_details.cached_tokens`` —
     so this subclass overrides :meth:`_extract_tokens` to surface them in
-    ``cached_input_tokens``. Use :attr:`CachedTokenRates.DEEPSEEK` (10%) when
+    ``cached_input_tokens``. Use :attr:`CachedTokenRates.DEEPSEEK` (~2%) when
     computing billable tokens.
 
     (Calling DeepSeek *through OpenRouter* uses :class:`OpenRouterModel`

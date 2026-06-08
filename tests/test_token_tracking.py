@@ -142,8 +142,8 @@ async def test_effective_input_tokens_provider_aware():
     assert result.effective_input_tokens(CachedTokenRates.OPENAI) == 750
     # Anthropic read (10% pay): same as Gemini
     assert result.effective_input_tokens(CachedTokenRates.ANTHROPIC_READ) == 550
-    # DeepSeek: same as Gemini
-    assert result.effective_input_tokens(CachedTokenRates.DEEPSEEK) == 550
+    # DeepSeek (2% pay): 500 + int(500*0.02) = 510 effective
+    assert result.effective_input_tokens(CachedTokenRates.DEEPSEEK) == 510
 
     # Edge cases.
     assert result.effective_input_tokens(0.0) == 500  # cached fully free

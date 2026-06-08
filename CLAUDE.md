@@ -170,7 +170,7 @@ Tokens consumed by failed attempts are still tracked:
 ### Provider-aware billing (v0.9)
 
 `CachedTokenRates` constants (`GEMINI=0.10`, `OPENAI=0.50`,
-`ANTHROPIC_READ=0.10`, `DEEPSEEK=0.10`) encode the fraction of normal
+`ANTHROPIC_READ=0.10`, `DEEPSEEK=0.02`) encode the fraction of normal
 input price each provider charges for cached tokens. Pass to
 `BatchResult.effective_input_tokens(rate)` for accurate billable counts.
 Default is `GEMINI` for backward compat — non-Gemini callers must opt
@@ -441,6 +441,15 @@ src/async_batch_llm/
 - `example_llm_strategies.py` — custom-strategy patterns.
 - `example_context_manager.py` — async context manager usage.
 - `example_model_escalation.py` — earlier escalation example.
+- `example_batch_benchmark.py` — flagship "why async-batch-llm" demo:
+  GSM8K through DeepSeek Flash vs Gemini 3.1/2.5 Flash-Lite with
+  no-think→think escalation, a per-provider 3-way wall-time race
+  (sequential vs `asyncio.gather` vs the framework),
+  `aiogzip` async I/O on both ends, token/cost reporting, and an OpenAI
+  LLM-as-judge fallback grader. `download_gsm8k.py` fetches the data
+  (writes `examples/data/gsm8k_test.jsonl.gz`, gitignored). Needs
+  `aiogzip` + `[deepseek,gemini,openai]` extras. Docs:
+  `docs/examples/bulk-benchmark.md`.
 
 ---
 

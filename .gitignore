@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Benchmark demo data + outputs (examples/example_batch_benchmark.py)
+examples/data/
+
 # C extensions
 *.so
 
