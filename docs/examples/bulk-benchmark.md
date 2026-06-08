@@ -210,6 +210,43 @@ aggregate numbers behind both tables (wall time, tokens, cost, accuracy) are
 dumped to `examples/data/benchmark_results/summary.json` so a run can be cited
 without re-running it.
 
+### From a representative run
+
+One run (100-item bake-off, 30-item wall-time race, `max_workers=40`, June 2026
+pricing). Numbers shift run-to-run with network latency and model sampling —
+treat them as illustrative, not a spec.
+
+**Wall-time race** (30 items per provider, seconds):
+
+| Provider       | Sequential | `gather` | async-batch-llm | Speedup (seq→abl) | OK |
+|----------------|-----------:|---------:|----------------:|------------------:|---:|
+| deepseek-flash |       65.9 |      4.9 |             4.3 |             15.5× | 30 |
+| gemini-3.1     |       41.7 |      2.4 |             1.8 |             22.7× | 30 |
+| gemini-2.5     |       46.0 |      3.9 |             3.6 |             12.7× | 30 |
+
+Concurrency collapses wall time (≈13–23× here), and the framework leg is
+neck-and-neck with a bare `gather` (here even a hair faster) while *also*
+handling the retries, backoff, and rate-limit cooldowns `gather` would silently
+skip.
+
+**Provider bake-off** (100 items each):
+
+| Provider (model)                   | Accuracy | Wall (s) | Input | Cached | Output | Cost ($) |
+|------------------------------------|---------:|---------:|------:|-------:|-------:|---------:|
+| deepseek-flash (deepseek-v4-flash) |    98.0% |     18.9 | 9,648 |  1,280 | 10,384 |   0.0041 |
+| gemini-3.1 (gemini-3.1-flash-lite) |    98.0% |      5.5 | 9,666 |      0 | 19,961 |   0.0324 |
+| gemini-2.5 (gemini-2.5-flash-lite) |    96.0% |     12.6 | 9,666 |      0 | 33,125 |   0.0142 |
+
+Every item parsed cleanly for all three providers (no unparsed answers), so the
+LLM-as-judge fallback didn't fire this run. DeepSeek was the cheapest by far
+(~$0.004): it prices low *and* was the only provider to register cache hits
+(13.3% → 8,394 cache-adjusted billable input tokens). Gemini 3.1 Flash-Lite was
+the **fastest** (5.5 s) yet the **priciest** ($0.032 — its higher per-token rate
+outweighs its lower output-token count vs 2.5). Output volume tracks how much
+each model "thinks": 2.5 Flash-Lite emitted the most (33k tokens), 3.1
+Flash-Lite ~20k, non-thinking DeepSeek the least (10k). (On the 3.1-vs-2.5
+accuracy gap, see the matched-no-thinking caveat above.)
+
 The headline: concurrency collapses wall time, the framework matches a bare
 `gather` for speed while *also* surviving transient errors and rate limits, and
 you get token/cost accounting for free.
