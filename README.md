@@ -10,9 +10,9 @@
 | src/async\_batch\_llm/\_internal/event\_dispatcher.py        |       59 |       16 |       14 |        1 |     76.71% |57, 63-64, 80-83, 96-99, 111-115 |
 | src/async\_batch\_llm/\_internal/rate\_limit\_coordinator.py |      112 |       12 |       20 |        1 |     90.15% |84-86, 160, 209-221 |
 | src/async\_batch\_llm/\_internal/strategy\_lifecycle.py      |       40 |        2 |       10 |        1 |     94.00% |79-\>78, 100, 104 |
-| src/async\_batch\_llm/base.py                                |      261 |       36 |       64 |        8 |     84.00% |90, 263-\>exit, 556-557, 571, 579-580, 584-588, 592-602, 625, 629, 676-692, 744-\>exit, 749, 766, 781-\>exit, 790-794, 811-813 |
+| src/async\_batch\_llm/base.py                                |      261 |       36 |       64 |        8 |     84.00% |90, 263-\>exit, 558-559, 573, 581-582, 586-590, 594-604, 627, 631, 678-694, 746-\>exit, 751, 768, 783-\>exit, 792-796, 813-815 |
 | src/async\_batch\_llm/classifiers/\_\_init\_\_.py            |        4 |        0 |        0 |        0 |    100.00% |           |
-| src/async\_batch\_llm/classifiers/gemini.py                  |       43 |       12 |       16 |        2 |     76.27% |31-33, 41-43, 51-53, 71-72, 106-107 |
+| src/async\_batch\_llm/classifiers/gemini.py                  |       43 |        9 |       16 |        1 |     83.05% |31-33, 41-43, 75-76, 110-111 |
 | src/async\_batch\_llm/classifiers/openai.py                  |       83 |       17 |       36 |        3 |     83.19% |54-65, 111-112, 120, 130, 196-197, 269 |
 | src/async\_batch\_llm/classifiers/openrouter.py              |       10 |        0 |        2 |        0 |    100.00% |           |
 | src/async\_batch\_llm/core/\_\_init\_\_.py                   |        3 |        0 |        0 |        0 |    100.00% |           |
@@ -31,7 +31,7 @@
 | src/async\_batch\_llm/strategies/errors.py                   |       48 |        2 |       12 |        0 |     96.67% |   193-194 |
 | src/async\_batch\_llm/strategies/rate\_limit.py              |       31 |        0 |        2 |        0 |    100.00% |           |
 | src/async\_batch\_llm/token\_extractor.py                    |       54 |        2 |       24 |        5 |     91.03% |51-\>57, 53-\>57, 61-\>65, 66-\>83, 119-\>124, 135-136 |
-| **TOTAL**                                                    | **1907** |  **210** |  **576** |   **79** | **87.39%** |           |
+| **TOTAL**                                                    | **1907** |  **207** |  **576** |   **78** | **87.56%** |           |
 
 
 ## Setup coverage badge
