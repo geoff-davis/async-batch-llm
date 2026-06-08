@@ -93,7 +93,7 @@ from typing import Any
 DATA_PATH = Path(__file__).parent / "data" / "gsm8k_test.jsonl.gz"
 RESULTS_DIR = Path(__file__).parent / "data" / "benchmark_results"
 
-BAKEOFF_ITEMS = 100  # items each provider answers in the accuracy bake-off
+BAKEOFF_ITEMS = 500  # items each provider answers in the accuracy bake-off
 RACE_ITEMS = 30  # items in the wall-time race (the sequential leg is the slow one)
 MAX_WORKERS = 40  # high concurrency for the providers
 JUDGE_WORKERS = 10  # concurrency for the fallback grader
