@@ -103,6 +103,13 @@ JUDGE_MODEL = "gpt-5-nano"
 # (minimal/low/medium/high); Gemini 2.5 uses a numeric thinking *budget*
 # (0 disables, positive enables). Each contestant's fast pass minimizes thinking
 # and its escalation maximizes it.
+#
+# CAVEAT — the two Gemini fast passes are NOT a matched "no thinking" setup:
+# 2.5's budget=0 turns thinking fully OFF, but 3.1's level enum has no "off" —
+# "minimal" is the floor and still does a little thinking. So 3.1 gets a small
+# thinking edge that 2.5 doesn't; don't read the 3.1-vs-2.5 gap as pure model
+# quality. (2.5 Flash-Lite defaults to thinking off, so budget=0 matches its
+# default; 3.1 Flash-Lite ships with thinking on by default.)
 GEMINI_31_FAST_CONFIG = {"thinking_config": {"thinking_level": "minimal"}}
 GEMINI_31_THINK_CONFIG = {"thinking_config": {"thinking_level": "high"}}
 GEMINI_25_FAST_CONFIG = {"thinking_config": {"thinking_budget": 0}}

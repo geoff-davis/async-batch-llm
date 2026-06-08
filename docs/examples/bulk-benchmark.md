@@ -158,6 +158,16 @@ Providers differ only in how "thinking" is selected, hidden behind a small
 - **Gemini 2.5** — one `GeminiModel`, per-call `thinking_budget` (`0` vs a
   positive budget); 2.5 uses a numeric budget rather than a level.
 
+**Caveat — the two Gemini fast passes aren't a matched "no thinking" setup.**
+Gemini 2.5's `thinking_budget=0` turns thinking **fully off**, but Gemini 3.1's
+level enum has no "off" — `minimal` is the floor and still does a little
+thinking. So 3.1 carries a small thinking advantage 2.5 doesn't, and the
+3.1-vs-2.5 accuracy gap shouldn't be read as pure model quality. (2.5 Flash-Lite
+defaults to thinking off, so `0` matches its default; 3.1 Flash-Lite ships with
+thinking on.) Also note that because escalation only fires on a parse failure, a
+clean run uses the *fast* config for nearly every item — so the reported Gemini
+numbers reflect `minimal` (3.1) / off (2.5), not the `high`/2048 escalation tier.
+
 ### 3. Token counting and cost
 
 The package aggregates `total_input_tokens`, `total_cached_tokens`, and
