@@ -8,19 +8,19 @@ math benchmark through several providers and shows, in one run:
 2. A **provider bake-off** — DeepSeek Flash vs Gemini 3.1 Flash-Lite vs Gemini
    2.5 Flash-Lite on accuracy, tokens, and cost.
 3. **No-thinking → thinking escalation** driven by the retry path.
-4. **Async gzip I/O** on both ends via [`aiogzip`](https://github.com/geoff-davis/aiogzip).
+4. **Streaming gzip I/O** with lock-free concurrent writes (stdlib `gzip`).
 5. **LLM-as-judge** as a fallback grader.
 
 ## Install and fetch data
 
 ```bash
-pip install 'async-batch-llm[deepseek,gemini,openai]' aiogzip
+pip install 'async-batch-llm[deepseek,gemini,openai]'
 python examples/download_gsm8k.py
 ```
 
 The downloader fetches the 1,319-item GSM8K test split and writes it to
-`examples/data/gsm8k_test.jsonl.gz`. The benchmark stream-reads it back with
-`aiogzip`.
+`examples/data/gsm8k_test.jsonl.gz`. The benchmark reads it back with the stdlib
+`gzip` module.
 
 ## Configure keys
 
@@ -50,63 +50,61 @@ python examples/example_batch_benchmark.py
 ## The architecture
 
 ```text
-aiogzip stream-read .jsonl.gz
-        │   (async I/O)
+gzip read .jsonl.gz   (one-time, before timing)
+        │
         ▼
 ParallelBatchProcessor  ──►  retry · backoff · rate-limit · escalation
         │   (high concurrency)
         ▼
-aiogzip stream-write .jsonl.gz   (concurrent post-processors → single-consumer queue)
+gzip stream-write .jsonl.gz   (concurrent post-processors → atomic blocking writes)
 ```
 
-### 1. Async I/O with aiogzip
+### 1. Gzip I/O (stdlib, blocking writes)
 
-Reading is a plain async loop over the gzip lines:
+Reading is a one-time blocking gzip read, done before any timer starts:
 
 ```python
-from aiogzip import AsyncGzipFile
+import gzip
 
-async with AsyncGzipFile(str(path), "rt") as f:
-    async for line in f:
+with gzip.open(path, "rt") as f:
+    for line in f:
         record = json.loads(line)
         ...
 ```
 
 **Be honest about scale.** At this dataset's size (~240 KB compressed) gzip I/O
-barely registers, so aiogzip is used as plumbing, *not* in the timing race: the
-read happens once before any timer starts, and the race legs do no writing
-(results are streamed to gzip only in the bake-off). A standalone write-path
-benchmark (`examples/bench_gzip_write.py`, no API) makes the reason concrete —
-for tiny records the async queue writer is ~2.9× *slower* than a plain blocking
-`gzip.write()` (queue hops + thread-executor overhead), crossing over to faster
-only once records reach tens of KiB. At ~50-byte records that overhead is ~20 µs
-across the whole run — utterly dwarfed by LLM latency. aiogzip's real payoff is
-on large batches, where a synchronous `gzip.read()`/`write()` of a
-multi-hundred-MB file blocks the event loop and stalls every concurrent worker,
-whereas aiogzip offloads zlib to a thread (above a 256 KiB chunk threshold).
+barely registers — the read happens once before the timers, and it's dwarfed by
+LLM latency regardless. So the demo uses plain blocking `gzip`, *not* an async
+or threaded writer. That's a deliberate choice, not a shortcut: a standalone
+write-path micro-benchmark (`examples/bench_gzip_write.py`, no API) shows that
+for tiny records an async-queue/thread writer runs **several times slower** than
+a plain blocking `gzip.write()` — the queue hops and thread-executor overhead
+dominate, and only pay off once records reach tens of KiB. At GSM8K's ~50-byte
+records that overhead is pure cost. An offloaded writer earns its keep only on
+multi-hundred-MB outputs, where a synchronous compress would block the event
+loop and stall every concurrent worker.
 
-**Pitfall — one aiogzip file is not safe for concurrent writers.**
-The bake-off's `post_processor` callbacks run **concurrently**, and an open
-`aiogzip` file isn't safe for concurrent `await`-ed writes — interleave two and
-you corrupt the stream. Rather than serialize the workers behind a lock, the
-demo uses a single-consumer queue: each post-processor enqueues (cheap), and one
-consumer task owns the file. One writer → no corruption, no lock, loop never
-blocks:
+**Concurrent writers are safe without a lock.** The bake-off's `post_processor`
+callbacks run **concurrently**, but a synchronous `gzip.write()` with no `await`
+in between is *atomic* with respect to the event loop — it can't switch tasks
+mid-write — so concurrent producers share one open file with no lock and no
+interleaving:
 
 ```python
 class StreamingGzipWriter:
-    async def write(self, record):          # called by each post_processor
-        await self._queue.put(record)
+    async def __aenter__(self):
+        self._fh = gzip.open(self.path, "wt")
+        return self
 
-    async def _consume(self):               # one task owns the file
-        async with AsyncGzipFile(self.path, "wt") as out:
-            while (record := await self._queue.get()) is not None:
-                await out.write(json.dumps(record) + "\n")
+    async def write(self, record):                   # called by each post_processor
+        self._fh.write(json.dumps(record) + "\n")    # no await → atomic on the loop
 ```
 
-(A synchronous `gzip.write()` with no `await` is also safe without a lock — it's
-atomic on the loop — but it *blocks* the loop while compressing; the queue keeps
-that off the critical path.)
+(The blocking write does hold the loop for the duration of the compress; at this
+record size that's negligible. For huge outputs you'd push it to a thread or
+async writer — paying the queue/executor overhead to keep the loop free — but at
+this scale that trade goes the other way, which is why we dropped the async
+writer.)
 
 Output lands in **completion order**, not input order; each record carries its
 `item_id`, so the original order is recoverable downstream (sort by id) — for a
@@ -207,7 +205,10 @@ across to compare providers, down to compare orchestrations. The **provider
 bake-off** reports accuracy, wall time,
 input/cached/output tokens, and estimated cost, plus per-provider detail with
 cache hit rates and cache-adjusted billable tokens. Per-item results are written
-to `examples/data/benchmark_results/<provider>_results.jsonl.gz`.
+to `examples/data/benchmark_results/<provider>_results.jsonl.gz`, and the
+aggregate numbers behind both tables (wall time, tokens, cost, accuracy) are
+dumped to `examples/data/benchmark_results/summary.json` so a run can be cited
+without re-running it.
 
 The headline: concurrency collapses wall time, the framework matches a bare
 `gather` for speed while *also* surviving transient errors and rate limits, and

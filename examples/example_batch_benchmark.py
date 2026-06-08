@@ -19,18 +19,23 @@ benchmark through several providers and shows three things at once:
    *validation-gated*: an answer with no parseable ``#### <number>`` raises,
    which is what triggers the retry (and thus the escalation).
 
-I/O is async on both ends via ``aiogzip``: the .jsonl.gz benchmark is
-stream-read, and results stream out to a .jsonl.gz file. Because one open
-aiogzip file is NOT safe for concurrent writers and the framework's
-post-processors run concurrently, the writes go through a single-consumer queue
-(``StreamingGzipWriter``): post-processors enqueue, one task drains to disk. No
-lock; one writer. Output is in completion order, not input order — each record
-carries its ``item_id`` so the original order is recoverable downstream.
+I/O uses the stdlib ``gzip`` module on both ends: the .jsonl.gz benchmark is
+read once up front, and results stream out to a .jsonl.gz file. The
+post-processors run concurrently, but a synchronous ``gzip.write()`` with no
+``await`` in between is atomic with respect to the event loop — the loop can't
+switch tasks mid-write — so concurrent post-processors share one open file with
+no lock and no corruption (``StreamingGzipWriter``). Output is in completion
+order, not input order — each record carries its ``item_id`` so the original
+order is recoverable downstream.
 
-A note: at this dataset's size (~240 KB compressed) aiogzip does *not* move
-wall time — the speedup is entirely concurrency. aiogzip earns its keep on
-large batches, where a synchronous ``gzip.read()`` would block the event loop
-and stall every concurrent LLM worker during (de)compression.
+A note: at this dataset's size (~240 KB compressed) gzip I/O doesn't move wall
+time — the speedup is entirely concurrency. The blocking write is deliberate:
+at these record sizes, pushing writes to an async queue or a thread only adds
+queue-hop / executor overhead (a standalone micro-benchmark,
+``examples/bench_gzip_write.py``, shows the async path running several times
+slower for tiny records). For multi-hundred-MB outputs — where a synchronous
+compress would stall the loop and every concurrent worker with it — an offloaded
+writer would pay off instead.
 
 A small ChatGPT "fallback grader" batch is the LLM-as-judge showcase: GSM8K
 is exact-match scorable for free, so the judge only sees the handful of
@@ -39,7 +44,7 @@ outputs whose answer we couldn't parse, and decides whether they match gold.
 ## Installation
 
 ```bash
-pip install 'async-batch-llm[deepseek,gemini,openai]' aiogzip
+pip install 'async-batch-llm[deepseek,gemini,openai]'
 python examples/download_gsm8k.py
 ```
 
@@ -72,6 +77,7 @@ python examples/example_batch_benchmark.py
 """
 
 import asyncio
+import gzip
 import json
 import os
 import re
@@ -228,15 +234,17 @@ def build_prompt(question: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Async gzip I/O (aiogzip)
+# Gzip I/O (stdlib, blocking writes)
 # ---------------------------------------------------------------------------
 async def load_items(path: Path, limit: int) -> list[Item]:
-    """Stream-read up to ``limit`` items from a .jsonl.gz file with aiogzip."""
-    from aiogzip import AsyncGzipFile
+    """Read up to ``limit`` items from a .jsonl.gz file (plain blocking gzip).
 
+    This runs once, before any timer starts, so a brief synchronous decompress
+    of the (~240 KB) file never touches the measured wall time.
+    """
     items: list[Item] = []
-    async with AsyncGzipFile(str(path), "rt") as f:
-        async for line in f:
+    with gzip.open(path, "rt") as f:
+        for line in f:
             line = line.strip()
             if not line:
                 continue
@@ -254,15 +262,17 @@ async def load_items(path: Path, limit: int) -> list[Item]:
 
 
 class StreamingGzipWriter:
-    """Single-consumer .jsonl.gz writer for concurrent producers.
+    """.jsonl.gz writer for concurrent producers, using blocking gzip writes.
 
-    The framework's post-processors run concurrently, and one open aiogzip file
-    is *not* safe for concurrent writers. Rather than guard a shared file with a
-    lock (which serializes the workers on the write), we use a producer/consumer
-    queue: each post-processor ``await write(record)`` to enqueue (cheap), and a
-    single consumer task drains the queue to the file. One writer → no
-    corruption, no lock; the queue does the serialization and the workers never
-    block on I/O.
+    The framework's post-processors run concurrently, but a synchronous
+    ``gzip.write()`` with no ``await`` in between is atomic with respect to the
+    event loop — the loop can't switch tasks mid-write — so concurrent producers
+    can share one open file with no lock and no corruption. We deliberately do
+    *not* push writes onto an async queue or a thread: at these record sizes the
+    queue-hop / executor overhead is pure cost, and the blocking write is both
+    simpler and faster (see ``examples/bench_gzip_write.py``). For
+    multi-hundred-MB outputs, where the compress step would stall the loop, an
+    offloaded writer would pay off instead.
 
     Records are written in *completion order* (whatever order items finish under
     concurrency), not input order. Each record carries its ``item_id``, so the
@@ -272,34 +282,25 @@ class StreamingGzipWriter:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-        self._task: asyncio.Task[None] | None = None
+        self._fh: Any = None
 
     async def __aenter__(self) -> "StreamingGzipWriter":
-        self._task = asyncio.create_task(self._consume())
+        self._fh = gzip.open(self.path, "wt")
         return self
 
-    async def _consume(self) -> None:
-        from aiogzip import AsyncGzipFile
-
-        async with AsyncGzipFile(str(self.path), "wt") as out:
-            while True:
-                record = await self._queue.get()
-                try:
-                    if record is None:  # sentinel: all producers are done
-                        break
-                    await out.write(json.dumps(record) + "\n")
-                finally:
-                    self._queue.task_done()
-
     async def write(self, record: dict[str, Any]) -> None:
-        """Enqueue a record; call this from a post_processor."""
-        await self._queue.put(record)
+        """Write one record; call this from a post_processor.
+
+        The synchronous ``write`` is atomic on the event loop (no ``await``
+        mid-write), so concurrent callers can't interleave and corrupt the
+        stream — no lock needed.
+        """
+        self._fh.write(json.dumps(record) + "\n")
 
     async def __aexit__(self, *exc: Any) -> None:
-        await self._queue.put(None)  # tell the consumer to flush remaining and stop
-        if self._task is not None:
-            await self._task
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
 
 
 # ---------------------------------------------------------------------------
@@ -524,8 +525,8 @@ async def run_contestant(
     )
 
     start = perf_counter()
-    # Single-consumer queue writer (outer): post-processors enqueue, one task
-    # drains to the .jsonl.gz file. No lock, no concurrent-write corruption.
+    # Blocking gzip writer (outer): each concurrent post-processor does a
+    # synchronous, atomic write to the .jsonl.gz file — no lock, no corruption.
     async with StreamingGzipWriter(out_path) as writer:
 
         async def write_result(result: Any) -> None:
@@ -803,6 +804,85 @@ def print_bakeoff(cards: list[Scorecard], judge_card: Scorecard | None) -> None:
         )
 
 
+def write_summary(
+    race_rows: list[RaceResult],
+    cards: list[Scorecard],
+    judge_card: Scorecard | None,
+) -> Path:
+    """Persist the race + bake-off aggregates to ``benchmark_results/summary.json``.
+
+    The per-item .jsonl.gz files capture answers but not wall time, tokens, or
+    cost — so this dumps the same numbers ``print_race``/``print_bakeoff`` show,
+    letting a run be cited (e.g. in docs) without re-running it.
+    """
+    from datetime import datetime, timezone
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _bakeoff_row(card: Scorecard) -> dict[str, Any]:
+        br = card.batch_result
+        pricing = PRICING[card.model_id]
+        cache_pct = (
+            br.total_cached_tokens / br.total_input_tokens * 100
+            if br.total_input_tokens
+            else 0.0
+        )
+        return {
+            "provider": card.name,
+            "model_id": card.model_id,
+            "accuracy_pct": round(card.accuracy * 100, 1),
+            "wall_s": round(card.wall, 2),
+            "input_tokens": br.total_input_tokens,
+            "cached_tokens": br.total_cached_tokens,
+            "output_tokens": br.total_output_tokens,
+            "cost_usd": round(estimate_cost(br, pricing), 4),
+            "billable_input_tokens": br.effective_input_tokens(pricing.cached_rate),
+            "cache_hit_rate_pct": round(cache_pct, 1),
+            "exact_correct": card.exact_correct,
+            "judge_rescued": card.judge_correct,
+            "unparsed": card.ambiguous,
+            "errors": card.errors,
+        }
+
+    summary: dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "config": {
+            "race_items": RACE_ITEMS,
+            "bakeoff_items": BAKEOFF_ITEMS,
+            "max_workers": MAX_WORKERS,
+            "gather_chunk_size": GATHER_CHUNK_SIZE,
+        },
+        "wall_time_race": [
+            {
+                "provider": r.name,
+                "sequential_s": round(r.seq[0], 2),
+                "gather_s": round(r.gather[0], 2),
+                "async_batch_llm_s": round(r.proc[0], 2),
+                "speedup_seq_to_abl": (round(r.seq[0] / r.proc[0], 1) if r.proc[0] else None),
+                "ok": r.proc[1],
+            }
+            for r in race_rows
+        ],
+        "bakeoff": [_bakeoff_row(c) for c in cards],
+    }
+    if judge_card is not None:
+        jbr = judge_card.batch_result
+        summary["judge"] = {
+            "model_id": judge_card.model_id,
+            "wall_s": round(judge_card.wall, 2),
+            "input_tokens": jbr.total_input_tokens,
+            "cached_tokens": jbr.total_cached_tokens,
+            "output_tokens": jbr.total_output_tokens,
+            "cost_usd": round(estimate_cost(jbr, PRICING[JUDGE_MODEL]), 4),
+            "judged": judge_card.total,
+            "judge_correct": judge_card.judge_correct,
+        }
+
+    out_path = RESULTS_DIR / "summary.json"
+    out_path.write_text(json.dumps(summary, indent=2) + "\n")
+    return out_path
+
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
@@ -828,7 +908,7 @@ async def main() -> None:
 
     bakeoff_items = await load_items(DATA_PATH, BAKEOFF_ITEMS)
     race_items = bakeoff_items[:RACE_ITEMS]
-    print(f"Loaded {len(bakeoff_items)} GSM8K items from {DATA_PATH.name} (aiogzip).")
+    print(f"Loaded {len(bakeoff_items)} GSM8K items from {DATA_PATH.name} (gzip).")
 
     # Each strategy is consumed by exactly one processor, whose __aexit__ owns
     # its cleanup (it closes the provider's HTTP client). So we build a fresh
@@ -885,7 +965,9 @@ async def main() -> None:
         )
 
     print_bakeoff(cards, judge_card)
+    summary_path = write_summary(race_rows, cards, judge_card)
     print(f"\nPer-item results written to {RESULTS_DIR}/ (one .jsonl.gz per provider).")
+    print(f"Aggregate summary (wall time + cost + accuracy) written to {summary_path}.")
 
 
 if __name__ == "__main__":
