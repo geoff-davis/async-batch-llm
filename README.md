@@ -819,6 +819,7 @@ Check out the [`examples/`](examples/) directory for complete working examples:
 - [`example_gemini_smart_retry.py`](examples/example_gemini_smart_retry.py) - Smart retry patterns
 - [`example_smart_model_escalation.py`](examples/example_smart_model_escalation.py) - Cost optimization
 - [`example_context_manager.py`](examples/example_context_manager.py) - Resource management
+- [`example_batch_benchmark.py`](examples/example_batch_benchmark.py) - Flagship bulk-benchmark demo
 
 ---
 
