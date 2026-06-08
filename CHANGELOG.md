@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Open-file-limit warning.** `ParallelBatchProcessor` now emits a
+  `UserWarning` at construction when `max_workers` is close to the process's
+  soft `RLIMIT_NOFILE`. Each in-flight request typically holds a socket (a file
+  descriptor), so a high worker count near the OS limit (≈256 by default on
+  macOS) would otherwise fail mid-run with `OSError: [Errno 24] Too many open
+  files`. The library only *warns* — it does not mutate the process-global
+  limit — and points to a new "Open file limits and high concurrency" section
+  in the getting-started docs covering `ulimit`, in-process `resource.setrlimit`,
+  and connection-pool sizing.
+
 ### Changed
 
 - **`GeminiErrorClassifier` routes 503 / model-overload through the coordinated

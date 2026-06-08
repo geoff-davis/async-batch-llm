@@ -208,6 +208,44 @@ model = DeepSeekModel.from_api_key("deepseek-chat", json_mode=True)
 strategy = DeepSeekStrategy(model, pydantic_json_parser(Topic))
 ```
 
+## Open file limits and high concurrency
+
+Each in-flight request typically holds a socket — an operating-system **file
+descriptor** — so a high `max_workers` (together with the provider connection
+pool and your app's own fds) can run into the OS **open-file limit**. The
+symptom is `OSError: [Errno 24] Too many open files`, and it bites hardest on
+**macOS**, whose default soft limit is only ~256.
+
+`ParallelBatchProcessor` emits a `UserWarning` at construction when
+`max_workers` is close to the current soft limit (`RLIMIT_NOFILE`). It does
+**not** raise the limit for you — changing it mutates process-global state, so
+that's your call. Three ways to handle it:
+
+1. **Raise the limit for the shell**, before running:
+
+   ```bash
+   ulimit -n 8192      # raise the soft limit (must be ≤ the hard limit)
+   ```
+
+2. **Raise it in-process**, early in your program (Unix only):
+
+   ```python
+   import resource
+
+   soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+   target = hard if hard != resource.RLIM_INFINITY else 8192
+   resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, target), hard))
+   ```
+
+3. **Lower `max_workers`** to fit the available limit. For I/O-bound LLM calls
+   the throughput gain flattens out well before you exhaust the fd budget, so
+   capping workers is often fine.
+
+Also size the **connection pool** to your worker count so the pool itself isn't
+the bottleneck — `max_connections=` on the OpenAI-compatible `from_api_key(...)`
+(see the [OpenAI integration guide](OPENAI_INTEGRATION.md#connection-pool-sizing-max_connections)),
+and httpx limits via `HttpOptions` for the Gemini client.
+
 ## Next Steps
 
 - [Basic Examples](examples/basic.md) - See more usage examples
