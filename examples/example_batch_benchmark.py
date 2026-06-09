@@ -19,18 +19,23 @@ benchmark through several providers and shows three things at once:
    *validation-gated*: an answer with no parseable ``#### <number>`` raises,
    which is what triggers the retry (and thus the escalation).
 
-I/O is async on both ends via ``aiogzip``: the .jsonl.gz benchmark is
-stream-read, and results stream out to a .jsonl.gz file. Because one open
-aiogzip file is NOT safe for concurrent writers and the framework's
-post-processors run concurrently, the writes go through a single-consumer queue
-(``StreamingGzipWriter``): post-processors enqueue, one task drains to disk. No
-lock; one writer. Output is in completion order, not input order — each record
-carries its ``item_id`` so the original order is recoverable downstream.
+I/O uses the stdlib ``gzip`` module on both ends: the .jsonl.gz benchmark is
+read once up front, and results stream out to a .jsonl.gz file. The
+post-processors run concurrently, but a synchronous ``gzip.write()`` with no
+``await`` in between is atomic with respect to the event loop — the loop can't
+switch tasks mid-write — so concurrent post-processors share one open file with
+no lock and no corruption (``StreamingGzipWriter``). Output is in completion
+order, not input order — each record carries its ``item_id`` so the original
+order is recoverable downstream.
 
-A note: at this dataset's size (~240 KB compressed) aiogzip does *not* move
-wall time — the speedup is entirely concurrency. aiogzip earns its keep on
-large batches, where a synchronous ``gzip.read()`` would block the event loop
-and stall every concurrent LLM worker during (de)compression.
+A note: at this dataset's size (~240 KB compressed) gzip I/O doesn't move wall
+time — the speedup is entirely concurrency. The blocking write is deliberate:
+at these record sizes, pushing writes to an async queue or a thread only adds
+queue-hop / executor overhead (a standalone micro-benchmark,
+``examples/bench_gzip_write.py``, shows the async path running several times
+slower for tiny records). For multi-hundred-MB outputs — where a synchronous
+compress would stall the loop and every concurrent worker with it — an offloaded
+writer would pay off instead.
 
 A small ChatGPT "fallback grader" batch is the LLM-as-judge showcase: GSM8K
 is exact-match scorable for free, so the judge only sees the handful of
@@ -39,7 +44,7 @@ outputs whose answer we couldn't parse, and decides whether they match gold.
 ## Installation
 
 ```bash
-pip install 'async-batch-llm[deepseek,gemini,openai]' aiogzip
+pip install 'async-batch-llm[deepseek,gemini,openai]'
 python examples/download_gsm8k.py
 ```
 
@@ -68,13 +73,19 @@ are absent, so the demo runs with whatever you have configured.
 
 ```bash
 python examples/example_batch_benchmark.py
+python examples/example_batch_benchmark.py --skip-race  # bake-off only (faster)
 ```
+
+``--skip-race`` skips the wall-time race (whose sequential leg dominates
+runtime) and jumps straight to the provider bake-off — handy when iterating.
 """
 
 import asyncio
+import gzip
 import json
 import os
 import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -87,9 +98,18 @@ from typing import Any
 DATA_PATH = Path(__file__).parent / "data" / "gsm8k_test.jsonl.gz"
 RESULTS_DIR = Path(__file__).parent / "data" / "benchmark_results"
 
-BAKEOFF_ITEMS = 100  # items each provider answers in the accuracy bake-off
+BAKEOFF_ITEMS = None  # items per provider in the bake-off; None = the whole dataset
 RACE_ITEMS = 30  # items in the wall-time race (the sequential leg is the slow one)
-MAX_WORKERS = 40  # high concurrency for the providers
+# Concurrency is tuned PER PROVIDER — they tolerate very different request rates.
+# DeepSeek allows thousands of concurrent connections; Gemini 3.1 Flash-Lite
+# handled high concurrency cleanly; Gemini 2.5 Flash-Lite rate-limits hard above
+# ~50 (at 100 it spent most of a run in cooldowns). Each provider's connection
+# pool is sized to match its worker count — DeepSeek via max_connections, Gemini
+# via the genai client's httpx limits — so workers aren't capped at httpx's ~100
+# default pool (see issue #25).
+DEEPSEEK_WORKERS = 250
+GEMINI_31_WORKERS = 250
+GEMINI_25_WORKERS = 10  # 2.5 Flash-Lite overloads (503s) quickly; keep this low
 JUDGE_WORKERS = 10  # concurrency for the fallback grader
 GATHER_CHUNK_SIZE = 50  # naive baseline: gather this many at a time (barrier per chunk)
 
@@ -103,6 +123,13 @@ JUDGE_MODEL = "gpt-5-nano"
 # (minimal/low/medium/high); Gemini 2.5 uses a numeric thinking *budget*
 # (0 disables, positive enables). Each contestant's fast pass minimizes thinking
 # and its escalation maximizes it.
+#
+# CAVEAT — the two Gemini fast passes are NOT a matched "no thinking" setup:
+# 2.5's budget=0 turns thinking fully OFF, but 3.1's level enum has no "off" —
+# "minimal" is the floor and still does a little thinking. So 3.1 gets a small
+# thinking edge that 2.5 doesn't; don't read the 3.1-vs-2.5 gap as pure model
+# quality. (2.5 Flash-Lite defaults to thinking off, so budget=0 matches its
+# default; 3.1 Flash-Lite ships with thinking on by default.)
 GEMINI_31_FAST_CONFIG = {"thinking_config": {"thinking_level": "minimal"}}
 GEMINI_31_THINK_CONFIG = {"thinking_config": {"thinking_level": "high"}}
 GEMINI_25_FAST_CONFIG = {"thinking_config": {"thinking_budget": 0}}
@@ -221,15 +248,18 @@ def build_prompt(question: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Async gzip I/O (aiogzip)
+# Gzip I/O (stdlib, blocking writes)
 # ---------------------------------------------------------------------------
-async def load_items(path: Path, limit: int) -> list[Item]:
-    """Stream-read up to ``limit`` items from a .jsonl.gz file with aiogzip."""
-    from aiogzip import AsyncGzipFile
+async def load_items(path: Path, limit: int | None) -> list[Item]:
+    """Read up to ``limit`` items from a .jsonl.gz file (``None`` = all of them).
 
+    Plain blocking gzip. This runs once, before any timer starts, so a brief
+    synchronous decompress of the (~240 KB) file never touches the measured
+    wall time.
+    """
     items: list[Item] = []
-    async with AsyncGzipFile(str(path), "rt") as f:
-        async for line in f:
+    with gzip.open(path, "rt") as f:
+        for line in f:
             line = line.strip()
             if not line:
                 continue
@@ -241,21 +271,23 @@ async def load_items(path: Path, limit: int) -> list[Item]:
                     gold=extract_answer(record["answer"]),
                 )
             )
-            if len(items) >= limit:
+            if limit is not None and len(items) >= limit:
                 break
     return items
 
 
 class StreamingGzipWriter:
-    """Single-consumer .jsonl.gz writer for concurrent producers.
+    """.jsonl.gz writer for concurrent producers, using blocking gzip writes.
 
-    The framework's post-processors run concurrently, and one open aiogzip file
-    is *not* safe for concurrent writers. Rather than guard a shared file with a
-    lock (which serializes the workers on the write), we use a producer/consumer
-    queue: each post-processor ``await write(record)`` to enqueue (cheap), and a
-    single consumer task drains the queue to the file. One writer → no
-    corruption, no lock; the queue does the serialization and the workers never
-    block on I/O.
+    The framework's post-processors run concurrently, but a synchronous
+    ``gzip.write()`` with no ``await`` in between is atomic with respect to the
+    event loop — the loop can't switch tasks mid-write — so concurrent producers
+    can share one open file with no lock and no corruption. We deliberately do
+    *not* push writes onto an async queue or a thread: at these record sizes the
+    queue-hop / executor overhead is pure cost, and the blocking write is both
+    simpler and faster (see ``examples/bench_gzip_write.py``). For
+    multi-hundred-MB outputs, where the compress step would stall the loop, an
+    offloaded writer would pay off instead.
 
     Records are written in *completion order* (whatever order items finish under
     concurrency), not input order. Each record carries its ``item_id``, so the
@@ -265,34 +297,25 @@ class StreamingGzipWriter:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-        self._task: asyncio.Task[None] | None = None
+        self._fh: Any = None
 
     async def __aenter__(self) -> "StreamingGzipWriter":
-        self._task = asyncio.create_task(self._consume())
+        self._fh = gzip.open(self.path, "wt")
         return self
 
-    async def _consume(self) -> None:
-        from aiogzip import AsyncGzipFile
-
-        async with AsyncGzipFile(str(self.path), "wt") as out:
-            while True:
-                record = await self._queue.get()
-                try:
-                    if record is None:  # sentinel: all producers are done
-                        break
-                    await out.write(json.dumps(record) + "\n")
-                finally:
-                    self._queue.task_done()
-
     async def write(self, record: dict[str, Any]) -> None:
-        """Enqueue a record; call this from a post_processor."""
-        await self._queue.put(record)
+        """Write one record; call this from a post_processor.
+
+        The synchronous ``write`` is atomic on the event loop (no ``await``
+        mid-write), so concurrent callers can't interleave and corrupt the
+        stream — no lock needed.
+        """
+        self._fh.write(json.dumps(record) + "\n")
 
     async def __aexit__(self, *exc: Any) -> None:
-        await self._queue.put(None)  # tell the consumer to flush remaining and stop
-        if self._task is not None:
-            await self._task
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +379,20 @@ class ModelCall:
     async def cleanup(self) -> None:
         if isinstance(self.model, ManagedLLMModel):
             await self.model.cleanup()
+            return
+        # Non-managed model (GeminiModel wraps a caller-built genai.Client): close
+        # its underlying client so its sockets don't leak into the next
+        # contestant's run. Idempotent — fast and thinking share one model, so
+        # this may run twice; genai.Client.close() tolerates that.
+        close = getattr(getattr(self.model, "_client", None), "close", None)
+        if close is None:
+            return
+        try:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+        except Exception:
+            pass
 
     async def generate(self, prompt: str) -> Any:
         return await self.model.generate(prompt, **self.kwargs)
@@ -383,6 +420,13 @@ class EscalatingStrategy(LLMCallStrategy[GSM8KAnswer]):
         self.thinking = thinking
         self.escalate_at = escalate_at
         self.max_attempts = max_attempts
+        # Telemetry (the strategy instance is shared across the whole batch, and
+        # asyncio runs these increments without preemption, so plain ints are
+        # safe). These tell us how hard each model made us work:
+        self.attempts = 0  # total execute() calls (≥ items: extras are retries)
+        self.escalations = 0  # attempts that used the thinking pass
+        self.parse_failures = 0  # responses with no parseable `#### <number>`
+        self.error_counts: dict[str, int] = {}  # by exception type, across attempts
 
     async def prepare(self) -> None:
         await self.fast.prepare()
@@ -392,12 +436,24 @@ class EscalatingStrategy(LLMCallStrategy[GSM8KAnswer]):
         await self.fast.cleanup()
         await self.thinking.cleanup()
 
+    async def on_error(self, exception: Exception, attempt: int, state: Any = None) -> None:
+        # Called by the framework on every failed attempt — counts retries by
+        # error type (AnswerParseError = malformed output, ServerError = 503/
+        # overload, APIConnectionError = transient, etc.).
+        name = type(exception).__name__
+        self.error_counts[name] = self.error_counts.get(name, 0) + 1
+
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: Any = None
     ) -> tuple[GSM8KAnswer, dict[str, Any], dict[str, Any] | None]:
+        self.attempts += 1
         call = self.thinking if attempt >= self.escalate_at else self.fast
+        if call is self.thinking:
+            self.escalations += 1
         response = await call.generate(prompt)
         answer = extract_answer(response.text)
+        if answer is None:
+            self.parse_failures += 1
 
         metadata = dict(response.metadata or {})
         metadata["model_label"] = call.label
@@ -425,17 +481,18 @@ class Contestant:
     fast_call: ModelCall
     error_classifier: Any
     pricing: Pricing
+    workers: int  # per-provider concurrency (and pool size)
 
 
 def make_deepseek() -> Contestant:
     from async_batch_llm import DeepSeekModel, OpenAIErrorClassifier
 
     fast = ModelCall(
-        DeepSeekModel.from_api_key(DEEPSEEK_MODEL, thinking=False, max_connections=MAX_WORKERS),
+        DeepSeekModel.from_api_key(DEEPSEEK_MODEL, thinking=False, max_connections=DEEPSEEK_WORKERS),
         label=f"{DEEPSEEK_MODEL}:no-think",
     )
     thinking = ModelCall(
-        DeepSeekModel.from_api_key(DEEPSEEK_MODEL, thinking=True, max_connections=MAX_WORKERS),
+        DeepSeekModel.from_api_key(DEEPSEEK_MODEL, thinking=True, max_connections=DEEPSEEK_WORKERS),
         label=f"{DEEPSEEK_MODEL}:think",
     )
     return Contestant(
@@ -446,26 +503,42 @@ def make_deepseek() -> Contestant:
         # DeepSeek is OpenAI-compatible; wrap so parse failures escalate.
         error_classifier=EscalationErrorClassifier(OpenAIErrorClassifier()),
         pricing=PRICING[DEEPSEEK_MODEL],
+        workers=DEEPSEEK_WORKERS,
     )
 
 
-def _gemini_client() -> Any:
+def _gemini_client(workers: int) -> Any:
+    import httpx
     from google import genai
+    from google.genai import types
 
+    # GeminiModel has no max_connections knob (it wraps a genai.Client), and
+    # google-genai uses httpx's ~100-connection default pool — so without this,
+    # workers above ~100 would just block on the pool (the #25 footgun). Size the
+    # underlying httpx limits to the worker count via HttpOptions.
+    limits = httpx.Limits(max_connections=workers, max_keepalive_connections=workers)
+    http_options = types.HttpOptions(
+        client_args={"limits": limits},
+        async_client_args={"limits": limits},
+    )
     if GEMINI_USE_VERTEX:
         # Vertex AI backend: ADC (`gcloud auth application-default login`) plus
         # GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION, read from the environment.
-        return genai.Client(vertexai=True)
+        return genai.Client(vertexai=True, http_options=http_options)
     # Gemini Developer API (AI Studio): API key.
-    return genai.Client(api_key=GOOGLE_API_KEY)
+    return genai.Client(api_key=GOOGLE_API_KEY, http_options=http_options)
 
 
 def _make_gemini(
-    name: str, model_id: str, fast_config: dict[str, Any], think_config: dict[str, Any]
+    name: str,
+    model_id: str,
+    fast_config: dict[str, Any],
+    think_config: dict[str, Any],
+    workers: int,
 ) -> Contestant:
     from async_batch_llm import GeminiErrorClassifier, GeminiModel
 
-    model = GeminiModel(model_id, _gemini_client())  # one model, two thinking configs
+    model = GeminiModel(model_id, _gemini_client(workers))  # one model, two thinking configs
     fast = ModelCall(model, label=f"{model_id}:fast", kwargs={"config": fast_config})
     thinking = ModelCall(model, label=f"{model_id}:think", kwargs={"config": think_config})
     return Contestant(
@@ -475,15 +548,20 @@ def _make_gemini(
         fast_call=fast,
         error_classifier=EscalationErrorClassifier(GeminiErrorClassifier()),
         pricing=PRICING[model_id],
+        workers=workers,
     )
 
 
 def make_gemini_31() -> Contestant:
-    return _make_gemini("gemini-3.1", GEMINI_31_MODEL, GEMINI_31_FAST_CONFIG, GEMINI_31_THINK_CONFIG)
+    return _make_gemini(
+        "gemini-3.1", GEMINI_31_MODEL, GEMINI_31_FAST_CONFIG, GEMINI_31_THINK_CONFIG, GEMINI_31_WORKERS
+    )
 
 
 def make_gemini_25() -> Contestant:
-    return _make_gemini("gemini-2.5", GEMINI_25_MODEL, GEMINI_25_FAST_CONFIG, GEMINI_25_THINK_CONFIG)
+    return _make_gemini(
+        "gemini-2.5", GEMINI_25_MODEL, GEMINI_25_FAST_CONFIG, GEMINI_25_THINK_CONFIG, GEMINI_25_WORKERS
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -511,14 +589,14 @@ async def run_contestant(
     out_path = RESULTS_DIR / f"{contestant.name}_results.jsonl.gz"
 
     config = ProcessorConfig(
-        max_workers=MAX_WORKERS,
+        max_workers=contestant.workers,
         timeout_per_item=120.0,
         retry=RetryConfig(max_attempts=3, initial_wait=1.0),
     )
 
     start = perf_counter()
-    # Single-consumer queue writer (outer): post-processors enqueue, one task
-    # drains to the .jsonl.gz file. No lock, no concurrent-write corruption.
+    # Blocking gzip writer (outer): each concurrent post-processor does a
+    # synchronous, atomic write to the .jsonl.gz file — no lock, no corruption.
     async with StreamingGzipWriter(out_path) as writer:
 
         async def write_result(result: Any) -> None:
@@ -568,10 +646,21 @@ class Scorecard:
     ambiguous: int
     wall: float
     batch_result: Any
+    workers: int = 0
+    # Strategy telemetry (how hard the model made us work).
+    attempts: int = 0  # total LLM calls, including retries
+    escalations: int = 0  # attempts that used the thinking pass
+    parse_failures: int = 0  # responses with no parseable answer
+    error_counts: dict[str, int] = field(default_factory=dict)  # by exception type
 
     @property
     def accuracy(self) -> float:
         return (self.exact_correct + self.judge_correct) / self.total if self.total else 0.0
+
+    @property
+    def retries(self) -> int:
+        """Attempts beyond the first per item (total attempts − items)."""
+        return max(0, self.attempts - self.total)
 
 
 def score_batch(name: str, model_id: str, batch_result: Any, wall: float) -> tuple[Scorecard, list[tuple]]:
@@ -684,7 +773,7 @@ async def race_processor(items: list[Item], contestant: Contestant) -> tuple[flo
     from async_batch_llm.core import RetryConfig
 
     config = ProcessorConfig(
-        max_workers=MAX_WORKERS,
+        max_workers=contestant.workers,
         timeout_per_item=120.0,
         retry=RetryConfig(max_attempts=3, initial_wait=1.0),
     )
@@ -711,6 +800,7 @@ class RaceResult:
     seq: tuple[float, int]  # (wall, ok)
     gather: tuple[float, int]
     proc: tuple[float, int]  # async-batch-llm
+    workers: int = 0
 
 
 async def run_race_for(build: Callable[[], Contestant], items: list[Item]) -> RaceResult:
@@ -720,7 +810,7 @@ async def run_race_for(build: Callable[[], Contestant], items: list[Item]) -> Ra
     seq = await race_sequential(items, contestant.fast_call)
     gather = await race_naive_gather(items, contestant.fast_call)
     proc = await race_processor(items, contestant)  # this run's __aexit__ cleans it up
-    return RaceResult(contestant.name, seq, gather, proc)
+    return RaceResult(contestant.name, seq, gather, proc, workers=contestant.workers)
 
 
 # ---------------------------------------------------------------------------
@@ -787,23 +877,150 @@ def print_bakeoff(cards: list[Scorecard], judge_card: Scorecard | None) -> None:
         billable = br.effective_input_tokens(PRICING[card.model_id].cached_rate)
         cache_pct = (br.total_cached_tokens / br.total_input_tokens * 100) if br.total_input_tokens else 0.0
         print(
-            f"  {card.name}: exact={card.exact_correct} judge_rescued={card.judge_correct} "
-            f"unparsed={card.ambiguous} errors={card.errors}"
+            f"  {card.name}: workers={card.workers} exact={card.exact_correct} "
+            f"judge_rescued={card.judge_correct} unparsed={card.ambiguous} errors={card.errors}"
         )
         print(
             f"      billable input tokens (cache-adjusted)={billable:,} "
             f"| cache hit rate={cache_pct:.1f}%"
         )
+        # How hard the model made us work: total attempts vs items (retries),
+        # malformed-output rate, escalations, and a breakdown by error type.
+        parse_pct = (card.parse_failures / card.attempts * 100) if card.attempts else 0.0
+        errors = (
+            ", ".join(f"{name}={n}" for name, n in sorted(card.error_counts.items()))
+            or "none"
+        )
+        print(
+            f"      attempts={card.attempts} (retries={card.retries}) "
+            f"escalations={card.escalations} "
+            f"malformed={card.parse_failures} ({parse_pct:.1f}% of attempts)"
+        )
+        print(f"      errors by type: {errors}")
+
+
+def write_summary(
+    race_rows: list[RaceResult],
+    cards: list[Scorecard],
+    judge_card: Scorecard | None,
+) -> Path:
+    """Persist the race + bake-off aggregates to ``benchmark_results/summary.json``.
+
+    The per-item .jsonl.gz files capture answers but not wall time, tokens, or
+    cost — so this dumps the same numbers ``print_race``/``print_bakeoff`` show,
+    letting a run be cited (e.g. in docs) without re-running it.
+    """
+    from datetime import datetime, timezone
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _bakeoff_row(card: Scorecard) -> dict[str, Any]:
+        br = card.batch_result
+        pricing = PRICING[card.model_id]
+        cache_pct = (
+            br.total_cached_tokens / br.total_input_tokens * 100
+            if br.total_input_tokens
+            else 0.0
+        )
+        return {
+            "provider": card.name,
+            "model_id": card.model_id,
+            "workers": card.workers,
+            "accuracy_pct": round(card.accuracy * 100, 1),
+            "wall_s": round(card.wall, 2),
+            "input_tokens": br.total_input_tokens,
+            "cached_tokens": br.total_cached_tokens,
+            "output_tokens": br.total_output_tokens,
+            "cost_usd": round(estimate_cost(br, pricing), 4),
+            "billable_input_tokens": br.effective_input_tokens(pricing.cached_rate),
+            "cache_hit_rate_pct": round(cache_pct, 1),
+            "exact_correct": card.exact_correct,
+            "judge_rescued": card.judge_correct,
+            "unparsed": card.ambiguous,
+            "errors": card.errors,
+            "attempts": card.attempts,
+            "retries": card.retries,
+            "escalations": card.escalations,
+            "parse_failures": card.parse_failures,
+            "error_counts": card.error_counts,
+        }
+
+    summary: dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "config": {
+            "race_items": RACE_ITEMS,
+            # Actual count processed (BAKEOFF_ITEMS may be None = whole dataset).
+            "bakeoff_items": (cards[0].total if cards else 0),
+            "gather_chunk_size": GATHER_CHUNK_SIZE,
+        },
+        "wall_time_race": [
+            {
+                "provider": r.name,
+                "workers": r.workers,
+                "sequential_s": round(r.seq[0], 2),
+                "gather_s": round(r.gather[0], 2),
+                "async_batch_llm_s": round(r.proc[0], 2),
+                "speedup_seq_to_abl": (round(r.seq[0] / r.proc[0], 1) if r.proc[0] else None),
+                "ok": r.proc[1],
+            }
+            for r in race_rows
+        ],
+        "bakeoff": [_bakeoff_row(c) for c in cards],
+    }
+    if judge_card is not None:
+        jbr = judge_card.batch_result
+        summary["judge"] = {
+            "model_id": judge_card.model_id,
+            "wall_s": round(judge_card.wall, 2),
+            "input_tokens": jbr.total_input_tokens,
+            "cached_tokens": jbr.total_cached_tokens,
+            "output_tokens": jbr.total_output_tokens,
+            "cost_usd": round(estimate_cost(jbr, PRICING[JUDGE_MODEL]), 4),
+            "judged": judge_card.total,
+            "judge_correct": judge_card.judge_correct,
+        }
+
+    out_path = RESULTS_DIR / "summary.json"
+    out_path.write_text(json.dumps(summary, indent=2) + "\n")
+    return out_path
 
 
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
+def _raise_fd_limit(target: int) -> None:
+    """Raise the soft open-file limit toward ``target`` (best effort).
+
+    Each in-flight request is a socket = an open file descriptor, so at hundreds
+    of concurrent workers the OS fd limit — not the API — is the ceiling. macOS
+    defaults the soft limit to ~256, which ``OSError: [Errno 24] Too many open
+    files`` at the worker counts here. Bump the soft limit up to the hard limit;
+    no-op on non-Unix or if we can't raise it (then lower the worker counts, or
+    run ``ulimit -n <N>`` first).
+    """
+    try:
+        import resource
+    except ImportError:
+        return  # non-Unix (e.g. Windows) — nothing to do
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    want = target if hard == resource.RLIM_INFINITY else min(hard, target)
+    if want <= soft:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+    except (ValueError, OSError):
+        pass
+
+
 async def main() -> None:
     if not DATA_PATH.exists():
         print(f"Benchmark data not found at {DATA_PATH}")
         print("Run:  python examples/download_gsm8k.py")
         return
+
+    # Each concurrent request holds a socket; give the fd limit headroom for the
+    # largest provider pool (plus leaked keepalive sockets and overhead).
+    _raise_fd_limit(max(DEEPSEEK_WORKERS, GEMINI_31_WORKERS, GEMINI_25_WORKERS) * 2 + 512)
 
     builders: list[Callable[[], Contestant]] = []
     if DEEPSEEK_API_KEY:
@@ -819,21 +1036,28 @@ async def main() -> None:
         print("Optionally OPENAI_API_KEY for the fallback grader. Then re-run.")
         return
 
+    skip_race = "--skip-race" in sys.argv[1:]
+
     bakeoff_items = await load_items(DATA_PATH, BAKEOFF_ITEMS)
     race_items = bakeoff_items[:RACE_ITEMS]
-    print(f"Loaded {len(bakeoff_items)} GSM8K items from {DATA_PATH.name} (aiogzip).")
+    print(f"Loaded {len(bakeoff_items)} GSM8K items from {DATA_PATH.name} (gzip).")
 
     # Each strategy is consumed by exactly one processor, whose __aexit__ owns
     # its cleanup (it closes the provider's HTTP client). So we build a fresh
     # set of models per use rather than sharing instances across processors.
 
     # ---- Wall-time race (every provider × three orchestrations) ----
-    print(f"\nRunning wall-time race on {RACE_ITEMS} items per provider...")
-    print("  (each provider's sequential leg runs one call at a time — give it a minute)")
+    # The sequential leg runs one call at a time, so it dominates runtime;
+    # --skip-race jumps straight to the bake-off for faster iteration.
     race_rows: list[RaceResult] = []
-    for build in builders:
-        race_rows.append(await run_race_for(build, race_items))
-    print_race(race_rows, RACE_ITEMS)
+    if skip_race:
+        print("\nSkipping wall-time race (--skip-race).")
+    else:
+        print(f"\nRunning wall-time race on {RACE_ITEMS} items per provider...")
+        print("  (each provider's sequential leg runs one call at a time — give it a minute)")
+        for build in builders:
+            race_rows.append(await run_race_for(build, race_items))
+        print_race(race_rows, RACE_ITEMS)
 
     # ---- Provider bake-off (fresh build per contestant) ----
     cards: list[Scorecard] = []
@@ -841,9 +1065,15 @@ async def main() -> None:
     ambiguous_owner: dict[str, Scorecard] = {}
     for build in builders:
         contestant = build()
-        print(f"\nRunning bake-off batch: {contestant.name} ({BAKEOFF_ITEMS} items)...")
+        print(f"\nRunning bake-off batch: {contestant.name} ({len(bakeoff_items)} items)...")
         batch_result, wall = await run_contestant(contestant, bakeoff_items)
         card, ambiguous = score_batch(contestant.name, contestant.model_id, batch_result, wall)
+        card.workers = contestant.workers
+        strat = contestant.strategy
+        card.attempts = strat.attempts
+        card.escalations = strat.escalations
+        card.parse_failures = strat.parse_failures
+        card.error_counts = dict(strat.error_counts)
         cards.append(card)
         for item_id, raw, gold in ambiguous:
             tagged_id = f"{contestant.name}:{item_id}"
@@ -870,6 +1100,7 @@ async def main() -> None:
             ambiguous=0,
             wall=judge_wall,
             batch_result=judge_br,
+            workers=JUDGE_WORKERS,
         )
     elif all_ambiguous:
         print(
@@ -878,7 +1109,9 @@ async def main() -> None:
         )
 
     print_bakeoff(cards, judge_card)
+    summary_path = write_summary(race_rows, cards, judge_card)
     print(f"\nPer-item results written to {RESULTS_DIR}/ (one .jsonl.gz per provider).")
+    print(f"Aggregate summary (wall time + cost + accuracy) written to {summary_path}.")
 
 
 if __name__ == "__main__":

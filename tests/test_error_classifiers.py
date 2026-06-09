@@ -119,19 +119,22 @@ async def test_gemini_classifier_server_errors_retryable():
 
     classifier = GeminiErrorClassifier()
 
-    # 503 overload / UNAVAILABLE — the common transient case (regression: this
-    # used to be dropped as non-retryable because it isn't a "timeout").
+    # 503 overload / UNAVAILABLE — a capacity signal, routed through the
+    # coordinated cooldown (is_rate_limit=True) rather than per-item backoff,
+    # so all workers pause + slow-start instead of hammering an overloaded model.
     err = ServerError(
         503, {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}}
     )
     info = classifier.classify(err)
     assert info.is_retryable is True
-    assert info.is_rate_limit is False
-    assert info.error_category == "server_error"
+    assert info.is_rate_limit is True
+    assert info.error_category == "server_overload"
 
-    # 500 internal error — also retryable.
+    # 500 internal error — transient one-off, per-item retry (not a cooldown).
     info = classifier.classify(ServerError(500, {"error": {"code": 500, "message": "internal"}}))
     assert info.is_retryable is True
+    assert info.is_rate_limit is False
+    assert info.error_category == "server_error"
 
     # 504 deadline — retryable and flagged as a timeout.
     info = classifier.classify(

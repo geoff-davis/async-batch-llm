@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`GeminiErrorClassifier` routes 503 / model-overload through the coordinated
+  cooldown.** A 503 `UNAVAILABLE` / "overloaded" / "high demand" now classifies
+  as `is_rate_limit=True` (category `server_overload`), so the
+  `RateLimitCoordinator` pauses all workers and slow-starts — under high
+  concurrency, per-item backoff alone can't relieve an overloaded model. Other
+  5xx (500/502/504) stay one-off per-item retries. Refines the blanket 5xx retry
+  added in v0.11.0.
+
 ## [0.11.0] - 2026-06-08
 
 ### Added

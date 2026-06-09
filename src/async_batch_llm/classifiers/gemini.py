@@ -5,6 +5,11 @@ from ..strategies.errors import ErrorClassifier, ErrorInfo, FrameworkTimeoutErro
 # Error pattern constants
 RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota", "rate limit")
 TIMEOUT_PATTERNS = ("timeout", "504", "deadline")
+# 503 Service Unavailable / model overload. Distinct from a quota rate limit,
+# but it's the same kind of capacity signal — so we route it through the
+# coordinated cooldown (pause all workers + slow-start) rather than per-item
+# backoff, which alone can't relieve an overloaded model under high concurrency.
+OVERLOAD_PATTERNS = ("503", "unavailable", "overloaded", "high demand")
 
 
 class GeminiErrorClassifier(ErrorClassifier):
@@ -49,12 +54,22 @@ class GeminiErrorClassifier(ErrorClassifier):
 
         if isinstance(exception, ServerError):
             error_str = str(exception)
+            # 503 Service Unavailable / overload is a capacity signal — route it
+            # through the coordinated cooldown (is_rate_limit=True pauses all
+            # workers and slow-starts), since per-item backoff alone can't
+            # relieve an overloaded model when dozens of workers keep hitting it.
+            if self._matches_any_pattern(error_str, OVERLOAD_PATTERNS):
+                return ErrorInfo(
+                    is_retryable=True,
+                    is_rate_limit=True,
+                    is_timeout=False,
+                    error_category="server_overload",
+                )
+            # Other 5xx (500, 502, 504) are one-off transient errors → per-item
+            # retry/backoff. All retryable, matching OpenAIErrorClassifier's 5xx
+            # handling (the two used to disagree: Gemini retried only timeouts).
             is_timeout = self._matches_any_pattern(error_str, TIMEOUT_PATTERNS)
             return ErrorInfo(
-                # 5xx are transient server-side problems (503 overload/UNAVAILABLE,
-                # 500, 502, 504). All retryable — backoff + rate-limit cooldown
-                # keep retries from hammering. Matches OpenAIErrorClassifier's 5xx
-                # handling (the two used to disagree: Gemini retried only timeouts).
                 is_retryable=True,
                 is_rate_limit=False,
                 is_timeout=is_timeout,

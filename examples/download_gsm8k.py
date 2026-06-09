@@ -6,8 +6,8 @@ canonical GSM8K test split (1,319 grade-school math word problems, each a
 ``#### <number>`` marker) from the OpenAI ``grade-school-math`` repo and
 writes it compressed to ``examples/data/gsm8k_test.jsonl.gz``.
 
-The benchmark demo reads it back with ``aiogzip`` — the point of the demo is
-async I/O on both ends, so we keep the on-disk format gzipped.
+The benchmark demo reads it back with the stdlib ``gzip`` module, so we keep
+the on-disk format gzipped.
 
 Usage::
 
@@ -49,7 +49,6 @@ def main() -> None:
     line_count = raw.count(b"\n")
     print(f"Fetched {len(raw) / 1024:.0f} KiB ({line_count} records). Compressing...")
 
-    # gzip is fine for the write here; the demo reads it back with aiogzip.
     with gzip.open(OUTPUT_PATH, "wb") as f:
         f.write(raw)
 
