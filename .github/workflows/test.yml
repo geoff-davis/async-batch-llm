@@ -11,6 +11,14 @@ permissions:
   contents: write
   pull-requests: write
 
+# Serialize runs that share a ref so back-to-back main pushes don't race the
+# coverage action's push to its data branch (the second push would be rejected
+# non-fast-forward). Push runs queue (every commit still gets covered); PR runs
+# cancel on a newer push to save CI.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
