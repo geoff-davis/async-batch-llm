@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-06-09
+
 ### Added
 
 - **Open-file-limit warning.** `ParallelBatchProcessor` now emits a
@@ -28,6 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   concurrency, per-item backoff alone can't relieve an overloaded model. Other
   5xx (500/502/504) stay one-off per-item retries. Refines the blanket 5xx retry
   added in v0.11.0.
+
+### Documentation
+
+- **Expanded the bulk-benchmark example and refreshed the README.** Added a
+  `--throughput` mode to `examples/example_batch_benchmark.py` (worker-pool vs
+  chunked-`asyncio.gather` throughput at matched concurrency, with per-leg
+  rate-limit counts and an inter-leg quota-reset gap), and a new
+  `examples/peek_outputs.py` for comparing raw model output verbosity across
+  providers. Reworked the README value proposition (provider-agnostic worker
+  pool, error-type-aware resilience, cost/observability) with a benchmark
+  "sense of scale" callout, a minimal lead example, and pointers to deeper docs.
 
 ## [0.11.0] - 2026-06-08
 
