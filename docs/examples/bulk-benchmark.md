@@ -200,10 +200,10 @@ without re-running it.
 ### From a representative run
 
 One full run — **1,319-item bake-off**, 30-item wall-time race, **per-provider
-worker counts** (DeepSeek 250, Gemini 3.1 250, Gemini 2.5 **10**), June 2026
-pricing (2026-06-09). Numbers shift run-to-run with network latency, model
-sampling, and your account's rate limits — treat them as illustrative, not a
-spec.
+worker counts** (DeepSeek 250, Gemini 3.1 250, Gemini 2.5 **10** in this
+snapshot; the default has since dropped to 5), June 2026 pricing (2026-06-09).
+Numbers shift run-to-run with network latency, model sampling, and your
+account's rate limits — treat them as illustrative, not a spec.
 
 **Wall-time race** (30 items per provider, seconds):
 
@@ -226,9 +226,12 @@ the retries, backoff, and rate-limit cooldowns `gather` would silently skip.
 | gemini-2.5 (gemini-2.5-flash-lite) |    95.3% |    679.2 | 129,748 |      0 | 443,609 |   0.1904 |
 
 **Mind the worker counts when reading "Wall (s)" — this is not an
-apples-to-apples speed race.** Gemini 2.5 Flash-Lite ran at **10 workers**
-because it 503s/times-out hard above ~50, so its 679 s is mostly its rate-limit
-ceiling, not raw model speed; DeepSeek and Gemini 3.1 each ran at 250.
+apples-to-apples speed race.** Gemini 2.5 Flash-Lite ran at **10 workers** in
+this snapshot because it 503s/times-out hard above ~50, so its 679 s is mostly
+its rate-limit ceiling, not raw model speed; DeepSeek and Gemini 3.1 each ran at
+250. (The example's default for 2.5 has since dropped to **5 workers** — it
+rate-limited even at 10 — so a fresh run would show 2.5 slower still; its
+accuracy/token/cost numbers are unaffected by the worker count.)
 
 The error/retry summary — the framework earning its keep:
 
