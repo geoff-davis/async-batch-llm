@@ -1,6 +1,6 @@
 # async-batch-llm
 
-**Process thousands of LLM requests in parallel with automatic retries, rate limiting, and flexible error handling.**
+**Provider-agnostic bulk LLM processing: thousands of requests in parallel, with retries and rate-limit handling.**
 
 Works with any LLM provider (OpenAI, Anthropic, Google, LangChain, or custom) through a simple
 strategy pattern. Built on asyncio for efficient I/O-bound processing.
@@ -18,12 +18,44 @@ strategy pattern. Built on asyncio for efficient I/O-bound processing.
 
 ## Why async-batch-llm?
 
-- ✅ **Universal** - Works with any LLM provider through a simple strategy interface
-- ✅ **Reliable** - Built-in retry logic, timeout handling, and coordinated rate limiting
-- ✅ **Fast** - Parallel async processing with configurable concurrency
-- ✅ **Observable** - Token tracking, metrics collection, and event hooks
-- ✅ **Cost-Effective** - Shared caching strategies can dramatically reduce repeated prompt costs
-- ✅ **Type-Safe** - Full generic type support with Pydantic validation
+Bulk LLM inference done right: a **bounded async worker pool** that's fast *and*
+safe, **error-type-aware resilience**, and **cost/observability built in** —
+across **any provider**.
+
+- 🔀 **Provider-agnostic** — one strategy-pattern API runs the same batch on
+  DeepSeek, Gemini, OpenAI, OpenRouter, PydanticAI, or your own provider. Swap a
+  line to A/B providers on cost, speed, and accuracy.
+- ⚡ **Fast *and* safe** — runs many calls concurrently (big speedups over
+  serial), refills the pool continuously so one slow call never stalls a whole
+  chunk (faster than a naive `asyncio.gather`), and **bounds** in-flight work so
+  a large batch doesn't exhaust sockets, file descriptors, or memory.
+- 🛟 **Error-type-aware resilience** — retries are driven by *why* a call failed:
+  an unparseable/invalid model output can escalate to a smarter or thinking
+  model, while a server-side 429/503 triggers a **coordinated cooldown** that
+  pauses *all* workers and slow-starts — instead of each worker blindly hammering
+  a throttled endpoint.
+- 💸 **Cost & token accounting** — input/cached/output tokens tracked per
+  provider, aggregated across retries (and recovered from failed attempts), with
+  cache-aware billing estimates.
+- 🔭 **Observable & streaming** — per-result post-processors (write to disk/DB as
+  each item finishes), progress callbacks, metrics observers, and middleware.
+- 🧱 **Type-safe** — full generic typing with optional Pydantic validation.
+
+It's **real-time parallel processing** of individual calls — not a delayed
+batched-API client — so it's built for latency-sensitive bulk work, not 24-hour
+discounted batches.
+
+### A sense of scale
+
+From a sample [GSM8K benchmark run](docs/examples/bulk-benchmark.md) — illustrative,
+not a spec (numbers shift with provider, account limits, and network):
+
+- **~17× faster than serial** — 30 problems took ~57 s one-at-a-time vs ~3.4 s
+  through the pool.
+- **~2× faster than a naive chunked `asyncio.gather`** at the same 250-worker
+  concurrency (DeepSeek) — continuous refill beats per-chunk barriers.
+- **1,319 problems for ~$0.05** on DeepSeek Flash, with the token/cost breakdown
+  printed for free.
 
 ---
 
