@@ -55,6 +55,14 @@ bake-off:
 python examples/example_batch_benchmark.py --skip-race
 ```
 
+Pass `--throughput` to run *only* the worker-pool throughput benchmark (below) —
+for each large-pool provider it races chunked `asyncio.gather` against
+async-batch-llm at the provider's full worker count, on a big batch:
+
+```bash
+python examples/example_batch_benchmark.py --throughput
+```
+
 ## The architecture
 
 ```text
@@ -67,56 +75,27 @@ ParallelBatchProcessor  ──►  retry · backoff · rate-limit · escalation
 gzip stream-write .jsonl.gz   (concurrent post-processors → atomic blocking writes)
 ```
 
-### 1. Gzip I/O (stdlib, blocking writes)
+### 1. Gzip I/O (stdlib, blocking)
 
-Reading is a one-time blocking gzip read, done before any timer starts:
-
-```python
-import gzip
-
-with gzip.open(path, "rt") as f:
-    for line in f:
-        record = json.loads(line)
-        ...
-```
-
-**Be honest about scale.** At this dataset's size (~240 KB compressed) gzip I/O
-barely registers — the read happens once before the timers, and it's dwarfed by
-LLM latency regardless. So the demo uses plain blocking `gzip`, *not* an async
-or threaded writer. That's a deliberate choice, not a shortcut: a standalone
-write-path micro-benchmark (`examples/bench_gzip_write.py`, no API) shows that
-for tiny records an async-queue/thread writer runs **several times slower** than
-a plain blocking `gzip.write()` — the queue hops and thread-executor overhead
-dominate, and only pay off once records reach tens of KiB. At GSM8K's ~50-byte
-records that overhead is pure cost. An offloaded writer earns its keep only on
-multi-hundred-MB outputs, where a synchronous compress would block the event
-loop and stall every concurrent worker.
-
-**Concurrent writers are safe without a lock.** The bake-off's `post_processor`
-callbacks run **concurrently**, but a synchronous `gzip.write()` with no `await`
-in between is *atomic* with respect to the event loop — it can't switch tasks
-mid-write — so concurrent producers share one open file with no lock and no
-interleaving:
+The dataset is read once with stdlib `gzip` before any timer starts, and results
+stream out the same way. The bake-off's `post_processor` callbacks run
+concurrently, but a synchronous `gzip.write()` with no `await` in between is
+*atomic* with respect to the event loop, so concurrent producers share one open
+file with no lock and no interleaving:
 
 ```python
 class StreamingGzipWriter:
-    async def __aenter__(self):
-        self._fh = gzip.open(self.path, "wt")
-        return self
-
     async def write(self, record):                   # called by each post_processor
         self._fh.write(json.dumps(record) + "\n")    # no await → atomic on the loop
 ```
 
-(The blocking write does hold the loop for the duration of the compress; at this
-record size that's negligible. For huge outputs you'd push it to a thread or
-async writer — paying the queue/executor overhead to keep the loop free — but at
-this scale that trade goes the other way, which is why we dropped the async
-writer.)
+At this dataset's size (~240 KB) gzip I/O is negligible next to LLM latency, so
+the wall-time win is all concurrency. Async/threaded gzip writes can give a
+further speed-up for very large outputs (keeping a slow compress off the event
+loop) — a worthwhile option in some cases, but out of scope here.
 
 Output lands in **completion order**, not input order; each record carries its
-`item_id`, so the original order is recoverable downstream (sort by id) — for a
-benchmark dump that's all you need.
+`item_id`, so the original order is recoverable downstream (sort by id).
 
 ### 2. Validation-gated thinking escalation
 
@@ -274,3 +253,51 @@ unparsed item — used only where the free regex grader fell short.
 The headline: concurrency collapses wall time, the framework matches a bare
 `gather` for speed while *also* surviving transient errors and rate limits (here:
 64 retries and a 503, all absorbed), and you get token/cost accounting for free.
+
+### Throughput at scale (`--throughput`)
+
+The wall-time race above runs only 30 items, so a 250-worker pool never fills —
+all 30 calls fire at once regardless of orchestration. To see what the worker
+pool actually buys you at high concurrency, `--throughput` runs a focused
+benchmark on a large batch (`THROUGHPUT_ITEMS`, default 1,000): for each
+large-pool provider (DeepSeek and Gemini 3.1; Gemini 2.5's tiny pool is skipped),
+it races a **chunked `asyncio.gather`** against **async-batch-llm**, both pinned
+to the provider's full worker count.
+
+Because both bound concurrency identically, the orchestration difference is
+barriers vs continuous refill: chunked `gather` can't start the next chunk until
+the *slowest* call in the current one returns, while async-batch-llm refills a
+worker the instant one frees up. The table reports each side's items/sec and the
+pool's speedup.
+
+**This is only apples-to-apples below the provider's rate ceiling.** The two
+legs share one per-minute quota and run back-to-back, so the first leg's burst
+can drain it and leave the second leg eating rate-limit cooldowns it didn't
+cause — and the legs aren't symmetric about rate limits: chunked `gather` has no
+backoff (a 429/503 is just a lost result), whereas async-batch-llm pauses all
+workers and slow-starts. So if a provider rate-limits you at the test
+concurrency, the worker-pool leg can look *slower* purely because it's the only
+one respecting the limit. Two mitigations are built in: the bench **pauses
+`THROUGHPUT_LEG_GAP_S` (default 60 s) between legs** to let the quota reset, and
+the table shows a **rate-limit/cooldown count (`RL`) per leg** — read those
+first. The cleanest read is a provider you're *not* throttled against (here,
+DeepSeek, where the pool wins outright); for a rate-limited provider the honest
+takeaway is "sustained throughput under the limit," not raw orchestration speed.
+
+From a representative run (1,000 items, both legs at 250 workers, 60 s gap
+between legs, 2026-06-09):
+
+| Provider       | gather it/s | abl it/s | Speedup | RL (gather / abl) |
+|----------------|------------:|---------:|--------:|:-----------------:|
+| deepseek-flash |        28.4 |     57.2 |   2.01× |       0 / 0       |
+| gemini-3.1     |        38.7 |     49.8 |   1.28× |       0 / 0       |
+
+Both legs hit **zero** rate-limit cooldowns (`RL = 0`), so this is a clean
+comparison — the worker pool's continuous refill simply beats chunked `gather`'s
+per-chunk barriers, by **2.0×** on DeepSeek and **1.3×** on Gemini 3.1. DeepSeek's
+larger margin comes from higher per-call latency variance (more stragglers for
+the barrier to wait on); Gemini 3.1's faster, more uniform calls leave the pool
+less to recover. (An earlier run *without* the inter-leg gap showed Gemini's abl
+leg at 0.5× — slower — purely because it ran second on a drained quota and spent
+the time in cooldowns; the gap plus the `RL` columns make that visible instead of
+misleading.)
