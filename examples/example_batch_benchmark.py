@@ -73,7 +73,11 @@ are absent, so the demo runs with whatever you have configured.
 
 ```bash
 python examples/example_batch_benchmark.py
+python examples/example_batch_benchmark.py --skip-race  # bake-off only (faster)
 ```
+
+``--skip-race`` skips the wall-time race (whose sequential leg dominates
+runtime) and jumps straight to the provider bake-off — handy when iterating.
 """
 
 import asyncio
@@ -81,6 +85,7 @@ import gzip
 import json
 import os
 import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -93,9 +98,18 @@ from typing import Any
 DATA_PATH = Path(__file__).parent / "data" / "gsm8k_test.jsonl.gz"
 RESULTS_DIR = Path(__file__).parent / "data" / "benchmark_results"
 
-BAKEOFF_ITEMS = 500  # items each provider answers in the accuracy bake-off
+BAKEOFF_ITEMS = None  # items per provider in the bake-off; None = the whole dataset
 RACE_ITEMS = 30  # items in the wall-time race (the sequential leg is the slow one)
-MAX_WORKERS = 40  # high concurrency for the providers
+# Concurrency is tuned PER PROVIDER — they tolerate very different request rates.
+# DeepSeek allows thousands of concurrent connections; Gemini 3.1 Flash-Lite
+# handled high concurrency cleanly; Gemini 2.5 Flash-Lite rate-limits hard above
+# ~50 (at 100 it spent most of a run in cooldowns). Each provider's connection
+# pool is sized to match its worker count — DeepSeek via max_connections, Gemini
+# via the genai client's httpx limits — so workers aren't capped at httpx's ~100
+# default pool (see issue #25).
+DEEPSEEK_WORKERS = 250
+GEMINI_31_WORKERS = 250
+GEMINI_25_WORKERS = 10  # 2.5 Flash-Lite overloads (503s) quickly; keep this low
 JUDGE_WORKERS = 10  # concurrency for the fallback grader
 GATHER_CHUNK_SIZE = 50  # naive baseline: gather this many at a time (barrier per chunk)
 
@@ -236,11 +250,12 @@ def build_prompt(question: str) -> str:
 # ---------------------------------------------------------------------------
 # Gzip I/O (stdlib, blocking writes)
 # ---------------------------------------------------------------------------
-async def load_items(path: Path, limit: int) -> list[Item]:
-    """Read up to ``limit`` items from a .jsonl.gz file (plain blocking gzip).
+async def load_items(path: Path, limit: int | None) -> list[Item]:
+    """Read up to ``limit`` items from a .jsonl.gz file (``None`` = all of them).
 
-    This runs once, before any timer starts, so a brief synchronous decompress
-    of the (~240 KB) file never touches the measured wall time.
+    Plain blocking gzip. This runs once, before any timer starts, so a brief
+    synchronous decompress of the (~240 KB) file never touches the measured
+    wall time.
     """
     items: list[Item] = []
     with gzip.open(path, "rt") as f:
@@ -256,7 +271,7 @@ async def load_items(path: Path, limit: int) -> list[Item]:
                     gold=extract_answer(record["answer"]),
                 )
             )
-            if len(items) >= limit:
+            if limit is not None and len(items) >= limit:
                 break
     return items
 
@@ -364,6 +379,20 @@ class ModelCall:
     async def cleanup(self) -> None:
         if isinstance(self.model, ManagedLLMModel):
             await self.model.cleanup()
+            return
+        # Non-managed model (GeminiModel wraps a caller-built genai.Client): close
+        # its underlying client so its sockets don't leak into the next
+        # contestant's run. Idempotent — fast and thinking share one model, so
+        # this may run twice; genai.Client.close() tolerates that.
+        close = getattr(getattr(self.model, "_client", None), "close", None)
+        if close is None:
+            return
+        try:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+        except Exception:
+            pass
 
     async def generate(self, prompt: str) -> Any:
         return await self.model.generate(prompt, **self.kwargs)
@@ -391,6 +420,13 @@ class EscalatingStrategy(LLMCallStrategy[GSM8KAnswer]):
         self.thinking = thinking
         self.escalate_at = escalate_at
         self.max_attempts = max_attempts
+        # Telemetry (the strategy instance is shared across the whole batch, and
+        # asyncio runs these increments without preemption, so plain ints are
+        # safe). These tell us how hard each model made us work:
+        self.attempts = 0  # total execute() calls (≥ items: extras are retries)
+        self.escalations = 0  # attempts that used the thinking pass
+        self.parse_failures = 0  # responses with no parseable `#### <number>`
+        self.error_counts: dict[str, int] = {}  # by exception type, across attempts
 
     async def prepare(self) -> None:
         await self.fast.prepare()
@@ -400,12 +436,24 @@ class EscalatingStrategy(LLMCallStrategy[GSM8KAnswer]):
         await self.fast.cleanup()
         await self.thinking.cleanup()
 
+    async def on_error(self, exception: Exception, attempt: int, state: Any = None) -> None:
+        # Called by the framework on every failed attempt — counts retries by
+        # error type (AnswerParseError = malformed output, ServerError = 503/
+        # overload, APIConnectionError = transient, etc.).
+        name = type(exception).__name__
+        self.error_counts[name] = self.error_counts.get(name, 0) + 1
+
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: Any = None
     ) -> tuple[GSM8KAnswer, dict[str, Any], dict[str, Any] | None]:
+        self.attempts += 1
         call = self.thinking if attempt >= self.escalate_at else self.fast
+        if call is self.thinking:
+            self.escalations += 1
         response = await call.generate(prompt)
         answer = extract_answer(response.text)
+        if answer is None:
+            self.parse_failures += 1
 
         metadata = dict(response.metadata or {})
         metadata["model_label"] = call.label
@@ -433,17 +481,18 @@ class Contestant:
     fast_call: ModelCall
     error_classifier: Any
     pricing: Pricing
+    workers: int  # per-provider concurrency (and pool size)
 
 
 def make_deepseek() -> Contestant:
     from async_batch_llm import DeepSeekModel, OpenAIErrorClassifier
 
     fast = ModelCall(
-        DeepSeekModel.from_api_key(DEEPSEEK_MODEL, thinking=False, max_connections=MAX_WORKERS),
+        DeepSeekModel.from_api_key(DEEPSEEK_MODEL, thinking=False, max_connections=DEEPSEEK_WORKERS),
         label=f"{DEEPSEEK_MODEL}:no-think",
     )
     thinking = ModelCall(
-        DeepSeekModel.from_api_key(DEEPSEEK_MODEL, thinking=True, max_connections=MAX_WORKERS),
+        DeepSeekModel.from_api_key(DEEPSEEK_MODEL, thinking=True, max_connections=DEEPSEEK_WORKERS),
         label=f"{DEEPSEEK_MODEL}:think",
     )
     return Contestant(
@@ -454,26 +503,42 @@ def make_deepseek() -> Contestant:
         # DeepSeek is OpenAI-compatible; wrap so parse failures escalate.
         error_classifier=EscalationErrorClassifier(OpenAIErrorClassifier()),
         pricing=PRICING[DEEPSEEK_MODEL],
+        workers=DEEPSEEK_WORKERS,
     )
 
 
-def _gemini_client() -> Any:
+def _gemini_client(workers: int) -> Any:
+    import httpx
     from google import genai
+    from google.genai import types
 
+    # GeminiModel has no max_connections knob (it wraps a genai.Client), and
+    # google-genai uses httpx's ~100-connection default pool — so without this,
+    # workers above ~100 would just block on the pool (the #25 footgun). Size the
+    # underlying httpx limits to the worker count via HttpOptions.
+    limits = httpx.Limits(max_connections=workers, max_keepalive_connections=workers)
+    http_options = types.HttpOptions(
+        client_args={"limits": limits},
+        async_client_args={"limits": limits},
+    )
     if GEMINI_USE_VERTEX:
         # Vertex AI backend: ADC (`gcloud auth application-default login`) plus
         # GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION, read from the environment.
-        return genai.Client(vertexai=True)
+        return genai.Client(vertexai=True, http_options=http_options)
     # Gemini Developer API (AI Studio): API key.
-    return genai.Client(api_key=GOOGLE_API_KEY)
+    return genai.Client(api_key=GOOGLE_API_KEY, http_options=http_options)
 
 
 def _make_gemini(
-    name: str, model_id: str, fast_config: dict[str, Any], think_config: dict[str, Any]
+    name: str,
+    model_id: str,
+    fast_config: dict[str, Any],
+    think_config: dict[str, Any],
+    workers: int,
 ) -> Contestant:
     from async_batch_llm import GeminiErrorClassifier, GeminiModel
 
-    model = GeminiModel(model_id, _gemini_client())  # one model, two thinking configs
+    model = GeminiModel(model_id, _gemini_client(workers))  # one model, two thinking configs
     fast = ModelCall(model, label=f"{model_id}:fast", kwargs={"config": fast_config})
     thinking = ModelCall(model, label=f"{model_id}:think", kwargs={"config": think_config})
     return Contestant(
@@ -483,15 +548,20 @@ def _make_gemini(
         fast_call=fast,
         error_classifier=EscalationErrorClassifier(GeminiErrorClassifier()),
         pricing=PRICING[model_id],
+        workers=workers,
     )
 
 
 def make_gemini_31() -> Contestant:
-    return _make_gemini("gemini-3.1", GEMINI_31_MODEL, GEMINI_31_FAST_CONFIG, GEMINI_31_THINK_CONFIG)
+    return _make_gemini(
+        "gemini-3.1", GEMINI_31_MODEL, GEMINI_31_FAST_CONFIG, GEMINI_31_THINK_CONFIG, GEMINI_31_WORKERS
+    )
 
 
 def make_gemini_25() -> Contestant:
-    return _make_gemini("gemini-2.5", GEMINI_25_MODEL, GEMINI_25_FAST_CONFIG, GEMINI_25_THINK_CONFIG)
+    return _make_gemini(
+        "gemini-2.5", GEMINI_25_MODEL, GEMINI_25_FAST_CONFIG, GEMINI_25_THINK_CONFIG, GEMINI_25_WORKERS
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -519,7 +589,7 @@ async def run_contestant(
     out_path = RESULTS_DIR / f"{contestant.name}_results.jsonl.gz"
 
     config = ProcessorConfig(
-        max_workers=MAX_WORKERS,
+        max_workers=contestant.workers,
         timeout_per_item=120.0,
         retry=RetryConfig(max_attempts=3, initial_wait=1.0),
     )
@@ -576,10 +646,21 @@ class Scorecard:
     ambiguous: int
     wall: float
     batch_result: Any
+    workers: int = 0
+    # Strategy telemetry (how hard the model made us work).
+    attempts: int = 0  # total LLM calls, including retries
+    escalations: int = 0  # attempts that used the thinking pass
+    parse_failures: int = 0  # responses with no parseable answer
+    error_counts: dict[str, int] = field(default_factory=dict)  # by exception type
 
     @property
     def accuracy(self) -> float:
         return (self.exact_correct + self.judge_correct) / self.total if self.total else 0.0
+
+    @property
+    def retries(self) -> int:
+        """Attempts beyond the first per item (total attempts − items)."""
+        return max(0, self.attempts - self.total)
 
 
 def score_batch(name: str, model_id: str, batch_result: Any, wall: float) -> tuple[Scorecard, list[tuple]]:
@@ -692,7 +773,7 @@ async def race_processor(items: list[Item], contestant: Contestant) -> tuple[flo
     from async_batch_llm.core import RetryConfig
 
     config = ProcessorConfig(
-        max_workers=MAX_WORKERS,
+        max_workers=contestant.workers,
         timeout_per_item=120.0,
         retry=RetryConfig(max_attempts=3, initial_wait=1.0),
     )
@@ -719,6 +800,7 @@ class RaceResult:
     seq: tuple[float, int]  # (wall, ok)
     gather: tuple[float, int]
     proc: tuple[float, int]  # async-batch-llm
+    workers: int = 0
 
 
 async def run_race_for(build: Callable[[], Contestant], items: list[Item]) -> RaceResult:
@@ -728,7 +810,7 @@ async def run_race_for(build: Callable[[], Contestant], items: list[Item]) -> Ra
     seq = await race_sequential(items, contestant.fast_call)
     gather = await race_naive_gather(items, contestant.fast_call)
     proc = await race_processor(items, contestant)  # this run's __aexit__ cleans it up
-    return RaceResult(contestant.name, seq, gather, proc)
+    return RaceResult(contestant.name, seq, gather, proc, workers=contestant.workers)
 
 
 # ---------------------------------------------------------------------------
@@ -795,13 +877,26 @@ def print_bakeoff(cards: list[Scorecard], judge_card: Scorecard | None) -> None:
         billable = br.effective_input_tokens(PRICING[card.model_id].cached_rate)
         cache_pct = (br.total_cached_tokens / br.total_input_tokens * 100) if br.total_input_tokens else 0.0
         print(
-            f"  {card.name}: exact={card.exact_correct} judge_rescued={card.judge_correct} "
-            f"unparsed={card.ambiguous} errors={card.errors}"
+            f"  {card.name}: workers={card.workers} exact={card.exact_correct} "
+            f"judge_rescued={card.judge_correct} unparsed={card.ambiguous} errors={card.errors}"
         )
         print(
             f"      billable input tokens (cache-adjusted)={billable:,} "
             f"| cache hit rate={cache_pct:.1f}%"
         )
+        # How hard the model made us work: total attempts vs items (retries),
+        # malformed-output rate, escalations, and a breakdown by error type.
+        parse_pct = (card.parse_failures / card.attempts * 100) if card.attempts else 0.0
+        errors = (
+            ", ".join(f"{name}={n}" for name, n in sorted(card.error_counts.items()))
+            or "none"
+        )
+        print(
+            f"      attempts={card.attempts} (retries={card.retries}) "
+            f"escalations={card.escalations} "
+            f"malformed={card.parse_failures} ({parse_pct:.1f}% of attempts)"
+        )
+        print(f"      errors by type: {errors}")
 
 
 def write_summary(
@@ -830,6 +925,7 @@ def write_summary(
         return {
             "provider": card.name,
             "model_id": card.model_id,
+            "workers": card.workers,
             "accuracy_pct": round(card.accuracy * 100, 1),
             "wall_s": round(card.wall, 2),
             "input_tokens": br.total_input_tokens,
@@ -842,19 +938,25 @@ def write_summary(
             "judge_rescued": card.judge_correct,
             "unparsed": card.ambiguous,
             "errors": card.errors,
+            "attempts": card.attempts,
+            "retries": card.retries,
+            "escalations": card.escalations,
+            "parse_failures": card.parse_failures,
+            "error_counts": card.error_counts,
         }
 
     summary: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "config": {
             "race_items": RACE_ITEMS,
-            "bakeoff_items": BAKEOFF_ITEMS,
-            "max_workers": MAX_WORKERS,
+            # Actual count processed (BAKEOFF_ITEMS may be None = whole dataset).
+            "bakeoff_items": (cards[0].total if cards else 0),
             "gather_chunk_size": GATHER_CHUNK_SIZE,
         },
         "wall_time_race": [
             {
                 "provider": r.name,
+                "workers": r.workers,
                 "sequential_s": round(r.seq[0], 2),
                 "gather_s": round(r.gather[0], 2),
                 "async_batch_llm_s": round(r.proc[0], 2),
@@ -886,11 +988,39 @@ def write_summary(
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
+def _raise_fd_limit(target: int) -> None:
+    """Raise the soft open-file limit toward ``target`` (best effort).
+
+    Each in-flight request is a socket = an open file descriptor, so at hundreds
+    of concurrent workers the OS fd limit — not the API — is the ceiling. macOS
+    defaults the soft limit to ~256, which ``OSError: [Errno 24] Too many open
+    files`` at the worker counts here. Bump the soft limit up to the hard limit;
+    no-op on non-Unix or if we can't raise it (then lower the worker counts, or
+    run ``ulimit -n <N>`` first).
+    """
+    try:
+        import resource
+    except ImportError:
+        return  # non-Unix (e.g. Windows) — nothing to do
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    want = target if hard == resource.RLIM_INFINITY else min(hard, target)
+    if want <= soft:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+    except (ValueError, OSError):
+        pass
+
+
 async def main() -> None:
     if not DATA_PATH.exists():
         print(f"Benchmark data not found at {DATA_PATH}")
         print("Run:  python examples/download_gsm8k.py")
         return
+
+    # Each concurrent request holds a socket; give the fd limit headroom for the
+    # largest provider pool (plus leaked keepalive sockets and overhead).
+    _raise_fd_limit(max(DEEPSEEK_WORKERS, GEMINI_31_WORKERS, GEMINI_25_WORKERS) * 2 + 512)
 
     builders: list[Callable[[], Contestant]] = []
     if DEEPSEEK_API_KEY:
@@ -906,6 +1036,8 @@ async def main() -> None:
         print("Optionally OPENAI_API_KEY for the fallback grader. Then re-run.")
         return
 
+    skip_race = "--skip-race" in sys.argv[1:]
+
     bakeoff_items = await load_items(DATA_PATH, BAKEOFF_ITEMS)
     race_items = bakeoff_items[:RACE_ITEMS]
     print(f"Loaded {len(bakeoff_items)} GSM8K items from {DATA_PATH.name} (gzip).")
@@ -915,12 +1047,17 @@ async def main() -> None:
     # set of models per use rather than sharing instances across processors.
 
     # ---- Wall-time race (every provider × three orchestrations) ----
-    print(f"\nRunning wall-time race on {RACE_ITEMS} items per provider...")
-    print("  (each provider's sequential leg runs one call at a time — give it a minute)")
+    # The sequential leg runs one call at a time, so it dominates runtime;
+    # --skip-race jumps straight to the bake-off for faster iteration.
     race_rows: list[RaceResult] = []
-    for build in builders:
-        race_rows.append(await run_race_for(build, race_items))
-    print_race(race_rows, RACE_ITEMS)
+    if skip_race:
+        print("\nSkipping wall-time race (--skip-race).")
+    else:
+        print(f"\nRunning wall-time race on {RACE_ITEMS} items per provider...")
+        print("  (each provider's sequential leg runs one call at a time — give it a minute)")
+        for build in builders:
+            race_rows.append(await run_race_for(build, race_items))
+        print_race(race_rows, RACE_ITEMS)
 
     # ---- Provider bake-off (fresh build per contestant) ----
     cards: list[Scorecard] = []
@@ -928,9 +1065,15 @@ async def main() -> None:
     ambiguous_owner: dict[str, Scorecard] = {}
     for build in builders:
         contestant = build()
-        print(f"\nRunning bake-off batch: {contestant.name} ({BAKEOFF_ITEMS} items)...")
+        print(f"\nRunning bake-off batch: {contestant.name} ({len(bakeoff_items)} items)...")
         batch_result, wall = await run_contestant(contestant, bakeoff_items)
         card, ambiguous = score_batch(contestant.name, contestant.model_id, batch_result, wall)
+        card.workers = contestant.workers
+        strat = contestant.strategy
+        card.attempts = strat.attempts
+        card.escalations = strat.escalations
+        card.parse_failures = strat.parse_failures
+        card.error_counts = dict(strat.error_counts)
         cards.append(card)
         for item_id, raw, gold in ambiguous:
             tagged_id = f"{contestant.name}:{item_id}"
@@ -957,6 +1100,7 @@ async def main() -> None:
             ambiguous=0,
             wall=judge_wall,
             batch_result=judge_br,
+            workers=JUDGE_WORKERS,
         )
     elif all_ambiguous:
         print(

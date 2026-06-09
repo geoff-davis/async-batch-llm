@@ -47,6 +47,14 @@ export GOOGLE_CLOUD_LOCATION=us-central1
 python examples/example_batch_benchmark.py
 ```
 
+Pass `--skip-race` to skip the wall-time race (whose sequential leg dominates
+runtime) and run only the provider bake-off — handy when iterating on the
+bake-off:
+
+```bash
+python examples/example_batch_benchmark.py --skip-race
+```
+
 ## The architecture
 
 ```text
@@ -212,41 +220,57 @@ without re-running it.
 
 ### From a representative run
 
-One run (100-item bake-off, 30-item wall-time race, `max_workers=40`, June 2026
-pricing). Numbers shift run-to-run with network latency and model sampling —
-treat them as illustrative, not a spec.
+One full run — **1,319-item bake-off**, 30-item wall-time race, **per-provider
+worker counts** (DeepSeek 250, Gemini 3.1 250, Gemini 2.5 **10**), June 2026
+pricing (2026-06-09). Numbers shift run-to-run with network latency, model
+sampling, and your account's rate limits — treat them as illustrative, not a
+spec.
 
 **Wall-time race** (30 items per provider, seconds):
 
 | Provider       | Sequential | `gather` | async-batch-llm | Speedup (seq→abl) | OK |
 |----------------|-----------:|---------:|----------------:|------------------:|---:|
-| deepseek-flash |       65.9 |      4.9 |             4.3 |             15.5× | 30 |
-| gemini-3.1     |       41.7 |      2.4 |             1.8 |             22.7× | 30 |
-| gemini-2.5     |       46.0 |      3.9 |             3.6 |             12.7× | 30 |
+| deepseek-flash |       57.0 |      4.3 |             3.4 |             16.9× | 30 |
+| gemini-3.1     |       41.3 |      2.6 |             2.1 |             20.1× | 30 |
+| gemini-2.5     |       40.1 |      5.0 |             4.4 |              9.0× | 30 |
 
-Concurrency collapses wall time (≈13–23× here), and the framework leg is
-neck-and-neck with a bare `gather` (here even a hair faster) while *also*
-handling the retries, backoff, and rate-limit cooldowns `gather` would silently
-skip.
+Concurrency collapses wall time (≈9–20× here), and the framework leg is
+neck-and-neck with a bare `gather` (here a touch faster) while *also* handling
+the retries, backoff, and rate-limit cooldowns `gather` would silently skip.
 
-**Provider bake-off** (100 items each):
+**Provider bake-off** (1,319 items each):
 
-| Provider (model)                   | Accuracy | Wall (s) | Input | Cached | Output | Cost ($) |
-|------------------------------------|---------:|---------:|------:|-------:|-------:|---------:|
-| deepseek-flash (deepseek-v4-flash) |    98.0% |     18.9 | 9,648 |  1,280 | 10,384 |   0.0041 |
-| gemini-3.1 (gemini-3.1-flash-lite) |    98.0% |      5.5 | 9,666 |      0 | 19,961 |   0.0324 |
-| gemini-2.5 (gemini-2.5-flash-lite) |    96.0% |     12.6 | 9,666 |      0 | 33,125 |   0.0142 |
+| Provider (model)                   | Accuracy | Wall (s) |   Input | Cached |  Output | Cost ($) |
+|------------------------------------|---------:|---------:|--------:|-------:|--------:|---------:|
+| deepseek-flash (deepseek-v4-flash) |    96.9% |     28.6 | 130,171 | 16,896 | 136,127 |   0.0540 |
+| gemini-3.1 (gemini-3.1-flash-lite) |    96.6% |     16.1 | 129,951 |      0 | 267,258 |   0.4334 |
+| gemini-2.5 (gemini-2.5-flash-lite) |    95.3% |    679.2 | 129,748 |      0 | 443,609 |   0.1904 |
 
-Every item parsed cleanly for all three providers (no unparsed answers), so the
-LLM-as-judge fallback didn't fire this run. DeepSeek was the cheapest by far
-(~$0.004): it prices low *and* was the only provider to register cache hits
-(13.3% → 8,394 cache-adjusted billable input tokens). Gemini 3.1 Flash-Lite was
-the **fastest** (5.5 s) yet the **priciest** ($0.032 — its higher per-token rate
-outweighs its lower output-token count vs 2.5). Output volume tracks how much
-each model "thinks": 2.5 Flash-Lite emitted the most (33k tokens), 3.1
-Flash-Lite ~20k, non-thinking DeepSeek the least (10k). (On the 3.1-vs-2.5
-accuracy gap, see the matched-no-thinking caveat above.)
+**Mind the worker counts when reading "Wall (s)" — this is not an
+apples-to-apples speed race.** Gemini 2.5 Flash-Lite ran at **10 workers**
+because it 503s/times-out hard above ~50, so its 679 s is mostly its rate-limit
+ceiling, not raw model speed; DeepSeek and Gemini 3.1 each ran at 250.
+
+The error/retry summary — the framework earning its keep:
+
+- **deepseek-flash** — 1,278/1,319 correct, **0 permanent errors**; 1,328
+  attempts (9 retries, 2 escalations to thinking, 9 malformed outputs). Only
+  provider with cache hits (13.0% → 113,613 cache-adjusted billable input).
+- **gemini-3.1** — 1,274 correct, a clean run: 1,319 attempts, **0 retries, 0
+  escalations, 0 errors**.
+- **gemini-2.5** — 1,257 correct but a rough session: 1,383 attempts (**64
+  retries**, 32 escalations); errors by type `AnswerParseError=36,
+  FrameworkTimeoutError=29, ServerError=1`, ending with just 1 unparsed and 2
+  permanent failures. The framework absorbed all of it — including the 503
+  (`ServerError`) that's now retryable.
+
+Takeaways: **cost** spans ~8× for near-identical accuracy — DeepSeek cheapest
+($0.054, helped by cache hits and a lean 136k output), Gemini 3.1 priciest
+($0.43, high per-token rate × 267k output), 2.5 in between ($0.19) but the most
+verbose (443k output). **Accuracy** is ~95–97% across all three (mind the
+3.1-vs-2.5 thinking caveat above). And the LLM-as-judge fired on exactly the 1
+unparsed item — used only where the free regex grader fell short.
 
 The headline: concurrency collapses wall time, the framework matches a bare
-`gather` for speed while *also* surviving transient errors and rate limits, and
-you get token/cost accounting for free.
+`gather` for speed while *also* surviving transient errors and rate limits (here:
+64 retries and a 503, all absorbed), and you get token/cost accounting for free.
