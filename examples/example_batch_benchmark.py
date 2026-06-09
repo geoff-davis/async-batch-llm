@@ -73,11 +73,18 @@ are absent, so the demo runs with whatever you have configured.
 
 ```bash
 python examples/example_batch_benchmark.py
-python examples/example_batch_benchmark.py --skip-race  # bake-off only (faster)
+python examples/example_batch_benchmark.py --skip-race    # bake-off only (faster)
+python examples/example_batch_benchmark.py --throughput   # only the worker-pool throughput bench
 ```
 
 ``--skip-race`` skips the wall-time race (whose sequential leg dominates
 runtime) and jumps straight to the provider bake-off — handy when iterating.
+
+``--throughput`` runs *only* the throughput benchmark: for each large-pool
+provider (DeepSeek, Gemini 3.1 — Gemini 2.5's tiny pool is skipped), it races a
+chunked ``asyncio.gather`` against ``async-batch-llm``, both pinned to the
+provider's full worker count, on a big batch (``THROUGHPUT_ITEMS``). Isolates
+how much the worker pool's continuous refill beats per-chunk barriers at scale.
 """
 
 import asyncio
@@ -102,16 +109,23 @@ BAKEOFF_ITEMS = None  # items per provider in the bake-off; None = the whole dat
 RACE_ITEMS = 30  # items in the wall-time race (the sequential leg is the slow one)
 # Concurrency is tuned PER PROVIDER — they tolerate very different request rates.
 # DeepSeek allows thousands of concurrent connections; Gemini 3.1 Flash-Lite
-# handled high concurrency cleanly; Gemini 2.5 Flash-Lite rate-limits hard above
-# ~50 (at 100 it spent most of a run in cooldowns). Each provider's connection
-# pool is sized to match its worker count — DeepSeek via max_connections, Gemini
-# via the genai client's httpx limits — so workers aren't capped at httpx's ~100
-# default pool (see issue #25).
+# handled high concurrency cleanly; Gemini 2.5 Flash-Lite rate-limits/503s even
+# at modest concurrency (it still hit limits at 10, so we run it at 5). Each
+# provider's connection pool is sized to match its worker count — DeepSeek via
+# max_connections, Gemini via the genai client's httpx limits — so workers
+# aren't capped at httpx's ~100 default pool (see issue #25).
 DEEPSEEK_WORKERS = 250
 GEMINI_31_WORKERS = 250
-GEMINI_25_WORKERS = 10  # 2.5 Flash-Lite overloads (503s) quickly; keep this low
+GEMINI_25_WORKERS = 5  # 2.5 Flash-Lite overloads (503s) / rate-limits even at 10; keep this very low
 JUDGE_WORKERS = 10  # concurrency for the fallback grader
 GATHER_CHUNK_SIZE = 50  # naive baseline: gather this many at a time (barrier per chunk)
+# --throughput benchmark: isolate the worker-pool win at large concurrency.
+THROUGHPUT_ITEMS = 1000  # items; want this >> the worker pool so it saturates (None = whole dataset)
+THROUGHPUT_MIN_WORKERS = 50  # only benchmark providers whose pool is at least this big
+# The two legs share the provider's per-minute quota; running them back-to-back
+# lets the first leg's burst deplete it, so the second leg eats rate-limit
+# cooldowns it didn't cause. Pause between legs to let the quota reset (0 = off).
+THROUGHPUT_LEG_GAP_S = 60.0
 
 # Model ids (as of June 2026 — adjust to taste).
 DEEPSEEK_MODEL = "deepseek-v4-flash"
@@ -744,17 +758,21 @@ async def race_sequential(items: list[Item], call: ModelCall) -> tuple[float, in
     return perf_counter() - start, ok
 
 
-async def race_naive_gather(items: list[Item], call: ModelCall) -> tuple[float, int]:
+async def race_naive_gather(
+    items: list[Item], call: ModelCall, chunk_size: int = GATHER_CHUNK_SIZE
+) -> tuple[float, int]:
     """Realistic naive baseline: gather a fixed-size chunk at a time to bound
     concurrency. Each chunk is a barrier — the next can't start until the
     *slowest* call in the current one returns — and there's no retry/backoff, so
     a failed call is just lost. At demo sizes the batch fits in one chunk (so it
     matches firing everything at once); the per-chunk straggler cost only shows
-    up once items far exceed GATHER_CHUNK_SIZE."""
+    up once items far exceed ``chunk_size``. The throughput benchmark passes
+    ``chunk_size=workers`` so this matches the worker pool's concurrency and the
+    only difference left is barrier-vs-continuous-refill."""
     start = perf_counter()
     ok = 0
-    for i in range(0, len(items), GATHER_CHUNK_SIZE):
-        chunk = items[i : i + GATHER_CHUNK_SIZE]
+    for i in range(0, len(items), chunk_size):
+        chunk = items[i : i + chunk_size]
         results = await asyncio.gather(
             *(call.generate(build_prompt(item.question)) for item in chunk),
             return_exceptions=True,
@@ -813,6 +831,102 @@ async def run_race_for(build: Callable[[], Contestant], items: list[Item]) -> Ra
     return RaceResult(contestant.name, seq, gather, proc, workers=contestant.workers)
 
 
+@dataclass
+class ThroughputResult:
+    name: str
+    workers: int
+    # each leg: (wall_seconds, ok_count, rate_limit_hits)
+    gather: tuple[float, int, int]  # chunked gather at `workers` concurrency
+    abl: tuple[float, int, int]  # async-batch-llm at `workers` concurrency
+
+
+async def _throughput_gather(
+    items: list[Item], call: ModelCall, chunk_size: int, classifier: Any
+) -> tuple[float, int, int]:
+    """Chunked gather, counting rate-limit-classified failures (gather has no
+    backoff — a 429/503 is just a lost result, not a cooldown)."""
+    start = perf_counter()
+    ok = rate_limited = 0
+    for i in range(0, len(items), chunk_size):
+        chunk = items[i : i + chunk_size]
+        results = await asyncio.gather(
+            *(call.generate(build_prompt(item.question)) for item in chunk),
+            return_exceptions=True,
+        )
+        for r in results:
+            if isinstance(r, Exception):
+                try:
+                    if classifier.classify(r).is_rate_limit:
+                        rate_limited += 1
+                except Exception:  # noqa: BLE001 - classification is best-effort here
+                    pass
+            else:
+                ok += 1
+    return perf_counter() - start, ok, rate_limited
+
+
+async def _throughput_abl(items: list[Item], contestant: Contestant) -> tuple[float, int, int]:
+    """async-batch-llm leg; returns the processor's rate_limit_count (each one is
+    a coordinated cooldown: pause all workers + slow-start)."""
+    from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+    from async_batch_llm.core import RetryConfig
+
+    config = ProcessorConfig(
+        max_workers=contestant.workers,
+        timeout_per_item=120.0,
+        retry=RetryConfig(max_attempts=3, initial_wait=1.0),
+    )
+    start = perf_counter()
+    async with ParallelBatchProcessor(
+        config=config, error_classifier=contestant.error_classifier
+    ) as processor:
+        for item in items:
+            await processor.add_work(
+                LLMWorkItem(
+                    item_id=item.id,
+                    strategy=contestant.strategy,
+                    prompt=build_prompt(item.question),
+                    context={"gold": item.gold},
+                )
+            )
+        batch_result = await processor.process_all()
+        stats = await processor.get_stats()
+    return perf_counter() - start, batch_result.succeeded, int(stats.get("rate_limit_count", 0))
+
+
+async def run_throughput_for(
+    build: Callable[[], Contestant], items: list[Item]
+) -> "ThroughputResult | None":
+    """Throughput at a large worker pool: chunked gather vs the worker pool, both
+    pinned to the provider's full concurrency — so the only orchestration
+    difference is per-chunk barriers vs continuous refill. Skips small-pool
+    providers (e.g. Gemini 2.5, which can't sustain a large pool).
+
+    The two legs share the provider's per-minute quota, so we pause between them
+    (THROUGHPUT_LEG_GAP_S) to let it reset — otherwise the first leg's burst
+    drains it and the second leg eats cooldowns it didn't cause."""
+    contestant = build()
+    if contestant.workers < THROUGHPUT_MIN_WORKERS:
+        print(
+            f"  skipping {contestant.name}: {contestant.workers}-worker pool is below the "
+            f"{THROUGHPUT_MIN_WORKERS}-worker throughput threshold"
+        )
+        await contestant.strategy.cleanup()
+        return None
+    print(
+        f"  {contestant.name}: chunked gather vs worker pool, both at "
+        f"{contestant.workers} workers, {len(items)} items..."
+    )
+    gather = await _throughput_gather(
+        items, contestant.fast_call, contestant.workers, contestant.error_classifier
+    )
+    if THROUGHPUT_LEG_GAP_S > 0:
+        print(f"    (pausing {THROUGHPUT_LEG_GAP_S:.0f}s to let the per-minute quota reset)")
+        await asyncio.sleep(THROUGHPUT_LEG_GAP_S)
+    abl = await _throughput_abl(items, contestant)  # this run's __aexit__ cleans it up
+    return ThroughputResult(contestant.name, contestant.workers, gather, abl)
+
+
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
@@ -838,6 +952,37 @@ def print_race(rows: list[RaceResult], n: int) -> None:
         "-> async-batch-llm); the\nframework leg matches a bare gather for speed "
         "while also surviving transient\nerrors and rate limits (which gather "
         "would silently drop)."
+    )
+
+
+def print_throughput(rows: list[ThroughputResult], n: int) -> None:
+    print("\n" + "=" * 84)
+    print(f"THROUGHPUT AT SCALE  ({n} items — chunked gather vs worker pool, same concurrency)")
+    print("=" * 84)
+    print("  g = chunked gather   a = async-batch-llm   RL = rate-limit / cooldown hits")
+    print(
+        f"{'Provider':<15}{'Workers':>8}{'g s':>8}{'g it/s':>8}{'g RL':>6}"
+        f"{'a s':>8}{'a it/s':>8}{'a RL':>6}{'Speedup':>9}"
+    )
+    print("-" * 84)
+    for r in rows:
+        g_wall, g_ok, g_rl = r.gather
+        a_wall, a_ok, a_rl = r.abl
+        g_tps = g_ok / g_wall if g_wall else 0.0
+        a_tps = a_ok / a_wall if a_wall else 0.0
+        speedup = f"{a_tps / g_tps:.2f}x" if g_tps else "-"
+        print(
+            f"{r.name:<15}{r.workers:>8}{g_wall:>8.1f}{g_tps:>8.1f}{g_rl:>6}"
+            f"{a_wall:>8.1f}{a_tps:>8.1f}{a_rl:>6}{speedup:>9}"
+        )
+    print(
+        "\nBoth bound concurrency to the same worker count, so the orchestration "
+        "difference is\nbarriers (chunked `gather` waits for the slowest call in each chunk) vs "
+        "continuous\nrefill (async-batch-llm). But compare the RL columns first: gather has no "
+        "backoff,\nso a rate-limited provider just costs it lost results, while async-batch-llm "
+        "pauses\nall workers and slow-starts — so if `a RL` is high, abl's lower it/s is it "
+        "respecting\nthe rate limit, not running slower. The pool's true win is cleanest on a "
+        "provider\nyou're *not* rate-limited against (here, DeepSeek)."
     )
 
 
@@ -1034,6 +1179,25 @@ async def main() -> None:
         print("  DeepSeek: export DEEPSEEK_API_KEY=sk-...")
         print("  Gemini:   export GOOGLE_API_KEY=...  (or GOOGLE_GENAI_USE_VERTEXAI=true + ADC)")
         print("Optionally OPENAI_API_KEY for the fallback grader. Then re-run.")
+        return
+
+    # --throughput runs ONLY the worker-pool throughput benchmark and exits.
+    if "--throughput" in sys.argv[1:]:
+        items = await load_items(DATA_PATH, THROUGHPUT_ITEMS)
+        print(f"Loaded {len(items)} GSM8K items from {DATA_PATH.name} (gzip).")
+        print(
+            f"\nThroughput at scale — chunked gather vs worker pool, "
+            f"large-pool providers only ({len(items)} items)..."
+        )
+        rows: list[ThroughputResult] = []
+        for build in builders:
+            result = await run_throughput_for(build, items)
+            if result is not None:
+                rows.append(result)
+        if rows:
+            print_throughput(rows, len(items))
+        else:
+            print("No large-pool providers configured; nothing to benchmark.")
         return
 
     skip_race = "--skip-race" in sys.argv[1:]
