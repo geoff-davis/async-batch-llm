@@ -46,6 +46,51 @@ ERROR_MESSAGE_MAX_LENGTH = 200
 # Larger truncation used for detailed diagnostic logs (final attempt, validation traces).
 ERROR_MESSAGE_DETAILED_LENGTH = 500
 
+# Warn when the soft open-file limit leaves less than this many fds of headroom
+# above max_workers (each in-flight request typically holds a socket).
+_FD_LIMIT_HEADROOM = 128
+# Docs section explaining the open-file-limit footgun and how to fix it.
+_FD_LIMIT_DOCS_URL = (
+    "https://geoff-davis.github.io/async-batch-llm/getting-started/"
+    "#open-file-limits-and-high-concurrency"
+)
+
+
+def _warn_if_fd_limit_low(max_workers: int) -> None:
+    """Warn if ``max_workers`` is close to the process's soft open-file limit.
+
+    Each in-flight request typically holds a socket (a file descriptor), so a
+    ``max_workers`` near the OS soft limit (``RLIMIT_NOFILE`` — 256 by default
+    on macOS) risks ``OSError: [Errno 24] Too many open files`` once the
+    connection pools, workers, and the app's own fds are all drawing from it.
+
+    This only *warns* — raising the limit mutates process-global state, which is
+    the operator's call, not the library's. No-op on non-Unix platforms (no
+    ``RLIMIT_NOFILE``) or when the limit is unlimited / comfortably high.
+    """
+    try:
+        import resource
+    except ImportError:
+        return  # non-Unix (e.g. Windows): no RLIMIT_NOFILE
+    try:
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ValueError, OSError):
+        return
+    if soft == resource.RLIM_INFINITY or soft - max_workers >= _FD_LIMIT_HEADROOM:
+        return
+
+    import warnings
+
+    warnings.warn(
+        f"max_workers={max_workers} is close to this process's soft open-file "
+        f"limit (RLIMIT_NOFILE={soft}); high-concurrency runs may fail with "
+        f"'OSError: [Errno 24] Too many open files'. Raise the limit "
+        f"(e.g. `ulimit -n {max(8192, max_workers * 4)}`, or resource.setrlimit "
+        f"in-process) or lower max_workers. See {_FD_LIMIT_DOCS_URL}",
+        UserWarning,
+        stacklevel=3,
+    )
+
 
 class ParallelBatchProcessor(
     BatchProcessor[TInput, TOutput, TContext], Generic[TInput, TOutput, TContext]
@@ -143,6 +188,9 @@ class ParallelBatchProcessor(
             progress_callback_timeout=config.progress_callback_timeout,
         )
         self.config = config
+
+        # Diagnostic: high max_workers can outrun the OS open-file limit.
+        _warn_if_fd_limit_low(config.max_workers)
 
         # Set up strategies
         self.error_classifier = error_classifier or DefaultErrorClassifier()
