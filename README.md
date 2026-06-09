@@ -94,44 +94,30 @@ versions match CI (all Makefile targets call `uv run` to use the synced environm
 
 ### Basic Example
 
-Process a batch of documents with structured output:
+Run a batch of prompts concurrently against any built-in provider:
 
 ```python
 import asyncio
 from async_batch_llm import (
-    ParallelBatchProcessor,
     LLMWorkItem,
+    OpenAIModel,
+    OpenAIStrategy,
+    ParallelBatchProcessor,
     ProcessorConfig,
-    PydanticAIStrategy,
 )
-from pydantic_ai import Agent
-from pydantic import BaseModel
 
-class Summary(BaseModel):
-    title: str
-    key_points: list[str]
+documents = ["Document 1 text...", "Document 2 text..."]
 
 async def main():
-    # Create agent and wrap in strategy
-    agent = Agent("gemini-2.5-flash", result_type=Summary)
-    strategy = PydanticAIStrategy(agent=agent)
+    model = OpenAIModel.from_api_key("gpt-4o-mini")   # reads OPENAI_API_KEY
+    strategy = OpenAIStrategy(model)
+    config = ProcessorConfig(max_workers=10)          # up to 10 calls in flight at once
 
-    # Configure processor
-    config = ProcessorConfig(max_workers=5, timeout_per_item=30.0)
-
-    # Process items with automatic resource cleanup
-    async with ParallelBatchProcessor[str, Summary, None](config=config) as processor:
-        # Add work items
-        for doc in ["Document 1 text...", "Document 2 text..."]:
+    async with ParallelBatchProcessor(config=config) as processor:
+        for i, doc in enumerate(documents):
             await processor.add_work(
-                LLMWorkItem(
-                    item_id=f"doc_{hash(doc)}",
-                    strategy=strategy,
-                    prompt=f"Summarize: {doc}",
-                )
+                LLMWorkItem(item_id=f"doc_{i}", strategy=strategy, prompt=f"Summarize: {doc}")
             )
-
-        # Process all in parallel
         result = await processor.process_all()
 
     print(f"Succeeded: {result.succeeded}/{result.total_items}")
@@ -139,6 +125,12 @@ async def main():
 
 asyncio.run(main())
 ```
+
+Switching providers is a one-line change (`DeepSeekModel` / `GeminiModel` /
+`OpenRouterModel`, or a custom strategy). For **structured output** pass a
+`response_parser` (or use `PydanticAIStrategy`); for **smart retries**,
+**caching**, and **observability**, see [Core Features](#core-features) below and
+the [`examples/`](examples/) directory.
 
 ---
 
@@ -194,79 +186,27 @@ LangChain, and more.
 
 #### DeepSeek quickstart
 
-DeepSeek is a standout fit for this library: it allows **thousands of
-concurrent connections** (far more than most providers), so a single
-asyncio batch can drive very high throughput — as long as you size the
-connection pool to match (see `max_connections` below). Combined with its
-cheap cache-hit tier, it's well suited to large classification/extraction
-jobs.
-
-End-to-end batch with the gotchas handled. DeepSeek's V4 models
-(`deepseek-v4-flash` / `deepseek-v4-pro`) default to **thinking**, which is
-expensive for batch classification (multiples of the output tokens, cost, and
-latency), so we turn it off explicitly. The `deepseek-chat` (non-thinking) /
-`deepseek-reasoner` (thinking) aliases still work but are being deprecated —
-prefer the V4 ids plus `thinking=`.
+DeepSeek allows **thousands of concurrent connections** — far more than most
+providers — so one asyncio batch can drive very high throughput. The footgun:
+the openai SDK defaults to httpx's ~100-connection pool, so raising `max_workers`
+past that gives no extra throughput (workers just block on the pool). Size
+`max_connections` to match `max_workers`:
 
 ```python
-from pydantic import BaseModel
-
-from async_batch_llm import (
-    CachedTokenRates,
-    DeepSeekModel,
-    DeepSeekStrategy,
-    LLMWorkItem,
-    OpenAIErrorClassifier,
-    ParallelBatchProcessor,
-    ProcessorConfig,
-    pydantic_json_parser,
-)
-
-
-class Topic(BaseModel):
-    label: str
-    confidence: float
-
+from async_batch_llm import DeepSeekModel, DeepSeekStrategy
 
 model = DeepSeekModel.from_api_key(
-    "deepseek-v4-flash",     # reads DEEPSEEK_API_KEY
-    thinking=False,          # non-thinking: cheaper/faster for classification
-    json_mode=True,          # response_format={"type": "json_object"}
-    max_connections=150,     # size the httpx pool to max_workers (see below)
-    system_instruction='Classify the text. Respond with JSON: {"label": ..., "confidence": ...}',
+    "deepseek-v4-flash",   # reads DEEPSEEK_API_KEY; V4 defaults thinking ON (pricey for batch)
+    thinking=False,        # turn it off for classification/extraction
+    max_connections=150,   # size the httpx pool to your max_workers
 )
-# pydantic_json_parser strips markdown fences DeepSeek adds even in JSON mode.
-strategy = DeepSeekStrategy(model, pydantic_json_parser(Topic))
-config = ProcessorConfig(max_workers=150, timeout_per_item=60.0)
-
-async with ParallelBatchProcessor[None, Topic, None](
-    config=config,
-    error_classifier=OpenAIErrorClassifier(),  # classifies 402 as non-retryable
-) as processor:
-    for i, text in enumerate(texts):
-        await processor.add_work(LLMWorkItem(item_id=f"t{i}", strategy=strategy, prompt=text))
-    result = await processor.process_all()
-
-# DeepSeek cache reads cost 10% of normal — bill cached tokens at that rate.
-print(result.effective_input_tokens(CachedTokenRates.DEEPSEEK))
+strategy = DeepSeekStrategy(model)
 ```
 
-Gotchas this handles:
-
-- **Connection pool (`max_connections`) — the key to DeepSeek's concurrency.**
-  DeepSeek allows thousands of concurrent connections, but the openai SDK uses
-  httpx's ~100 default pool, so raising `max_workers` above that gives no extra
-  throughput — workers just block on the pool, which silently becomes your
-  ceiling instead of the API. Set `max_connections` to your `max_workers` to
-  unlock the headroom; both scale together. (Even then, the default
-  `RateLimitConfig` slow-start ramp bounds time-to-full-throughput on the first
-  ~50 items — tune it too if you're chasing peak speed.)
-- **Markdown fences.** DeepSeek wraps JSON in ```` ```json ... ``` ````
-  even in JSON mode; `pydantic_json_parser` strips them before validating, so
-  you don't burn retries on the fence characters.
-- **Prepaid balance.** A `402 Insufficient Balance` (auth still passes) is
-  classified as non-retryable with a "top up your balance" hint — it won't
-  silently burn all your retry attempts looking like a generic bug.
+[`examples/example_deepseek.py`](examples/example_deepseek.py) has the full
+version: JSON mode with markdown-fence-tolerant parsing (`pydantic_json_parser`),
+`402 Insufficient Balance` handling, and cache-hit token accounting
+(`CachedTokenRates.DEEPSEEK`).
 
 ### Automatic Retries
 
@@ -288,6 +228,10 @@ config = ProcessorConfig(
 ```
 
 The framework automatically retries on validation errors, network errors, and other transient failures.
+
+For **error-*type*-aware** retries — retry the cheap model on transient/rate-limit errors, but
+escalate to a smarter or thinking model only when the *output* is bad — see
+[`examples/example_smart_model_escalation.py`](examples/example_smart_model_escalation.py).
 
 ### Rate Limiting
 
