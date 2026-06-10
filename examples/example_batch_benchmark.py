@@ -115,16 +115,23 @@ RACE_ITEMS = 30  # items in the wall-time race (the sequential leg is the slow o
 # aren't capped at httpx's ~100 default pool (see issue #25).
 DEEPSEEK_WORKERS = 250
 GEMINI_31_WORKERS = 250
-GEMINI_25_WORKERS = 5  # 2.5 Flash-Lite overloads (503s) / rate-limits even at 10; keep this very low
+GEMINI_25_WORKERS = (
+    5  # 2.5 Flash-Lite overloads (503s) / rate-limits even at 10; keep this very low
+)
 JUDGE_WORKERS = 10  # concurrency for the fallback grader
 GATHER_CHUNK_SIZE = 50  # naive baseline: gather this many at a time (barrier per chunk)
 # --throughput benchmark: isolate the worker-pool win at large concurrency.
-THROUGHPUT_ITEMS = 1000  # items; want this >> the worker pool so it saturates (None = whole dataset)
+THROUGHPUT_ITEMS = (
+    1000  # items; want this >> the worker pool so it saturates (None = whole dataset)
+)
 THROUGHPUT_MIN_WORKERS = 50  # only benchmark providers whose pool is at least this big
 # The two legs share the provider's per-minute quota; running them back-to-back
 # lets the first leg's burst deplete it, so the second leg eats rate-limit
 # cooldowns it didn't cause. Pause between legs to let the quota reset (0 = off).
 THROUGHPUT_LEG_GAP_S = 60.0
+# How many shared items to capture full raw outputs for (terse-vs-verbose
+# qualitative comparison across providers). The first N items of the dataset.
+SHOWCASE_N = 5
 
 # Model ids (as of June 2026 — adjust to taste).
 DEEPSEEK_MODEL = "deepseek-v4-flash"
@@ -167,6 +174,8 @@ class Pricing:
 
 
 # Verify against each provider's current pricing page before quoting numbers.
+# PRICING_DATE stamps when these were last checked (recorded in summary.json).
+PRICING_DATE = "2026-06-01"
 PRICING = {
     DEEPSEEK_MODEL: Pricing(input=0.14, cached_input=0.0028, output=0.28),
     GEMINI_31_MODEL: Pricing(input=0.25, cached_input=0.025, output=1.50),
@@ -501,7 +510,9 @@ def make_deepseek() -> Contestant:
     from async_batch_llm import DeepSeekModel, OpenAIErrorClassifier
 
     fast = ModelCall(
-        DeepSeekModel.from_api_key(DEEPSEEK_MODEL, thinking=False, max_connections=DEEPSEEK_WORKERS),
+        DeepSeekModel.from_api_key(
+            DEEPSEEK_MODEL, thinking=False, max_connections=DEEPSEEK_WORKERS
+        ),
         label=f"{DEEPSEEK_MODEL}:no-think",
     )
     thinking = ModelCall(
@@ -567,13 +578,21 @@ def _make_gemini(
 
 def make_gemini_31() -> Contestant:
     return _make_gemini(
-        "gemini-3.1", GEMINI_31_MODEL, GEMINI_31_FAST_CONFIG, GEMINI_31_THINK_CONFIG, GEMINI_31_WORKERS
+        "gemini-3.1",
+        GEMINI_31_MODEL,
+        GEMINI_31_FAST_CONFIG,
+        GEMINI_31_THINK_CONFIG,
+        GEMINI_31_WORKERS,
     )
 
 
 def make_gemini_25() -> Contestant:
     return _make_gemini(
-        "gemini-2.5", GEMINI_25_MODEL, GEMINI_25_FAST_CONFIG, GEMINI_25_THINK_CONFIG, GEMINI_25_WORKERS
+        "gemini-2.5",
+        GEMINI_25_MODEL,
+        GEMINI_25_FAST_CONFIG,
+        GEMINI_25_THINK_CONFIG,
+        GEMINI_25_WORKERS,
     )
 
 
@@ -593,13 +612,20 @@ def estimate_cost(batch_result: Any, pricing: Pricing) -> float:
 # The bake-off: full batch per contestant, results streamed to .jsonl.gz
 # ---------------------------------------------------------------------------
 async def run_contestant(
-    contestant: Contestant, items: list[Item]
-) -> tuple[Any, float]:
-    from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+    contestant: Contestant, items: list[Item], showcase_ids: set[str] | None = None
+) -> tuple[Any, float, list[dict[str, Any]]]:
+    # The high-level streaming API — one call instead of the add_work / process_all
+    # dance. We carry per-item context (gold + question) via (item_id, prompt,
+    # context) triples, and write each result to the .jsonl.gz file via the
+    # forwarded post_processor.
+    from async_batch_llm import ProcessorConfig, process_prompts
     from async_batch_llm.core import RetryConfig
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RESULTS_DIR / f"{contestant.name}_results.jsonl.gz"
+    showcase_ids = showcase_ids or set()
+    # Full raw outputs for the showcase items (terse-vs-verbose comparison).
+    samples: list[dict[str, Any]] = []
 
     config = ProcessorConfig(
         max_workers=contestant.workers,
@@ -627,25 +653,41 @@ async def run_contestant(
                     "error": result.error if not result.success else None,
                 }
             )
+            # Capture the FULL raw response + token counts for showcase items so
+            # the write-up can show how terse/verbose each provider is (a big
+            # driver of cost beyond sticker price).
+            if result.item_id in showcase_ids and output is not None:
+                tu = result.token_usage or {}
+                samples.append(
+                    {
+                        "item_id": result.item_id,
+                        "question": (result.context or {}).get("question"),
+                        "gold": (result.context or {}).get("gold"),
+                        "answer": output.value,
+                        "raw": getattr(output, "raw", None),
+                        "output_tokens": tu.get("output_tokens", 0),
+                        "input_tokens": tu.get("input_tokens", 0),
+                        "cached_input_tokens": tu.get("cached_input_tokens", 0),
+                    }
+                )
 
-        async with ParallelBatchProcessor(
+        batch_result = await process_prompts(
+            contestant.strategy,
+            [
+                (
+                    item.id,
+                    build_prompt(item.question),
+                    {"gold": item.gold, "question": item.question},
+                )
+                for item in items
+            ],
             config=config,
             error_classifier=contestant.error_classifier,
             post_processor=write_result,
-        ) as processor:
-            for item in items:
-                await processor.add_work(
-                    LLMWorkItem(
-                        item_id=item.id,
-                        strategy=contestant.strategy,
-                        prompt=build_prompt(item.question),
-                        context={"gold": item.gold},
-                    )
-                )
-            batch_result = await processor.process_all()
+        )
     wall = perf_counter() - start
 
-    return batch_result, wall
+    return batch_result, wall, samples
 
 
 @dataclass
@@ -665,6 +707,7 @@ class Scorecard:
     escalations: int = 0  # attempts that used the thinking pass
     parse_failures: int = 0  # responses with no parseable answer
     error_counts: dict[str, int] = field(default_factory=dict)  # by exception type
+    samples: list[dict[str, Any]] = field(default_factory=list)  # showcase raw outputs
 
     @property
     def accuracy(self) -> float:
@@ -676,7 +719,9 @@ class Scorecard:
         return max(0, self.attempts - self.total)
 
 
-def score_batch(name: str, model_id: str, batch_result: Any, wall: float) -> tuple[Scorecard, list[tuple]]:
+def score_batch(
+    name: str, model_id: str, batch_result: Any, wall: float
+) -> tuple[Scorecard, list[tuple]]:
     """Grade by exact match; return the ambiguous (unparseable) items for the judge."""
     exact_correct = 0
     errors = 0
@@ -710,32 +755,30 @@ def score_batch(name: str, model_id: str, batch_result: Any, wall: float) -> tup
 # ---------------------------------------------------------------------------
 # Fallback grader (LLM-as-judge) — only sees the unparseable outputs
 # ---------------------------------------------------------------------------
-async def grade_ambiguous(ambiguous: list[tuple[str, str, float | None]]) -> tuple[dict[str, bool], Any]:
+async def grade_ambiguous(
+    ambiguous: list[tuple[str, str, float | None]],
+) -> tuple[dict[str, bool], Any]:
     from async_batch_llm import (
-        LLMWorkItem,
-        OpenAIErrorClassifier,
         OpenAIModel,
         OpenAIStrategy,
-        ParallelBatchProcessor,
         ProcessorConfig,
+        process_prompts,
     )
 
     model = OpenAIModel.from_api_key(JUDGE_MODEL, max_connections=JUDGE_WORKERS)
     strategy = OpenAIStrategy(model, response_parser=lambda resp: "YES" in resp.text.upper())
     config = ProcessorConfig(max_workers=JUDGE_WORKERS, timeout_per_item=120.0)
 
-    async with ParallelBatchProcessor(
-        config=config, error_classifier=OpenAIErrorClassifier()
-    ) as processor:
-        for item_id, raw, gold in ambiguous:
-            await processor.add_work(
-                LLMWorkItem(
-                    item_id=item_id,
-                    strategy=strategy,
-                    prompt=JUDGE_TEMPLATE.format(gold=gold, response=raw),
-                )
-            )
-        batch_result = await processor.process_all()
+    # No per-item context needed here, so plain (item_id, prompt) pairs. The
+    # error classifier is auto-selected from OpenAIStrategy.
+    batch_result = await process_prompts(
+        strategy,
+        [
+            (item_id, JUDGE_TEMPLATE.format(gold=gold, response=raw))
+            for item_id, raw, gold in ambiguous
+        ],
+        config=config,
+    )
 
     verdicts = {r.item_id: bool(r.output) for r in batch_result.results if r.success}
     return verdicts, batch_result
@@ -836,6 +879,7 @@ class ThroughputResult:
     workers: int
     # each leg: (wall_seconds, ok_count, rate_limit_hits)
     gather: tuple[float, int, int]  # chunked gather at `workers` concurrency
+    semaphore: tuple[float, int, int]  # semaphore-pool gather, continuous refill
     abl: tuple[float, int, int]  # async-batch-llm at `workers` concurrency
 
 
@@ -861,6 +905,36 @@ async def _throughput_gather(
                     pass
             else:
                 ok += 1
+    return perf_counter() - start, ok, rate_limited
+
+
+async def _throughput_semaphore(
+    items: list[Item], call: ModelCall, workers: int, classifier: Any
+) -> tuple[float, int, int]:
+    """Semaphore-bounded ``asyncio.gather``: one big gather over all items, with a
+    Semaphore(workers) gating concurrency. Unlike the chunked baseline there are
+    **no per-chunk barriers** — a finished call immediately frees its slot for the
+    next item (continuous refill), so this is the *fair* concurrency baseline at
+    the same worker count. Like any bare gather it still has no backoff: a
+    429/503 is a lost result, not a cooldown."""
+    sem = asyncio.Semaphore(workers)
+    ok = rate_limited = 0
+
+    async def _one(item: Item) -> None:
+        nonlocal ok, rate_limited
+        async with sem:
+            try:
+                await call.generate(build_prompt(item.question))
+                ok += 1
+            except Exception as exc:  # noqa: BLE001 - bare gather drops failures
+                try:
+                    if classifier.classify(exc).is_rate_limit:
+                        rate_limited += 1
+                except Exception:  # noqa: BLE001 - classification is best-effort
+                    pass
+
+    start = perf_counter()
+    await asyncio.gather(*(_one(item) for item in items))
     return perf_counter() - start, ok, rate_limited
 
 
@@ -913,17 +987,25 @@ async def run_throughput_for(
         await contestant.strategy.cleanup()
         return None
     print(
-        f"  {contestant.name}: chunked gather vs worker pool, both at "
+        f"  {contestant.name}: chunked gather vs semaphore pool vs worker pool, all at "
         f"{contestant.workers} workers, {len(items)} items..."
     )
+
+    async def _pause_for_quota() -> None:
+        if THROUGHPUT_LEG_GAP_S > 0:
+            print(f"    (pausing {THROUGHPUT_LEG_GAP_S:.0f}s to let the per-minute quota reset)")
+            await asyncio.sleep(THROUGHPUT_LEG_GAP_S)
+
     gather = await _throughput_gather(
         items, contestant.fast_call, contestant.workers, contestant.error_classifier
     )
-    if THROUGHPUT_LEG_GAP_S > 0:
-        print(f"    (pausing {THROUGHPUT_LEG_GAP_S:.0f}s to let the per-minute quota reset)")
-        await asyncio.sleep(THROUGHPUT_LEG_GAP_S)
+    await _pause_for_quota()
+    semaphore = await _throughput_semaphore(
+        items, contestant.fast_call, contestant.workers, contestant.error_classifier
+    )
+    await _pause_for_quota()
     abl = await _throughput_abl(items, contestant)  # this run's __aexit__ cleans it up
-    return ThroughputResult(contestant.name, contestant.workers, gather, abl)
+    return ThroughputResult(contestant.name, contestant.workers, gather, semaphore, abl)
 
 
 # ---------------------------------------------------------------------------
@@ -955,33 +1037,42 @@ def print_race(rows: list[RaceResult], n: int) -> None:
 
 
 def print_throughput(rows: list[ThroughputResult], n: int) -> None:
-    print("\n" + "=" * 84)
-    print(f"THROUGHPUT AT SCALE  ({n} items — chunked gather vs worker pool, same concurrency)")
-    print("=" * 84)
-    print("  g = chunked gather   a = async-batch-llm   RL = rate-limit / cooldown hits")
+    print("\n" + "=" * 96)
+    print(f"THROUGHPUT AT SCALE  ({n} items — three orchestrations at the same concurrency)")
+    print("=" * 96)
     print(
-        f"{'Provider':<15}{'Workers':>8}{'g s':>8}{'g it/s':>8}{'g RL':>6}"
-        f"{'a s':>8}{'a it/s':>8}{'a RL':>6}{'Speedup':>9}"
+        "  g = chunked gather   s = semaphore pool (continuous refill)   "
+        "a = async-batch-llm   RL = rate-limit hits"
     )
-    print("-" * 84)
+    print(
+        f"{'Provider':<14}{'Workers':>8}{'g it/s':>8}{'g RL':>6}"
+        f"{'s it/s':>8}{'s RL':>6}{'a it/s':>8}{'a RL':>6}{'a vs s':>8}"
+    )
+    print("-" * 96)
     for r in rows:
         g_wall, g_ok, g_rl = r.gather
+        s_wall, s_ok, s_rl = r.semaphore
         a_wall, a_ok, a_rl = r.abl
         g_tps = g_ok / g_wall if g_wall else 0.0
+        s_tps = s_ok / s_wall if s_wall else 0.0
         a_tps = a_ok / a_wall if a_wall else 0.0
-        speedup = f"{a_tps / g_tps:.2f}x" if g_tps else "-"
+        # Compare against the *fair* baseline (semaphore pool), not the chunked one.
+        ratio = f"{a_tps / s_tps:.2f}x" if s_tps else "-"
         print(
-            f"{r.name:<15}{r.workers:>8}{g_wall:>8.1f}{g_tps:>8.1f}{g_rl:>6}"
-            f"{a_wall:>8.1f}{a_tps:>8.1f}{a_rl:>6}{speedup:>9}"
+            f"{r.name:<14}{r.workers:>8}{g_tps:>8.1f}{g_rl:>6}"
+            f"{s_tps:>8.1f}{s_rl:>6}{a_tps:>8.1f}{a_rl:>6}{ratio:>8}"
         )
     print(
-        "\nBoth bound concurrency to the same worker count, so the orchestration "
-        "difference is\nbarriers (chunked `gather` waits for the slowest call in each chunk) vs "
-        "continuous\nrefill (async-batch-llm). But compare the RL columns first: gather has no "
-        "backoff,\nso a rate-limited provider just costs it lost results, while async-batch-llm "
-        "pauses\nall workers and slow-starts — so if `a RL` is high, abl's lower it/s is it "
-        "respecting\nthe rate limit, not running slower. The pool's true win is cleanest on a "
-        "provider\nyou're *not* rate-limited against (here, DeepSeek)."
+        "\nThree orchestrations at the *same* worker count:\n"
+        "  - chunked gather (g): per-chunk barriers — waits for the slowest call in each chunk;\n"
+        "  - semaphore pool (s): continuous refill, the FAIR concurrency baseline;\n"
+        "  - async-batch-llm (a): continuous refill PLUS retry/backoff/coordinated cooldown.\n"
+        "Expect a ~= s on raw throughput: a well-written semaphore pool already saturates the\n"
+        "provider, so the framework should match it, not beat it. The differentiation isn't "
+        "speed —\nit's the RL columns and what happens on failure: g/s have no backoff, so a "
+        "429/503 is a\nsilently lost result; async-batch-llm retries, pauses all workers, and "
+        "slow-starts (see the\nerror/retry resilience summary). Parity on throughput + survival "
+        "on errors is the win."
     )
 
 
@@ -1019,7 +1110,9 @@ def print_bakeoff(cards: list[Scorecard], judge_card: Scorecard | None) -> None:
     for card in cards:
         br = card.batch_result
         billable = br.effective_input_tokens(PRICING[card.model_id].cached_rate)
-        cache_pct = (br.total_cached_tokens / br.total_input_tokens * 100) if br.total_input_tokens else 0.0
+        cache_pct = (
+            (br.total_cached_tokens / br.total_input_tokens * 100) if br.total_input_tokens else 0.0
+        )
         print(
             f"  {card.name}: workers={card.workers} exact={card.exact_correct} "
             f"judge_rescued={card.judge_correct} unparsed={card.ambiguous} errors={card.errors}"
@@ -1031,10 +1124,7 @@ def print_bakeoff(cards: list[Scorecard], judge_card: Scorecard | None) -> None:
         # How hard the model made us work: total attempts vs items (retries),
         # malformed-output rate, escalations, and a breakdown by error type.
         parse_pct = (card.parse_failures / card.attempts * 100) if card.attempts else 0.0
-        errors = (
-            ", ".join(f"{name}={n}" for name, n in sorted(card.error_counts.items()))
-            or "none"
-        )
+        errors = ", ".join(f"{name}={n}" for name, n in sorted(card.error_counts.items())) or "none"
         print(
             f"      attempts={card.attempts} (retries={card.retries}) "
             f"escalations={card.escalations} "
@@ -1056,16 +1146,17 @@ def write_summary(
     """
     from datetime import datetime, timezone
 
+    from async_batch_llm import __version__ as abl_version
+
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     def _bakeoff_row(card: Scorecard) -> dict[str, Any]:
         br = card.batch_result
         pricing = PRICING[card.model_id]
         cache_pct = (
-            br.total_cached_tokens / br.total_input_tokens * 100
-            if br.total_input_tokens
-            else 0.0
+            br.total_cached_tokens / br.total_input_tokens * 100 if br.total_input_tokens else 0.0
         )
+        avg_output = (br.total_output_tokens / card.total) if card.total else 0.0
         return {
             "provider": card.name,
             "model_id": card.model_id,
@@ -1075,6 +1166,8 @@ def write_summary(
             "input_tokens": br.total_input_tokens,
             "cached_tokens": br.total_cached_tokens,
             "output_tokens": br.total_output_tokens,
+            # Avg output tokens/item — the "DeepSeek is terser" cost driver.
+            "avg_output_tokens_per_item": round(avg_output, 1),
             "cost_usd": round(estimate_cost(br, pricing), 4),
             "billable_input_tokens": br.effective_input_tokens(pricing.cached_rate),
             "cache_hit_rate_pct": round(cache_pct, 1),
@@ -1089,13 +1182,51 @@ def write_summary(
             "error_counts": card.error_counts,
         }
 
+    bakeoff_n = cards[0].total if cards else 0
     summary: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "config": {
             "race_items": RACE_ITEMS,
             # Actual count processed (BAKEOFF_ITEMS may be None = whole dataset).
-            "bakeoff_items": (cards[0].total if cards else 0),
+            "bakeoff_items": bakeoff_n,
             "gather_chunk_size": GATHER_CHUNK_SIZE,
+        },
+        # Methodology snapshot so a cited run is fully reproducible/dated.
+        "methodology": {
+            "package_version": abl_version,
+            "dataset": {
+                "name": "GSM8K test split",
+                "file": DATA_PATH.name,
+                "items": bakeoff_n,
+            },
+            "models": {
+                "deepseek": DEEPSEEK_MODEL,
+                "gemini_3.1": GEMINI_31_MODEL,
+                "gemini_2.5": GEMINI_25_MODEL,
+                "judge": JUDGE_MODEL,
+            },
+            "worker_caps": {
+                DEEPSEEK_MODEL: DEEPSEEK_WORKERS,
+                GEMINI_31_MODEL: GEMINI_31_WORKERS,
+                GEMINI_25_MODEL: GEMINI_25_WORKERS,
+            },
+            "notes": [
+                "Gemini 2.5 Flash-Lite is throttle-capped at "
+                f"{GEMINI_25_WORKERS} workers (503s / rate-limits even at 10); "
+                "other providers run at their full pool.",
+            ],
+            "pricing": {
+                "as_of": PRICING_DATE,
+                "usd_per_mtok": {
+                    model_id: {
+                        "input": p.input,
+                        "cached_input": p.cached_input,
+                        "output": p.output,
+                        "cached_rate": round(p.cached_rate, 4),
+                    }
+                    for model_id, p in PRICING.items()
+                },
+            },
         },
         "wall_time_race": [
             {
@@ -1111,6 +1242,32 @@ def write_summary(
         ],
         "bakeoff": [_bakeoff_row(c) for c in cards],
     }
+
+    # Cross-provider showcase: the SAME items answered by each provider, with
+    # full raw text + token counts — the terse-vs-verbose qualitative data.
+    samples_by_item: dict[str, dict[str, Any]] = {}
+    for card in cards:
+        for s in card.samples:
+            entry = samples_by_item.setdefault(
+                s["item_id"],
+                {
+                    "item_id": s["item_id"],
+                    "question": s.get("question"),
+                    "gold": s.get("gold"),
+                    "providers": {},
+                },
+            )
+            entry["providers"][card.name] = {
+                "model_id": card.model_id,
+                "answer": s.get("answer"),
+                "output_tokens": s.get("output_tokens"),
+                "input_tokens": s.get("input_tokens"),
+                "cached_input_tokens": s.get("cached_input_tokens"),
+                "raw": s.get("raw"),
+            }
+    if samples_by_item:
+        summary["samples"] = list(samples_by_item.values())
+
     if judge_card is not None:
         jbr = judge_card.batch_result
         summary["judge"] = {
@@ -1126,6 +1283,45 @@ def write_summary(
 
     out_path = RESULTS_DIR / "summary.json"
     out_path.write_text(json.dumps(summary, indent=2) + "\n")
+    return out_path
+
+
+def write_throughput(rows: list[ThroughputResult], n: int) -> Path:
+    """Persist the throughput parity table (chunked gather vs semaphore pool vs
+    async-batch-llm, same concurrency) to ``benchmark_results/throughput.json``."""
+    from datetime import datetime, timezone
+
+    from async_batch_llm import __version__ as abl_version
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _leg(leg: tuple[float, int, int]) -> dict[str, Any]:
+        wall, ok, rl = leg
+        return {
+            "wall_s": round(wall, 2),
+            "ok": ok,
+            "rate_limit_hits": rl,
+            "items_per_s": round(ok / wall, 1) if wall else 0.0,
+        }
+
+    data = {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "package_version": abl_version,
+        "items": n,
+        "gather_chunk_size": GATHER_CHUNK_SIZE,
+        "rows": [
+            {
+                "provider": r.name,
+                "workers": r.workers,
+                "chunked_gather": _leg(r.gather),
+                "semaphore_pool": _leg(r.semaphore),
+                "async_batch_llm": _leg(r.abl),
+            }
+            for r in rows
+        ],
+    }
+    out_path = RESULTS_DIR / "throughput.json"
+    out_path.write_text(json.dumps(data, indent=2) + "\n")
     return out_path
 
 
@@ -1195,6 +1391,8 @@ async def main() -> None:
                 rows.append(result)
         if rows:
             print_throughput(rows, len(items))
+            throughput_path = write_throughput(rows, len(items))
+            print(f"\nThroughput parity table written to {throughput_path}.")
         else:
             print("No large-pool providers configured; nothing to benchmark.")
         return
@@ -1223,15 +1421,19 @@ async def main() -> None:
         print_race(race_rows, RACE_ITEMS)
 
     # ---- Provider bake-off (fresh build per contestant) ----
+    # Capture full raw outputs for the same first-N items across every provider
+    # (terse-vs-verbose comparison for the write-up).
+    showcase_ids = {it.id for it in bakeoff_items[:SHOWCASE_N]}
     cards: list[Scorecard] = []
     all_ambiguous: list[tuple[str, str, float | None]] = []
     ambiguous_owner: dict[str, Scorecard] = {}
     for build in builders:
         contestant = build()
         print(f"\nRunning bake-off batch: {contestant.name} ({len(bakeoff_items)} items)...")
-        batch_result, wall = await run_contestant(contestant, bakeoff_items)
+        batch_result, wall, samples = await run_contestant(contestant, bakeoff_items, showcase_ids)
         card, ambiguous = score_batch(contestant.name, contestant.model_id, batch_result, wall)
         card.workers = contestant.workers
+        card.samples = samples
         strat = contestant.strategy
         card.attempts = strat.attempts
         card.escalations = strat.escalations
@@ -1246,7 +1448,9 @@ async def main() -> None:
     # ---- Fallback grader (LLM-as-judge) on the unparseable outputs ----
     judge_card: Scorecard | None = None
     if all_ambiguous and OPENAI_API_KEY:
-        print(f"\nFallback grader: judging {len(all_ambiguous)} unparseable outputs with {JUDGE_MODEL}...")
+        print(
+            f"\nFallback grader: judging {len(all_ambiguous)} unparseable outputs with {JUDGE_MODEL}..."
+        )
         start = perf_counter()
         verdicts, judge_br = await grade_ambiguous(all_ambiguous)
         judge_wall = perf_counter() - start
