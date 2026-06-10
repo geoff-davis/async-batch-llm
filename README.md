@@ -27,9 +27,10 @@ From a sample [GSM8K test-split run](docs/benchmarks.md) — illustrative, not a
   pool. Concurrency collapses wall time.
 - **The full 1,319-problem test split for ~$0.05** on DeepSeek Flash — vs ~$0.43 on a Gemini run at
   the *same* 95–97% accuracy (~8× cheaper), with the per-provider cost breakdown printed for free.
-- **Out-throughputs a hand-rolled `Semaphore` + `gather` pool** (here ~1.2–2× — a bounded worker
-  pool beats scheduling every coroutine up front) *and* survives the 429s/503s a bare pool silently
-  drops: retrying validation errors, escalating the model on bad output, riding out throttling.
+- **At least as fast as a hand-rolled `Semaphore` + `gather` pool** — it edged ahead in this run (a
+  bounded worker pool runs a fixed N tasks instead of scheduling every coroutine up front) — and,
+  unlike a bare pool, *survives* the 429s/503s it would otherwise drop: retrying validation errors,
+  escalating the model on bad output, riding out throttling.
 
 See the [benchmarks](docs/benchmarks.md) for methodology and the full tables.
 
