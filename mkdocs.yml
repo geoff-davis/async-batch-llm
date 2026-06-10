@@ -58,6 +58,9 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Production Checklist: production-checklist.md
+  - Testing: testing.md
+  - Benchmarks: benchmarks.md
   - Provider Integrations:
     - Gemini: GEMINI_INTEGRATION.md
     - OpenAI: OPENAI_INTEGRATION.md
@@ -66,7 +69,7 @@ nav:
     - Basic Usage: examples/basic.md
     - Custom Strategies: examples/custom-strategies.md
     - Advanced Patterns: examples/advanced.md
-    - Bulk Benchmark: examples/bulk-benchmark.md
+    - Benchmark Walkthrough: examples/benchmark-walkthrough.md
   - Migration Guides:
     - v0.10 Migration: MIGRATION_V0_10.md
     - v0.4 Migration: migration/v0.4.md

@@ -203,3 +203,84 @@ async def adaptive_processing():
             # Too many rate limits, reduce workers for next batch
             processor.config.max_workers = 3
 ```
+
+## Progressive Temperature on Retries
+
+Increase creativity on retries to get past validation errors. Note that rate
+limits don't advance the `attempt` number (they're retried at the same logical
+attempt), so escalation here is driven by *validation* failures, not throttling.
+
+```python
+from pydantic import ValidationError
+from async_batch_llm import RetryState
+from async_batch_llm.llm_strategies import LLMCallStrategy
+
+class ProgressiveTempStrategy(LLMCallStrategy[str]):
+    """Increase temperature only when validation keeps failing."""
+
+    def __init__(self, client, temps=None):
+        self.client = client
+        self.temps = temps if temps is not None else [0.0, 0.5, 1.0]
+
+    async def execute(
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+    ):
+        state = state or RetryState()
+        failures = state.get("validation_failures", 0)
+        temp = self.temps[min(failures, len(self.temps) - 1)]
+        response = await self.client.generate(prompt, temperature=temp)
+        return response.text, extract_tokens(response)
+
+    async def on_error(
+        self, exception: Exception, attempt: int, state: RetryState | None = None
+    ):
+        if state and isinstance(exception, ValidationError):
+            state.set("validation_failures", state.get("validation_failures", 0) + 1)
+```
+
+## Partial Recovery with RetryState
+
+Save partial results across attempts and retry only the fields that failed —
+often cheaper than re-extracting everything.
+
+```python
+from async_batch_llm import RetryState
+from async_batch_llm.llm_strategies import LLMCallStrategy
+
+class PartialRecoveryStrategy(LLMCallStrategy[dict]):
+    """Parse partial results and retry only failed fields."""
+
+    FIELDS = ["name", "email", "phone", "address"]
+
+    async def execute(
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+    ):
+        state = state or RetryState()
+        partial = state.get("partial_results", {})
+        needed = state.get("failed_fields", self.FIELDS)
+
+        if attempt == 1:
+            final_prompt = f"{prompt}\nExtract: {', '.join(needed)}"
+        else:
+            final_prompt = (
+                f"{prompt}\nYou already got these right: {partial}"
+                f"\nNow extract only: {', '.join(needed)}"
+            )
+
+        result = parse_response(await self.client.generate(final_prompt))
+        if attempt > 1:
+            result = {**partial, **result}
+
+        missing = [f for f in self.FIELDS if f not in result]
+        if missing:
+            state.set("partial_results", dict(result))
+            state.set("failed_fields", missing)
+            raise ValueError(f"Missing fields: {missing}")
+
+        return result, extract_tokens(response)
+```
+
+Retries focus only on the fields that failed validation, so the follow-up
+attempt usually consumes fewer tokens than the first. See
+[`examples/example_smart_model_escalation.py`](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_smart_model_escalation.py)
+and `examples/example_gemini_smart_retry.py` for complete, runnable versions.

@@ -286,6 +286,8 @@ and httpx limits via `HttpOptions` for the Gemini client.
 
 ## Next Steps
 
+- [Production Checklist](production-checklist.md) - Worker count, connection
+  pools, fd limits, timeout/retry budgets, rate-limit tuning, constant-memory streaming
 - [Basic Examples](examples/basic.md) - See more usage examples
 - [Custom Strategies](examples/custom-strategies.md) - Build your own strategies
 - [Advanced Patterns](examples/advanced.md) - Learn advanced techniques

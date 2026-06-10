@@ -1,9 +1,11 @@
 # async-batch-llm
 
-**Provider-agnostic bulk LLM processing: thousands of requests in parallel, with retries and rate-limit handling.**
+**Run thousands of individual LLM calls in parallel — with coordinated rate-limit handling,
+error-type-aware retries, and per-call cost accounting — when you need the results *now*, not from
+a 24-hour batch API.**
 
-Works with any LLM provider (OpenAI, Anthropic, Google, LangChain, or custom) through a simple
-strategy pattern. Built on asyncio for efficient I/O-bound processing.
+Provider-agnostic (OpenAI, Anthropic, Google, DeepSeek, OpenRouter, PydanticAI, or your own)
+through a simple strategy pattern; built on asyncio for I/O-bound throughput.
 
 [![PyPI version](https://badge.fury.io/py/async-batch-llm.svg)](https://badge.fury.io/py/async-batch-llm)
 [![Python 3.10-3.14](https://img.shields.io/badge/python-3.10--3.14-blue.svg)](https://www.python.org/downloads/)
@@ -16,46 +18,61 @@ strategy pattern. Built on asyncio for efficient I/O-bound processing.
 
 ---
 
-## Why async-batch-llm?
+## A sense of scale
 
-Bulk LLM inference done right: a **bounded async worker pool** that's fast *and*
-safe, **error-type-aware resilience**, and **cost/observability built in** —
-across **any provider**.
+From a sample [GSM8K test-split run](docs/benchmarks.md) — illustrative, not a spec
+(numbers shift with provider, account limits, and network):
 
-- 🔀 **Provider-agnostic** — one strategy-pattern API runs the same batch on
-  DeepSeek, Gemini, OpenAI, OpenRouter, PydanticAI, or your own provider. Swap a
-  line to A/B providers on cost, speed, and accuracy.
-- ⚡ **Fast *and* safe** — runs many calls concurrently (big speedups over
-  serial), refills the pool continuously so one slow call never stalls a whole
-  chunk (faster than a naive `asyncio.gather`), and **bounds** in-flight work so
-  a large batch doesn't exhaust sockets, file descriptors, or memory.
-- 🛟 **Error-type-aware resilience** — retries are driven by *why* a call failed:
-  an unparseable/invalid model output can escalate to a smarter or thinking
-  model, while a server-side 429/503 triggers a **coordinated cooldown** that
-  pauses *all* workers and slow-starts — instead of each worker blindly hammering
-  a throttled endpoint.
-- 💸 **Cost & token accounting** — input/cached/output tokens tracked per
-  provider, aggregated across retries (and recovered from failed attempts), with
-  cache-aware billing estimates.
-- 🔭 **Observable & streaming** — per-result post-processors (write to disk/DB as
-  each item finishes), progress callbacks, metrics observers, and middleware.
-- 🧱 **Type-safe** — full generic typing with optional Pydantic validation.
+- **~16–19× faster than serial** — 30 problems took ~40–65 s one-at-a-time vs ~2–4 s through the
+  pool (even a provider throttle-capped to 5 workers ran 5×). Concurrency collapses wall time.
+- **The full 1,319-problem test split for ~$0.05** on DeepSeek Flash — vs ~$0.43 on a Gemini run at
+  the *same* 95–97% accuracy (~8× cheaper), with the per-provider cost breakdown printed for free.
+- **At least as fast as a hand-rolled `Semaphore` + `gather` pool** — it edged ahead in this run (a
+  bounded worker pool runs a fixed N tasks instead of scheduling every coroutine up front) — and,
+  unlike a bare pool, *survives* the 429s/503s it would otherwise drop: retrying validation errors,
+  escalating the model on bad output, riding out throttling.
 
-It's **real-time parallel processing** of individual calls — not a delayed
-batched-API client — so it's built for latency-sensitive bulk work, not 24-hour
-discounted batches.
+See the [benchmarks](docs/benchmarks.md) for methodology and the full tables.
 
-### A sense of scale
+## vs. rolling your own
 
-From a sample [GSM8K benchmark run](docs/examples/bulk-benchmark.md) — illustrative,
-not a spec (numbers shift with provider, account limits, and network):
+The 90% version is a semaphore and a `gather`. Here's what those few lines *don't* handle:
 
-- **~17× faster than serial** — 30 problems took ~57 s one-at-a-time vs ~3.4 s
-  through the pool.
-- **~2× faster than a naive chunked `asyncio.gather`** at the same 250-worker
-  concurrency (DeepSeek) — continuous refill beats per-chunk barriers.
-- **1,319 problems for ~$0.05** on DeepSeek Flash, with the token/cost breakdown
-  printed for free.
+```python
+import asyncio
+
+sem = asyncio.Semaphore(20)  # cap concurrency
+
+async def call_one(prompt: str) -> str:
+    async with sem:
+        resp = await client.chat.completions.create(
+            model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}]
+        )
+        return resp.choices[0].message.content
+
+results = await asyncio.gather(*(call_one(p) for p in prompts))
+```
+
+- **429 / rate limits** — no coordinated cooldown; every task keeps hammering a throttled endpoint.
+- **Validation failures** — a malformed/unparseable response is just *returned*; no retry, no
+  "escalate to a smarter or thinking model when the output is bad".
+- **Transient errors** — one raised exception loses the whole batch; `return_exceptions=True` only
+  trades that for `Exception` objects salted through your results to hand-filter.
+- **Cost** — no idea what you spent, and *zero* accounting for tokens burned on failed attempts.
+- **Memory** — `gather()` materializes every coroutine up front; you can't stream a million prompts
+  through constant memory.
+
+async-batch-llm *is* that loop with the operational layer filled in — coordinated cooldowns,
+error-type-aware retries, token/cost accounting (including failures), bounded-memory streaming, and
+a one-line provider swap.
+
+## When NOT to use this
+
+- **You can wait hours.** If the job is latency-tolerant, the providers' own **batch APIs**
+  (OpenAI / Anthropic / Gemini Batch) run ~50% cheaper with results in up to 24 h. This library is
+  for *real-time* bulk — results now, at full price.
+- **It's a handful of calls.** For a one-off script over a few dozen prompts, a bare
+  `asyncio.gather` (optionally with a semaphore) is fine — don't take the dependency.
 
 ---
 
@@ -135,7 +152,8 @@ async for result in process_stream(strategy, huge_prompt_source, config=config):
 ```
 
 `prompts` can be any sync **or** async iterable. Pass `(item_id, prompt)` pairs
-instead of bare strings to control ids, and forward any processor option
+instead of bare strings to control ids — or `(item_id, prompt, context)` triples
+to carry per-item data through to the result — and forward any processor option
 (`post_processor`, `observers`, `error_classifier`, …) as a keyword argument.
 The error classifier is auto-selected from the strategy when you don't pass one.
 
@@ -371,483 +389,67 @@ async with ParallelBatchProcessor(config=config) as processor:
 - Without caching: 100 items × $0.10 = **$10.00**
 - With shared caching: 100 items × $0.03 = **$3.00** (assuming cached tokens are billed at 10% of the original rate)
 
-### Token Tracking
+### Token & cost accounting
 
-Track token usage across all requests, including cached tokens:
+Every `BatchResult` aggregates input / cached / output tokens — across retries,
+and recovered from failed attempts. Turn them into money with `estimated_cost`,
+which applies the per-provider cache discount:
 
 ```python
-result = await processor.process_all()
-
-# Basic token counts
-print(f"Input tokens: {result.total_input_tokens}")
-print(f"Output tokens: {result.total_output_tokens}")
-
-# Cache metrics
-print(f"Cached tokens: {result.total_cached_tokens}")
-print(f"Cache hit rate: {result.cache_hit_rate():.1f}%")
-# Pass a per-provider rate from CachedTokenRates (GEMINI / OPENAI /
-# ANTHROPIC_READ / DEEPSEEK) for an accurate billable-token estimate.
-# Calling it without an explicit rate defaults to the Gemini rate AND warns
-# when cached tokens are present (the rate is wrong for other providers).
 from async_batch_llm import CachedTokenRates
 
-# Billable *input tokens* after the cache discount (a token count, not a price):
-print(f"Billable input tokens: {result.effective_input_tokens(CachedTokenRates.OPENAI):,}")
-
-# Or estimate spend directly from per-million-token prices:
+print(f"Cache hit rate: {result.cache_hit_rate():.1f}%")
 cost = result.estimated_cost(
-    input_per_mtok=0.15,   # $ per 1M input tokens
-    output_per_mtok=0.60,  # $ per 1M output tokens
-    cached_token_rate=CachedTokenRates.OPENAI,
+    input_per_mtok=0.15, output_per_mtok=0.60,   # $ per 1M tokens
+    cached_token_rate=CachedTokenRates.OPENAI,   # per-provider cache rate
 )
 print(f"Estimated cost: ${cost:.4f}")
 ```
 
 ### Observability
 
-Monitor processing with metrics, middleware, and event observers:
-
-```python
-from async_batch_llm import MetricsObserver
-
-# Collect metrics
-metrics = MetricsObserver()
-
-# Observers receive lifecycle events:
-# - BATCH_STARTED / BATCH_COMPLETED
-# - WORKER_STARTED / WORKER_STOPPED
-# - ITEM_STARTED / ITEM_COMPLETED / ITEM_FAILED
-# - RATE_LIMIT_HIT / COOLDOWN_STARTED / COOLDOWN_ENDED
-
-processor = ParallelBatchProcessor(
-    config=config,
-    observers=[metrics],
-)
-
-result = await processor.process_all()
-
-# Get detailed metrics
-collected_metrics = await metrics.get_metrics()
-# Returns: {
-#   "items_processed": 100,
-#   "items_succeeded": 95,
-#   "items_failed": 5,
-#   "avg_processing_time": 1.2,
-#   "rate_limits_hit": 0,
-#   ...
-# }
-
-# Export in different formats
-json_export = await metrics.export_json()
-prometheus_export = await metrics.export_prometheus()
-
-# If you don't use `async with`, call shutdown() to clean up workers/strategies:
-# processor = ParallelBatchProcessor(config=config)
-# ... add work, process ...
-# await processor.shutdown()
-```
+Metrics observers, lifecycle events (`ITEM_*`, `RATE_LIMIT_HIT`, `COOLDOWN_*`, …)
+with JSON / Prometheus export, plus middleware and progress callbacks. See
+[Advanced Patterns → Custom Observers / Middleware](docs/examples/advanced.md).
 
 ---
 
 ## Common Use Cases
 
-### Structured Data Extraction
-
-Extract structured data with automatic validation retry:
-
-```python
-from pydantic import BaseModel, Field
-from async_batch_llm import PydanticAIStrategy, LLMWorkItem
-from pydantic_ai import Agent
-
-class ContactInfo(BaseModel):
-    name: str = Field(min_length=1)
-    email: str = Field(pattern=r'^[\w\.-]+@[\w\.-]+\.\w+$')
-    phone: str
-
-agent = Agent("gemini-2.5-flash", output_type=ContactInfo)
-strategy = PydanticAIStrategy(agent=agent)
-
-async with ParallelBatchProcessor(config=config) as processor:
-    for text in contact_texts:
-        await processor.add_work(
-            LLMWorkItem(
-                item_id=text.id,
-                strategy=strategy,
-                prompt=f"Extract contact info: {text}",
-            )
-        )
-
-    result = await processor.process_all()
-
-# Framework automatically retries on validation errors
-# Each retry can use different temperature (via custom strategy)
-```
-
-### Document Summarization
-
-Summarize many documents in parallel:
-
-```python
-from pydantic import BaseModel
-
-class Summary(BaseModel):
-    title: str
-    key_points: list[str]
-    sentiment: str
-
-agent = Agent("gemini-2.5-flash", output_type=Summary)
-strategy = PydanticAIStrategy(agent=agent)
-
-async with ParallelBatchProcessor(config=config) as processor:
-    for doc in documents:
-        await processor.add_work(
-            LLMWorkItem(
-                item_id=doc.id,
-                strategy=strategy,
-                prompt=f"Summarize this document:\n\n{doc.text}",
-            )
-        )
-
-    result = await processor.process_all()
-
-    # Process results
-    for item_result in result.results:
-        if item_result.success:
-            print(f"{item_result.item_id}: {item_result.output.title}")
-```
-
-### RAG with Context Caching
-
-Process queries against large document context with caching:
-
-```python
-from async_batch_llm import GeminiCachedModel, GeminiStrategy
-from google import genai
-
-client = genai.Client(api_key="your-api-key")
-
-# Cache the large document context once via the explicit API; see also https://developers.googleblog.com/en/gemini-2-5-models-now-support-implicit-caching/
-cached_model = GeminiCachedModel(
-    model="gemini-2.0-flash",
-    client=client,
-    cached_content=[
-        genai.types.Content(
-            role="user",
-            parts=[genai.types.Part(text=large_document_corpus)],
-        )
-    ],
-    cache_ttl_seconds=3600,
-)
-strategy = GeminiStrategy(model=cached_model)
-
-async with ParallelBatchProcessor(config=config) as processor:
-    # Process multiple queries against the cached context
-    for query in user_queries:
-        await processor.add_work(
-            LLMWorkItem(
-                item_id=query.id,
-                strategy=strategy,  # Reuse cached strategy
-                prompt=query.text,
-            )
-        )
-
-    result = await processor.process_all()
-
-# Cached tokens are billed at ~10% of the usual rate, so reusing context can reduce total cost substantially
-```
-
-### Custom Post-Processing
-
-Save results to database as they complete:
-
-```python
-from dataclasses import dataclass
-
-@dataclass
-class WorkContext:
-    user_id: str
-    document_id: str
-
-async def save_result(result):
-    """Save successful results to database."""
-    if result.success:
-        await db.save(
-            user_id=result.context.user_id,
-            document_id=result.context.document_id,
-            summary=result.output,
-        )
-
-async with ParallelBatchProcessor(
-    config=config,
-    post_processor=save_result,
-) as processor:
-    # Add work with context
-    await processor.add_work(
-        LLMWorkItem(
-            item_id="doc_123",
-            strategy=strategy,
-            prompt="Summarize...",
-            context=WorkContext(user_id="user_1", document_id="doc_123"),
-        )
-    )
-
-    result = await processor.process_all()
-```
-
----
+Worked, runnable versions of the usual jobs — structured extraction with
+validation retry, document summarization, RAG with shared context caching, and
+saving results to a DB via a `post_processor` — live in
+[`examples/`](examples/) and the [Basic Usage](docs/examples/basic.md) guide.
 
 ## Advanced Patterns
 
-### Progressive Temperature on Retries
+`RetryState` persists across an item's attempts, which unlocks **error-type-aware**
+strategies — progressive temperature, **smart model escalation** (cheap model first, escalate to a
+smarter/thinking model only on bad *output* — typically 60–80% cheaper), and partial-field recovery.
+Because rate limits don't advance the attempt number, escalation tracks genuine quality failures, not
+throttling.
 
-Increase creativity on retries to get past validation errors:
-
-```python
-from pydantic import ValidationError
-from async_batch_llm import RetryState
-from async_batch_llm.llm_strategies import LLMCallStrategy
-
-class ProgressiveTempStrategy(LLMCallStrategy[str]):
-    """Increase temperature only when validation keeps failing."""
-
-    def __init__(self, client, temps=None):
-        self.client = client
-        self.temps = temps if temps is not None else [0.0, 0.5, 1.0]
-
-    async def execute(
-        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
-    ):
-        state = state or RetryState()
-        failures = state.get("validation_failures", 0)
-        temp = self.temps[min(failures, len(self.temps) - 1)]
-        response = await self.client.generate(prompt, temperature=temp)
-        return response.text, extract_tokens(response)
-
-    async def on_error(
-        self, exception: Exception, attempt: int, state: RetryState | None = None
-    ):
-        if state and isinstance(exception, ValidationError):
-            state.set("validation_failures", state.get("validation_failures", 0) + 1)
-```
-
-### Smart Model Escalation
-
-Start with cheap models, escalate only on quality issues:
-
-```python
-from pydantic import ValidationError
-
-class SmartModelEscalationStrategy(LLMCallStrategy[Output]):
-    """Escalate to better models ONLY on validation errors."""
-
-    MODELS = [
-        "gemini-2.5-flash-lite",  # Cheapest
-        "gemini-2.5-flash",       # Moderate
-        "gemini-2.5-pro",         # Most capable
-    ]
-
-    def __init__(self, client):
-        self.client = client
-
-    async def on_error(
-        self, exception: Exception, attempt: int, state: RetryState | None = None
-    ):
-        """Only count validation errors for escalation."""
-        if state is None:
-            return
-        if isinstance(exception, ValidationError):
-            state.set("validation_failures", state.get("validation_failures", 0) + 1)
-        # Network/rate limit errors don't trigger escalation
-
-    async def execute(
-        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
-    ):
-        state = state or RetryState()
-        failures = state.get("validation_failures", 0)
-        model_idx = min(failures, len(self.MODELS) - 1)
-        model = self.MODELS[model_idx]
-        response = await self.client.generate(prompt, model=model)
-        return parse_output(response), extract_tokens(response)
-```
-
-**Cost Savings:**
-
-- Validation error → Escalate to smarter model ✅
-- Network error → Retry same cheap model ✅
-- Rate limit error → Retry same cheap model ✅
-- Most tasks succeed on attempt 1 (cheap)
-- Result: **~60-80% cost reduction**
-
-See [`examples/example_smart_model_escalation.py`](examples/example_smart_model_escalation.py) for complete implementation.
-
-### Partial Recovery with RetryState
-
-Save partial results and retry only failed fields:
-
-```python
-from async_batch_llm import RetryState
-
-class PartialRecoveryStrategy(LLMCallStrategy[dict]):
-    """Parse partial results and retry only failed fields."""
-
-    async def execute(self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None):
-        if state is None:
-            state = RetryState()
-
-        # Check for partial results from previous attempt
-        partial_results = state.get("partial_results", {})
-        failed_fields = state.get("failed_fields", ["name", "email", "phone", "address"])
-
-        if attempt == 1:
-            final_prompt = f"{prompt}\nExtract: {', '.join(failed_fields)}"
-        else:
-            # Retry only failed fields
-            final_prompt = (
-                f"{prompt}\nYou already got these right: {partial_results}"
-                f"\nNow extract only: {', '.join(failed_fields)}"
-            )
-
-        response = await self.client.generate(final_prompt)
-        result = parse_response(response)
-
-        # Merge with partial results
-        if attempt > 1:
-            result = {**partial_results, **result}
-
-        # Check for missing fields
-        missing = [f for f in ["name", "email", "phone", "address"] if f not in result]
-        if missing:
-            # Save what we got and retry
-            state.set("partial_results", {k: v for k, v in result.items()})
-            state.set("failed_fields", missing)
-            raise ValueError(f"Missing fields: {missing}")
-
-        return result, extract_tokens(response)
-```
-
-**Cost Considerations:**
-
-- Retries focus only on the fields that failed validation, so the second attempt
-  usually consumes fewer tokens than the first.
-- Actual savings depend on how many fields typically fail and the provider's billing model.
+→ Full walkthroughs in **[Advanced Patterns](docs/examples/advanced.md)**, runnable in
+[`examples/example_smart_model_escalation.py`](examples/example_smart_model_escalation.py) and
+[`examples/example_gemini_smart_retry.py`](examples/example_gemini_smart_retry.py).
 
 ---
 
-## Configuration
+## Configuration & tuning
 
-### ProcessorConfig
+`ProcessorConfig` (with nested `RetryConfig` / `RateLimitConfig`) controls workers, per-attempt
+timeout, retry budgets (`max_attempts`, plus `max_rate_limit_retries` — rate limits don't burn your
+retry budget), rate-limit cooldown + slow-start, proactive limiting, progress reporting, and
+queueing. Full field reference: **[API reference → ProcessorConfig](docs/API.md)**.
 
-Complete configuration options:
-
-```python
-from async_batch_llm import ProcessorConfig
-from async_batch_llm import RetryConfig, RateLimitConfig
-
-config = ProcessorConfig(
-    # Core Settings
-    max_workers=5,              # Number of parallel workers
-    timeout_per_item=120.0,     # Max seconds per execute() attempt (per-attempt, not a total budget across retries)
-    post_processor_timeout=90.0,  # Max seconds for each post-processor call
-
-    # Retry Configuration
-    retry=RetryConfig(
-        max_attempts=3,          # Maximum retry attempts
-        initial_wait=1.0,        # Initial retry delay (seconds)
-        max_wait=60.0,           # Maximum retry delay
-        exponential_base=2.0,    # Backoff multiplier
-        jitter=True,             # Add random jitter
-    ),
-
-    # Rate Limit Configuration
-    rate_limit=RateLimitConfig(
-        cooldown_seconds=300.0,        # Cooldown after rate limit (5 min)
-        backoff_multiplier=1.5,        # Increase cooldown on repeated limits
-        slow_start_items=50,           # Gradual ramp-up over 50 items
-        slow_start_initial_delay=2.0,  # Start slow
-        slow_start_final_delay=0.1,    # Ramp to full speed
-    ),
-
-    # Progress Reporting
-    progress_interval=10,              # Log progress every N items
-    progress_callback_timeout=5.0,     # Timeout for progress callbacks
-
-    # Queue Management
-    max_queue_size=0,                  # Max items in queue (0 = unlimited)
-)
-```
-
-### Choosing Worker Count
-
-**Rate-Limited APIs (OpenAI, Anthropic, Gemini):**
-
-- Start with `max_workers=5`
-- Monitor `rate_limit_count` in metrics
-- Reduce workers if hitting limits frequently
-
-**Unlimited APIs (Local Models):**
-
-- Use `max_workers=min(cpu_count() * 2, 20)`
-- Cap at 20 to avoid excessive context switching
-
-**Testing/Debugging:**
-
-- Use `max_workers=2` for easier log reading
-
----
+For the operational decisions — worker count per provider, sizing `max_connections` to `max_workers`,
+the `RLIMIT_NOFILE` footgun, timeout-vs-retry-budget interaction, rate-limit tuning, and the
+constant-memory streaming pattern — see the **[Production Checklist](docs/production-checklist.md)**.
 
 ## Testing
 
-### Three Testing Approaches
-
-#### 1. Dry-Run Mode (No API Calls)
-
-```python
-config = ProcessorConfig(dry_run=True)  # No API calls made
-
-async with ParallelBatchProcessor(config=config) as processor:
-    await processor.add_work(work_item)
-    result = await processor.process_all()  # Returns mock data
-```
-
-#### 2. Mock Strategies (Unit Tests)
-
-```python
-from async_batch_llm.testing import MockAgent
-
-mock_agent = MockAgent(
-    response_factory=lambda p: Summary(title="Test", key_points=["A", "B"]),
-    latency=0.01,  # Simulate 10ms latency
-)
-
-strategy = PydanticAIStrategy(agent=mock_agent)
-```
-
-#### 3. Small Batch Integration Tests
-
-```python
-# Test with 5 items before processing 1000
-test_items = full_dataset[:5]
-
-config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
-result = await process_batch(test_items, config)
-
-if result.succeeded == len(test_items):
-    # Now process full batch
-    full_result = await process_batch(full_dataset, config)
-```
-
----
-
-## Performance
-
-Throughput is bounded by provider latency, not the framework. For real
-end-to-end numbers — speedup vs serial, speedup vs a naive chunked
-`asyncio.gather`, and per-batch token/cost — see the
-[GSM8K bulk benchmark](docs/examples/bulk-benchmark.md) (and the
-[scale summary](#a-sense-of-scale) up top). Reproduce it locally with
-[`examples/benchmark_worker_overhead.py`](examples/benchmark_worker_overhead.py)
-(no network) or [`examples/example_batch_benchmark.py`](examples/example_batch_benchmark.py).
+Test without spending on API calls — dry-run mode, `MockAgent` (simulates latency, rate limits, and
+errors), and small-batch integration tests. See the **[Testing guide](docs/testing.md)**.
 
 ---
 
