@@ -262,15 +262,30 @@ config = ProcessorConfig(
     max_workers=5,
     timeout_per_item=30.0,
     retry=RetryConfig(
-        max_attempts=3,
+        max_attempts=3,             # budget for content/transport failures
         initial_wait=1.0,
         exponential_base=2.0,
-        jitter=True,  # Prevents thundering herd
+        jitter=True,                # Prevents thundering herd
+        max_rate_limit_retries=20,  # rate-limit retries are budgeted separately
     ),
 )
 ```
 
 The framework automatically retries on validation errors, network errors, and other transient failures.
+
+**Rate limits don't consume your retry budget.** `max_attempts` bounds *content
+and transport* failures (bad/invalid output, timeouts, connection errors, 5xx).
+A `429` / quota / coordinated-cooldown signal is a "wait and try again", not a
+failed attempt — so it's retried at the **same logical attempt number** after the
+cooldown and is bounded separately by `max_rate_limit_retries` (default 20; set
+to `0` to make rate limits fail immediately). When that separate budget is
+exceeded the item fails with a `RateLimitRetriesExceeded` error (token usage
+included, like any other exhausted failure).
+
+This keeps the `attempt` number that `execute()` sees meaningful: a
+model-escalation strategy (escalate to a smarter/thinking model on attempt ≥ 2)
+escalates because the *output* was bad over `max_attempts` tries — never just
+because the endpoint was busy.
 
 For **error-*type*-aware** retries — retry the cheap model on transient/rate-limit errors, but
 escalate to a smarter or thinking model only when the *output* is bad — see

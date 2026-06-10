@@ -8,13 +8,29 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RetryConfig:
-    """Configuration for retry behavior."""
+    """Configuration for retry behavior.
+
+    ``max_attempts`` bounds retries for *content/transport* failures (validation
+    errors, timeouts, connection errors, generic 5xx). **Rate-limit errors are
+    exempt from this budget**: a 429 / quota / coordinated-cooldown signal is a
+    "wait and try again", not a failed attempt, so it does not consume an
+    ``attempt`` — the same logical ``attempt`` number is retried after the
+    cooldown. Rate-limit retries are instead bounded separately by
+    ``max_rate_limit_retries`` (a backstop against an endpoint that throttles
+    forever). This keeps model-escalation strategies (which key behavior off the
+    attempt number) from escalating just because the endpoint was busy.
+    """
 
     max_attempts: int = 3
     initial_wait: float = 1.0
     max_wait: float = 60.0
     exponential_base: float = 2.0
     jitter: bool = True
+    # Max times a single item may be retried after a rate-limit/cooldown without
+    # consuming its max_attempts budget. 0 = rate limits immediately count as
+    # failures. Exceeding it fails the item with a clear "exceeded N rate-limit
+    # retries" error.
+    max_rate_limit_retries: int = 20
 
     def __post_init__(self) -> None:
         """Validate configuration on construction."""
@@ -26,6 +42,12 @@ class RetryConfig:
             raise ValueError(
                 f"max_attempts must be >= 1 (got {self.max_attempts}). "
                 f"Set retry.max_attempts to a positive integer."
+            )
+        if self.max_rate_limit_retries < 0:
+            raise ValueError(
+                f"max_rate_limit_retries must be >= 0 (got {self.max_rate_limit_retries}). "
+                f"Set retry.max_rate_limit_retries to 0 (rate limits fail immediately) "
+                f"or a positive integer."
             )
         if self.initial_wait <= 0:
             raise ValueError(

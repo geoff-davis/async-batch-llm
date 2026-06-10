@@ -106,7 +106,15 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
 
         Args:
             prompt: The prompt to send to the LLM
-            attempt: Which retry attempt this is (1, 2, 3, ...)
+            attempt: Which *logical* retry attempt this is (1, 2, 3, ...).
+                **Guarantee:** rate-limit errors do NOT advance this number. If a
+                call is throttled (429 / coordinated cooldown), the framework
+                retries the *same* ``attempt`` after the cooldown rather than
+                burning an attempt. So a strategy that escalates models on higher
+                attempts (e.g. attempt >= 2 → smarter model) escalates because the
+                *output* was bad over ``max_attempts`` tries, never merely because
+                the endpoint was busy. Rate-limit retries are bounded separately
+                by ``RetryConfig.max_rate_limit_retries``.
             timeout: Maximum time to wait for response (seconds)
             state: Optional retry state that persists across attempts (v0.3.0)
 

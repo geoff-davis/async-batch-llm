@@ -34,6 +34,7 @@ from .strategies import (
     ErrorClassifier,
     ExponentialBackoffStrategy,
     FrameworkTimeoutError,
+    RateLimitRetriesExceeded,
     RateLimitStrategy,
 )
 from .token_extractor import TokenExtractor
@@ -712,7 +713,17 @@ class ParallelBatchProcessor(
             logger.error(f"[FAIL]Strategy prepare() failed for {work_item.item_id}: {e}")
             raise
 
-        for attempt in range(1, self.config.retry.max_attempts + 1):
+        # Two independent counters: `attempt` is the *logical* attempt number
+        # (what execute()/on_error() see, and what model-escalation strategies
+        # key off). `rate_limit_retries` bounds throttling retries separately.
+        # Rate-limit errors retry the SAME logical attempt — they don't consume
+        # the max_attempts budget — so a busy endpoint can't trigger escalation.
+        attempt = 1
+        rate_limit_retries = 0
+        max_attempts = self.config.retry.max_attempts
+        max_rate_limit_retries = self.config.retry.max_rate_limit_retries
+
+        while True:
             try:
                 result = await self._process_item(
                     work_item,
@@ -724,93 +735,108 @@ class ParallelBatchProcessor(
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                # Accumulate token usage across retry attempts so users see
-                # the true cost of a failure, not just the final attempt.
+                # Accumulate token usage across every attempt (including
+                # rate-limit retries) so users see the true cost of a failure.
                 attempt_tokens = self._extract_token_usage(e)
                 self._token_extractor.accumulate(cumulative_failed_tokens, attempt_tokens)
 
-                if not self._should_retry_error(e):
+                error_info = self.error_classifier.classify(e)
+                error_snippet = str(e)[:ERROR_MESSAGE_MAX_LENGTH]
+                error_type = type(e).__name__
+
+                if not error_info.is_retryable:
                     # Surface an operator hint (e.g. a 402 insufficient-balance
                     # remediation) at WARNING so a misconfiguration doesn't read
                     # like a generic API/code bug; otherwise a quiet debug line.
-                    hint = self.error_classifier.classify(e).hint
-                    if hint:
-                        logger.warning(f"[FAIL]Non-retryable error for {work_item.item_id}: {hint}")
+                    if error_info.hint:
+                        logger.warning(
+                            f"[FAIL]Non-retryable error for {work_item.item_id}: {error_info.hint}"
+                        )
                     else:
-                        logger.debug(f"Error not retryable: {type(e).__name__}")
-                    # Attach token usage to exception so it can be included in failed result
-                    if hasattr(e, "__dict__"):
-                        e.__dict__["_failed_token_usage"] = cumulative_failed_tokens
+                        logger.debug(f"Error not retryable: {error_type}")
+                    self._attach_failed_tokens(e, cumulative_failed_tokens)
                     raise
-                if attempt >= self.config.retry.max_attempts:
-                    error_msg = str(e)
-                    token_summary = ""
-                    if cumulative_failed_tokens["total_tokens"] > 0:
-                        total = cumulative_failed_tokens["total_tokens"]
-                        token_summary = f"\n  Total tokens consumed across all attempts: {total}"
-                    logger.error(
-                        f"[FAIL]ALL {self.config.retry.max_attempts} ATTEMPTS EXHAUSTED "
-                        f"for {work_item.item_id}:\n"
-                        f"  Final error type: {type(e).__name__}\n"
-                        f"  Final error message: {error_msg[:ERROR_MESSAGE_DETAILED_LENGTH]}{token_summary}"
+
+                if error_info.is_rate_limit:
+                    # Rate limits do NOT consume the max_attempts budget — they're
+                    # "wait and try again", not a failed attempt. The coordinated
+                    # cooldown already ran inside _handle_rate_limit(), so we retry
+                    # the SAME logical attempt immediately. A separate counter
+                    # bounds this so a permanently-throttled endpoint can't hang.
+                    rate_limit_retries += 1
+                    if rate_limit_retries > max_rate_limit_retries:
+                        token_summary = self._cumulative_token_summary(cumulative_failed_tokens)
+                        logger.error(
+                            f"[FAIL]EXCEEDED {max_rate_limit_retries} RATE-LIMIT RETRIES "
+                            f"for {work_item.item_id}:\n"
+                            f"  Last error type: {error_type}\n"
+                            f"  Last error message: "
+                            f"{str(e)[:ERROR_MESSAGE_DETAILED_LENGTH]}{token_summary}"
+                        )
+                        exhausted = RateLimitRetriesExceeded(
+                            f"Exceeded {max_rate_limit_retries} rate-limit retries for "
+                            f"{work_item.item_id} (last error: {error_type}: {error_snippet})",
+                            item_id=work_item.item_id,
+                            rate_limit_retries=rate_limit_retries,
+                        )
+                        exhausted.__dict__["_failed_token_usage"] = cumulative_failed_tokens
+                        raise exhausted from e
+                    logger.warning(
+                        f"[WARN]Rate-limit retry {rate_limit_retries} for {work_item.item_id} "
+                        f"(attempt {attempt}/{max_attempts} budget unchanged): "
+                        f"{error_type} - {error_snippet}. "
+                        f"Retrying immediately (cooldown already applied)..."
                     )
-                    # Attach token usage to exception so it can be included in failed result
-                    if hasattr(e, "__dict__"):
-                        e.__dict__["_failed_token_usage"] = cumulative_failed_tokens
+                    continue  # attempt unchanged; no extra backoff (cooldown done)
+
+                # --- Non-rate-limit retryable error: consumes the budget. ---
+                if attempt >= max_attempts:
+                    token_summary = self._cumulative_token_summary(cumulative_failed_tokens)
+                    logger.error(
+                        f"[FAIL]ALL {max_attempts} ATTEMPTS EXHAUSTED "
+                        f"for {work_item.item_id}:\n"
+                        f"  Final error type: {error_type}\n"
+                        f"  Final error message: "
+                        f"{str(e)[:ERROR_MESSAGE_DETAILED_LENGTH]}{token_summary}"
+                    )
+                    self._attach_failed_tokens(e, cumulative_failed_tokens)
                     raise
 
-                # Classify error to determine if we should delay
-                error_info = self.error_classifier.classify(e)
-
-                # Only delay for network/timeout errors, not for validation errors
-                # Validation errors are immediate - strategy can adjust its behavior on retry
-                # PydanticAI wraps validation errors in UnexpectedModelBehavior
+                # Validation errors retry immediately — the strategy adjusts on
+                # retry; other transient errors get exponential backoff keyed off
+                # the logical attempt number. (PydanticAI wraps validation errors
+                # in UnexpectedModelBehavior.)
                 error_msg_for_check = str(e)
                 is_validation_error = (
-                    "validation" in type(e).__name__.lower()
-                    or "parse" in type(e).__name__.lower()
-                    or "unexpectedmodelbehavior" in type(e).__name__.lower()
+                    "validation" in error_type.lower()
+                    or "parse" in error_type.lower()
+                    or "unexpectedmodelbehavior" in error_type.lower()
                     or "result validation" in error_msg_for_check.lower()
                     or error_info.error_category == "validation_error"
                 )
 
-                if is_validation_error or error_info.is_rate_limit:
-                    # Validation errors retry immediately — the strategy adjusts on retry.
-                    # Rate limits already waited inside _handle_rate_limit()'s coordinated
-                    # cooldown; adding exponential backoff here would double the delay.
+                if is_validation_error:
                     wait_time = 0.0
                 else:
-                    # Calculate wait time with exponential backoff for network/timeout errors
                     wait_time = min(
                         self.config.retry.initial_wait
                         * (self.config.retry.exponential_base ** (attempt - 1)),
                         self.config.retry.max_wait,
                     )
-
-                    # Apply jitter if enabled to prevent thundering herd
                     if self.config.retry.jitter:
                         import random
 
-                        # Apply jitter: multiply by random factor between 0.5 and 1.0
-                        # This reduces wait time by up to 50% to spread out retries
+                        # Jitter to 50-100% of the computed wait to spread retries.
                         wait_time = wait_time * (0.5 + random.random() * 0.5)
 
-                # Log retry attempt
-                # Brief snippet for retry logs (shorter than the detailed final-failure log)
-                error_snippet = str(e)[:ERROR_MESSAGE_MAX_LENGTH]
-                error_type = type(e).__name__
-                if error_info.is_rate_limit:
-                    retry_desc = "immediately (cooldown already applied)"
-                elif wait_time == 0:
-                    retry_desc = "immediately"
-                else:
-                    retry_desc = f"in {wait_time:.1f}s"
+                retry_desc = "immediately" if wait_time == 0 else f"in {wait_time:.1f}s"
                 logger.warning(
-                    f"[WARN]Attempt {attempt}/{self.config.retry.max_attempts} failed for "
+                    f"[WARN]Attempt {attempt}/{max_attempts} failed for "
                     f"{work_item.item_id}: {error_type} - {error_snippet}. "
                     f"Retrying {retry_desc}..."
                 )
 
+                attempt += 1
                 if wait_time > 0:
                     await asyncio.sleep(wait_time)
             else:
@@ -822,10 +848,20 @@ class ParallelBatchProcessor(
                 self._merge_failed_tokens(result, cumulative_failed_tokens)
                 return result
 
-        # Unreachable - all paths raise or return
-        raise RuntimeError(
-            f"Unexpected: all retry attempts should have raised for {work_item.item_id}"
-        )
+    @staticmethod
+    def _attach_failed_tokens(exception: Exception, tokens: dict[str, int]) -> None:
+        """Stamp cumulative failed-attempt tokens onto an exception for the worker
+        to surface in the failed ``WorkItemResult``. No-op if the exception has
+        no writable ``__dict__``."""
+        if hasattr(exception, "__dict__"):
+            exception.__dict__["_failed_token_usage"] = tokens
+
+    @staticmethod
+    def _cumulative_token_summary(tokens: dict[str, int]) -> str:
+        """Format the cross-attempt token total for final-failure logs (or '')."""
+        if tokens.get("total_tokens", 0) > 0:
+            return f"\n  Total tokens consumed across all attempts: {tokens['total_tokens']}"
+        return ""
 
     @staticmethod
     def _merge_failed_tokens(

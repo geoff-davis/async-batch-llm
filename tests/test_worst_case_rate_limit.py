@@ -36,20 +36,28 @@ async def test_all_workers_hit_rate_limit_simultaneously():
     num_workers = 10
 
     class MultipleRateLimitStrategy(LLMCallStrategy[str]):
-        """Strategy that hits rate limit on first attempt for all workers."""
+        """Strategy that hits rate limit on its first call for all workers.
+
+        Keys off a per-item call counter, not the attempt number: rate-limit
+        retries are exempt from the attempt budget, so ``attempt`` stays 1.
+        """
+
+        def __init__(self) -> None:
+            self.calls = 0
 
         async def execute(
             self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[str, TokenUsage]:
             nonlocal execute_count, rate_limit_count
             execute_count += 1
+            self.calls += 1
 
-            # On first attempt, all workers hit rate limit
-            if attempt == 1:
+            # On the first call, all workers hit rate limit
+            if self.calls == 1:
                 rate_limit_count += 1
                 raise Exception("429 Resource Exhausted: Rate limit exceeded")
 
-            # Second attempt succeeds
+            # Second call (after the coordinated cooldown) succeeds
             return f"Result: {prompt}", {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
 
     config = ProcessorConfig(
@@ -106,25 +114,34 @@ async def test_cascading_rate_limits_under_high_load():
     attempt_counts = {}  # Track attempts per item
 
     class CascadingRateLimitStrategy(LLMCallStrategy[str]):
-        """Strategy that causes cascading rate limits."""
+        """Strategy that causes cascading rate limits.
+
+        Keys off a per-item call counter, not the attempt number: rate-limit
+        retries don't advance ``attempt``, so the first two *calls* (not
+        attempts) hit the limit before the third succeeds.
+        """
+
+        def __init__(self) -> None:
+            self.calls = 0
 
         async def execute(
             self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[str, TokenUsage]:
             nonlocal rate_limit_wave
 
-            # Track this attempt
+            # Track calls for this item
             item_id = prompt.split()[-1]  # Extract item ID from prompt
-            attempt_counts[item_id] = attempt_counts.get(item_id, 0) + 1
+            self.calls += 1
+            attempt_counts[item_id] = self.calls
 
-            # First 2 waves of attempts hit rate limit
-            if attempt <= 2:
+            # First 2 calls hit rate limit
+            if self.calls <= 2:
                 # Simulate rate limit
                 await asyncio.sleep(0.01)  # Small delay to simulate network
                 raise Exception(f"429 Resource Exhausted (wave {rate_limit_wave})")
 
-            # Third attempt succeeds
-            return f"Result after {attempt} attempts: {prompt}", {
+            # Third call succeeds
+            return f"Result after {self.calls} calls: {prompt}", {
                 "input_tokens": 10,
                 "output_tokens": 5,
                 "total_tokens": 15,
@@ -177,17 +194,19 @@ async def test_rate_limit_with_mixed_success_and_failures():
     rate_limited_items = 0
 
     class MixedRateLimitStrategy(LLMCallStrategy[str]):
-        """Strategy where some items hit rate limit, others succeed."""
+        """Strategy where some items hit rate limit on their first call, others succeed."""
 
         def __init__(self, should_rate_limit: bool):
             self.should_rate_limit = should_rate_limit
+            self.calls = 0
 
         async def execute(
             self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[str, TokenUsage]:
             nonlocal successful_items, rate_limited_items
 
-            if self.should_rate_limit and attempt == 1:
+            self.calls += 1
+            if self.should_rate_limit and self.calls == 1:
                 rate_limited_items += 1
                 await asyncio.sleep(0.01)
                 raise Exception("429 Resource Exhausted")
