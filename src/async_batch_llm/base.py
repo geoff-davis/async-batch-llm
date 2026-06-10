@@ -1,10 +1,11 @@
 """Base classes and interfaces for batch LLM processing."""
 
 import asyncio
+import contextlib
 import logging
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generic, TypedDict, TypeVar  # noqa: F401
 
@@ -550,6 +551,28 @@ class ProcessingStats:
         }
 
 
+class _EndOfStream:
+    """Sentinel pushed onto the result stream once all work is processed."""
+
+
+class _WorkerCrashed:
+    """Sentinel carrying an unexpected worker exception for ``results()`` to re-raise.
+
+    A worker that finishes normally returns ``None``; one that dies from a
+    framework bug would otherwise hang the consumer forever, so a done-callback
+    wraps the exception in this sentinel and pushes it onto the result stream.
+    """
+
+    __slots__ = ("exception",)
+
+    def __init__(self, exception: BaseException) -> None:
+        self.exception = exception
+
+
+# Singleton end-of-stream marker.
+_END_OF_STREAM = _EndOfStream()
+
+
 class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
     """
     Abstract base class for batch LLM processing strategies.
@@ -557,6 +580,16 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
     Subclasses implement different strategies for processing batches:
     - ParallelBatchProcessor: Process items in parallel as individual requests
     - BatchAPIProcessor: Use Google's true batch API (future)
+
+    Two usage modes:
+
+    - **Batch** (:meth:`process_all`): add all work, then process to a
+      ``BatchResult``. One-shot; ``add_work`` is rejected once it starts.
+    - **Streaming** (:meth:`start` / :meth:`add_work` / :meth:`finish` /
+      :meth:`results`): workers run *while* work is still being added, so a
+      bounded ``max_queue_size`` becomes backpressure — letting you stream
+      arbitrarily large inputs through constant memory — instead of a deadlock.
+      Results are yielded in completion order.
     """
 
     def __init__(
@@ -597,14 +630,26 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._is_processing = False
         self._progress_tasks: set[asyncio.Task[Any]] = set()
 
+        # Thread-safety locks (shared by both modes; subclasses use these).
+        self._stats_lock = asyncio.Lock()
+        self._results_lock = asyncio.Lock()
+
         # Background post-processor tasks (only used when
         # ProcessorConfig.concurrent_post_processing is True). The semaphore is
-        # created per-run in process_all() so it binds to the active event loop
-        # and is sized to max_workers.
+        # created per-run in process_all()/start() so it binds to the active
+        # event loop and is sized to max_workers.
         self._post_processor_tasks: set[asyncio.Task[Any]] = set()
         self._post_processor_semaphore: asyncio.Semaphore | None = None
 
         self._processing_started = False  # Prevent add_work() after process_all() starts
+
+        # Streaming-mode state (see start()/finish()/results()).
+        self._streaming = False
+        self._finished = False
+        self._result_stream: (
+            asyncio.Queue[WorkItemResult | _EndOfStream | _WorkerCrashed] | None
+        ) = None
+        self._finalize_task: asyncio.Task[None] | None = None
 
     async def __aenter__(self):
         """Context manager entry - returns self for use in async with."""
@@ -622,6 +667,13 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         This method should be called when you're done with the processor,
         or use the processor as an async context manager.
         """
+        # Cancel the streaming finalize task (may be blocked on queue.join()
+        # if a worker crashed) before tearing down the workers it awaits.
+        if self._finalize_task is not None and not self._finalize_task.done():
+            self._finalize_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._finalize_task
+
         # Cancel any running workers
         if self._workers:
             logger.debug(f"Cleaning up {len(self._workers)} workers")
@@ -678,39 +730,148 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         """
         Add a work item to the processing queue.
 
+        In **streaming mode** (after :meth:`start`) workers are already running,
+        so this may be called freely while processing; a bounded
+        ``max_queue_size`` then provides **backpressure** (``put`` awaits a free
+        slot) rather than deadlocking. :meth:`finish` is the streaming boundary
+        equivalent of the batch mode's "no add_work after process_all()" rule.
+
+        In **batch mode** (used with :meth:`process_all`) add all work *before*
+        processing starts.
+
         Args:
             work_item: Work item to process
 
         Raises:
-            RuntimeError: If called after process_all() has started
-            ValueError: If a bounded queue (max_queue_size > 0) is already full.
-                Workers only start in process_all(), and add_work() is rejected
-                once processing begins — so a bounded queue can never drain while
-                you are still adding work. Blocking on a full queue here would
-                deadlock forever, so we raise instead.
+            RuntimeError: In streaming mode, if called after :meth:`finish`. In
+                batch mode, if called after :meth:`process_all` has started.
+            ValueError: In batch mode, if a bounded queue (``max_queue_size > 0``)
+                fills up — batch-mode workers don't start until ``process_all()``,
+                so the queue can't drain while you add, and blocking would
+                deadlock. Use streaming mode for bounded queues.
         """
+        if self._streaming:
+            if self._finished:
+                raise RuntimeError(
+                    "Cannot add work after finish() — the streaming batch is closed. "
+                    "Create a new processor for additional work."
+                )
+            # Workers are running and draining the queue, so a bounded queue
+            # safely applies backpressure here instead of deadlocking.
+            await self._queue.put(work_item)
+            async with self._stats_lock:
+                self._stats.total += 1
+            return
+
         if self._processing_started:
             raise RuntimeError(
                 "Cannot add work after process_all() has started. "
                 "Create a new processor instance for additional batches."
             )
 
-        # Never block on put(): the queue only drains once process_all() starts
-        # the workers, and add_work() is forbidden after that point, so a full
-        # bounded queue here would hang forever. Surface it as a clear error.
+        # Batch mode: workers don't exist yet, so a full bounded queue can't
+        # drain — blocking would hang forever. Point users at streaming mode.
         try:
             self._queue.put_nowait(work_item)
         except asyncio.QueueFull:
             raise ValueError(
-                f"Work queue is full (max_queue_size={self.max_queue_size}). "
-                "Because workers only start in process_all() and add_work() is "
-                "rejected after processing begins, a bounded queue cannot drain "
-                "while you are still adding items — so this would otherwise block "
-                "forever. Raise ProcessorConfig(max_queue_size=...) to fit the "
-                "whole batch (0 = unlimited), or split the work across multiple "
-                "processor runs."
+                f"Work queue is full (max_queue_size={self.max_queue_size}) in batch mode. "
+                "Bounded queues require streaming mode: start()/add_work()/finish() (or the "
+                "high-level process_stream/process_prompts), where running workers drain the "
+                "queue so it becomes backpressure. For batch mode (process_all), set "
+                "max_queue_size=0 (unlimited) or size it to fit the whole batch."
             ) from None
         self._stats.total += 1
+
+    # ── Streaming mode ───────────────────────────────────────────────────
+
+    def start(self) -> None:
+        """Spawn workers immediately and enter streaming mode. Idempotent.
+
+        Unlike :meth:`process_all`, this lets you :meth:`add_work` while workers
+        run, so a bounded ``max_queue_size`` becomes backpressure (stream
+        arbitrarily large inputs in constant memory) instead of a deadlock.
+        Consume results via :meth:`results`; call :meth:`finish` when no more
+        work will be added.
+        """
+        if self._workers:
+            return  # already started (streaming or batch)
+
+        self._streaming = True
+        self._processing_started = True
+        self._is_processing = True
+        self._finished = False
+        self._result_stream = asyncio.Queue()
+        # Count any work added before start(); add_work() increments thereafter.
+        self._results = []
+        self._stats = ProcessingStats(total=self._queue.qsize())
+        self._stats.start_time = time.time()
+        self._post_processor_tasks = set()
+        self._post_processor_semaphore = asyncio.Semaphore(self.max_workers)
+
+        self._workers = [
+            asyncio.create_task(self._worker(worker_id)) for worker_id in range(self.max_workers)
+        ]
+        # Safety net: a worker dying from a framework bug must not hang the
+        # consumer — surface it on the result stream (see _on_worker_done).
+        for worker in self._workers:
+            worker.add_done_callback(self._on_worker_done)
+
+    async def finish(self) -> None:
+        """Signal that no more work will be added; :meth:`results` ends once the
+        queue drains and workers stop. Idempotent."""
+        if not self._streaming:
+            raise RuntimeError("finish() is only valid in streaming mode (call start() first).")
+        if self._finished:
+            return
+        self._finished = True
+        self._finalize_task = asyncio.create_task(self._finalize_stream())
+
+    async def _finalize_stream(self) -> None:
+        """Drain the queue, stop workers, then close the result stream."""
+        try:
+            await self._queue.join()  # all queued items processed
+            for _ in range(self.max_workers):  # release workers
+                await self._queue.put(None)
+            await asyncio.gather(*self._workers, return_exceptions=True)
+            # Let any concurrent (background) post-processors finish too.
+            if self._post_processor_tasks:
+                await asyncio.gather(*self._post_processor_tasks, return_exceptions=True)
+            await self._on_batch_completed()
+        finally:
+            # Always close the stream so results() terminates, even on error.
+            self._is_processing = False
+            if self._result_stream is not None:
+                await self._result_stream.put(_END_OF_STREAM)
+
+    async def results(self) -> AsyncIterator[WorkItemResult[TOutput, TContext]]:
+        """Yield results in completion order until :meth:`finish` + queue drain.
+
+        Results arrive in the order items *finish* (not the order added). If a
+        worker dies unexpectedly, the exception is re-raised here.
+        """
+        if self._result_stream is None:
+            raise RuntimeError("results() requires streaming mode (call start() first).")
+        while True:
+            item = await self._result_stream.get()
+            if isinstance(item, _EndOfStream):
+                return
+            if isinstance(item, _WorkerCrashed):
+                raise item.exception
+            yield item
+
+    def _on_worker_done(self, task: "asyncio.Task[Any]") -> None:
+        """Done-callback: surface an unexpected worker death to the consumer.
+
+        Workers that finish normally return ``None``; a cancelled worker is
+        expected during shutdown. Anything else is a framework bug that would
+        otherwise hang :meth:`results`, so push an error sentinel.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None and self._result_stream is not None:
+            self._result_stream.put_nowait(_WorkerCrashed(exc))
 
     async def _on_batch_started(self) -> None:
         """Hook for subclasses to run logic when a batch starts."""

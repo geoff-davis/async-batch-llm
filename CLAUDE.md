@@ -29,8 +29,11 @@ reads `0.8.0` until the release-prep flow bumps it.
 
 ## Quick reference
 
-High-level convenience API (`highlevel.py`) for the common case — collect, or
-stream as items finish. Error classifier is auto-selected from the strategy:
+High-level streaming API (`streaming.py`) for the common case — collect, or
+stream as items finish. Built on the processor's first-class streaming mode
+(`start()`/`add_work()`/`finish()`/`results()`), so a bounded `max_queue_size`
+gives backpressure (constant memory for huge inputs). Error classifier is
+auto-selected from the strategy:
 
 ```python
 from async_batch_llm import OpenAIModel, OpenAIStrategy, process_prompts, process_stream
@@ -386,7 +389,7 @@ src/async_batch_llm/
 ├── base.py               # LLMWorkItem, WorkItemResult, BatchResult,
 │                         # LLMResponse, RetryState, CachedTokenRates
 ├── parallel.py           # ParallelBatchProcessor (orchestration)
-├── highlevel.py          # process_prompts / process_stream (convenience API)
+├── streaming.py          # process_prompts / process_stream (streaming API)
 ├── llm_strategies.py     # LLMCallStrategy + built-in strategies
 ├── models.py             # GeminiModel, GeminiCachedModel,
 │                         # OpenAICompatibleModel, OpenAIModel,

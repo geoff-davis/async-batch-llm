@@ -1,0 +1,136 @@
+"""High-level streaming API built on the processor's first-class streaming mode.
+
+:func:`process_stream` yields each result as it completes; :func:`process_prompts`
+collects them into a :class:`BatchResult`. Both accept a sync **or** async
+iterable of prompts — bare strings get auto-generated item ids (``item_0``,
+``item_1``, …) or you can pass ``(item_id, prompt)`` tuples.
+
+Because the processor runs workers while work is still being fed, a bounded
+``ProcessorConfig.max_queue_size`` becomes backpressure: you can stream an
+arbitrarily large (even unbounded) input through **constant memory**, since the
+producer blocks on a full queue instead of buffering everything up front.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+from collections.abc import AsyncIterable, AsyncIterator, Iterable
+from typing import TYPE_CHECKING, Any, TypeVar
+
+from .base import BatchResult, LLMWorkItem, WorkItemResult
+from .core import ProcessorConfig
+from .parallel import ParallelBatchProcessor
+
+if TYPE_CHECKING:
+    from .llm_strategies import LLMCallStrategy
+
+TOutput = TypeVar("TOutput")
+
+# A prompt entry is either a bare prompt string or an (item_id, prompt) tuple.
+PromptEntry = str | tuple[str, str]
+PromptSource = Iterable[PromptEntry] | AsyncIterable[PromptEntry]
+
+
+async def _aiter(source: PromptSource) -> AsyncIterator[Any]:
+    """Iterate a sync OR async iterable uniformly.
+
+    Yields ``Any`` because ``isinstance(source, AsyncIterable)`` narrows away the
+    element type; callers pass each entry straight to :func:`_to_work_item`,
+    which validates the shape.
+    """
+    if isinstance(source, AsyncIterable):
+        async for entry in source:
+            yield entry
+    else:
+        for entry in source:
+            yield entry
+
+
+def _to_work_item(
+    entry: PromptEntry, index: int, strategy: LLMCallStrategy[TOutput]
+) -> LLMWorkItem[Any, TOutput, Any]:
+    if isinstance(entry, tuple):
+        item_id, prompt = entry
+        return LLMWorkItem(item_id=str(item_id), strategy=strategy, prompt=str(prompt))
+    return LLMWorkItem(item_id=f"item_{index}", strategy=strategy, prompt=str(entry))
+
+
+async def process_stream(
+    strategy: LLMCallStrategy[TOutput],
+    prompts: PromptSource,
+    *,
+    config: ProcessorConfig | None = None,
+    **processor_kwargs: Any,
+) -> AsyncIterator[WorkItemResult[TOutput, Any]]:
+    """Yield each :class:`WorkItemResult` as it completes, in completion order.
+
+    Args:
+        strategy: The LLM call strategy to run for every prompt.
+        prompts: Sync or async iterable of bare prompt strings (ids
+            auto-generated) and/or ``(item_id, prompt)`` tuples.
+        config: Processor configuration. Defaults to ``ProcessorConfig()``. Set
+            ``max_queue_size`` to bound memory for very large inputs.
+        **processor_kwargs: Forwarded to ``ParallelBatchProcessor`` (observers,
+            middlewares, ``error_classifier``, ``progress_callback``, …).
+
+    Yields:
+        Results (success *and* failure) in the order items finish — generally
+        NOT the order submitted. A producer error (e.g. a failing async input)
+        propagates to the consumer after already-queued results drain; breaking
+        out of the loop early cancels the producer and tears down the workers.
+    """
+    processor = ParallelBatchProcessor(config=config or ProcessorConfig(), **processor_kwargs)
+    feed_error: list[BaseException] = []
+
+    async def _feed() -> None:
+        try:
+            index = 0
+            async for entry in _aiter(prompts):
+                await processor.add_work(_to_work_item(entry, index, strategy))  # backpressure here
+                index += 1
+        except asyncio.CancelledError:
+            raise  # consumer broke out early; cleanup handles teardown
+        except BaseException as exc:  # noqa: BLE001 - surfaced to the consumer below
+            feed_error.append(exc)
+        # Normal completion or a (captured) producer error: close the stream so
+        # results() terminates after the already-queued items drain.
+        await processor.finish()
+
+    async with processor:  # __aexit__ -> cleanup() cancels workers/finalize
+        processor.start()
+        producer = asyncio.create_task(_feed())
+        try:
+            async for result in processor.results():
+                yield result
+        finally:
+            if not producer.done():
+                producer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await producer
+
+    # Reached only when results() ended normally (end-of-stream). If the
+    # producer failed, surface its exception now (after draining results).
+    if feed_error:
+        raise feed_error[0]
+
+
+async def process_prompts(
+    strategy: LLMCallStrategy[TOutput],
+    prompts: PromptSource,
+    *,
+    config: ProcessorConfig | None = None,
+    **processor_kwargs: Any,
+) -> BatchResult[TOutput, Any]:
+    """Run ``strategy`` over ``prompts`` and collect every result.
+
+    The one-liner entry point — drains :func:`process_stream` into a
+    :class:`BatchResult` (whose ``results`` are in completion order). For
+    constant-memory processing of very large inputs, use :func:`process_stream`
+    directly with a bounded ``config.max_queue_size``.
+    """
+    results = [
+        result
+        async for result in process_stream(strategy, prompts, config=config, **processor_kwargs)
+    ]
+    return BatchResult(results=results)
