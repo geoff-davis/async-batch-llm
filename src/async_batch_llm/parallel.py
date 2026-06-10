@@ -241,9 +241,8 @@ class ParallelBatchProcessor(
         self._current_generation_event = self._rate_limit_coord._current_generation_event
         self._rate_limit_lock = self._rate_limit_coord._lock
 
-        # Thread safety locks (stats + results remain processor-owned).
-        self._stats_lock = asyncio.Lock()
-        self._results_lock = asyncio.Lock()
+        # Thread-safety locks (_stats_lock / _results_lock) live on the base
+        # class so both batch and streaming modes share them.
 
         # Strategy lifecycle management (v0.2.0, extracted in v0.7.0).
         # Tracks prepared strategies via a WeakSet so sharing one instance
@@ -363,7 +362,7 @@ class ParallelBatchProcessor(
         no-op recommendation (custom strategies returning ``None``) is ignored.
         """
         await super().add_work(work_item)
-        if self._user_supplied_classifier:
+        if self._user_supplied_classifier or self._classifier_resolved:
             return
         try:
             recommended = work_item.strategy.recommended_error_classifier()
@@ -372,6 +371,11 @@ class ParallelBatchProcessor(
             recommended = None
         if recommended is not None:
             self._recommended_classifiers.append(recommended)
+            # Streaming mode has no "batch start" barrier and workers are
+            # already running, so resolve eagerly from the first recommendation
+            # rather than waiting to collect every item's (we can't).
+            if self._streaming:
+                self._resolve_error_classifier()
 
     def _resolve_error_classifier(self) -> None:
         """Pick an error classifier from the queued strategies' recommendations.
@@ -551,9 +555,15 @@ class ParallelBatchProcessor(
                     )
                 # Fall through to store result and call task_done()
 
-            # Store result (thread-safe)
-            async with self._results_lock:
-                self._results.append(result)
+            # Store the result. In streaming mode publish it to the result
+            # stream (constant memory — we don't accumulate _results); in batch
+            # mode accumulate for process_all()'s BatchResult.
+            if self._streaming:
+                assert self._result_stream is not None  # set by start()
+                await self._result_stream.put(result)
+            else:
+                async with self._results_lock:
+                    self._results.append(result)
 
             # Update stats (thread-safe). A single lock acquisition handles the
             # counters, the progress-callback decision, AND the periodic-log

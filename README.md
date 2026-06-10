@@ -119,20 +119,29 @@ async def main():
 asyncio.run(main())
 ```
 
-Want results as they finish (e.g. to write each to disk)? Stream them:
+Want results as they finish (e.g. to write each to disk)? Stream them. With a
+bounded `max_queue_size`, the producer applies **backpressure** — so you can
+stream a **million prompts (or an unbounded source) through constant memory**,
+since work isn't all buffered up front:
 
 ```python
-from async_batch_llm import process_stream
+from async_batch_llm import process_stream, ProcessorConfig
 
-async for result in process_stream(strategy, prompts):
+config = ProcessorConfig(max_workers=50, max_queue_size=200)  # ~constant memory
+
+async for result in process_stream(strategy, huge_prompt_source, config=config):
     if result.success:
-        await save(result.item_id, result.output)
+        await save(result.item_id, result.output)   # results arrive in completion order
 ```
 
-Pass `(item_id, prompt)` pairs instead of bare strings to control ids, and
-forward any processor option (`post_processor`, `observers`, `error_classifier`,
-…) as a keyword argument. The error classifier is auto-selected from the
-strategy when you don't pass one.
+`prompts` can be any sync **or** async iterable. Pass `(item_id, prompt)` pairs
+instead of bare strings to control ids, and forward any processor option
+(`post_processor`, `observers`, `error_classifier`, …) as a keyword argument.
+The error classifier is auto-selected from the strategy when you don't pass one.
+
+Need the low-level controls? `processor.start()` / `add_work()` / `finish()` /
+`results()` is the streaming mode `process_stream` is built on (workers run
+while you add work — a bounded queue is backpressure, not a deadlock).
 
 #### Full control (advanced)
 

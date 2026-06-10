@@ -87,9 +87,6 @@ from .core import ProcessorConfig, RateLimitConfig, RetryConfig
 # Protocols
 from .core.protocols import LLMModel, ManagedLLMModel
 
-# High-level convenience API (built on ParallelBatchProcessor)
-from .highlevel import process_prompts, process_stream
-
 # LLM call strategies
 from .llm_strategies import (
     DeepSeekStrategy,
@@ -135,6 +132,9 @@ from .strategies import (
     RateLimitStrategy,
     TokenTrackingError,
 )
+
+# High-level streaming API (built on the processor's streaming mode)
+from .streaming import process_prompts, process_stream
 
 # Type variable for output type in simplified aliases
 _T = TypeVar("_T")
