@@ -3,7 +3,8 @@
 :func:`process_stream` yields each result as it completes; :func:`process_prompts`
 collects them into a :class:`BatchResult`. Both accept a sync **or** async
 iterable of prompts — bare strings get auto-generated item ids (``item_0``,
-``item_1``, …) or you can pass ``(item_id, prompt)`` tuples.
+``item_1``, …), ``(item_id, prompt)`` pairs, or ``(item_id, prompt, context)``
+triples (the context flows to ``WorkItemResult.context`` and your post_processor).
 
 Because the processor runs workers while work is still being fed, a bounded
 ``ProcessorConfig.max_queue_size`` becomes backpressure: you can stream an
@@ -16,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from .base import BatchResult, LLMWorkItem, WorkItemResult
 from .core import ProcessorConfig
@@ -27,8 +28,11 @@ if TYPE_CHECKING:
 
 TOutput = TypeVar("TOutput")
 
-# A prompt entry is either a bare prompt string or an (item_id, prompt) tuple.
-PromptEntry = str | tuple[str, str]
+# A prompt entry is a bare prompt string, an (item_id, prompt) pair, or an
+# (item_id, prompt, context) triple. The context is forwarded to
+# LLMWorkItem.context — so it reaches WorkItemResult.context and any
+# post_processor (handy for carrying DB ids, gold labels, routing keys, etc.).
+PromptEntry = str | tuple[str, str] | tuple[str, str, Any]
 PromptSource = Iterable[PromptEntry] | AsyncIterable[PromptEntry]
 
 
@@ -51,8 +55,22 @@ def _to_work_item(
     entry: PromptEntry, index: int, strategy: LLMCallStrategy[TOutput]
 ) -> LLMWorkItem[Any, TOutput, Any]:
     if isinstance(entry, tuple):
-        item_id, prompt = entry
-        return LLMWorkItem(item_id=str(item_id), strategy=strategy, prompt=str(prompt))
+        # Cast to a variadic tuple so positional access doesn't depend on the
+        # type checker narrowing the tuple length (which it can't do via len()).
+        parts = cast("tuple[Any, ...]", entry)
+        if len(parts) == 2:
+            return LLMWorkItem(item_id=str(parts[0]), strategy=strategy, prompt=str(parts[1]))
+        if len(parts) == 3:
+            return LLMWorkItem(
+                item_id=str(parts[0]),
+                strategy=strategy,
+                prompt=str(parts[1]),
+                context=parts[2],
+            )
+        raise TypeError(
+            "prompt tuple must be (item_id, prompt) or (item_id, prompt, context); "
+            f"got a tuple of length {len(parts)} at index {index}."
+        )
     return LLMWorkItem(item_id=f"item_{index}", strategy=strategy, prompt=str(entry))
 
 
@@ -68,7 +86,8 @@ async def process_stream(
     Args:
         strategy: The LLM call strategy to run for every prompt.
         prompts: Sync or async iterable of bare prompt strings (ids
-            auto-generated) and/or ``(item_id, prompt)`` tuples.
+            auto-generated), ``(item_id, prompt)`` pairs, and/or
+            ``(item_id, prompt, context)`` triples (context → result.context).
         config: Processor configuration. Defaults to ``ProcessorConfig()``. Set
             ``max_queue_size`` to bound memory for very large inputs.
         **processor_kwargs: Forwarded to ``ParallelBatchProcessor`` (observers,

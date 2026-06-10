@@ -60,6 +60,43 @@ async def test_process_prompts_tuple_ids():
 
 
 @pytest.mark.asyncio
+async def test_process_prompts_carries_per_item_context():
+    # (item_id, prompt, context) triples — context reaches result.context.
+    result = await process_prompts(
+        _Strategy(),
+        [("a", "hi", {"gold": 1}), ("b", "yo", {"gold": 2})],
+        config=ProcessorConfig(max_workers=2),
+    )
+    by_id = result.by_id()
+    assert by_id["a"].context == {"gold": 1}
+    assert by_id["b"].context == {"gold": 2}
+
+
+@pytest.mark.asyncio
+async def test_process_stream_context_reaches_post_processor():
+    seen: dict[str, object] = {}
+
+    async def post(r: WorkItemResult) -> None:
+        seen[r.item_id] = r.context
+
+    async for _ in process_stream(
+        _Strategy(),
+        [("x", "p", {"k": "v"})],
+        config=ProcessorConfig(max_workers=1),
+        post_processor=post,
+    ):
+        pass
+    assert seen == {"x": {"k": "v"}}
+
+
+def test_to_work_item_rejects_bad_tuple_length():
+    from async_batch_llm.streaming import _to_work_item
+
+    with pytest.raises(TypeError, match="item_id, prompt"):
+        _to_work_item(("only-one",), 0, _Strategy())  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
 async def test_process_stream_yields_in_completion_order():
     # "slow" submitted first but sleeps; "fast" should stream out first.
     strategy = _Strategy(delays={"slow": 0.1})
