@@ -9,12 +9,21 @@ TOutput = TypeVar("TOutput")
 
 
 class MockUsage:
-    """Mock usage information."""
+    """Mock usage information.
+
+    Exposes both the pydantic-ai 0.x names (``request_tokens`` /
+    ``response_tokens``) and the 1.x names (``input_tokens`` / ``output_tokens``)
+    so strategies and the token extractor work against either, matching real
+    pydantic-ai usage objects which still carry both.
+    """
 
     def __init__(self, request_tokens: int = 100, response_tokens: int = 50):
         """Initialize mock usage."""
         self.request_tokens = request_tokens
         self.response_tokens = response_tokens
+        # pydantic-ai 1.x names (aliases of the above).
+        self.input_tokens = request_tokens
+        self.output_tokens = response_tokens
         self.total_tokens = request_tokens + response_tokens
 
 

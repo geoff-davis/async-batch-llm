@@ -389,7 +389,7 @@ class ContactInfo(BaseModel):
     email: str = Field(pattern=r'^[\w\.-]+@[\w\.-]+\.\w+$')
     phone: str
 
-agent = Agent("gemini-2.5-flash", result_type=ContactInfo)
+agent = Agent("gemini-2.5-flash", output_type=ContactInfo)
 strategy = PydanticAIStrategy(agent=agent)
 
 async with ParallelBatchProcessor(config=config) as processor:
@@ -420,7 +420,7 @@ class Summary(BaseModel):
     key_points: list[str]
     sentiment: str
 
-agent = Agent("gemini-2.5-flash", result_type=Summary)
+agent = Agent("gemini-2.5-flash", output_type=Summary)
 strategy = PydanticAIStrategy(agent=agent)
 
 async with ParallelBatchProcessor(config=config) as processor:
@@ -671,7 +671,7 @@ from async_batch_llm.core import RetryConfig, RateLimitConfig
 config = ProcessorConfig(
     # Core Settings
     max_workers=5,              # Number of parallel workers
-    timeout_per_item=120.0,     # Max seconds per item (including retries)
+    timeout_per_item=120.0,     # Max seconds per execute() attempt (per-attempt, not a total budget across retries)
     post_processor_timeout=90.0,  # Max seconds for each post-processor call
 
     # Retry Configuration

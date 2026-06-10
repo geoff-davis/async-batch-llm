@@ -68,7 +68,7 @@ class Summary(BaseModel):
 
 async def main():
     # Create agent and wrap in strategy
-    agent = Agent("gemini-2.5-flash", result_type=Summary)
+    agent = Agent("gemini-2.5-flash", output_type=Summary)
     strategy = PydanticAIStrategy(agent=agent)
 
     # Configure processor

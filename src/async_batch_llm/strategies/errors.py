@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -11,6 +13,31 @@ if TYPE_CHECKING:
 
 # Common error pattern constants
 RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota", "rate limit")
+
+
+@lru_cache(maxsize=64)
+def _word_boundary_regex(pattern: str) -> re.Pattern[str]:
+    return re.compile(rf"\b{re.escape(pattern)}\b")
+
+
+def pattern_in(text_lower: str, pattern: str) -> bool:
+    """Return True if ``pattern`` appears in already-lowercased ``text_lower``.
+
+    Purely-numeric patterns (HTTP status codes like ``"429"``, ``"503"``,
+    ``"402"``) are matched on **word boundaries** so an unrelated number such
+    as ``"Expected 4290 tokens"`` doesn't get mistaken for a ``429`` rate
+    limit and trigger a coordinated cooldown of every worker. Non-numeric
+    patterns (``"quota"``, ``"rate limit"``) use plain substring containment.
+    """
+    if pattern.isdigit():
+        return _word_boundary_regex(pattern).search(text_lower) is not None
+    return pattern in text_lower
+
+
+def matches_any_pattern(text: str, patterns: tuple[str, ...]) -> bool:
+    """Case-insensitively test ``text`` against ``patterns`` (see :func:`pattern_in`)."""
+    lowered = text.lower()
+    return any(pattern_in(lowered, pattern) for pattern in patterns)
 
 
 class TokenTrackingError(Exception):
@@ -135,9 +162,13 @@ class DefaultErrorClassifier(ErrorClassifier):
     """Default error classifier that handles common error types."""
 
     def _matches_rate_limit(self, error_str: str) -> bool:
-        """Return True if the error string looks like a rate limit."""
-        lowered = error_str.lower()
-        return any(pattern in lowered for pattern in RATE_LIMIT_PATTERNS)
+        """Return True if the error string looks like a rate limit.
+
+        Numeric codes ("429") match on word boundaries via
+        :func:`matches_any_pattern`, so "Expected 4290 tokens" is not
+        misread as a rate limit.
+        """
+        return matches_any_pattern(error_str, RATE_LIMIT_PATTERNS)
 
     def classify(self, exception: Exception) -> ErrorInfo:
         """Classify common errors with conservative defaults."""

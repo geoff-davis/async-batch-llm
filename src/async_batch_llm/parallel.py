@@ -170,13 +170,24 @@ class ParallelBatchProcessor(
                 rate_limit=RateLimitConfig(cooldown_seconds=rate_limit_cooldown or 300.0),
             )
         else:
-            # Override config with explicit parameters if provided
+            # Override config with explicit legacy parameters if provided — but
+            # build a NEW config via dataclasses.replace rather than mutating the
+            # caller's object (and its nested RateLimitConfig). Callers may reuse
+            # the same ProcessorConfig across processors and shouldn't see it
+            # silently rewritten under them.
+            import dataclasses
+
+            overrides: dict = {}
             if max_workers is not None:
-                config.max_workers = max_workers
+                overrides["max_workers"] = max_workers
             if timeout_per_item is not None:
-                config.timeout_per_item = timeout_per_item
+                overrides["timeout_per_item"] = timeout_per_item
             if rate_limit_cooldown is not None:
-                config.rate_limit.cooldown_seconds = rate_limit_cooldown
+                overrides["rate_limit"] = dataclasses.replace(
+                    config.rate_limit, cooldown_seconds=rate_limit_cooldown
+                )
+            if overrides:
+                config = dataclasses.replace(config, **overrides)
 
         config.validate()
 
@@ -455,6 +466,17 @@ class ParallelBatchProcessor(
                         context=work_item.context,
                         token_usage=cast(TokenUsage, failed_tokens),
                     )
+
+                # Emit ITEM_FAILED here too. Items that exhaust retries reach
+                # this fallback (the exception propagates out of
+                # _process_item_with_retries) rather than the non-retryable
+                # branch in _handle_execution_error, so without this emit a
+                # MetricsObserver would undercount failures vs BatchResult.
+                if not result.success:
+                    await self._emit_event(
+                        ProcessingEvent.ITEM_FAILED,
+                        {"item_id": work_item.item_id, "error_type": type(e).__name__},
+                    )
                 # Fall through to store result and call task_done()
 
             # Store result (thread-safe)
@@ -506,13 +528,9 @@ class ParallelBatchProcessor(
             # Note: Post-processors should check result.success and handle accordingly
             # Most post-processors return early for failures, but some may want to
             # save failed items (e.g., dedupe_authors saves failed clusters as singletons)
-            try:
-                await asyncio.wait_for(
-                    self._run_post_processor(result),
-                    timeout=self.config.post_processor_timeout,
-                )
-            except TimeoutError:
-                logger.error(f"⏱ Post-processor exceeded timeout for {work_item.item_id}")
+            # The timeout is enforced inside _run_post_processor from config — a
+            # single source of truth rather than a hardcoded inner cap.
+            await self._run_post_processor(result, timeout=self.config.post_processor_timeout)
 
             self._queue.task_done()
 
@@ -617,7 +635,7 @@ class ParallelBatchProcessor(
 
         for attempt in range(1, self.config.retry.max_attempts + 1):
             try:
-                return await self._process_item(
+                result = await self._process_item(
                     work_item,
                     worker_id,
                     attempt_number=attempt,
@@ -716,11 +734,37 @@ class ParallelBatchProcessor(
 
                 if wait_time > 0:
                     await asyncio.sleep(wait_time)
+            else:
+                # _process_item returned without raising (success, or a result
+                # produced by middleware / non-retryable handling). Fold in the
+                # tokens consumed by any earlier failed attempts so cost
+                # reporting is aggregated across retries, not just the final
+                # attempt (see README "aggregated across retries").
+                self._merge_failed_tokens(result, cumulative_failed_tokens)
+                return result
 
         # Unreachable - all paths raise or return
         raise RuntimeError(
             f"Unexpected: all retry attempts should have raised for {work_item.item_id}"
         )
+
+    @staticmethod
+    def _merge_failed_tokens(
+        result: WorkItemResult[TOutput, TContext], failed_tokens: dict[str, int]
+    ) -> None:
+        """Add tokens consumed by prior failed attempts into ``result.token_usage``.
+
+        Mutates ``result.token_usage`` in place. Keys that would stay zero and
+        weren't already present are left out so a clean success keeps its tidy
+        ``{input, output, total}`` shape.
+        """
+        existing = cast("dict[str, int]", result.token_usage)
+        usage: dict[str, int] = {}
+        for key in ("input_tokens", "output_tokens", "total_tokens", "cached_input_tokens"):
+            combined = existing.get(key, 0) + failed_tokens.get(key, 0)
+            if combined or key in existing:
+                usage[key] = combined
+        result.token_usage = cast(TokenUsage, usage)
 
     def _get_strategy(
         self, work_item: LLMWorkItem[TInput, TOutput, TContext]
@@ -822,7 +866,11 @@ class ParallelBatchProcessor(
                     elapsed=elapsed,
                     timeout_limit=self.config.timeout_per_item,
                 )
-                # Preserve token usage if the underlying exception had it (including cached tokens)
+                # This except also catches a TimeoutError *subclass the strategy
+                # raised itself* (not just asyncio.wait_for's own fresh timeout),
+                # and that one can carry token usage. Copy it across so failed-
+                # attempt tokens aren't lost — the token extractor only reads the
+                # top exception's __dict__, not its __cause__'s.
                 if (
                     hasattr(timeout_exc, "__dict__")
                     and "_failed_token_usage" in timeout_exc.__dict__

@@ -10,7 +10,12 @@ Added in v0.9.0.
 
 from __future__ import annotations
 
-from ..strategies.errors import ErrorClassifier, ErrorInfo, FrameworkTimeoutError
+from ..strategies.errors import (
+    ErrorClassifier,
+    ErrorInfo,
+    FrameworkTimeoutError,
+    matches_any_pattern,
+)
 
 RATE_LIMIT_PATTERNS = (
     "429",
@@ -79,8 +84,11 @@ class OpenAIErrorClassifier(ErrorClassifier):
     _NON_RETRYABLE_STATUS = frozenset({400, 401, 403, 404, 405, 409, 410, 422})
 
     def _matches_any_pattern(self, error_str: str, patterns: tuple[str, ...]) -> bool:
-        error_lower = error_str.lower()
-        return any(pattern in error_lower for pattern in patterns)
+        # Numeric codes ("429", "402", "504") match on word boundaries so an
+        # unrelated number (e.g. "4290 tokens") doesn't trip a pattern. SDK
+        # exception types and HTTP status codes are still preferred over this
+        # string sniffing — see _classify_openai_exception, which runs first.
+        return matches_any_pattern(error_str, patterns)
 
     def classify(self, exception: Exception) -> ErrorInfo:
         # Framework timeout takes priority over everything else.

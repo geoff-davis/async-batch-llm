@@ -15,7 +15,7 @@ from async_batch_llm import (
 from pydantic_ai import Agent
 
 async def main():
-    agent = Agent("gemini-2.5-flash", result_type=str)
+    agent = Agent("gemini-2.5-flash", output_type=str)
     strategy = PydanticAIStrategy(agent=agent)
 
     config = ProcessorConfig(max_workers=5)
@@ -60,7 +60,7 @@ class CodeReview(BaseModel):
     rating: int
 
 async def review_code():
-    agent = Agent("gemini-2.5-flash", result_type=CodeReview)
+    agent = Agent("gemini-2.5-flash", output_type=CodeReview)
     strategy = PydanticAIStrategy(agent=agent)
 
     config = ProcessorConfig(max_workers=3)
@@ -99,7 +99,7 @@ class FileContext:
     original_content: str
 
 async def process_with_context():
-    agent = Agent("gemini-2.5-flash", result_type=str)
+    agent = Agent("gemini-2.5-flash", output_type=str)
     strategy = PydanticAIStrategy(agent=agent)
 
     config = ProcessorConfig(max_workers=5)
@@ -141,7 +141,7 @@ async def save_result(result):
         print(f"Saved {result.item_id}")
 
 async def process_with_post_processor():
-    agent = Agent("gemini-2.5-flash", result_type=str)
+    agent = Agent("gemini-2.5-flash", output_type=str)
     strategy = PydanticAIStrategy(agent=agent)
 
     config = ProcessorConfig(max_workers=5)
@@ -164,7 +164,7 @@ from async_batch_llm.observers import MetricsObserver
 async def process_with_metrics():
     metrics = MetricsObserver()
 
-    agent = Agent("gemini-2.5-flash", result_type=str)
+    agent = Agent("gemini-2.5-flash", output_type=str)
     strategy = PydanticAIStrategy(agent=agent)
 
     config = ProcessorConfig(max_workers=5)

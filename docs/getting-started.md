@@ -98,7 +98,7 @@ class Output(BaseModel):
     field1: str
     field2: int
 
-agent = Agent("gemini-2.5-flash", result_type=Output)
+agent = Agent("gemini-2.5-flash", output_type=Output)
 strategy = PydanticAIStrategy(agent=agent)
 ```
 

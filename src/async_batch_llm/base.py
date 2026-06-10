@@ -107,7 +107,6 @@ class RetryState:
 # Timeout constants (seconds)
 WORKER_CANCELLATION_TIMEOUT = 2.0  # Time to wait for workers to cancel gracefully
 WORKER_SHUTDOWN_TIMEOUT = 30.0  # Time to wait for workers to finish after queue is done
-POST_PROCESSOR_EXECUTION_TIMEOUT = 75.0  # Maximum time for post-processor to execute
 PROGRESS_TASK_CANCELLATION_TIMEOUT = 2.0  # Time to wait for progress callbacks to cancel
 
 
@@ -612,6 +611,11 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
 
         Raises:
             RuntimeError: If called after process_all() has started
+            ValueError: If a bounded queue (max_queue_size > 0) is already full.
+                Workers only start in process_all(), and add_work() is rejected
+                once processing begins — so a bounded queue can never drain while
+                you are still adding work. Blocking on a full queue here would
+                deadlock forever, so we raise instead.
         """
         if self._processing_started:
             raise RuntimeError(
@@ -619,7 +623,21 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 "Create a new processor instance for additional batches."
             )
 
-        await self._queue.put(work_item)
+        # Never block on put(): the queue only drains once process_all() starts
+        # the workers, and add_work() is forbidden after that point, so a full
+        # bounded queue here would hang forever. Surface it as a clear error.
+        try:
+            self._queue.put_nowait(work_item)
+        except asyncio.QueueFull:
+            raise ValueError(
+                f"Work queue is full (max_queue_size={self.max_queue_size}). "
+                "Because workers only start in process_all() and add_work() is "
+                "rejected after processing begins, a bounded queue cannot drain "
+                "while you are still adding items — so this would otherwise block "
+                "forever. Raise ProcessorConfig(max_queue_size=...) to fit the "
+                "whole batch (0 = unlimited), or split the work across multiple "
+                "processor runs."
+            ) from None
         self._stats.total += 1
 
     async def _on_batch_started(self) -> None:
@@ -730,12 +748,20 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         """
         pass
 
-    async def _run_post_processor(self, result: WorkItemResult[TOutput, TContext]) -> None:
+    async def _run_post_processor(
+        self,
+        result: WorkItemResult[TOutput, TContext],
+        timeout: float | None = None,
+    ) -> None:
         """
         Run the post-processor callback if provided.
 
         Args:
             result: Work item result to post-process
+            timeout: Maximum seconds an async post-processor may run before it is
+                cancelled (``None`` = no limit). Threaded through from
+                ``ProcessorConfig.post_processor_timeout`` so a single, caller-
+                configured value governs — there is no separate hardcoded cap.
         """
         if self.post_processor is None:
             return
@@ -744,12 +770,13 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             await_result = self.post_processor(result)
             # Handle both async and sync post-processors
             if asyncio.iscoroutine(await_result):
-                # Inner timeout for the post-processor execution itself
-                # (Outer timeout at worker level handles semaphore waits)
-                await asyncio.wait_for(await_result, timeout=POST_PROCESSOR_EXECUTION_TIMEOUT)
+                if timeout is not None:
+                    await asyncio.wait_for(await_result, timeout=timeout)
+                else:
+                    await await_result
         except TimeoutError:
             logger.error(
-                f"[FAIL]Post-processor execution timed out after {POST_PROCESSOR_EXECUTION_TIMEOUT}s for {result.item_id}"
+                f"[FAIL]Post-processor execution timed out after {timeout}s for {result.item_id}"
             )
         except Exception as e:
             # Log error with full details - this is critical for debugging

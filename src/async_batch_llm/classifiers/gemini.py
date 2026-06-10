@@ -1,6 +1,11 @@
 """Google Gemini-specific error classification."""
 
-from ..strategies.errors import ErrorClassifier, ErrorInfo, FrameworkTimeoutError
+from ..strategies.errors import (
+    ErrorClassifier,
+    ErrorInfo,
+    FrameworkTimeoutError,
+    matches_any_pattern,
+)
 
 # Error pattern constants
 RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota", "rate limit")
@@ -16,9 +21,14 @@ class GeminiErrorClassifier(ErrorClassifier):
     """Google Gemini-specific error classification."""
 
     def _matches_any_pattern(self, error_str: str, patterns: tuple[str, ...]) -> bool:
-        """Check if error string matches any of the given patterns (case-insensitive)."""
-        error_lower = error_str.lower()
-        return any(pattern in error_lower for pattern in patterns)
+        """Check if error string matches any of the given patterns (case-insensitive).
+
+        Numeric codes ("429", "503", "504") match on word boundaries so an
+        unrelated number (e.g. "4290 tokens") doesn't get classified as a rate
+        limit / overload. Gemini SDK exception types (ClientError/ServerError)
+        are still preferred and checked before this string fallback.
+        """
+        return matches_any_pattern(error_str, patterns)
 
     def classify(self, exception: Exception) -> ErrorInfo:
         """Classify Gemini-specific errors."""

@@ -88,9 +88,17 @@ class ProcessorConfig:
     """Complete configuration for batch processor."""
 
     max_workers: int = 5
+    # Timeout applied to EACH execute() attempt (seconds), enforced via
+    # asyncio.wait_for() around the strategy call. This is per-attempt, NOT a
+    # total budget across retries: with retry.max_attempts=3 a single item can
+    # legitimately spend up to ~3 × timeout_per_item in execute() time (plus any
+    # backoff waits between attempts). Size it for one slow call, not the whole
+    # retry chain.
     timeout_per_item: float = 120.0
     # Timeout for user-supplied post-processor functions (seconds).
     # Post-processors may do database/IO work; leave generous but bounded.
+    # This is the single source of truth — it is threaded into
+    # _run_post_processor and governs the wait directly (no hidden inner cap).
     post_processor_timeout: float = 90.0
 
     retry: RetryConfig = field(default_factory=RetryConfig)
@@ -106,8 +114,13 @@ class ProcessorConfig:
     # Observability
     enable_detailed_logging: bool = False
 
-    # Queue management
-    max_queue_size: int = 0  # 0 = unlimited, >0 = max items in queue
+    # Queue management.
+    # 0 = unlimited (recommended). A positive bound must be >= the total number
+    # of items you add_work() before process_all(): workers only start in
+    # process_all() and add_work() is rejected once processing begins, so a
+    # bounded queue cannot drain while you are still adding work. add_work()
+    # raises ValueError (rather than blocking forever) if the bound is reached.
+    max_queue_size: int = 0
 
     # Dry-run mode (for testing configuration without making API calls)
     dry_run: bool = False
