@@ -224,24 +224,25 @@ async def test_gemini_classifier_rate_limit_retries_after_processor_cooldown():
 
 
 @pytest.mark.asyncio
-async def test_persistent_rate_limit_exhausts_max_attempts():
-    """A rate limit that never clears must respect retry.max_attempts and
-    record a permanent failure instead of looping forever.
+async def test_persistent_rate_limit_exhausts_rate_limit_budget():
+    """A rate limit that never clears terminates via max_rate_limit_retries
+    (NOT max_attempts) and records a permanent failure instead of looping forever.
 
-    Regression test for the is_retryable: False -> True change: before the
-    classifier flip, rate-limited items failed fast after one attempt; now
-    they retry, so we need to ensure the retry loop still terminates.
+    Rate-limit errors are exempt from the max_attempts budget — they're retried at
+    the same logical attempt number — so a persistent throttle is bounded by the
+    separate retry.max_rate_limit_retries backstop.
     """
-    max_attempts = 3
+    max_rate_limit_retries = 3
     strategy = _PersistentRateLimitStrategy()
     config = ProcessorConfig(
         max_workers=1,
         timeout_per_item=1.0,
         retry=RetryConfig(
-            max_attempts=max_attempts,
+            max_attempts=3,  # irrelevant for pure rate limits; budget never consumed
             initial_wait=0.001,
             max_wait=0.001,
             jitter=False,
+            max_rate_limit_retries=max_rate_limit_retries,
         ),
         rate_limit=RateLimitConfig(
             cooldown_seconds=0.001,
@@ -268,12 +269,13 @@ async def test_persistent_rate_limit_exhausts_max_attempts():
 
     assert result.succeeded == 0
     assert result.failed == 1
-    assert strategy.call_count == max_attempts, (
-        f"Expected exactly {max_attempts} attempts before giving up, got {strategy.call_count}."
+    # max_rate_limit_retries retries + the call that trips the cap.
+    assert strategy.call_count == max_rate_limit_retries + 1, (
+        f"Expected {max_rate_limit_retries + 1} calls before giving up, got {strategy.call_count}."
     )
     failure = result.results[0]
     assert failure.success is False
-    assert "429" in (failure.error or "") or "RESOURCE_EXHAUSTED" in (failure.error or "")
+    assert "RateLimitRetriesExceeded" in (failure.error or "")
 
 
 @pytest.mark.asyncio

@@ -112,6 +112,32 @@ class FrameworkTimeoutError(TimeoutError):
         self.timeout_limit = timeout_limit
 
 
+class RateLimitRetriesExceeded(Exception):
+    """A work item was retried after rate limits more than ``max_rate_limit_retries``.
+
+    Rate-limit errors don't consume the ``max_attempts`` budget (they're a "wait
+    and try again", not a failed attempt), but they ARE bounded separately by
+    ``RetryConfig.max_rate_limit_retries`` so an endpoint that throttles forever
+    can't hang the batch indefinitely. When that bound is exceeded the framework
+    fails the item with this exception.
+
+    Attributes:
+        item_id: ID of the work item that exhausted its rate-limit retries.
+        rate_limit_retries: How many rate-limit retries were attempted.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        item_id: str | None = None,
+        rate_limit_retries: int | None = None,
+    ):
+        super().__init__(message)
+        self.item_id = item_id
+        self.rate_limit_retries = rate_limit_retries
+
+
 @dataclass
 class ErrorInfo:
     """Structured information about an error.

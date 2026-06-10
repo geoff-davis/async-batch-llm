@@ -131,6 +131,7 @@ from .strategies import (
     ExponentialBackoffStrategy,
     FixedDelayStrategy,
     FrameworkTimeoutError,
+    RateLimitRetriesExceeded,
     RateLimitStrategy,
     TokenTrackingError,
 )
@@ -211,6 +212,7 @@ __all__ = [
     "ErrorInfo",
     "DefaultErrorClassifier",
     "FrameworkTimeoutError",
+    "RateLimitRetriesExceeded",
     "TokenTrackingError",
     "RateLimitStrategy",
     "ExponentialBackoffStrategy",

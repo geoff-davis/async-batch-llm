@@ -744,15 +744,22 @@ class RetryConfig:
     max_wait: float = 60.0
     exponential_base: float = 2.0
     jitter: bool = True
+    max_rate_limit_retries: int = 20
 ```
 
 **Fields:**
 
-- `max_attempts` (int): Maximum retry attempts. Default: 3
+- `max_attempts` (int): Maximum attempts for *content/transport* failures
+  (validation, timeout, connection, 5xx). Default: 3
 - `initial_wait` (float): Initial wait time in seconds. Default: 1.0
 - `max_wait` (float): Maximum wait time in seconds. Default: 60.0
 - `exponential_base` (float): Exponential backoff base. Default: 2.0
 - `jitter` (bool): Add random jitter to wait times. Default: True
+- `max_rate_limit_retries` (int): Maximum times an item may be retried after a
+  rate-limit/cooldown **without** consuming its `max_attempts` budget. Rate
+  limits are retried at the same logical attempt number; exceeding this fails
+  the item with a `RateLimitRetriesExceeded` error. `0` makes rate limits fail
+  immediately. Default: 20
 
 **Validation:**
 
@@ -760,6 +767,7 @@ class RetryConfig:
 - `initial_wait` must be > 0
 - `max_wait` must be >= initial_wait
 - `exponential_base` must be >= 1
+- `max_rate_limit_retries` must be >= 0
 
 **Example:**
 
