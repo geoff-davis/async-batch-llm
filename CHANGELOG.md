@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Gemini `503` / "high demand" overload now retries with per-item exponential
+  backoff instead of a coordinated cooldown.** A 503 is a transient server-side
+  capacity blip (usually per-request — a retry often lands on a healthy
+  backend), so `GeminiErrorClassifier` now treats it like any other 5xx
+  (`is_rate_limit=False`), matching `OpenAIErrorClassifier`, rather than pausing
+  *all* workers for the full rate-limit cooldown. The coordinated cooldown stays
+  reserved for genuine quota exhaustion (429 / `RESOURCE_EXHAUSTED`). For
+  *sustained* overload at high concurrency, lower `max_workers` or set
+  `ProcessorConfig.max_requests_per_minute`.
+
 ## [0.12.0] - 2026-06-09
 
 ### Added

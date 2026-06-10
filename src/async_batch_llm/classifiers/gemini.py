@@ -10,10 +10,9 @@ from ..strategies.errors import (
 # Error pattern constants
 RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota", "rate limit")
 TIMEOUT_PATTERNS = ("timeout", "504", "deadline")
-# 503 Service Unavailable / model overload. Distinct from a quota rate limit,
-# but it's the same kind of capacity signal — so we route it through the
-# coordinated cooldown (pause all workers + slow-start) rather than per-item
-# backoff, which alone can't relieve an overloaded model under high concurrency.
+# 503 Service Unavailable / model overload — a transient server-side capacity
+# blip (distinct from a 429 quota rate limit). Retried with per-item exponential
+# backoff like any other 5xx, NOT a coordinated cooldown (see classify()).
 OVERLOAD_PATTERNS = ("503", "unavailable", "overloaded", "high demand")
 
 
@@ -64,14 +63,20 @@ class GeminiErrorClassifier(ErrorClassifier):
 
         if isinstance(exception, ServerError):
             error_str = str(exception)
-            # 503 Service Unavailable / overload is a capacity signal — route it
-            # through the coordinated cooldown (is_rate_limit=True pauses all
-            # workers and slow-starts), since per-item backoff alone can't
-            # relieve an overloaded model when dozens of workers keep hitting it.
+            # 503 Service Unavailable / overload is a *transient, server-side*
+            # capacity blip — usually per-request (a retry often lands on a
+            # healthy backend), not your quota. So treat it like any other 5xx:
+            # per-item exponential backoff (is_rate_limit=False), matching
+            # OpenAIErrorClassifier. We deliberately do NOT trigger a coordinated
+            # cooldown here — that 5-minute global pause is for genuine quota
+            # exhaustion (429 / RESOURCE_EXHAUSTED, handled as ClientError above).
+            # For *sustained* overload at high concurrency, lower max_workers or
+            # set ProcessorConfig.max_requests_per_minute rather than relying on a
+            # reactive pause.
             if self._matches_any_pattern(error_str, OVERLOAD_PATTERNS):
                 return ErrorInfo(
                     is_retryable=True,
-                    is_rate_limit=True,
+                    is_rate_limit=False,
                     is_timeout=False,
                     error_category="server_overload",
                 )

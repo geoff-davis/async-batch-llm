@@ -119,15 +119,15 @@ async def test_gemini_classifier_server_errors_retryable():
 
     classifier = GeminiErrorClassifier()
 
-    # 503 overload / UNAVAILABLE — a capacity signal, routed through the
-    # coordinated cooldown (is_rate_limit=True) rather than per-item backoff,
-    # so all workers pause + slow-start instead of hammering an overloaded model.
+    # 503 overload / UNAVAILABLE — a transient server-side capacity blip, retried
+    # with per-item exponential backoff like any other 5xx (NOT a coordinated
+    # cooldown, which is reserved for 429/quota). Matches OpenAIErrorClassifier.
     err = ServerError(
         503, {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}}
     )
     info = classifier.classify(err)
     assert info.is_retryable is True
-    assert info.is_rate_limit is True
+    assert info.is_rate_limit is False
     assert info.error_category == "server_overload"
 
     # 500 internal error — transient one-off, per-item retry (not a cooldown).
