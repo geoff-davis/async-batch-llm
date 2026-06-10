@@ -203,8 +203,14 @@ class ParallelBatchProcessor(
         # Diagnostic: high max_workers can outrun the OS open-file limit.
         _warn_if_fd_limit_low(config.max_workers)
 
-        # Set up strategies
-        self.error_classifier = error_classifier or DefaultErrorClassifier()
+        # Set up strategies. When the caller didn't pass an explicit
+        # error_classifier, it's auto-selected from the work items' strategies at
+        # batch start (see _resolve_error_classifier); until then we hold a
+        # DefaultErrorClassifier so the processor is always usable.
+        self._user_supplied_classifier = error_classifier is not None
+        self.error_classifier: ErrorClassifier = error_classifier or DefaultErrorClassifier()
+        self._recommended_classifiers: list[ErrorClassifier] = []
+        self._classifier_resolved = self._user_supplied_classifier
         self.rate_limit_strategy = rate_limit_strategy or ExponentialBackoffStrategy(
             initial_cooldown=config.rate_limit.cooldown_seconds,
             backoff_multiplier=config.rate_limit.backoff_multiplier,
@@ -348,8 +354,67 @@ class ParallelBatchProcessor(
         async with self._stats_lock:
             return self._stats.copy()
 
+    async def add_work(self, work_item: LLMWorkItem[TInput, TOutput, TContext]) -> None:
+        """Queue a work item, recording its strategy's classifier recommendation.
+
+        Extends the base queueing with the bookkeeping needed to auto-select an
+        error classifier at batch start when the caller didn't pass one. A
+        no-op recommendation (custom strategies returning ``None``) is ignored.
+        """
+        await super().add_work(work_item)
+        if self._user_supplied_classifier:
+            return
+        try:
+            recommended = work_item.strategy.recommended_error_classifier()
+        except Exception:
+            # A buggy override must never break queueing — just skip the hint.
+            recommended = None
+        if recommended is not None:
+            self._recommended_classifiers.append(recommended)
+
+    def _resolve_error_classifier(self) -> None:
+        """Pick an error classifier from the queued strategies' recommendations.
+
+        Runs once, at batch start, only when the caller didn't pass an explicit
+        ``error_classifier``. If every recommending strategy agrees, that
+        classifier is used; if they disagree (mixed providers), we keep the
+        :class:`DefaultErrorClassifier` and warn. No recommendations → keep the
+        default silently (debug log).
+        """
+        if self._classifier_resolved:
+            return
+        self._classifier_resolved = True
+
+        recommendations = self._recommended_classifiers
+        if not recommendations:
+            logger.debug(
+                "No work-item strategy recommended an error classifier; using %s.",
+                type(self.error_classifier).__name__,
+            )
+            return
+
+        distinct_types = {type(r) for r in recommendations}
+        if len(distinct_types) == 1:
+            self.error_classifier = recommendations[0]
+            logger.debug(
+                "Auto-selected %s from work-item strategies.",
+                type(self.error_classifier).__name__,
+            )
+        else:
+            names = ", ".join(sorted(t.__name__ for t in distinct_types))
+            logger.warning(
+                "[WARN]Work items recommend mixed error classifiers (%s); falling back "
+                "to %s. Pass error_classifier=... to ParallelBatchProcessor to choose "
+                "one explicitly.",
+                names,
+                type(self.error_classifier).__name__,
+            )
+
     async def _on_batch_started(self) -> None:
         """Emit batch start event with initial stats snapshot."""
+        # Resolve the auto-selected error classifier before any worker runs.
+        self._resolve_error_classifier()
+
         async with self._stats_lock:
             stats_snapshot = self._stats.copy()
 

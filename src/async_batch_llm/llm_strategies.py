@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from pydantic_ai import Agent
 
     from .core.protocols import LLMModel
+    from .strategies.errors import ErrorClassifier
 else:
     try:
         from pydantic_ai import Agent
@@ -227,6 +228,21 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
         }
         return mock_output, mock_tokens
 
+    def recommended_error_classifier(self) -> "ErrorClassifier | None":
+        """Return the error classifier best suited to this strategy's provider.
+
+        :class:`~async_batch_llm.ParallelBatchProcessor` calls this to
+        auto-select a classifier when the caller didn't pass ``error_classifier``
+        explicitly — it reads the recommendation off the work items' strategies.
+
+        Returns ``None`` by default ("no preference"), which lets the framework
+        fall back to :class:`DefaultErrorClassifier`. Provider strategies
+        (``GeminiStrategy``, ``OpenAIStrategy``, …) override this to return their
+        matching classifier. An explicit ``error_classifier=`` on the processor
+        always wins over this recommendation.
+        """
+        return None
+
 
 class ModelStrategy(LLMCallStrategy[TOutput]):
     """
@@ -353,6 +369,11 @@ class GeminiStrategy(ModelStrategy[TOutput]):
         >>> strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
     """
 
+    def recommended_error_classifier(self) -> "ErrorClassifier":
+        from .classifiers.gemini import GeminiErrorClassifier
+
+        return GeminiErrorClassifier()
+
 
 class OpenAIStrategy(ModelStrategy[TOutput]):
     """
@@ -375,6 +396,11 @@ class OpenAIStrategy(ModelStrategy[TOutput]):
         ... )
     """
 
+    def recommended_error_classifier(self) -> "ErrorClassifier":
+        from .classifiers.openai import OpenAIErrorClassifier
+
+        return OpenAIErrorClassifier()
+
 
 class OpenRouterStrategy(ModelStrategy[TOutput]):
     """
@@ -396,6 +422,11 @@ class OpenRouterStrategy(ModelStrategy[TOutput]):
         >>> strategy = OpenRouterStrategy(model)
     """
 
+    def recommended_error_classifier(self) -> "ErrorClassifier":
+        from .classifiers.openrouter import OpenRouterErrorClassifier
+
+        return OpenRouterErrorClassifier()
+
 
 class DeepSeekStrategy(ModelStrategy[TOutput]):
     """
@@ -412,6 +443,12 @@ class DeepSeekStrategy(ModelStrategy[TOutput]):
         >>> model = DeepSeekModel.from_api_key("deepseek-chat", api_key="sk-...")
         >>> strategy = DeepSeekStrategy(model)
     """
+
+    def recommended_error_classifier(self) -> "ErrorClassifier":
+        # DeepSeek is OpenAI-compatible; reuse the OpenAI classifier.
+        from .classifiers.openai import OpenAIErrorClassifier
+
+        return OpenAIErrorClassifier()
 
 
 class PydanticAIStrategy(LLMCallStrategy[TOutput]):
@@ -492,7 +529,7 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
             # back to the legacy one for 0.x agents.
             result_type = getattr(self.agent, "output_type", None)
             if result_type is None:
-                result_type = getattr(self.agent, "result_type", None)  # ty:ignore[unresolved-attribute]
+                result_type = getattr(self.agent, "result_type", None)
 
             # If output type is a Pydantic model, try to create an instance
             if isinstance(result_type, type) and issubclass(result_type, BaseModel):

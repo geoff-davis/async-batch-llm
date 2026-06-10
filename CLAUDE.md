@@ -29,7 +29,20 @@ reads `0.8.0` until the release-prep flow bumps it.
 
 ## Quick reference
 
-Minimal working example:
+High-level convenience API (`highlevel.py`) for the common case — collect, or
+stream as items finish. Error classifier is auto-selected from the strategy:
+
+```python
+from async_batch_llm import OpenAIModel, OpenAIStrategy, process_prompts, process_stream
+
+strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
+
+result = await process_prompts(strategy, ["Summarize A", "Summarize B"])  # -> BatchResult
+async for r in process_stream(strategy, prompts):  # yields WorkItemResult in completion order
+    ...
+```
+
+Full-control example (drive `ParallelBatchProcessor` directly):
 
 ```python
 from async_batch_llm import (
@@ -373,6 +386,7 @@ src/async_batch_llm/
 ├── base.py               # LLMWorkItem, WorkItemResult, BatchResult,
 │                         # LLMResponse, RetryState, CachedTokenRates
 ├── parallel.py           # ParallelBatchProcessor (orchestration)
+├── highlevel.py          # process_prompts / process_stream (convenience API)
 ├── llm_strategies.py     # LLMCallStrategy + built-in strategies
 ├── models.py             # GeminiModel, GeminiCachedModel,
 │                         # OpenAICompatibleModel, OpenAIModel,

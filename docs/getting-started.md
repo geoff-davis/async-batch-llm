@@ -30,6 +30,44 @@ pip install 'async-batch-llm[deepseek]'
 pip install 'async-batch-llm[all]'
 ```
 
+## Quickstart: the high-level API
+
+For the common case — "run this strategy over these prompts" — reach for
+`process_prompts` (collect everything) or `process_stream` (handle each result
+as it finishes). Both accept bare strings (ids auto-generated) or
+`(item_id, prompt)` pairs, and forward any `ParallelBatchProcessor` option as a
+keyword argument.
+
+```python
+import asyncio
+from async_batch_llm import OpenAIModel, OpenAIStrategy, process_prompts, process_stream
+
+async def main():
+    strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
+
+    # Collect all results into a BatchResult:
+    result = await process_prompts(strategy, ["Summarize A", "Summarize B"])
+    print(f"{result.succeeded}/{result.total_items} succeeded")
+    for r in result.successes:
+        print(r.item_id, "->", r.output)
+
+    # …or stream results as each item completes:
+    async for r in process_stream(strategy, [("a", "first"), ("b", "second")]):
+        print("done:", r.item_id, r.success)
+
+asyncio.run(main())
+```
+
+`process_stream` is implemented with a post-processor that pushes each completed
+result onto an internal queue, so results arrive in **completion order**. When
+you don't pass `error_classifier=`, it's auto-selected from the strategy
+(`OpenAIStrategy` → `OpenAIErrorClassifier`, `GeminiStrategy` →
+`GeminiErrorClassifier`, etc.).
+
+The rest of this guide covers the underlying building blocks, which you use
+directly when you need custom queueing, per-item context, middleware, or
+observers.
+
 ## Core Concepts
 
 ### 1. Strategy Pattern
