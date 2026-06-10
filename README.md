@@ -23,14 +23,13 @@ through a simple strategy pattern; built on asyncio for I/O-bound throughput.
 From a sample [GSM8K test-split run](docs/benchmarks.md) — illustrative, not a spec
 (numbers shift with provider, account limits, and network):
 
-- **~17× faster than serial** — 30 problems took ~57 s one-at-a-time vs ~3.4 s through the pool.
-  Concurrency is what collapses wall time.
-- **The full 1,319-problem test split for ~$0.05** on DeepSeek Flash, with the per-provider
-  token/cost breakdown printed for free.
-- **Throughput on par with a hand-tuned `asyncio.gather` pool** — the framework matches a good
-  semaphore-bounded pool on raw speed. Its edge is *surviving the failures a bare pool drops*:
-  retrying validation errors, escalating the model on bad output, and riding out 429 cooldowns
-  instead of shedding results.
+- **~16–19× faster than serial** — 30 problems took ~40–65 s one-at-a-time vs ~2–4 s through the
+  pool. Concurrency collapses wall time.
+- **The full 1,319-problem test split for ~$0.05** on DeepSeek Flash — vs ~$0.43 on a Gemini run at
+  the *same* 95–97% accuracy (~8× cheaper), with the per-provider cost breakdown printed for free.
+- **Out-throughputs a hand-rolled `Semaphore` + `gather` pool** (here ~1.2–2× — a bounded worker
+  pool beats scheduling every coroutine up front) *and* survives the 429s/503s a bare pool silently
+  drops: retrying validation errors, escalating the model on bad output, riding out throttling.
 
 See the [benchmarks](docs/benchmarks.md) for methodology and the full tables.
 

@@ -9,8 +9,13 @@ and writes, into ``docs/assets/``:
 
     benchmark-summary.json        (committed copy, cited by the docs)
     benchmark-throughput.json     (committed copy)
-    benchmark-wall-time.png       (wall-time bars: sequential vs gather vs abl)
-    benchmark-cost-accuracy.png   (cost-vs-accuracy scatter for the bake-off)
+    benchmark-wall-time.png       (wall-time race: sequential vs gather vs abl)
+    benchmark-cost.png            (per-provider cost bars, labelled with accuracy)
+    benchmark-throughput.png      (throughput it/s: gather vs semaphore vs abl)
+
+Accuracy is intentionally NOT charted — it's 95–97% across providers, too tight
+to plot without being misleading; it lives in the bake-off table (and as a label
+on the cost bars).
 
 So the published charts/numbers are reproducible from a committed source of
 truth. Requires matplotlib:
@@ -87,28 +92,66 @@ def wall_time_chart(summary: dict, out: Path) -> None:
     print(f"wrote {out}")
 
 
-def cost_accuracy_chart(summary: dict, out: Path) -> None:
-    """Scatter: estimated cost ($) vs accuracy (%), one labelled point per provider."""
-    rows = summary.get("bakeoff", [])
+def cost_chart(summary: dict, out: Path) -> None:
+    """Per-provider cost bars for the full test split, each labelled with its
+    accuracy — so the chart shows the cost spread *and* that accuracy barely
+    moves (no separate, misleadingly-tight accuracy chart)."""
+    rows = sorted(summary.get("bakeoff", []), key=lambda r: r["cost_usd"])
     if not rows:
-        print("No bakeoff in summary.json; skipping cost-accuracy chart.")
+        print("No bakeoff in summary.json; skipping cost chart.")
         return
 
-    fig, ax = plt.subplots(figsize=(7.5, 5))
-    for r in rows:
-        ax.scatter(r["cost_usd"], r["accuracy_pct"], s=90, zorder=3)
+    labels = [r["provider"] for r in rows]
+    costs = [r["cost_usd"] for r in rows]
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    bars = ax.bar(labels, costs, color="#1565c0", width=0.55)
+    for bar, r in zip(bars, rows, strict=True):
         ax.annotate(
-            f"{r['provider']}\n{r['model_id']}",
-            (r["cost_usd"], r["accuracy_pct"]),
+            f"${r['cost_usd']:.4f}\n{r['accuracy_pct']:.1f}% acc",
+            (bar.get_x() + bar.get_width() / 2, r["cost_usd"]),
             textcoords="offset points",
-            xytext=(8, 6),
+            xytext=(0, 4),
+            ha="center",
             fontsize=8,
         )
+    ax.set_ylabel("estimated cost for the full test split (USD)")
+    ax.set_title("Cost for 1,319 problems — accuracy ~flat (95–97%), cost spans ~8×")
+    ax.margins(y=0.18)
+    fig.tight_layout()
+    fig.savefig(out, dpi=_DPI)
+    plt.close(fig)
+    print(f"wrote {out}")
 
-    ax.set_xlabel("estimated cost for the full test split (USD)")
-    ax.set_ylabel("accuracy (%)")
-    ax.set_title("Cost vs. accuracy — same framework, one strategy swap per provider")
-    ax.grid(True, linestyle=":", alpha=0.5)
+
+def throughput_chart(throughput: dict, out: Path) -> None:
+    """Grouped bars per provider: chunked gather vs semaphore pool vs async-batch-llm
+    items/sec, at the same worker count."""
+    rows = throughput.get("rows", [])
+    if not rows:
+        print("No rows in throughput.json; skipping throughput chart.")
+        return
+
+    providers = [r["provider"] for r in rows]
+    series = {
+        "chunked gather": ("#9e9e9e", [r["chunked_gather"]["items_per_s"] for r in rows]),
+        "semaphore pool": ("#90caf9", [r["semaphore_pool"]["items_per_s"] for r in rows]),
+        "async-batch-llm": ("#1565c0", [r["async_batch_llm"]["items_per_s"] for r in rows]),
+    }
+
+    x = range(len(providers))
+    width = 0.26
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    for i, (label, (color, vals)) in enumerate(series.items()):
+        offsets = [xi + (i - 1) * width for xi in x]
+        bars = ax.bar(offsets, vals, width, label=label, color=color)
+        ax.bar_label(bars, fmt="%.0f", padding=2, fontsize=8)
+
+    ax.set_ylabel("throughput (items/sec)")
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(providers)
+    ax.set_title("Throughput at scale — same workers; worker pool ≥ semaphore pool ≫ chunked")
+    ax.legend(title="orchestration", frameon=False)
+    ax.margins(y=0.15)
     fig.tight_layout()
     fig.savefig(out, dpi=_DPI)
     plt.close(fig)
@@ -121,15 +164,16 @@ def main() -> None:
 
     # Commit a copy of the source data the docs cite.
     shutil.copyfile(RESULTS_DIR / "summary.json", ASSETS_DIR / "benchmark-summary.json")
+
+    wall_time_chart(summary, ASSETS_DIR / "benchmark-wall-time.png")
+    cost_chart(summary, ASSETS_DIR / "benchmark-cost.png")
+
     throughput_path = RESULTS_DIR / "throughput.json"
     if throughput_path.exists():
         shutil.copyfile(throughput_path, ASSETS_DIR / "benchmark-throughput.json")
-        print(f"copied throughput.json -> {ASSETS_DIR / 'benchmark-throughput.json'}")
+        throughput_chart(json.loads(throughput_path.read_text()), ASSETS_DIR / "benchmark-throughput.png")
     else:
-        print("(no throughput.json yet — run with --throughput to include it)")
-
-    wall_time_chart(summary, ASSETS_DIR / "benchmark-wall-time.png")
-    cost_accuracy_chart(summary, ASSETS_DIR / "benchmark-cost-accuracy.png")
+        print("(no throughput.json yet — run with --throughput for the throughput chart)")
 
 
 if __name__ == "__main__":
