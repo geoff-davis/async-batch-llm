@@ -10,6 +10,10 @@ from .base import BaseObserver, ProcessingEvent
 class MetricsObserver(BaseObserver):
     """Collect metrics for monitoring (thread-safe)."""
 
+    # Lock-guarded in-memory counter updates only — fast and non-blocking, so
+    # it opts out of the per-event wait_for wrapper. See ProcessorObserver.
+    _abl_fast_observer: bool = True
+
     def __init__(self, *, max_processing_samples: int = 100):
         """Initialize metrics collector."""
         if max_processing_samples <= 0:

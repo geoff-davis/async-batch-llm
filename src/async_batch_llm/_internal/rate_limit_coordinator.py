@@ -73,6 +73,17 @@ class RateLimitCoordinator:
         Also advances the slow-start counter and ends the slow-start window
         when the ramp finishes.
         """
+        # Unlocked fast-path: slow-start is inactive the vast majority of the
+        # time (only between a rate limit and the end of its ramp), so this
+        # check spares every worker an asyncio.Lock acquire/release per item.
+        # The race is benign: `_slow_start_active` is only ever set True under
+        # the lock by handle_rate_limit(); a worker that reads a stale False
+        # the instant it flips just skips the delay for one item (it'll see it
+        # on the next), and a stale True falls through to the locked check
+        # below which re-reads the flag authoritatively.
+        if not self._slow_start_active:
+            return 0.0
+
         async with self._lock:
             if not self._slow_start_active:
                 return 0.0

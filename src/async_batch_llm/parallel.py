@@ -405,23 +405,29 @@ class ParallelBatchProcessor(
 
     async def _worker(self, worker_id: int):
         """Worker coroutine that processes items from the queue."""
-        logger.info(f"[OK]Worker {worker_id} started and waiting for work")
-        await self._emit_event(ProcessingEvent.WORKER_STARTED, {"worker_id": worker_id})
+        # Per-worker / per-item logs are DEBUG with lazy %-formatting: at 100
+        # workers and thousands of items these are pure hot-path overhead, and
+        # the f-string would be built even when DEBUG is disabled. INFO is
+        # reserved for batch start/end and the periodic progress line.
+        logger.debug("[Worker %s] started and waiting for work", worker_id)
+        if self._events.observers:
+            await self._emit_event(ProcessingEvent.WORKER_STARTED, {"worker_id": worker_id})
 
         while True:
             try:
                 work_item = await self._queue.get()
             except asyncio.CancelledError:
-                logger.info(f"[WARN]Worker {worker_id} cancelled while waiting for work")
+                logger.debug("[Worker %s] cancelled while waiting for work", worker_id)
                 raise
 
             if work_item is None:  # Sentinel value
                 self._queue.task_done()
-                logger.info(f"[OK]Worker {worker_id} finished (no more work)")
-                await self._emit_event(ProcessingEvent.WORKER_STOPPED, {"worker_id": worker_id})
+                logger.debug("[Worker %s] finished (no more work)", worker_id)
+                if self._events.observers:
+                    await self._emit_event(ProcessingEvent.WORKER_STOPPED, {"worker_id": worker_id})
                 return
 
-            logger.info(f"[INFO][Worker {worker_id}] Picked up {work_item.item_id} from queue")
+            logger.debug("[Worker %s] Picked up %s from queue", worker_id, work_item.item_id)
 
             # Wait if we're in rate limit cooldown, then apply slow-start ramp.
             await self._rate_limit_coord.wait_if_paused()
@@ -483,11 +489,16 @@ class ParallelBatchProcessor(
             async with self._results_lock:
                 self._results.append(result)
 
-            # Update stats (thread-safe)
+            # Update stats (thread-safe). A single lock acquisition handles the
+            # counters, the progress-callback decision, AND the periodic-log
+            # snapshot — stats don't change between here and the log below, so
+            # there's no reason to take _stats_lock twice per item.
             should_call_progress = False
             completed = 0
             total = 0
             current_item = ""
+            should_log = False
+            stats_snapshot: dict | None = None
 
             async with self._stats_lock:
                 self._stats.processed += 1
@@ -510,15 +521,16 @@ class ParallelBatchProcessor(
                         "cached_input_tokens", 0
                     )
 
-                # Check if we should call progress callback (based on progress_interval)
-                if (
-                    self.progress_callback
-                    and self._stats.processed % self.config.progress_interval == 0
-                ):
-                    should_call_progress = True
-                    completed = self._stats.processed
-                    total = self._stats.total
-                    current_item = work_item.item_id
+                # Both the progress callback and the periodic progress log fire
+                # on the same progress_interval boundary — decide both here.
+                should_log = self._stats.processed % self.config.progress_interval == 0
+                if should_log:
+                    stats_snapshot = self._stats.copy()
+                    if self.progress_callback:
+                        should_call_progress = True
+                        completed = self._stats.processed
+                        total = self._stats.total
+                        current_item = work_item.item_id
 
             # Invoke progress callback outside of lock
             if should_call_progress:
@@ -529,23 +541,25 @@ class ParallelBatchProcessor(
             # Most post-processors return early for failures, but some may want to
             # save failed items (e.g., dedupe_authors saves failed clusters as singletons)
             # The timeout is enforced inside _run_post_processor from config — a
-            # single source of truth rather than a hardcoded inner cap.
-            await self._run_post_processor(result, timeout=self.config.post_processor_timeout)
+            # single source of truth rather than a hardcoded inner cap. When
+            # concurrent_post_processing is enabled, run it as a tracked
+            # background task so a slow post-processor doesn't cap throughput.
+            if self.config.concurrent_post_processing:
+                self._spawn_post_processor(result, self.config.post_processor_timeout)
+            else:
+                await self._run_post_processor(result, timeout=self.config.post_processor_timeout)
 
             self._queue.task_done()
 
-            # Log completion
-            status = "[OK]" if result.success else "[FAIL]"
-            outcome = "success" if result.success else "failed"
-            logger.info(f"{status} [Worker {worker_id}] Completed {work_item.item_id} ({outcome})")
+            # Per-item completion log: DEBUG + lazy %-formatting (hot path).
+            logger.debug(
+                "[Worker %s] Completed %s (%s)",
+                worker_id,
+                work_item.item_id,
+                "success" if result.success else "failed",
+            )
 
-            # Log progress (thread-safe read of stats)
-            async with self._stats_lock:
-                should_log = self._stats.processed % self.config.progress_interval == 0
-                if should_log:
-                    stats_snapshot = self._stats.copy()
-
-            if should_log:
+            if should_log and stats_snapshot is not None:
                 elapsed = time.time() - stats_snapshot["start_time"]
                 calls_per_sec = stats_snapshot["processed"] / elapsed if elapsed > 0 else 0
 
@@ -786,16 +800,18 @@ class ParallelBatchProcessor(
         # Store original item_id before middleware might return None
         original_item_id = work_item.item_id
 
-        await self._emit_event(
-            ProcessingEvent.ITEM_STARTED,
-            {"item_id": original_item_id, "worker_id": worker_id},
-        )
+        # Skip building the event payload entirely when nobody is listening.
+        if self._events.observers:
+            await self._emit_event(
+                ProcessingEvent.ITEM_STARTED,
+                {"item_id": original_item_id, "worker_id": worker_id},
+            )
 
         try:
             # Run before middlewares
             processed_item = await self._run_middlewares_before(work_item)
             if processed_item is None:
-                logger.info(f"[INFO]Skipping {original_item_id} (filtered by middleware)")
+                logger.debug("Skipping %s (filtered by middleware)", original_item_id)
                 return WorkItemResult(
                     item_id=original_item_id,
                     success=False,
@@ -806,12 +822,17 @@ class ParallelBatchProcessor(
 
             # Execute the strategy
             if attempt_number > 1:
-                logger.info(
-                    f"[INFO][Worker {worker_id}] Retry attempt {attempt_number} for {work_item.item_id}"
+                logger.debug(
+                    "[Worker %s] Retry attempt %s for %s",
+                    worker_id,
+                    attempt_number,
+                    work_item.item_id,
                 )
             logger.debug(
-                f"[STRATEGY] Starting strategy.execute() for {work_item.item_id} "
-                f"(attempt {attempt_number}, timeout={self.config.timeout_per_item}s)"
+                "[STRATEGY] Starting strategy.execute() for %s (attempt %s, timeout=%ss)",
+                work_item.item_id,
+                attempt_number,
+                self.config.timeout_per_item,
             )
             llm_start_time = time.time()
 
@@ -823,16 +844,20 @@ class ParallelBatchProcessor(
                 # Proactive rate limiting: acquire token before making request
                 if self._proactive_rate_limiter:
                     logger.debug(
-                        f"[RATE-LIMIT] Acquiring token for {work_item.item_id} (attempt {attempt_number})"
+                        "[RATE-LIMIT] Acquiring token for %s (attempt %s)",
+                        work_item.item_id,
+                        attempt_number,
                     )
                     await self._proactive_rate_limiter.acquire()
                     logger.debug(
-                        f"[RATE-LIMIT] Token acquired for {work_item.item_id} (attempt {attempt_number})"
+                        "[RATE-LIMIT] Token acquired for %s (attempt %s)",
+                        work_item.item_id,
+                        attempt_number,
                     )
 
                 # Dry-run mode: use strategy's dry_run method instead of making API call
                 if self.config.dry_run:
-                    logger.info(f"[DRY-RUN] Skipping API call for {work_item.item_id}")
+                    logger.debug("[DRY-RUN] Skipping API call for %s", work_item.item_id)
                     # Delegate to strategy's dry_run method for mock output.
                     # dry_run is fixed at 2-tuple — no metadata for mock data.
                     output, token_usage = await strategy.dry_run(work_item.prompt)
@@ -882,22 +907,31 @@ class ParallelBatchProcessor(
 
             llm_duration = time.time() - llm_start_time
             logger.debug(
-                f"[STRATEGY] Completed strategy.execute() for {work_item.item_id} "
-                f"in {llm_duration:.1f}s"
+                "[STRATEGY] Completed strategy.execute() for %s in %.1fs",
+                work_item.item_id,
+                llm_duration,
             )
 
             # Log success after previous failures
             if attempt_number > 1:
-                failures = attempt_number - 1
-                logger.info(
-                    f"[OK]SUCCESS on attempt {attempt_number} for {work_item.item_id} "
-                    f"(after {failures} failure(s), took {llm_duration:.1f}s)"
+                logger.debug(
+                    "SUCCESS on attempt %s for %s (after %s failure(s), took %.1fs)",
+                    attempt_number,
+                    work_item.item_id,
+                    attempt_number - 1,
+                    llm_duration,
                 )
 
-            # Log first few results for debugging
+            # Log first few results for debugging (lazy: the big banner string is
+            # only built when DEBUG is actually enabled).
             if self._stats.succeeded < 3:
-                logger.info(
-                    f"[INFO]\n{'=' * 80}\nRESULT for {work_item.item_id}:\n{'=' * 80}\n{output}\n{'=' * 80}"
+                logger.debug(
+                    "\n%s\nRESULT for %s:\n%s\n%s\n%s",
+                    "=" * 80,
+                    work_item.item_id,
+                    "=" * 80,
+                    output,
+                    "=" * 80,
                 )
 
             # Create result
@@ -913,15 +947,17 @@ class ParallelBatchProcessor(
             # Run after middlewares
             work_result = await self._run_middlewares_after(work_result)
 
-            duration = time.time() - start_time
-            await self._emit_event(
-                ProcessingEvent.ITEM_COMPLETED,
-                {
-                    "item_id": work_item.item_id,
-                    "duration": duration,
-                    "tokens": token_usage.get("total_tokens", 0),
-                },
-            )
+            # Skip the duration calc + payload dict when nobody is observing.
+            if self._events.observers:
+                duration = time.time() - start_time
+                await self._emit_event(
+                    ProcessingEvent.ITEM_COMPLETED,
+                    {
+                        "item_id": work_item.item_id,
+                        "duration": duration,
+                        "tokens": token_usage.get("total_tokens", 0),
+                    },
+                )
 
             # Reset consecutive rate limit counter on success (thread-safe).
             await self._rate_limit_coord.on_item_success()
