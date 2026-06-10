@@ -321,7 +321,7 @@ The classifier automatically:
 Gemini has rate limits. Configure automatic handling:
 
 ```python
-from async_batch_llm.core import RateLimitConfig
+from async_batch_llm import RateLimitConfig
 
 config = ProcessorConfig(
     max_workers=10,

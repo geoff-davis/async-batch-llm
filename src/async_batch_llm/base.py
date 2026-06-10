@@ -312,7 +312,10 @@ class BatchResult(Generic[TOutput, TContext]):
     Result of processing a batch of work items.
 
     Attributes:
-        results: List of individual work item results
+        results: Individual work item results, in **completion order** — the
+            order items finished, which (with parallel workers, retries, and
+            rate-limit cooldowns) is generally NOT the order they were added.
+            Use :meth:`by_id` to look results up by ``item_id``.
         total_items: Total number of items in the batch
         succeeded: Number of successful items
         failed: Number of failed items
@@ -420,6 +423,54 @@ class BatchResult(Generic[TOutput, TContext]):
         # of effective billable tokens. See the Returns docstring.
         discount = int(self.total_cached_tokens * (1.0 - cached_token_rate))
         return self.total_input_tokens - discount
+
+    @property
+    def successes(self) -> list[WorkItemResult[TOutput, TContext]]:
+        """The successful results only, in completion order."""
+        return [r for r in self.results if r.success]
+
+    @property
+    def failures(self) -> list[WorkItemResult[TOutput, TContext]]:
+        """The failed results only, in completion order."""
+        return [r for r in self.results if not r.success]
+
+    def by_id(self) -> dict[str, WorkItemResult[TOutput, TContext]]:
+        """Map ``item_id`` -> result for direct lookup.
+
+        Results are ordered by completion, so use this when you need to align
+        outputs back to specific inputs. If two results somehow share an
+        ``item_id``, the later-completed one wins.
+        """
+        return {r.item_id: r for r in self.results}
+
+    def estimated_cost(
+        self,
+        input_per_mtok: float,
+        output_per_mtok: float,
+        cached_token_rate: float | None = None,
+    ) -> float:
+        """Estimate total spend from per-million-token prices.
+
+        Applies the cache discount to input tokens via
+        :meth:`effective_input_tokens`, so cached tokens are billed at their
+        reduced rate.
+
+        Args:
+            input_per_mtok: Price per 1,000,000 input tokens (in your currency).
+            output_per_mtok: Price per 1,000,000 output tokens.
+            cached_token_rate: Fraction of the normal input price paid for
+                cached tokens (see :class:`CachedTokenRates`). When ``None`` it
+                defaults to the Gemini rate and emits a ``UserWarning`` if cached
+                tokens are present — pass an explicit rate for other providers.
+
+        Returns:
+            Estimated total cost: ``effective_input / 1e6 * input_per_mtok +
+            output / 1e6 * output_per_mtok``.
+        """
+        billable_input = self.effective_input_tokens(cached_token_rate)
+        input_cost = billable_input / 1_000_000 * input_per_mtok
+        output_cost = self.total_output_tokens / 1_000_000 * output_per_mtok
+        return input_cost + output_cost
 
 
 def _unpack_strategy_result(

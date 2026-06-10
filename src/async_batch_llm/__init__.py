@@ -87,6 +87,9 @@ from .core import ProcessorConfig, RateLimitConfig, RetryConfig
 # Protocols
 from .core.protocols import LLMModel, ManagedLLMModel
 
+# High-level convenience API (built on ParallelBatchProcessor)
+from .highlevel import process_prompts, process_stream
+
 # LLM call strategies
 from .llm_strategies import (
     DeepSeekStrategy,
@@ -181,6 +184,9 @@ __all__ = [
     "ProcessorConfig",
     "RateLimitConfig",
     "RetryConfig",
+    # High-level convenience API
+    "process_prompts",
+    "process_stream",
     # LLM Strategies
     "DeepSeekStrategy",
     "GeminiStrategy",

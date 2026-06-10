@@ -94,7 +94,50 @@ versions match CI (all Makefile targets call `uv run` to use the synced environm
 
 ### Basic Example
 
-Run a batch of prompts concurrently against any built-in provider:
+The fastest way in is `process_prompts` — hand it a strategy and an iterable of
+prompts, get a `BatchResult` back. Item ids are auto-generated for bare strings:
+
+```python
+import asyncio
+from async_batch_llm import OpenAIModel, OpenAIStrategy, ProcessorConfig, process_prompts
+
+documents = ["Document 1 text...", "Document 2 text..."]
+
+async def main():
+    strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))  # reads OPENAI_API_KEY
+
+    result = await process_prompts(
+        strategy,
+        [f"Summarize: {doc}" for doc in documents],
+        config=ProcessorConfig(max_workers=10),  # up to 10 calls in flight
+    )
+
+    print(f"Succeeded: {result.succeeded}/{result.total_items}")
+    for r in result.successes:
+        print(r.item_id, "->", r.output)
+
+asyncio.run(main())
+```
+
+Want results as they finish (e.g. to write each to disk)? Stream them:
+
+```python
+from async_batch_llm import process_stream
+
+async for result in process_stream(strategy, prompts):
+    if result.success:
+        await save(result.item_id, result.output)
+```
+
+Pass `(item_id, prompt)` pairs instead of bare strings to control ids, and
+forward any processor option (`post_processor`, `observers`, `error_classifier`,
+…) as a keyword argument. The error classifier is auto-selected from the
+strategy when you don't pass one.
+
+#### Full control (advanced)
+
+For custom queueing, per-item context, or fine-grained lifecycle control, drive
+the `ParallelBatchProcessor` directly — `process_prompts` is a thin wrapper over it:
 
 ```python
 import asyncio
@@ -213,7 +256,7 @@ version: JSON mode with markdown-fence-tolerant parsing (`pydantic_json_parser`)
 Configure retry behavior with exponential backoff and jitter:
 
 ```python
-from async_batch_llm.core import RetryConfig
+from async_batch_llm import RetryConfig
 
 config = ProcessorConfig(
     max_workers=5,
@@ -238,7 +281,7 @@ escalate to a smarter or thinking model only when the *output* is bad — see
 Coordinated rate limit handling across all workers:
 
 ```python
-from async_batch_llm.core import RateLimitConfig
+from async_batch_llm import RateLimitConfig
 
 config = ProcessorConfig(
     rate_limit=RateLimitConfig(
@@ -324,7 +367,16 @@ print(f"Cache hit rate: {result.cache_hit_rate():.1f}%")
 # when cached tokens are present (the rate is wrong for other providers).
 from async_batch_llm import CachedTokenRates
 
-print(f"Billable cost: {result.effective_input_tokens(CachedTokenRates.OPENAI)} tokens")
+# Billable *input tokens* after the cache discount (a token count, not a price):
+print(f"Billable input tokens: {result.effective_input_tokens(CachedTokenRates.OPENAI):,}")
+
+# Or estimate spend directly from per-million-token prices:
+cost = result.estimated_cost(
+    input_per_mtok=0.15,   # $ per 1M input tokens
+    output_per_mtok=0.60,  # $ per 1M output tokens
+    cached_token_rate=CachedTokenRates.OPENAI,
+)
+print(f"Estimated cost: ${cost:.4f}")
 ```
 
 ### Observability
@@ -666,7 +718,7 @@ Complete configuration options:
 
 ```python
 from async_batch_llm import ProcessorConfig
-from async_batch_llm.core import RetryConfig, RateLimitConfig
+from async_batch_llm import RetryConfig, RateLimitConfig
 
 config = ProcessorConfig(
     # Core Settings
@@ -765,19 +817,13 @@ if result.succeeded == len(test_items):
 
 ## Performance
 
-### Throughput
-
-- **Sequential**: ~1 item/second (single threaded)
-- **5 workers**: ~5 items/second (parallel)
-- **10 workers**: ~10 items/second (parallel)
-
-### Example: 1000 Items
-
-- **Sequential**: ~16 minutes
-- **5 workers**: ~3 minutes (5× faster)
-- **10 workers**: ~1.5 minutes (10× faster)
-
-**Note:** Actual throughput depends on LLM latency (~200-500ms per call for most APIs).
+Throughput is bounded by provider latency, not the framework. For real
+end-to-end numbers — speedup vs serial, speedup vs a naive chunked
+`asyncio.gather`, and per-batch token/cost — see the
+[GSM8K bulk benchmark](docs/examples/bulk-benchmark.md) (and the
+[scale summary](#a-sense-of-scale) up top). Reproduce it locally with
+[`examples/benchmark_worker_overhead.py`](examples/benchmark_worker_overhead.py)
+(no network) or [`examples/example_batch_benchmark.py`](examples/example_batch_benchmark.py).
 
 ---
 

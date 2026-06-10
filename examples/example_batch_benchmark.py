@@ -31,9 +31,8 @@ order is recoverable downstream.
 A note: at this dataset's size (~240 KB compressed) gzip I/O doesn't move wall
 time — the speedup is entirely concurrency. The blocking write is deliberate:
 at these record sizes, pushing writes to an async queue or a thread only adds
-queue-hop / executor overhead (a standalone micro-benchmark,
-``examples/bench_gzip_write.py``, shows the async path running several times
-slower for tiny records). For multi-hundred-MB outputs — where a synchronous
+queue-hop / executor overhead (aiogzip's own benchmarks show the async path
+running several times slower for tiny records). For multi-hundred-MB outputs — where a synchronous
 compress would stall the loop and every concurrent worker with it — an offloaded
 writer would pay off instead.
 
@@ -299,7 +298,7 @@ class StreamingGzipWriter:
     can share one open file with no lock and no corruption. We deliberately do
     *not* push writes onto an async queue or a thread: at these record sizes the
     queue-hop / executor overhead is pure cost, and the blocking write is both
-    simpler and faster (see ``examples/bench_gzip_write.py``). For
+    simpler and faster. For
     multi-hundred-MB outputs, where the compress step would stall the loop, an
     offloaded writer would pay off instead.
 
@@ -786,7 +785,7 @@ async def race_processor(items: list[Item], contestant: Contestant) -> tuple[flo
 
     This leg times orchestration only — no result writing — so the race stays a
     clean apples-to-apples comparison of how the calls are driven. (Disk I/O is
-    negligible at this scale anyway; see examples/bench_gzip_write.py.)"""
+    negligible at this scale anyway.)"""
     from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
     from async_batch_llm.core import RetryConfig
 
