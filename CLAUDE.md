@@ -461,12 +461,16 @@ src/async_batch_llm/
 - `example_batch_benchmark.py` — flagship "why async-batch-llm" demo:
   GSM8K through DeepSeek Flash vs Gemini 3.1/2.5 Flash-Lite with
   no-think→think escalation, a per-provider 3-way wall-time race
-  (sequential vs `asyncio.gather` vs the framework),
-  `aiogzip` async I/O on both ends, token/cost reporting, and an OpenAI
-  LLM-as-judge fallback grader. `download_gsm8k.py` fetches the data
-  (writes `examples/data/gsm8k_test.jsonl.gz`, gitignored). Needs
-  `aiogzip` + `[deepseek,gemini,openai]` extras. Docs:
-  `docs/examples/bulk-benchmark.md`.
+  (sequential vs `asyncio.gather` vs the framework), a `--throughput`
+  parity bench (chunked gather vs semaphore pool vs the framework),
+  stdlib-`gzip` streaming I/O, token/cost reporting + a terse-vs-verbose
+  sample capture, and an OpenAI LLM-as-judge fallback grader. The bake-off +
+  judge use the high-level `process_prompts` API (context via 3-tuples). Writes
+  `benchmark_results/summary.json` + `throughput.json`. `download_gsm8k.py`
+  fetches the data (writes `examples/data/gsm8k_test.jsonl.gz`, gitignored).
+  Needs `[deepseek,gemini,openai]` extras. `generate_benchmark_charts.py`
+  (needs `[docs]`/matplotlib) turns the JSON into the `docs/benchmarks.md`
+  figures. Docs: `docs/benchmarks.md` (results) + `docs/examples/benchmark-walkthrough.md`.
 
 ---
 

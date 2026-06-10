@@ -20,7 +20,7 @@ through a simple strategy pattern; built on asyncio for I/O-bound throughput.
 
 ## A sense of scale
 
-From a sample [GSM8K test-split run](docs/examples/bulk-benchmark.md) — illustrative, not a spec
+From a sample [GSM8K test-split run](docs/benchmarks.md) — illustrative, not a spec
 (numbers shift with provider, account limits, and network):
 
 - **~17× faster than serial** — 30 problems took ~57 s one-at-a-time vs ~3.4 s through the pool.
@@ -32,7 +32,7 @@ From a sample [GSM8K test-split run](docs/examples/bulk-benchmark.md) — illust
   retrying validation errors, escalating the model on bad output, and riding out 429 cooldowns
   instead of shedding results.
 
-See the [bulk benchmark](docs/examples/bulk-benchmark.md) for methodology and the full tables.
+See the [benchmarks](docs/benchmarks.md) for methodology and the full tables.
 
 ## vs. rolling your own
 

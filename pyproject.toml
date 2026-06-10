@@ -79,6 +79,7 @@ docs = [
     "mkdocs-material>=9.5.0",
     "mkdocstrings[python]>=0.24.0",
     "pymdown-extensions>=10.0",
+    "matplotlib>=3.8",  # generate_benchmark_charts.py (docs/benchmarks.md figures)
 ]
 dev = [
     "pytest>=7.0.0",
