@@ -433,7 +433,7 @@ uv run python examples/example_gemini_direct.py
 from async_batch_llm import PydanticAIStrategy
 from pydantic_ai import Agent
 
-agent = Agent('gemini-2.5-flash', result_type=SummaryOutput)
+agent = Agent('gemini-2.5-flash', output_type=SummaryOutput)
 strategy = PydanticAIStrategy(agent=agent)
 
 work_item = LLMWorkItem(

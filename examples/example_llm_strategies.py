@@ -50,7 +50,7 @@ async def example_pydantic_ai_strategy():
     # Create a PydanticAI agent
     agent = Agent(
         "gemini-2.5-flash",
-        result_type=SummaryOutput,
+        output_type=SummaryOutput,
         system_prompt="You are a helpful assistant that summarizes text.",
     )
 

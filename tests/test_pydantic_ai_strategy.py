@@ -60,7 +60,7 @@ class TestPydanticAIStrategy:
     async def test_dry_run_with_pydantic_model(self):
         """Test dry_run creates mock instance of Pydantic model."""
         mock_agent = MagicMock()
-        mock_agent.result_type = SimpleOutput
+        mock_agent.output_type = SimpleOutput
 
         strategy = PydanticAIStrategy(agent=mock_agent)
         output, tokens = await strategy.dry_run("test prompt")
@@ -75,7 +75,7 @@ class TestPydanticAIStrategy:
     async def test_dry_run_with_complex_model(self):
         """Test dry_run with complex Pydantic model."""
         mock_agent = MagicMock()
-        mock_agent.result_type = ComplexOutput
+        mock_agent.output_type = ComplexOutput
 
         strategy = PydanticAIStrategy(agent=mock_agent)
         output, tokens = await strategy.dry_run("longer test prompt here")
@@ -86,8 +86,13 @@ class TestPydanticAIStrategy:
 
     @pytest.mark.asyncio
     async def test_dry_run_non_pydantic_type(self):
-        """Test dry_run falls back to base class for non-Pydantic types."""
-        mock_agent = MagicMock()
+        """Test dry_run falls back to base class for non-Pydantic types.
+
+        Uses a spec'd mock with only ``result_type`` (no ``output_type``) so this
+        also covers the legacy 0.x fallback branch: output_type absent -> read
+        result_type.
+        """
+        mock_agent = MagicMock(spec=["result_type"])
         mock_agent.result_type = str  # Not a Pydantic model
 
         strategy = PydanticAIStrategy(agent=mock_agent)

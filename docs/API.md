@@ -70,7 +70,7 @@ class LLMWorkItem(Generic[TInput, TOutput, TContext]):
 from async_batch_llm import LLMWorkItem, PydanticAIStrategy
 from pydantic_ai import Agent
 
-agent = Agent("openai:gpt-4", result_type=MyOutput)
+agent = Agent("openai:gpt-4", output_type=MyOutput)
 strategy = PydanticAIStrategy(agent=agent)
 
 work_item = LLMWorkItem(
@@ -532,7 +532,7 @@ class BookSummary(BaseModel):
     title: str
     summary: str
 
-agent = Agent("openai:gpt-4", result_type=BookSummary)
+agent = Agent("openai:gpt-4", output_type=BookSummary)
 strategy = PydanticAIStrategy(agent=agent)
 
 work_item = LLMWorkItem(
@@ -703,7 +703,8 @@ class ProcessorConfig:
 **Fields:**
 
 - `max_workers` (int): Maximum number of concurrent workers. Default: 5
-- `timeout_per_item` (float): Timeout per item in seconds (includes retries). Default: 120.0
+- `timeout_per_item` (float): Timeout applied to each `execute()` attempt in seconds (per-attempt, not a
+  total budget across retries). Default: 120.0
 - `retry` ([RetryConfig](#retryconfig)): Retry configuration
 - `rate_limit` ([RateLimitConfig](#ratelimitconfig)): Rate limit handling configuration
 - `progress_interval` (int): Log progress every N items. Default: 10
@@ -1356,7 +1357,7 @@ async def main():
     )
 
     # Create strategy
-    agent = Agent("openai:gpt-4", result_type=Summary)
+    agent = Agent("openai:gpt-4", output_type=Summary)
     strategy = PydanticAIStrategy(agent=agent)
 
     # Add metrics

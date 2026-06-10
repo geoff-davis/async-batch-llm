@@ -92,28 +92,35 @@ class TokenExtractor:
             cumulative[key] = cumulative.get(key, 0) + attempt_tokens.get(key, 0)
 
 
+def _first_attr(usage: Any, *names: str) -> Any:
+    """Return the first present, non-None attribute in ``names`` (short-circuits).
+
+    Short-circuiting matters: pydantic-ai 1.x keeps ``request_tokens`` /
+    ``response_tokens`` as *deprecated* aliases that emit a DeprecationWarning
+    when touched, so we ask for the 1.x names (``input_tokens`` /
+    ``output_tokens``) first and never read the deprecated ones when the new
+    ones are present.
+    """
+    for name in names:
+        value = getattr(usage, name, None)
+        if value is not None:
+            return value
+    return 0
+
+
 def _coerce_usage(usage: Any) -> dict[str, int]:
     """Convert a provider-specific usage object into our dict shape.
 
     Field-name aliasing covers the common providers:
 
-    - PydanticAI: ``request_tokens`` / ``response_tokens``
-    - Anthropic / our normalized shape: ``input_tokens`` / ``output_tokens``
+    - PydanticAI 1.x / Anthropic / our normalized shape: ``input_tokens`` /
+      ``output_tokens`` (PydanticAI 0.x ``request_tokens`` / ``response_tokens``
+      are still read as a fallback).
     - OpenAI / OpenRouter: ``prompt_tokens`` / ``completion_tokens``
     """
-    input_tokens = _int(
-        getattr(
-            usage,
-            "request_tokens",
-            getattr(usage, "input_tokens", getattr(usage, "prompt_tokens", 0)),
-        )
-    )
+    input_tokens = _int(_first_attr(usage, "input_tokens", "request_tokens", "prompt_tokens"))
     output_tokens = _int(
-        getattr(
-            usage,
-            "response_tokens",
-            getattr(usage, "output_tokens", getattr(usage, "completion_tokens", 0)),
-        )
+        _first_attr(usage, "output_tokens", "response_tokens", "completion_tokens")
     )
     cached = _int(getattr(usage, "cached_input_tokens", 0))
     if not cached:

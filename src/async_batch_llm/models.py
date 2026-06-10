@@ -462,11 +462,7 @@ class GeminiCachedModel:
                         f"(age: {age_str}, "
                         f"renewal buffer: {self._cache_renewal_buffer_seconds}s)"
                     )
-                    self._cache = None
-                    self._cache_created_at = None
-                    self._prepared = False
-                    await self._find_or_create_cache()
-                    self._prepared = True
+                    await self._renew_cache()
 
         if self._cache is None:
             raise RuntimeError("Cache not initialized — call prepare() first")
@@ -521,12 +517,87 @@ class GeminiCachedModel:
         expires_in = self._cache_ttl_seconds - cache_age
         return expires_in <= self._cache_renewal_buffer_seconds
 
-    async def _find_or_create_cache(self) -> None:
+    def _cache_within_renewal_buffer(self, cache: Any) -> bool:
+        """True if ``cache`` expires within the renewal buffer.
+
+        Reads the provider's ``expire_time`` so renewal lookups can skip a
+        candidate that is itself about to expire. Returns False when the
+        expiry is unknown (don't skip what we can't evaluate).
+        """
+        expire_time = getattr(cache, "expire_time", None)
+        if expire_time is None:
+            return False
+        try:
+            expires_in = expire_time.timestamp() - time.time()
+        except (AttributeError, TypeError, ValueError):
+            return False
+        return bool(expires_in <= self._cache_renewal_buffer_seconds)
+
+    async def _renew_cache(self) -> None:
+        """Extend the current cache's TTL in place, or find/create a fresh one.
+
+        Prefers ``caches.update()`` so the SAME cache's TTL is pushed out. This
+        fixes the old renewal bug: ``_find_or_create_cache`` would re-list and
+        re-adopt the very same near-expiry cache, extending nothing — so every
+        ``generate()`` call inside the renewal-buffer window kept doing a
+        ``caches.list()`` round-trip and the cache eventually lapsed anyway.
+
+        Falls back to find-or-create (skipping near-expiry candidates) when
+        there is no current cache or the update call fails.
+        """
+        cache = self._cache
+        if cache is not None and getattr(cache, "name", None):
+            try:
+                from google.genai.types import UpdateCachedContentConfig
+
+                updated = await self._client.aio.caches.update(
+                    name=cache.name,
+                    config=UpdateCachedContentConfig(ttl=f"{self._cache_ttl_seconds}s"),
+                )
+                # Some SDK versions return the refreshed cache object; keep our
+                # reference current when they do.
+                if updated is not None:
+                    self._cache = updated
+                self._cache_created_at = time.time()
+                self._prepared = True
+                logger.info(
+                    f"Renewed Gemini cache TTL in place: {self._cache.name} "
+                    f"(TTL: {self._cache_ttl_seconds}s)"
+                )
+                return
+            except Exception as e:
+                # Keep Exception (not BaseException) so KeyboardInterrupt still
+                # propagates; an in-place renew failure is recoverable via the
+                # find-or-create fallback below.
+                logger.warning(
+                    f"Failed to update TTL for cache '{getattr(cache, 'name', '?')}': {e}. "
+                    "Falling back to find-or-create."
+                )
+
+        # Drop the stale reference and find/create — but skip caches that are
+        # themselves inside the renewal buffer so we don't re-adopt a dud.
+        self._cache = None
+        self._cache_created_at = None
+        self._prepared = False
+        await self._find_or_create_cache(renewing=True)
+        self._prepared = True
+
+    async def _find_or_create_cache(self, renewing: bool = False) -> None:
         try:
             caches = await self._client.aio.caches.list()
 
             async for cache in caches:
                 if not cache.model or not cache.model.endswith(self._model):
+                    continue
+
+                # During renewal, ignore any candidate that is itself about to
+                # expire — adopting it would just put us straight back into the
+                # renewal-buffer window.
+                if renewing and self._cache_within_renewal_buffer(cache):
+                    logger.debug(
+                        f"Skipping cache {cache.name} during renewal: "
+                        "within renewal buffer of expiry"
+                    )
                     continue
 
                 if self._cache_tags:

@@ -34,6 +34,22 @@ logger = logging.getLogger(__name__)
 TOutput = TypeVar("TOutput")
 
 
+def _usage_field(usage: Any, *names: str) -> int:
+    """Read the first present, non-None attribute in ``names`` off ``usage``.
+
+    Lets us read pydantic-ai usage without triggering DeprecationWarnings:
+    we ask for the 1.x name (``input_tokens``) before the deprecated 0.x alias
+    (``request_tokens``). Returns 0 when ``usage`` is falsy or none match.
+    """
+    if not usage:
+        return 0
+    for name in names:
+        value = getattr(usage, name, None)
+        if value is not None:
+            return int(value)
+    return 0
+
+
 def _attach_token_usage(exception: Exception, tokens: "TokenUsage") -> NoReturn:
     """Attach token usage to ``exception`` and re-raise it.
 
@@ -445,12 +461,15 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
         """
         result = await self.agent.run(prompt)
 
-        # Extract token usage FIRST (before accessing result.output which may fail validation)
+        # Extract token usage FIRST (before accessing result.output which may fail validation).
+        # pydantic-ai 1.x renamed request_tokens/response_tokens -> input_tokens/output_tokens
+        # (the old names still exist but emit DeprecationWarning). Prefer the new
+        # names, falling back to the legacy ones so both 0.x and 1.x work cleanly.
         usage = result.usage()
         tokens: TokenUsage = {
-            "input_tokens": usage.request_tokens if usage else 0,
-            "output_tokens": usage.response_tokens if usage else 0,
-            "total_tokens": usage.total_tokens if usage else 0,
+            "input_tokens": _usage_field(usage, "input_tokens", "request_tokens"),
+            "output_tokens": _usage_field(usage, "output_tokens", "response_tokens"),
+            "total_tokens": _usage_field(usage, "total_tokens"),
         }
 
         # Access result.output (may raise validation errors)
@@ -468,9 +487,14 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
         try:
             from pydantic import BaseModel
 
-            result_type = self.agent.result_type  # ty:ignore[unresolved-attribute]
+            # pydantic-ai 1.x renamed Agent.result_type -> Agent.output_type
+            # (the old attribute no longer exists). Prefer the new name, fall
+            # back to the legacy one for 0.x agents.
+            result_type = getattr(self.agent, "output_type", None)
+            if result_type is None:
+                result_type = getattr(self.agent, "result_type", None)  # ty:ignore[unresolved-attribute]
 
-            # If result_type is a Pydantic model, try to create an instance
+            # If output type is a Pydantic model, try to create an instance
             if isinstance(result_type, type) and issubclass(result_type, BaseModel):
                 # Use model_construct to create instance without validation
                 # This allows creating instances even with required fields
