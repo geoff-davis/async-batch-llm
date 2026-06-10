@@ -388,231 +388,37 @@ async with ParallelBatchProcessor(config=config) as processor:
 - Without caching: 100 items × $0.10 = **$10.00**
 - With shared caching: 100 items × $0.03 = **$3.00** (assuming cached tokens are billed at 10% of the original rate)
 
-### Token Tracking
+### Token & cost accounting
 
-Track token usage across all requests, including cached tokens:
+Every `BatchResult` aggregates input / cached / output tokens — across retries,
+and recovered from failed attempts. Turn them into money with `estimated_cost`,
+which applies the per-provider cache discount:
 
 ```python
-result = await processor.process_all()
-
-# Basic token counts
-print(f"Input tokens: {result.total_input_tokens}")
-print(f"Output tokens: {result.total_output_tokens}")
-
-# Cache metrics
-print(f"Cached tokens: {result.total_cached_tokens}")
-print(f"Cache hit rate: {result.cache_hit_rate():.1f}%")
-# Pass a per-provider rate from CachedTokenRates (GEMINI / OPENAI /
-# ANTHROPIC_READ / DEEPSEEK) for an accurate billable-token estimate.
-# Calling it without an explicit rate defaults to the Gemini rate AND warns
-# when cached tokens are present (the rate is wrong for other providers).
 from async_batch_llm import CachedTokenRates
 
-# Billable *input tokens* after the cache discount (a token count, not a price):
-print(f"Billable input tokens: {result.effective_input_tokens(CachedTokenRates.OPENAI):,}")
-
-# Or estimate spend directly from per-million-token prices:
+print(f"Cache hit rate: {result.cache_hit_rate():.1f}%")
 cost = result.estimated_cost(
-    input_per_mtok=0.15,   # $ per 1M input tokens
-    output_per_mtok=0.60,  # $ per 1M output tokens
-    cached_token_rate=CachedTokenRates.OPENAI,
+    input_per_mtok=0.15, output_per_mtok=0.60,   # $ per 1M tokens
+    cached_token_rate=CachedTokenRates.OPENAI,   # per-provider cache rate
 )
 print(f"Estimated cost: ${cost:.4f}")
 ```
 
 ### Observability
 
-Monitor processing with metrics, middleware, and event observers:
-
-```python
-from async_batch_llm import MetricsObserver
-
-# Collect metrics
-metrics = MetricsObserver()
-
-# Observers receive lifecycle events:
-# - BATCH_STARTED / BATCH_COMPLETED
-# - WORKER_STARTED / WORKER_STOPPED
-# - ITEM_STARTED / ITEM_COMPLETED / ITEM_FAILED
-# - RATE_LIMIT_HIT / COOLDOWN_STARTED / COOLDOWN_ENDED
-
-processor = ParallelBatchProcessor(
-    config=config,
-    observers=[metrics],
-)
-
-result = await processor.process_all()
-
-# Get detailed metrics
-collected_metrics = await metrics.get_metrics()
-# Returns: {
-#   "items_processed": 100,
-#   "items_succeeded": 95,
-#   "items_failed": 5,
-#   "avg_processing_time": 1.2,
-#   "rate_limits_hit": 0,
-#   ...
-# }
-
-# Export in different formats
-json_export = await metrics.export_json()
-prometheus_export = await metrics.export_prometheus()
-
-# If you don't use `async with`, call shutdown() to clean up workers/strategies:
-# processor = ParallelBatchProcessor(config=config)
-# ... add work, process ...
-# await processor.shutdown()
-```
+Metrics observers, lifecycle events (`ITEM_*`, `RATE_LIMIT_HIT`, `COOLDOWN_*`, …)
+with JSON / Prometheus export, plus middleware and progress callbacks. See
+[Advanced Patterns → Custom Observers / Middleware](docs/examples/advanced.md).
 
 ---
 
 ## Common Use Cases
 
-### Structured Data Extraction
-
-Extract structured data with automatic validation retry:
-
-```python
-from pydantic import BaseModel, Field
-from async_batch_llm import PydanticAIStrategy, LLMWorkItem
-from pydantic_ai import Agent
-
-class ContactInfo(BaseModel):
-    name: str = Field(min_length=1)
-    email: str = Field(pattern=r'^[\w\.-]+@[\w\.-]+\.\w+$')
-    phone: str
-
-agent = Agent("gemini-2.5-flash", output_type=ContactInfo)
-strategy = PydanticAIStrategy(agent=agent)
-
-async with ParallelBatchProcessor(config=config) as processor:
-    for text in contact_texts:
-        await processor.add_work(
-            LLMWorkItem(
-                item_id=text.id,
-                strategy=strategy,
-                prompt=f"Extract contact info: {text}",
-            )
-        )
-
-    result = await processor.process_all()
-
-# Framework automatically retries on validation errors
-# Each retry can use different temperature (via custom strategy)
-```
-
-### Document Summarization
-
-Summarize many documents in parallel:
-
-```python
-from pydantic import BaseModel
-
-class Summary(BaseModel):
-    title: str
-    key_points: list[str]
-    sentiment: str
-
-agent = Agent("gemini-2.5-flash", output_type=Summary)
-strategy = PydanticAIStrategy(agent=agent)
-
-async with ParallelBatchProcessor(config=config) as processor:
-    for doc in documents:
-        await processor.add_work(
-            LLMWorkItem(
-                item_id=doc.id,
-                strategy=strategy,
-                prompt=f"Summarize this document:\n\n{doc.text}",
-            )
-        )
-
-    result = await processor.process_all()
-
-    # Process results
-    for item_result in result.results:
-        if item_result.success:
-            print(f"{item_result.item_id}: {item_result.output.title}")
-```
-
-### RAG with Context Caching
-
-Process queries against large document context with caching:
-
-```python
-from async_batch_llm import GeminiCachedModel, GeminiStrategy
-from google import genai
-
-client = genai.Client(api_key="your-api-key")
-
-# Cache the large document context once via the explicit API; see also https://developers.googleblog.com/en/gemini-2-5-models-now-support-implicit-caching/
-cached_model = GeminiCachedModel(
-    model="gemini-2.0-flash",
-    client=client,
-    cached_content=[
-        genai.types.Content(
-            role="user",
-            parts=[genai.types.Part(text=large_document_corpus)],
-        )
-    ],
-    cache_ttl_seconds=3600,
-)
-strategy = GeminiStrategy(model=cached_model)
-
-async with ParallelBatchProcessor(config=config) as processor:
-    # Process multiple queries against the cached context
-    for query in user_queries:
-        await processor.add_work(
-            LLMWorkItem(
-                item_id=query.id,
-                strategy=strategy,  # Reuse cached strategy
-                prompt=query.text,
-            )
-        )
-
-    result = await processor.process_all()
-
-# Cached tokens are billed at ~10% of the usual rate, so reusing context can reduce total cost substantially
-```
-
-### Custom Post-Processing
-
-Save results to database as they complete:
-
-```python
-from dataclasses import dataclass
-
-@dataclass
-class WorkContext:
-    user_id: str
-    document_id: str
-
-async def save_result(result):
-    """Save successful results to database."""
-    if result.success:
-        await db.save(
-            user_id=result.context.user_id,
-            document_id=result.context.document_id,
-            summary=result.output,
-        )
-
-async with ParallelBatchProcessor(
-    config=config,
-    post_processor=save_result,
-) as processor:
-    # Add work with context
-    await processor.add_work(
-        LLMWorkItem(
-            item_id="doc_123",
-            strategy=strategy,
-            prompt="Summarize...",
-            context=WorkContext(user_id="user_1", document_id="doc_123"),
-        )
-    )
-
-    result = await processor.process_all()
-```
-
----
+Worked, runnable versions of the usual jobs — structured extraction with
+validation retry, document summarization, RAG with shared context caching, and
+saving results to a DB via a `post_processor` — live in
+[`examples/`](examples/) and the [Basic Usage](docs/examples/basic.md) guide.
 
 ## Advanced Patterns
 
