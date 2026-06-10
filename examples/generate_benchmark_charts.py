@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = ROOT / "examples" / "data" / "benchmark_results"
 ASSETS_DIR = ROOT / "docs" / "assets"
 
-# Stable colour per orchestration / provider so the two charts read consistently.
+# Stable colour per orchestration so the charts read consistently.
 _ORCH_COLORS = {"sequential": "#9e9e9e", "gather": "#90caf9", "async-batch-llm": "#1565c0"}
 _DPI = 140
 

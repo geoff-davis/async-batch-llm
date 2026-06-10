@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **First-class streaming mode** on `ParallelBatchProcessor` —
+  `start()` / `add_work()` / `finish()` / `results()`. Workers run *while* you
+  add work, so a bounded `max_queue_size` becomes backpressure (constant-memory
+  processing of huge or unbounded inputs) instead of a deadlock risk. The
+  high-level `process_stream` / `process_prompts` are built on it.
+- **Per-item context in the high-level API** — `process_prompts` and
+  `process_stream` now accept `(item_id, prompt, context)` triples alongside
+  bare strings and `(item_id, prompt)` pairs; the context rides through to
+  `WorkItemResult.context` and post-processors.
+- **New docs**: a Production Checklist, a Testing guide, and a results-first
+  Benchmarks page backed by a real GSM8K test-split run — committed charts +
+  machine-readable `summary.json`/`throughput.json` under `docs/assets/`,
+  regenerable via `examples/generate_benchmark_charts.py` (matplotlib added to
+  the `[docs]` extra).
+
 ### Changed
 
 - **Gemini `503` / "high demand" overload now retries with per-item exponential
@@ -18,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reserved for genuine quota exhaustion (429 / `RESOURCE_EXHAUSTED`). For
   *sustained* overload at high concurrency, lower `max_workers` or set
   `ProcessorConfig.max_requests_per_minute`.
+- **README restructured around the value proposition** (~half the length):
+  leads with benchmark-backed scale numbers, "vs. rolling your own", and "When
+  NOT to use this"; reference-style sections moved to the docs site.
+- **Benchmark example overhaul** (`example_batch_benchmark.py`): a
+  `--throughput` mode racing chunked `gather` vs a semaphore pool vs the
+  framework at equal concurrency; terse-vs-verbose sample capture and
+  methodology metadata in `summary.json`; the bake-off + judge now use the
+  high-level `process_prompts` API; a benchmark-appropriate 30 s cooldown
+  override so a transient blip doesn't dominate the demo.
 
 ## [0.12.0] - 2026-06-09
 

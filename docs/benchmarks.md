@@ -18,7 +18,7 @@ strategy, the classifier pitfall, gzip streaming, the judge — see the
 | Field | Value |
 | --- | --- |
 | Date | 2026-06-10 |
-| `async-batch-llm` version | 0.12.0 |
+| `async-batch-llm` version | 0.12.0 + this release's pre-merge changes (streaming API, 503 per-item backoff) |
 | Dataset | GSM8K **test split**, 1,319 problems |
 | Models | `deepseek-v4-flash`, `gemini-3.1-flash-lite`, `gemini-2.5-flash-lite`; judge `gpt-5-nano` |
 | Worker pools | DeepSeek 250, Gemini 3.1 250, **Gemini 2.5 Flash-Lite 5** (throttle-capped — 503s/rate-limits even at 10) |
@@ -27,9 +27,9 @@ strategy, the classifier pitfall, gzip streaming, the judge — see the
 
 **Estimated cost to reproduce:** ~**$1–2** total in API spend (full 1,319-item
 bake-off across three providers + a 1,000-item throughput run + a handful of
-judge calls), plus ~25–30 minutes of wall time — dominated by the sequential
-race leg, the 60s inter-leg throughput pauses, and Gemini 2.5's ~21-minute
-bake-off at its 5-worker ceiling.
+judge calls), plus ~30–35 minutes of wall time — dominated by Gemini 2.5's
+~21-minute bake-off at its 5-worker ceiling, the sequential race leg, and the
+60s inter-leg throughput pauses.
 
 ## Wall-time race
 
@@ -48,10 +48,12 @@ concurrency collapses wall time.
 Concurrency collapses wall time (≈16–19× on the unthrottled providers). The race
 runs only 30 items, so a 250-worker pool never fills — every call fires at once
 regardless of orchestration, which is why `gather` and async-batch-llm are
-neck-and-neck here. Gemini 2.5 is the exception: at its 5-worker cap (plus a few
-transient 503s retried with backoff) it can't fire all 30 at once, so its `abl`
-leg trails `gather` — that's the throttle ceiling, not orchestration overhead.
-The pool's real advantage shows up at scale, below.
+neck-and-neck here. Gemini 2.5 is the exception: the framework respects its
+5-worker cap (and retried a few transient 503s with backoff), while the bare
+`gather` ignores the cap, fires all 30 at once, and got away with it on this
+small batch — so the `abl` leg trails. That's the throttle ceiling plus the
+framework playing it safe, not orchestration overhead. The pool's real advantage
+shows up at scale, below.
 
 ## Throughput at scale
 

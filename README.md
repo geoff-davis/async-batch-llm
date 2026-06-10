@@ -24,7 +24,7 @@ From a sample [GSM8K test-split run](docs/benchmarks.md) — illustrative, not a
 (numbers shift with provider, account limits, and network):
 
 - **~16–19× faster than serial** — 30 problems took ~40–65 s one-at-a-time vs ~2–4 s through the
-  pool. Concurrency collapses wall time.
+  pool (even a provider throttle-capped to 5 workers ran 5×). Concurrency collapses wall time.
 - **The full 1,319-problem test split for ~$0.05** on DeepSeek Flash — vs ~$0.43 on a Gemini run at
   the *same* 95–97% accuracy (~8× cheaper), with the per-provider cost breakdown printed for free.
 - **At least as fast as a hand-rolled `Semaphore` + `gather` pool** — it edged ahead in this run (a
@@ -152,7 +152,8 @@ async for result in process_stream(strategy, huge_prompt_source, config=config):
 ```
 
 `prompts` can be any sync **or** async iterable. Pass `(item_id, prompt)` pairs
-instead of bare strings to control ids, and forward any processor option
+instead of bare strings to control ids — or `(item_id, prompt, context)` triples
+to carry per-item data through to the result — and forward any processor option
 (`post_processor`, `observers`, `error_classifier`, …) as a keyword argument.
 The error classifier is auto-selected from the strategy when you don't pass one.
 
