@@ -546,6 +546,13 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._is_processing = False
         self._progress_tasks: set[asyncio.Task[Any]] = set()
 
+        # Background post-processor tasks (only used when
+        # ProcessorConfig.concurrent_post_processing is True). The semaphore is
+        # created per-run in process_all() so it binds to the active event loop
+        # and is sized to max_workers.
+        self._post_processor_tasks: set[asyncio.Task[Any]] = set()
+        self._post_processor_semaphore: asyncio.Semaphore | None = None
+
         self._processing_started = False  # Prevent add_work() after process_all() starts
 
     async def __aenter__(self):
@@ -601,6 +608,20 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 logger.warning("[WARN]Some progress callbacks did not cancel in time")
             finally:
                 self._progress_tasks.clear()
+
+        # Cancel any outstanding background post-processor tasks (concurrent mode)
+        if self._post_processor_tasks:
+            for task in list(self._post_processor_tasks):
+                task.cancel()
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*self._post_processor_tasks, return_exceptions=True),
+                    timeout=PROGRESS_TASK_CANCELLATION_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[WARN]Some post-processors did not cancel in time")
+            finally:
+                self._post_processor_tasks.clear()
 
     async def add_work(self, work_item: LLMWorkItem[TInput, TOutput, TContext]):
         """
@@ -665,6 +686,10 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._results = []
         self._stats = ProcessingStats(total=self._queue.qsize())
 
+        # Fresh post-processor concurrency state, bound to this run's loop.
+        self._post_processor_tasks = set()
+        self._post_processor_semaphore = asyncio.Semaphore(self.max_workers)
+
         # Record start time for rate calculation
         self._stats.start_time = time.time()
         self._is_processing = True
@@ -713,6 +738,13 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
 
         self._is_processing = False
 
+        # In concurrent_post_processing mode, post-processors run as background
+        # tasks; wait for all of them to finish before returning so callers can
+        # rely on every post-processor having completed (return_exceptions so a
+        # single failure can't break the await — they log their own errors).
+        if self._post_processor_tasks:
+            await asyncio.gather(*self._post_processor_tasks, return_exceptions=True)
+
         await self._on_batch_completed()
 
         # Snapshot results before returning so callers receive an independent list.
@@ -747,6 +779,32 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             Result of processing the work item
         """
         pass
+
+    def _spawn_post_processor(
+        self,
+        result: WorkItemResult[TOutput, TContext],
+        timeout: float | None,
+    ) -> None:
+        """Run the post-processor as a tracked background task (concurrent mode).
+
+        Bounded by ``_post_processor_semaphore`` (size ``max_workers``) so we
+        don't spawn unbounded concurrency. The task is tracked so
+        ``process_all()`` can await it before returning and ``cleanup()`` can
+        cancel it. ``_run_post_processor`` swallows its own exceptions, so the
+        task never surfaces an error to the event loop.
+        """
+        if self._post_processor_semaphore is None:
+            # Lazily bind to the running loop if process_all() hasn't set it.
+            self._post_processor_semaphore = asyncio.Semaphore(self.max_workers)
+        semaphore = self._post_processor_semaphore
+
+        async def _bounded_run() -> None:
+            async with semaphore:
+                await self._run_post_processor(result, timeout=timeout)
+
+        task: asyncio.Task[None] = asyncio.create_task(_bounded_run())
+        self._post_processor_tasks.add(task)
+        task.add_done_callback(self._post_processor_tasks.discard)
 
     async def _run_post_processor(
         self,

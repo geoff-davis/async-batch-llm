@@ -100,6 +100,12 @@ class ProcessorConfig:
     # This is the single source of truth — it is threaded into
     # _run_post_processor and governs the wait directly (no hidden inner cap).
     post_processor_timeout: float = 90.0
+    # When True, post-processors run as tracked background tasks (bounded by a
+    # semaphore of size max_workers) instead of inline, so a slow post-processor
+    # doesn't cap worker throughput. Trade-off: post-processors no longer run in
+    # item-completion order, and may overlap. process_all() still awaits every
+    # outstanding post-processor before returning. Default False (inline, ordered).
+    concurrent_post_processing: bool = False
 
     retry: RetryConfig = field(default_factory=RetryConfig)
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)

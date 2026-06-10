@@ -23,6 +23,12 @@ class ProcessingEvent(Enum):
 class ProcessorObserver(ABC):
     """Abstract base class for processor event observers."""
 
+    # Trusted built-in observers set this True to opt out of the per-event
+    # asyncio.wait_for timeout wrapper in EventDispatcher.emit (its task+timer
+    # setup is measurable hot-path overhead). User observers default to False
+    # so a slow/hanging on_event() can never block the worker loop.
+    _abl_fast_observer: bool = False
+
     @abstractmethod
     async def on_event(
         self,

@@ -42,17 +42,27 @@ class EventDispatcher(Generic[TInput, TOutput, TContext]):
 
     async def emit(self, event: ProcessingEvent, data: dict | None = None) -> None:
         """Notify every observer of `event`. Individual observer failures
-        are logged but don't abort the batch."""
+        are logged but don't abort the batch.
+
+        Trusted built-in observers (``_abl_fast_observer``) are awaited
+        directly; only third-party observers pay the per-event
+        ``asyncio.wait_for`` task/timer overhead that guards against a
+        slow/hanging ``on_event``. Callers should avoid building the ``data``
+        payload at all when there are no observers (check ``self.observers``).
+        """
         if not self.observers:
             return
 
         event_data = data or {}
         for observer in self.observers:
             try:
-                await asyncio.wait_for(
-                    observer.on_event(event, event_data),
-                    timeout=OBSERVER_CALLBACK_TIMEOUT,
-                )
+                if observer._abl_fast_observer:
+                    await observer.on_event(event, event_data)
+                else:
+                    await asyncio.wait_for(
+                        observer.on_event(event, event_data),
+                        timeout=OBSERVER_CALLBACK_TIMEOUT,
+                    )
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
