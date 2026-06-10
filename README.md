@@ -12,7 +12,7 @@
 | src/async\_batch\_llm/\_internal/strategy\_lifecycle.py      |       40 |        2 |       10 |        1 |     94.00% |79-\>78, 100, 104 |
 | src/async\_batch\_llm/base.py                                |      377 |       39 |      104 |       12 |     87.73% |91, 263-\>exit, 660-661, 690-691, 698-699, 703-713, 724-725, 798, 826, 839, 844-\>exit, 878, 882, 933-949, 1010, 1042-\>exit, 1046, 1048, 1065, 1080-\>exit, 1089-1093, 1110-1112 |
 | src/async\_batch\_llm/classifiers/\_\_init\_\_.py            |        4 |        0 |        0 |        0 |    100.00% |           |
-| src/async\_batch\_llm/classifiers/gemini.py                  |       45 |        9 |       18 |        1 |     84.13% |46-48, 56-58, 100-101, 135-136 |
+| src/async\_batch\_llm/classifiers/gemini.py                  |       45 |        9 |       18 |        1 |     84.13% |45-47, 55-57, 105-106, 140-141 |
 | src/async\_batch\_llm/classifiers/openai.py                  |       82 |       17 |       36 |        3 |     83.05% |59-70, 119-120, 128, 138, 204-205, 277 |
 | src/async\_batch\_llm/classifiers/openrouter.py              |       10 |        0 |        2 |        0 |    100.00% |           |
 | src/async\_batch\_llm/core/\_\_init\_\_.py                   |        3 |        0 |        0 |        0 |    100.00% |           |
