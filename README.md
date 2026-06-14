@@ -73,6 +73,10 @@ a one-line provider swap.
   for *real-time* bulk — results now, at full price.
 - **It's a handful of calls.** For a one-off script over a few dozen prompts, a bare
   `asyncio.gather` (optionally with a semaphore) is fine — don't take the dependency.
+  That said, if you want this library's *resilience* (error-aware retries, a coordinated
+  rate-limit cooldown, token accounting) for a single call or a web service's request
+  path *without* the batch machinery, reach for
+  [`call()` / `LLMGateway`](#single-calls-and-a-shared-gateway) instead.
 
 ---
 
@@ -339,6 +343,30 @@ config = ProcessorConfig(
 When any worker hits a rate limit (429 error), **all workers pause** during cooldown, then gradually
 resume to prevent immediate re-limiting.
 
+### Single calls and a shared gateway
+
+The resilience layer above — error-aware retries, the coordinated cooldown, token accounting — is
+also reachable *without* the batch processor, for the cases where parallelism isn't the point:
+
+```python
+from async_batch_llm import OpenAIModel, OpenAIStrategy, call, LLMGateway
+
+strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
+
+# One prompt through the full pipeline — no queue, workers, or result stream.
+summary = await call(strategy, "Summarize: ...")          # returns output, or raises
+
+# A long-lived, shared entry point for a web service's request path. Many
+# concurrent callers share one cooldown (one caller's 429 throttles everyone,
+# then slow-starts); a semaphore bounds global concurrency.
+async with LLMGateway(strategy, config=ProcessorConfig(max_workers=5)) as gw:
+    reply = await gw.submit("Answer this one request")
+```
+
+`try_call()` / `gw.try_submit()` return the full `WorkItemResult` (token usage, metadata, error)
+instead of raising. See [`examples/example_single_call.py`](examples/example_single_call.py) and
+[`examples/example_gateway.py`](examples/example_gateway.py).
+
 ### Cost Optimization with Caching
 
 Share a single cached strategy across all work items to avoid paying for the same context repeatedly:
@@ -458,6 +486,8 @@ errors), and small-batch integration tests. See the **[Testing guide](docs/testi
 Check out the [`examples/`](examples/) directory for complete working examples:
 
 - [`example_llm_strategies.py`](examples/example_llm_strategies.py) - All built-in strategies
+- [`example_single_call.py`](examples/example_single_call.py) - One resilient call, no batch machinery
+- [`example_gateway.py`](examples/example_gateway.py) - Shared rate-limited gateway for a request path
 - [`example_openai.py`](examples/example_openai.py) - OpenAI integration
 - [`example_openrouter.py`](examples/example_openrouter.py) - OpenRouter (multi-provider)
 - [`example_deepseek.py`](examples/example_deepseek.py) - DeepSeek with native cache-hit tracking
