@@ -87,12 +87,21 @@ def parse_response(response) -> SummaryOutput:
     """Parse the normalized LLMResponse into your output model."""
     return SummaryOutput.model_validate_json(response.text)
 
-# Create the model, then wrap it in the strategy. The built-in model doesn't
-# thread Gemini's per-call generation config (response_schema /
-# response_mime_type), so ask for JSON in the prompt — for schema-enforced JSON,
-# use a custom strategy that calls the client directly.
+# Create the model, then wrap it in the strategy. Pass `generation_config` to
+# thread Gemini's per-call generation config — here, server-enforced JSON via
+# `response_schema` / `response_mime_type` — on every call, no custom strategy
+# needed. (For a config that must change per retry attempt, subclass
+# `ModelStrategy.execute()` and read `self.generation_config`.)
 model = GeminiModel("gemini-2.5-flash", client)
-strategy = GeminiStrategy(model, response_parser=parse_response, temperature=0.7)
+strategy = GeminiStrategy(
+    model,
+    response_parser=parse_response,
+    temperature=0.7,
+    generation_config={
+        "response_mime_type": "application/json",
+        "response_schema": SummaryOutput,
+    },
+)
 
 # Configure processor
 config = ProcessorConfig(max_workers=5, timeout_per_item=30.0)
@@ -293,6 +302,11 @@ config = GenerateContentConfig(
     ],
 )
 ```
+
+To apply these on every call without writing a custom strategy, pass the
+equivalent **dict** as `GeminiStrategy(..., generation_config={...})` — it's
+merged into the SDK config on each `generate()`. (`safety_settings` also has a
+dedicated `GeminiModel(safety_settings=...)` argument.)
 
 See: <https://ai.google.dev/gemini-api/docs/models/generative-models#model-parameters>
 
