@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-14
+
 ### Added
 
 - **Single-call helper** — `call()` / `call_result()` run one prompt through the
@@ -48,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the batch worker, the single-call helper, and the gateway share one engine. The
   processor's public surface and behavior are unchanged; it now delegates its
   per-item methods to the executor.
+- **`google-genai` upgraded to 2.8.0** — the pinned dependency moves from 1.73.1
+  to 2.8.0. API-compatible for the Gemini integration; the existing `>=1.49.0`
+  constraint already permitted it (lockfile-only change).
+- **Deprecation fix** — replaced `asyncio.iscoroutinefunction` with
+  `inspect.iscoroutinefunction` (the asyncio alias is slated for removal in
+  Python 3.16); identical semantics for plain coroutine functions and a
+  callable's `__call__`.
 
 ## [0.13.0] - 2026-06-10
 
