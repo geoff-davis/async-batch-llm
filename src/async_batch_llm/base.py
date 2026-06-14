@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -628,9 +629,9 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self.progress_callback_timeout = progress_callback_timeout
         self._progress_callback_is_async = False
         if progress_callback is not None:
-            self._progress_callback_is_async = asyncio.iscoroutinefunction(progress_callback) or (
+            self._progress_callback_is_async = inspect.iscoroutinefunction(progress_callback) or (
                 callable(progress_callback)
-                and asyncio.iscoroutinefunction(progress_callback.__call__)  # type: ignore[operator]
+                and inspect.iscoroutinefunction(progress_callback.__call__)  # type: ignore[operator]
             )
         self._queue: asyncio.Queue[LLMWorkItem[TInput, TOutput, TContext] | None] = asyncio.Queue(
             maxsize=max_queue_size
