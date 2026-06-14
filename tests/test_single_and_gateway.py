@@ -224,3 +224,22 @@ async def test_gateway_aclose_drains_inflight_before_cleanup():
     result = await running
     assert result.success
     await asyncio.wait_for(closing, timeout=2.0)  # drains, then completes
+
+
+@pytest.mark.asyncio
+async def test_gateway_concurrent_aclose_all_await_cleanup():
+    # A second concurrent aclose() must not return until cleanup is actually
+    # complete — not just because the first call set the closed flag.
+    gw = LLMGateway(_slow_strategy(0.3), config=ProcessorConfig(max_workers=2))
+    running = asyncio.create_task(gw.submit_result("slow"))
+    await asyncio.sleep(0.05)  # in-flight
+
+    first = asyncio.create_task(gw.aclose())
+    second = asyncio.create_task(gw.aclose())
+    await asyncio.sleep(0.05)
+    assert not first.done(), "first aclose() returned before drain"
+    assert not second.done(), "second aclose() returned before cleanup completed"
+
+    await running
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=2.0)
+    assert gw._host._strategy_lifecycle._cleaned_up  # cleanup ran (once)

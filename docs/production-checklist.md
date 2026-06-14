@@ -104,7 +104,30 @@ async for result in process_stream(strategy, huge_prompt_source, config=config):
 a file lazily). The low-level equivalent is
 `processor.start()` / `add_work()` / `finish()` / `results()`.
 
-## 7. Cleanup
+## 7. Single calls and the gateway (request paths)
+
+For a web service's request path — where work arrives one call at a time, not as
+a batch — use [`LLMGateway`](api/single-gateway.md) instead of standing up a
+processor per request:
+
+- **One long-lived gateway per app.** Create it once at startup (e.g. a FastAPI
+  lifespan handler) and share it across all request handlers. A single gateway
+  means one shared rate-limit cooldown — when one caller hits a 429, all callers
+  briefly pause and then slow-start, instead of a thundering herd.
+- **Set `max_pending` and `submit_timeout` for web paths.** `max_pending` caps
+  in-flight requests (running + waiting) so an overload sheds load instantly
+  (rejecting with a failed result) rather than growing an unbounded waiter list;
+  `submit_timeout` bounds per-caller latency so a request stuck behind a cooldown
+  returns instead of hanging the handler. Both are off by default.
+- **Shutdown drains admitted requests.** `aclose()` (the `async with` exit) stops
+  accepting new work, then waits for already-admitted requests to finish before
+  cleaning up the shared strategy, so in-flight calls aren't cut off mid-flight.
+  `submit_timeout` bounds how long that drain can take.
+
+For a single ad-hoc call, [`call()` / `call_result()`](api/single-gateway.md)
+run one prompt through the same resilience pipeline with no pool at all.
+
+## 8. Cleanup
 
 Use the processor as an `async with` context manager so workers, caches, and
 HTTP clients are released. If you can't, call `await processor.shutdown()` when

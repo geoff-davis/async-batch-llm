@@ -99,6 +99,9 @@ class LLMGateway(Generic[TOutput]):
         # already-admitted work before cleaning up the shared strategy.
         self._idle = asyncio.Event()
         self._idle.set()
+        # The single drain+cleanup task; concurrent aclose() callers all await it
+        # so every `await gw.aclose()` returns only once cleanup is complete.
+        self._close_task: asyncio.Task[None] | None = None
 
     async def __aenter__(self) -> LLMGateway[TOutput]:
         return self
@@ -180,11 +183,20 @@ class LLMGateway(Generic[TOutput]):
         to drain before cleaning up the shared strategy, whose clients/caches may
         still be in use. ``submit_timeout`` bounds how long an admitted request
         can hold up shutdown.
+
+        Concurrent callers share one drain+cleanup task, so *every*
+        ``await gw.aclose()`` returns only once cleanup has actually completed —
+        not just because another call set the closed flag first.
         """
-        if self._closed:
-            return
+        # Set synchronously so new submits are rejected immediately, even before
+        # the cleanup task below is scheduled.
         self._closed = True
-        # No new admissions past this point, so _inflight only decreases.
+        if self._close_task is None:
+            self._close_task = asyncio.ensure_future(self._drain_and_close())
+        await self._close_task
+
+    async def _drain_and_close(self) -> None:
+        # No new admissions once _closed is set, so _inflight only decreases.
         if self._inflight > 0:
             await self._idle.wait()
         await self._host.aclose()

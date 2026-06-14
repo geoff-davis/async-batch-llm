@@ -35,8 +35,14 @@ _SINGLE_CALL_ITEM_ID = "single"
 
 
 class LLMCallError(RuntimeError):
-    """Raised by :func:`call` (and ``LLMGateway.submit``) when a request fails
-    after all retries.
+    """Raised by :func:`call` / ``LLMGateway.submit`` when a request fails and no
+    originating provider exception was preserved.
+
+    When the failure carried a provider exception — the usual case for an
+    exhausted-retry or permanent error — that exact exception is re-raised
+    instead, preserving its type. ``LLMCallError`` is the fallback for failures
+    that produce no exception: a middleware filter-skip, or the gateway's
+    admission-cap / ``submit_timeout`` rejections.
 
     Carries the originating :class:`WorkItemResult` on ``.result`` so callers
     can still reach token usage, metadata, and the error string.
