@@ -1,0 +1,267 @@
+"""Tests for the queue-less single-call helper and gateway."""
+
+import asyncio
+
+import pytest
+from pydantic import BaseModel
+
+from async_batch_llm import (
+    LLMCallError,
+    LLMGateway,
+    ProcessorConfig,
+    PydanticAIStrategy,
+    call,
+    call_result,
+)
+from async_batch_llm.core import RateLimitConfig, RetryConfig
+from async_batch_llm.testing import MockAgent
+
+
+class Out(BaseModel):
+    text: str
+
+
+def _agent(**kwargs):
+    return MockAgent(response_factory=lambda p: Out(text=f"ok:{p}"), latency=0.01, **kwargs)
+
+
+def _strategy(**kwargs):
+    return PydanticAIStrategy(agent=_agent(**kwargs))
+
+
+def _slow_strategy(latency: float) -> PydanticAIStrategy:
+    # _agent() pins latency=0.01, so build a slow agent directly.
+    agent = MockAgent(response_factory=lambda p: Out(text=f"ok:{p}"), latency=latency)
+    return PydanticAIStrategy(agent=agent)
+
+
+# ── single call ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_call_success_returns_output():
+    out = await call(_strategy(), "hello")
+    assert isinstance(out, Out)
+    assert out.text == "ok:hello"
+
+
+@pytest.mark.asyncio
+async def test_call_result_reports_tokens():
+    result = await call_result(_strategy(), "hello")
+    assert result.success
+    assert result.token_usage["total_tokens"] == 30
+
+
+@pytest.mark.asyncio
+async def test_call_retries_through_rate_limit():
+    # Rate-limited on the first call, succeeds on retry — exercises the
+    # coordinator's cooldown/slow-start path with no worker pool.
+    cfg = ProcessorConfig(
+        max_workers=1,
+        rate_limit=RateLimitConfig(cooldown_seconds=0.05),
+        retry=RetryConfig(max_attempts=3, max_rate_limit_retries=5),
+    )
+    out = await call(_strategy(rate_limit_on_call=1), "hi", config=cfg)
+    assert out.text == "ok:hi"
+
+
+@pytest.mark.asyncio
+async def test_call_failure_raises_and_call_result_does_not():
+    cfg = ProcessorConfig(max_workers=1, retry=RetryConfig(max_attempts=2))
+    strat = _strategy(failure_rate=1.0)
+    with pytest.raises((LLMCallError, Exception)):
+        await call(strat, "boom", config=cfg)
+
+    result = await call_result(_strategy(failure_rate=1.0), "boom", config=cfg)
+    assert not result.success
+    assert result.error
+    # The originating exception is preserved on the failed result.
+    assert result.exception is not None
+
+
+@pytest.mark.asyncio
+async def test_call_reraises_provider_exception():
+    # call() re-raises the provider's actual exception (message preserved), not
+    # a generic LLMCallError wrapper — because the executor records it on
+    # WorkItemResult.exception and unwrap_result re-raises it.
+    cfg = ProcessorConfig(max_workers=1, retry=RetryConfig(max_attempts=2))
+    with pytest.raises(Exception) as exc_info:
+        await call(_strategy(failure_rate=1.0), "boom", config=cfg)
+    assert not isinstance(exc_info.value, LLMCallError)
+    assert "Random failure" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_failed_result_exception_traceback_is_detached():
+    # The stored exception keeps its type/message but has no traceback, so
+    # accumulated failed results don't pin frame locals.
+    cfg = ProcessorConfig(max_workers=1, retry=RetryConfig(max_attempts=2))
+    result = await call_result(_strategy(failure_rate=1.0), "boom", config=cfg)
+    assert result.exception is not None
+    assert result.exception.__traceback__ is None
+    assert "Random failure" in str(result.exception)
+
+
+# ── gateway ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_gateway_concurrent_submits():
+    async with LLMGateway(_strategy(), config=ProcessorConfig(max_workers=4)) as gw:
+        outs = await asyncio.gather(*(gw.submit(f"p{i}") for i in range(12)))
+    assert [o.text for o in outs] == [f"ok:p{i}" for i in range(12)]
+
+
+@pytest.mark.asyncio
+async def test_gateway_shared_cooldown_recovers():
+    # A 429 on one request pauses via the shared coordinator; all still succeed.
+    cfg = ProcessorConfig(
+        max_workers=4,
+        rate_limit=RateLimitConfig(cooldown_seconds=0.05),
+        retry=RetryConfig(max_attempts=3, max_rate_limit_retries=5),
+    )
+    async with LLMGateway(_strategy(rate_limit_on_call=2), config=cfg) as gw:
+        outs = await asyncio.gather(*(gw.submit(f"p{i}") for i in range(6)))
+    assert all(o.text.startswith("ok:") for o in outs)
+
+
+@pytest.mark.asyncio
+async def test_gateway_submit_result_reports_failure():
+    cfg = ProcessorConfig(max_workers=2, retry=RetryConfig(max_attempts=2))
+    async with LLMGateway(_strategy(failure_rate=1.0), config=cfg) as gw:
+        result = await gw.submit_result("boom")
+    assert not result.success
+
+
+@pytest.mark.asyncio
+async def test_gateway_closed_rejects():
+    gw = LLMGateway(_strategy(), config=ProcessorConfig(max_workers=2))
+    await gw.aclose()
+    with pytest.raises(RuntimeError):
+        await gw.submit("x")
+
+
+@pytest.mark.asyncio
+async def test_gateway_cancelled_submit_frees_slot():
+    # max_workers=1: a cancelled in-flight submit must release its slot so the
+    # next submit can proceed (queue-less cancellation is free).
+    async with LLMGateway(_strategy(), config=ProcessorConfig(max_workers=1)) as gw:
+        slow = asyncio.create_task(gw.submit("slow"))
+        await asyncio.sleep(0)
+        slow.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await slow
+        out = await asyncio.wait_for(gw.submit("after"), timeout=2.0)
+    assert out.text == "ok:after"
+
+
+# ── admission cap + submit_timeout ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_gateway_admission_cap_rejects_when_saturated():
+    # max_workers=1, max_pending=0 → at most 1 in flight. A slow request holds
+    # the only slot; the next submit is rejected instantly instead of waiting.
+    cfg = ProcessorConfig(max_workers=1)
+    async with LLMGateway(_slow_strategy(0.3), config=cfg, max_pending=0) as gw:
+        held = asyncio.create_task(gw.submit_result("slow"))
+        await asyncio.sleep(0.05)  # let it acquire the slot and become in-flight
+        rejected = await gw.submit_result("over-cap")
+        assert not rejected.success
+        assert "saturated" in (rejected.error or "")
+        # The held request still completes normally.
+        ok = await held
+        assert ok.success and ok.output.text == "ok:slow"
+
+
+@pytest.mark.asyncio
+async def test_gateway_submit_timeout_rejects_slow_call():
+    # The call takes ~0.5s but the per-caller budget is 0.05s → failed result.
+    cfg = ProcessorConfig(max_workers=2)
+    async with LLMGateway(_slow_strategy(0.5), config=cfg, submit_timeout=0.05) as gw:
+        result = await gw.submit_result("slow")
+    assert not result.success
+    assert "timed out" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_gateway_per_call_timeout_override():
+    # A per-call timeout overrides the gateway default (here: no default).
+    async with LLMGateway(_slow_strategy(0.5), config=ProcessorConfig(max_workers=2)) as gw:
+        result = await gw.submit_result("slow", timeout=0.05)
+    assert not result.success
+    assert "timed out" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_gateway_cap_off_admits_beyond_workers():
+    # No max_pending → pure backpressure: callers beyond max_workers wait, and
+    # all of them ultimately succeed (behavior unchanged from before the cap).
+    async with LLMGateway(_strategy(), config=ProcessorConfig(max_workers=2)) as gw:
+        outs = await asyncio.gather(*(gw.submit(f"p{i}") for i in range(8)))
+    assert [o.text for o in outs] == [f"ok:p{i}" for i in range(8)]
+
+
+def test_gateway_rejects_invalid_knobs():
+    with pytest.raises(ValueError):
+        LLMGateway(_strategy(), max_pending=-1)
+    with pytest.raises(ValueError):
+        LLMGateway(_strategy(), submit_timeout=0)
+
+
+@pytest.mark.asyncio
+async def test_gateway_aclose_drains_inflight_before_cleanup():
+    # aclose() must not clean up the shared strategy while a request is still
+    # running — it waits for already-admitted work to drain first.
+    gw = LLMGateway(_slow_strategy(0.3), config=ProcessorConfig(max_workers=2))
+    running = asyncio.create_task(gw.submit_result("slow"))
+    await asyncio.sleep(0.05)  # let it become in-flight
+
+    closing = asyncio.create_task(gw.aclose())
+    await asyncio.sleep(0.05)
+    assert not closing.done(), "aclose() returned before the in-flight request drained"
+
+    result = await running
+    assert result.success
+    await asyncio.wait_for(closing, timeout=2.0)  # drains, then completes
+
+
+@pytest.mark.asyncio
+async def test_gateway_concurrent_aclose_all_await_cleanup():
+    # A second concurrent aclose() must not return until cleanup is actually
+    # complete — not just because the first call set the closed flag.
+    gw = LLMGateway(_slow_strategy(0.3), config=ProcessorConfig(max_workers=2))
+    running = asyncio.create_task(gw.submit_result("slow"))
+    await asyncio.sleep(0.05)  # in-flight
+
+    first = asyncio.create_task(gw.aclose())
+    second = asyncio.create_task(gw.aclose())
+    await asyncio.sleep(0.05)
+    assert not first.done(), "first aclose() returned before drain"
+    assert not second.done(), "second aclose() returned before cleanup completed"
+
+    await running
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=2.0)
+    assert gw._host._strategy_lifecycle._cleaned_up  # cleanup ran (once)
+
+
+@pytest.mark.asyncio
+async def test_gateway_aclose_cancellation_does_not_abort_cleanup():
+    # Cancelling one aclose() waiter mid-drain must NOT cancel the shared
+    # drain/cleanup task — cleanup still runs and a later aclose() completes.
+    gw = LLMGateway(_slow_strategy(0.3), config=ProcessorConfig(max_workers=2))
+    running = asyncio.create_task(gw.submit_result("slow"))
+    await asyncio.sleep(0.05)  # in-flight
+
+    first = asyncio.create_task(gw.aclose())
+    await asyncio.sleep(0.05)  # let it reach the drain wait
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    # The in-flight request finishes; cleanup still happens and a fresh aclose()
+    # returns normally rather than raising CancelledError.
+    result = await running
+    assert result.success
+    await asyncio.wait_for(gw.aclose(), timeout=2.0)
+    assert gw._host._strategy_lifecycle._cleaned_up

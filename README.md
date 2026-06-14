@@ -1,8 +1,15 @@
 # async-batch-llm
 
-**Run thousands of individual LLM calls in parallel — with coordinated rate-limit handling,
-error-type-aware retries, and per-call cost accounting — when you need the results *now*, not from
-a 24-hour batch API.**
+**async-batch-llm is an asyncio toolkit for latency-sensitive LLM workloads made
+of independent calls: bulk prompt runs you want back during the current workflow,
+plus single-call and service request paths that need the same retry/rate-limit
+behavior. It provides provider-agnostic execution surfaces — a bounded worker pool
+for bulk runs, plus queue-less single-call and gateway helpers for request paths —
+with coordinated cooldowns for rate limits, error-type-aware retries, bounded
+streaming, and token/cost accounting, including failed attempts.**
+
+Use it when provider batch APIs are too slow for the job; use those batch APIs
+when a cheaper 24-hour turnaround is acceptable.
 
 Provider-agnostic (OpenAI, Anthropic, Google, DeepSeek, OpenRouter, PydanticAI, or your own)
 through a simple strategy pattern; built on asyncio for I/O-bound throughput.
@@ -20,17 +27,29 @@ through a simple strategy pattern; built on asyncio for I/O-bound throughput.
 
 ## A sense of scale
 
-From a sample [GSM8K test-split run](docs/benchmarks.md) — illustrative, not a spec
-(numbers shift with provider, account limits, and network):
+One concrete [GSM8K test-split run](docs/benchmarks.md) is more useful than an
+abstract "fast". Treat these as order-of-magnitude examples, not promises:
+model latency, account limits, pricing, and network all move the numbers.
 
-- **~16–19× faster than serial** — 30 problems took ~40–65 s one-at-a-time vs ~2–4 s through the
-  pool (even a provider throttle-capped to 5 workers ran 5×). Concurrency collapses wall time.
-- **The full 1,319-problem test split for ~$0.05** on DeepSeek Flash — vs ~$0.43 on a Gemini run at
-  the *same* 95–97% accuracy (~8× cheaper), with the per-provider cost breakdown printed for free.
-- **At least as fast as a hand-rolled `Semaphore` + `gather` pool** — it edged ahead in this run (a
-  bounded worker pool runs a fixed N tasks instead of scheduling every coroutine up front) — and,
-  unlike a bare pool, *survives* the 429s/503s it would otherwise drop: retrying validation errors,
-  escalating the model on bad output, riding out throttling.
+- **Thirty independent calls: seconds instead of a minute.** The serial race took
+  39–65 s. With a worker pool it finished in 2.1–4.2 s on the uncapped providers
+  (15.6–19.1× faster). The throttle-capped Gemini 2.5 run used 5 workers and
+  landed at 8.1 s (5.0×).
+- **A thousand-call pool actually fills.** At equal concurrency on 1,000 prompts,
+  async-batch-llm processed 72 items/s on DeepSeek and 108 items/s on Gemini 3.1,
+  versus 58 and 55 items/s for a fair `Semaphore` pool. The exact multiple is
+  run-specific; the durable point is bounded workers and backpressure without
+  scheduling every coroutine up front.
+- **The full 1,319-item split made provider tradeoffs visible.** DeepSeek Flash
+  completed for $0.054 at 97.0% accuracy; Gemini 3.1 cost $0.433 at 96.6%;
+  Gemini 2.5 cost $0.261 at 95.4% but took ~21.5 minutes because it was capped
+  at 5 workers. The package does not make provider calls cheaper; it makes the
+  cost/latency/accuracy tradeoffs visible and keeps the provider swap small.
+- **Retries are part of the run, not an afterthought.** DeepSeek recovered 9
+  parse failures; the rough Gemini 2.5 run recorded 120 retries, 41 model
+  escalations, and transient 503s/timeouts, finishing at 95.4% accuracy with 2
+  permanent errors. A bare `gather` loop would make that error handling and cost
+  accounting your problem.
 
 See the [benchmarks](docs/benchmarks.md) for methodology and the full tables.
 
@@ -73,6 +92,10 @@ a one-line provider swap.
   for *real-time* bulk — results now, at full price.
 - **It's a handful of calls.** For a one-off script over a few dozen prompts, a bare
   `asyncio.gather` (optionally with a semaphore) is fine — don't take the dependency.
+  That said, if you want this library's *resilience* (error-aware retries, a coordinated
+  rate-limit cooldown, token accounting) for a single call or a web service's request
+  path *without* the batch machinery, reach for
+  [`call()` / `LLMGateway`](#single-calls-and-a-shared-gateway) instead.
 
 ---
 
@@ -339,6 +362,35 @@ config = ProcessorConfig(
 When any worker hits a rate limit (429 error), **all workers pause** during cooldown, then gradually
 resume to prevent immediate re-limiting.
 
+### Single calls and a shared gateway
+
+The resilience layer above — error-aware retries, the coordinated cooldown, token accounting — is
+also reachable *without* the batch processor, for the cases where parallelism isn't the point:
+
+```python
+from async_batch_llm import OpenAIModel, OpenAIStrategy, call, LLMGateway
+
+strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
+
+# One prompt through the full pipeline — no queue, workers, or result stream.
+summary = await call(strategy, "Summarize: ...")          # returns output, or raises
+
+# A long-lived, shared entry point for a web service's request path. Many
+# concurrent callers share one cooldown (one caller's 429 throttles everyone,
+# then slow-starts); a semaphore bounds global concurrency. Opt into
+# load-shedding with max_pending (admission cap) and submit_timeout (latency budget).
+async with LLMGateway(
+    strategy, config=ProcessorConfig(max_workers=5), max_pending=100, submit_timeout=30
+) as gw:
+    reply = await gw.submit("Answer this one request")
+```
+
+On failure, `call()` / `gw.submit()` re-raise the provider's own exception (preserving its type;
+`LLMCallError` only when none was preserved). `call_result()` / `gw.submit_result()` instead return
+the full `WorkItemResult` — `success`, `error`, `token_usage`, `metadata`, and the originating
+`exception` — without raising. See [`examples/example_single_call.py`](examples/example_single_call.py)
+and [`examples/example_gateway.py`](examples/example_gateway.py).
+
 ### Cost Optimization with Caching
 
 Share a single cached strategy across all work items to avoid paying for the same context repeatedly:
@@ -458,6 +510,8 @@ errors), and small-batch integration tests. See the **[Testing guide](docs/testi
 Check out the [`examples/`](examples/) directory for complete working examples:
 
 - [`example_llm_strategies.py`](examples/example_llm_strategies.py) - All built-in strategies
+- [`example_single_call.py`](examples/example_single_call.py) - One resilient call, no batch machinery
+- [`example_gateway.py`](examples/example_gateway.py) - Shared rate-limited gateway for a request path
 - [`example_openai.py`](examples/example_openai.py) - OpenAI integration
 - [`example_openrouter.py`](examples/example_openrouter.py) - OpenRouter (multi-provider)
 - [`example_deepseek.py`](examples/example_deepseek.py) - DeepSeek with native cache-hit tracking

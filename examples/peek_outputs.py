@@ -85,7 +85,11 @@ def build_models() -> list[tuple[str, Any, dict[str, Any]]]:
 
         from async_batch_llm import GeminiModel
 
-        client = genai.Client(vertexai=True) if GEMINI_USE_VERTEX else genai.Client(api_key=GOOGLE_API_KEY)
+        client = (
+            genai.Client(vertexai=True)
+            if GEMINI_USE_VERTEX
+            else genai.Client(api_key=GOOGLE_API_KEY)
+        )
         entries.append(
             (
                 "gemini-3.1 (minimal)",
