@@ -579,11 +579,13 @@ async def test_generation_config_forwarded_to_model():
 
 
 @pytest.mark.asyncio
-async def test_generation_config_defaults_to_none():
-    """Omitting generation_config forwards config=None (unchanged behavior)."""
+async def test_generation_config_omitted_when_unset():
+    """Omitting generation_config calls generate() WITHOUT a config kwarg, so a
+    custom LLMModel whose generate() doesn't accept config keeps working (the
+    pre-generation_config call shape is preserved)."""
     model = _recording_model()
     strategy = ModelStrategy(model)
 
     await strategy.execute("prompt", 1, 10.0)
 
-    assert model.generate.call_args.kwargs["config"] is None
+    assert "config" not in model.generate.call_args.kwargs

@@ -23,9 +23,10 @@ Get an API key from: https://aistudio.google.com/apikey
 ## Features Demonstrated
 
 1. Built-in GeminiStrategy (wrapping GeminiModel) for direct Gemini API calls
-2. Progressive temperature via custom strategy
-3. Structured output with Pydantic (parser-based for the built-in strategy;
-   response_schema-enforced via the custom strategy in Example 2)
+2. Progressive per-attempt temperature via a custom strategy (Example 2)
+3. Structured output with Pydantic — server-enforced response_schema through the
+   built-in strategy's generation_config (Example 1), or built inside a custom
+   strategy (Example 2)
 4. Token usage tracking
 5. Async batch processing with concurrency control
 6. Error handling and retries
@@ -169,13 +170,20 @@ async def main():
         return SummaryOutput.model_validate_json(response.text)
 
     # The built-in GeminiStrategy wraps a GeminiModel; the response_parser turns
-    # the normalized LLMResponse into your Pydantic model. The built-in model
-    # doesn't thread Gemini's per-call generation config (response_schema /
-    # response_mime_type), so we ask for JSON in the prompt — for
-    # schema-enforced JSON, use a custom strategy that calls the client directly
-    # (see Example 2).
+    # the normalized LLMResponse into your Pydantic model. Pass `generation_config`
+    # to thread Gemini's per-call config — here, server-enforced JSON via
+    # `response_schema` / `response_mime_type` — so no prompt-side JSON coaxing or
+    # custom strategy is needed.
     model = GeminiModel("gemini-2.5-flash", client)
-    strategy = GeminiStrategy(model, response_parser=parse_response, temperature=0.7)
+    strategy = GeminiStrategy(
+        model,
+        response_parser=parse_response,
+        temperature=0.7,
+        generation_config={
+            "response_mime_type": "application/json",
+            "response_schema": SummaryOutput,
+        },
+    )
 
     config = ProcessorConfig(max_workers=3, timeout_per_item=30.0)
 
@@ -185,11 +193,9 @@ async def main():
                 LLMWorkItem(
                     item_id=f"text_{i}",
                     strategy=strategy,
-                    prompt=(
-                        "Summarize this text. Respond with JSON matching "
-                        '{"summary": str, "key_points": [str, ...]}:\n\n'
-                        f"{text}"
-                    ),
+                    # response_schema enforces the JSON shape, so the prompt can
+                    # just state the task.
+                    prompt=f"Summarize this text:\n\n{text}",
                 )
             )
 

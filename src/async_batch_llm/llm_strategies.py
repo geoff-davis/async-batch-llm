@@ -356,9 +356,13 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
             framework still accepts the legacy 2-tuple shape from custom
             strategies via a compat shim.
         """
-        llm_response = await self.model.generate(
-            prompt, temperature=self.temperature, config=self.generation_config
-        )
+        # Only pass `config` when set, so a custom LLMModel whose generate()
+        # doesn't accept the kwarg keeps working — the default path is identical
+        # to before generation_config existed.
+        gen_kwargs: dict[str, Any] = {"temperature": self.temperature}
+        if self.generation_config is not None:
+            gen_kwargs["config"] = self.generation_config
+        llm_response = await self.model.generate(prompt, **gen_kwargs)
 
         try:
             output = self.response_parser(llm_response)
