@@ -87,8 +87,8 @@ async def main() -> None:
     )
 
     # call() instead re-raises the provider's own exception, preserving its type.
-    # (LLMCallError is the fallback only when no provider exception was preserved,
-    # e.g. a middleware-skipped item.)
+    # (LLMCallError is the fallback only when a failed result has no preserved
+    # exception — e.g. the gateway's max_pending / submit_timeout rejections.)
     try:
         await call(
             _strategy(failure_rate=1.0),
