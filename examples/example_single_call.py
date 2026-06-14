@@ -1,6 +1,6 @@
 """Example: one resilient LLM call without the batch machinery.
 
-`call()` / `try_call()` run a single prompt through the same resilience pipeline
+`call()` / `call_result()` run a single prompt through the same resilience pipeline
 the batch processor uses — error-type-aware retries, the coordinated rate-limit
 cooldown, and token accounting — but with no queue, workers, or result stream.
 
@@ -25,7 +25,7 @@ from async_batch_llm import (
     RateLimitConfig,
     RetryConfig,
     call,
-    try_call,
+    call_result,
 )
 from async_batch_llm.testing import MockAgent
 
@@ -54,11 +54,11 @@ async def main() -> None:
     summary = await call(_strategy(), "Quarterly numbers are up across every region.")
     print(f"call() -> {summary.headline!r} ({summary.sentiment})")
 
-    # 2. try_call() returns the full WorkItemResult — useful when you want token
+    # 2. call_result() returns the full WorkItemResult — useful when you want token
     #    accounting or want to branch on failure without exception handling.
-    result = await try_call(_strategy(), "Summarize the all-hands recap.")
+    result = await call_result(_strategy(), "Summarize the all-hands recap.")
     print(
-        f"try_call() -> success={result.success}, "
+        f"call_result() -> success={result.success}, "
         f"tokens={result.token_usage.get('total_tokens')}"
     )
 

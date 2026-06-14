@@ -11,7 +11,7 @@ from async_batch_llm import (
     ProcessorConfig,
     PydanticAIStrategy,
     call,
-    try_call,
+    call_result,
 )
 from async_batch_llm.core import RateLimitConfig, RetryConfig
 from async_batch_llm.testing import MockAgent
@@ -40,8 +40,8 @@ async def test_call_success_returns_output():
 
 
 @pytest.mark.asyncio
-async def test_try_call_reports_tokens():
-    result = await try_call(_strategy(), "hello")
+async def test_call_result_reports_tokens():
+    result = await call_result(_strategy(), "hello")
     assert result.success
     assert result.token_usage["total_tokens"] == 30
 
@@ -60,13 +60,13 @@ async def test_call_retries_through_rate_limit():
 
 
 @pytest.mark.asyncio
-async def test_call_failure_raises_and_try_call_does_not():
+async def test_call_failure_raises_and_call_result_does_not():
     cfg = ProcessorConfig(max_workers=1, retry=RetryConfig(max_attempts=2))
     strat = _strategy(failure_rate=1.0)
     with pytest.raises((LLMCallError, Exception)):
         await call(strat, "boom", config=cfg)
 
-    result = await try_call(_strategy(failure_rate=1.0), "boom", config=cfg)
+    result = await call_result(_strategy(failure_rate=1.0), "boom", config=cfg)
     assert not result.success
     assert result.error
 
@@ -95,10 +95,10 @@ async def test_gateway_shared_cooldown_recovers():
 
 
 @pytest.mark.asyncio
-async def test_gateway_try_submit_reports_failure():
+async def test_gateway_submit_result_reports_failure():
     cfg = ProcessorConfig(max_workers=2, retry=RetryConfig(max_attempts=2))
     async with LLMGateway(_strategy(failure_rate=1.0), config=cfg) as gw:
-        result = await gw.try_submit("boom")
+        result = await gw.submit_result("boom")
     assert not result.success
 
 

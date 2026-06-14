@@ -363,7 +363,7 @@ async with LLMGateway(strategy, config=ProcessorConfig(max_workers=5)) as gw:
     reply = await gw.submit("Answer this one request")
 ```
 
-`try_call()` / `gw.try_submit()` return the full `WorkItemResult` (token usage, metadata, error)
+`call_result()` / `gw.submit_result()` return the full `WorkItemResult` (token usage, metadata, error)
 instead of raising. See [`examples/example_single_call.py`](examples/example_single_call.py) and
 [`examples/example_gateway.py`](examples/example_gateway.py).
 

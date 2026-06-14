@@ -1,6 +1,6 @@
 """Single-call convenience API: one resilient LLM call, no batch ceremony.
 
-``call`` / ``try_call`` run one prompt through the full resilience pipeline —
+``call`` / ``call_result`` run one prompt through the full resilience pipeline —
 error-type-aware retries, the coordinated rate-limit cooldown, and token
 accounting — by driving :class:`ItemExecutor` directly over a lightweight host.
 No worker pool, queue, or result stream is created.
@@ -11,7 +11,7 @@ No worker pool, queue, or result stream is created.
     strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
     summary = await call(strategy, "Summarize: ...")          # output, or raises
 
-    result = await try_call(strategy, "Summarize: ...")        # full WorkItemResult
+    result = await call_result(strategy, "Summarize: ...")     # full WorkItemResult
     if result.success:
         print(result.output, result.token_usage)
 
@@ -62,7 +62,7 @@ def unwrap_result(result: WorkItemResult[TOutput, Any]) -> TOutput:
     raise LLMCallError(result.error or "LLM call failed", result=result)
 
 
-async def try_call(
+async def call_result(
     strategy: LLMCallStrategy[TOutput],
     prompt: str,
     *,
@@ -101,5 +101,5 @@ async def call(
     Set a timeout or retry policy via ``config`` (e.g.
     ``ProcessorConfig(timeout_per_item=20)``).
     """
-    result = await try_call(strategy, prompt, config=config, error_classifier=error_classifier)
+    result = await call_result(strategy, prompt, config=config, error_classifier=error_classifier)
     return unwrap_result(result)

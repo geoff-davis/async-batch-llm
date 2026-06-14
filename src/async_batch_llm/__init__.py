@@ -123,7 +123,7 @@ from .parallel import ParallelBatchProcessor
 
 # Structured-output parsing helpers
 from .parsing import pydantic_json_parser, strip_code_fences
-from .single import LLMCallError, call, try_call
+from .single import LLMCallError, call, call_result
 
 # Error classification and rate limit strategies
 from .strategies import (
@@ -195,7 +195,7 @@ __all__ = [
     "process_stream",
     # Single-call + gateway surfaces
     "call",
-    "try_call",
+    "call_result",
     "LLMCallError",
     "LLMGateway",
     # LLM Strategies

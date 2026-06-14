@@ -5,7 +5,7 @@ pipeline — error-type-aware retries, the coordinated rate-limit cooldown, and
 token accounting — without constructing a
 [`ParallelBatchProcessor`](core.md#parallelbatchprocessor).
 
-- **`call` / `try_call`** — one prompt, one result. No queue, workers, or result
+- **`call` / `call_result`** — one prompt, one result. No queue, workers, or result
   stream are created.
 - **`LLMGateway`** — a long-lived, shared entry point for the request path: many
   concurrent callers, one coordinated cooldown, concurrency bounded by a
@@ -18,9 +18,9 @@ For large bulk jobs, keep using `ParallelBatchProcessor` /
 
 ::: async_batch_llm.call
 
-## try_call
+## call_result
 
-::: async_batch_llm.try_call
+::: async_batch_llm.call_result
 
 ## LLMGateway
 

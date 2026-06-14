@@ -9,17 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Single-call helper** — `call()` / `try_call()` run one prompt through the
+- **Single-call helper** — `call()` / `call_result()` run one prompt through the
   full resilience pipeline (error-aware retries, the coordinated rate-limit
   cooldown, token accounting) with no queue, workers, or result stream. `call()`
-  returns the output (raising `LLMCallError` on failure); `try_call()` returns
+  returns the output (raising `LLMCallError` on failure); `call_result()` returns
   the full `WorkItemResult`. See `examples/example_single_call.py`.
 - **`LLMGateway`** — a long-lived, shared entry point for a web service's request
   path. Many concurrent callers `submit()` against one shared
   `RateLimitCoordinator` (so one caller's 429 throttles everyone, then
-  slow-starts), with global concurrency bounded by a semaphore. No queue, worker
-  pool, or per-request Future demux: each caller runs the request itself under
-  the semaphore, so a cancelled caller simply frees its slot. See
+  slow-starts), with global concurrency bounded by a semaphore. `submit()` raises
+  on failure; `submit_result()` returns the full `WorkItemResult`. No queue,
+  worker pool, or per-request Future demux: each caller runs the request itself
+  under the semaphore, so a cancelled caller simply frees its slot. See
   `examples/example_gateway.py` and `docs/api/single-gateway.md`.
 
 ### Changed

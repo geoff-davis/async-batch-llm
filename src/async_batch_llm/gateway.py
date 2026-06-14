@@ -78,9 +78,9 @@ class LLMGateway(Generic[TOutput]):
 
         Blocks on the semaphore when the pool is saturated (backpressure).
         """
-        return unwrap_result(await self.try_submit(prompt))
+        return unwrap_result(await self.submit_result(prompt))
 
-    async def try_submit(self, prompt: str) -> WorkItemResult[TOutput, Any]:
+    async def submit_result(self, prompt: str) -> WorkItemResult[TOutput, Any]:
         """Like :meth:`submit` but returns the WorkItemResult instead of raising.
 
         Gives access to ``token_usage`` / ``metadata`` and lets callers branch

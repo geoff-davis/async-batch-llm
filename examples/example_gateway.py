@@ -71,11 +71,11 @@ async def main() -> None:
         print("Dispatching 8 concurrent requests through the gateway...")
         await asyncio.gather(*(handle_request(gateway, n) for n in range(8)))
 
-        # try_submit() returns the full WorkItemResult instead of raising, so you
+        # submit_result() returns the full WorkItemResult instead of raising, so you
         # can read token usage or branch on failure.
-        result = await gateway.try_submit("one more, please")
+        result = await gateway.submit_result("one more, please")
         print(
-            f"\ntry_submit() -> success={result.success}, "
+            f"\nsubmit_result() -> success={result.success}, "
             f"tokens={result.token_usage.get('total_tokens')}"
         )
 
