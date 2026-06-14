@@ -76,6 +76,7 @@ nav:
     - v0.1 Migration: migration/v0.1.md
   - API Reference:
     - Core: api/core.md
+    - Single Call & Gateway: api/single-gateway.md
     - Strategies: api/strategies.md
     - Observers: api/observers.md
   - Contributing: contributing.md

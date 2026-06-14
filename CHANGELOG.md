@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Single-call helper** — `call()` / `call_result()` run one prompt through the
+  full resilience pipeline (error-aware retries, the coordinated rate-limit
+  cooldown, token accounting) with no queue, workers, or result stream. `call()`
+  returns the output, re-raising the provider's own exception on failure (or
+  `LLMCallError` when none was preserved); `call_result()` returns the full
+  `WorkItemResult`. See `examples/example_single_call.py`.
+- **`LLMGateway`** — a long-lived, shared entry point for a web service's request
+  path. Many concurrent callers `submit()` against one shared
+  `RateLimitCoordinator` (so one caller's 429 throttles everyone, then
+  slow-starts), with global concurrency bounded by a semaphore. `submit()` raises
+  on failure; `submit_result()` returns the full `WorkItemResult`. No queue,
+  worker pool, or per-request Future demux: each caller runs the request itself
+  under the semaphore, so a cancelled caller simply frees its slot. Two opt-in
+  load-shedding knobs (off by default): `max_pending` caps in-flight requests
+  (running + waiting) and rejects over-cap submits instantly instead of growing
+  an unbounded waiter list; `submit_timeout` bounds per-caller latency. See
+  `examples/example_gateway.py` and `docs/api/single-gateway.md`.
+- **`WorkItemResult.exception`** — failed results now carry the originating
+  exception (when one was raised). `call()` / `LLMGateway.submit()` re-raise that
+  exact exception, preserving the provider's type, instead of always wrapping it
+  in `LLMCallError`. `None` for successes and non-error outcomes (e.g. a
+  middleware filter-skip). Excluded from result equality.
+
+### Changed
+
+- **Internal: `ItemExecutor` extraction.** The per-item execution engine
+  (retries, error classification, rate-limit coordination, token accounting) was
+  factored out of `ParallelBatchProcessor` into `_internal/item_executor.py` so
+  the batch worker, the single-call helper, and the gateway share one engine. The
+  processor's public surface and behavior are unchanged; it now delegates its
+  per-item methods to the executor.
+
 ## [0.13.0] - 2026-06-10
 
 ### Added

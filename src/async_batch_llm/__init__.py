@@ -87,6 +87,10 @@ from .core import ProcessorConfig, RateLimitConfig, RetryConfig
 # Protocols
 from .core.protocols import LLMModel, ManagedLLMModel
 
+# Queue-less convenience surfaces (single call + shared gateway), built on the
+# same per-item resilience pipeline as the batch processor.
+from .gateway import LLMGateway
+
 # LLM call strategies
 from .llm_strategies import (
     DeepSeekStrategy,
@@ -119,6 +123,7 @@ from .parallel import ParallelBatchProcessor
 
 # Structured-output parsing helpers
 from .parsing import pydantic_json_parser, strip_code_fences
+from .single import LLMCallError, call, call_result
 
 # Error classification and rate limit strategies
 from .strategies import (
@@ -188,6 +193,11 @@ __all__ = [
     # High-level convenience API
     "process_prompts",
     "process_stream",
+    # Single-call + gateway surfaces
+    "call",
+    "call_result",
+    "LLMCallError",
+    "LLMGateway",
     # LLM Strategies
     "DeepSeekStrategy",
     "GeminiStrategy",
