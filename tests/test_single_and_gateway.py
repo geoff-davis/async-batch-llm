@@ -243,3 +243,25 @@ async def test_gateway_concurrent_aclose_all_await_cleanup():
     await running
     await asyncio.wait_for(asyncio.gather(first, second), timeout=2.0)
     assert gw._host._strategy_lifecycle._cleaned_up  # cleanup ran (once)
+
+
+@pytest.mark.asyncio
+async def test_gateway_aclose_cancellation_does_not_abort_cleanup():
+    # Cancelling one aclose() waiter mid-drain must NOT cancel the shared
+    # drain/cleanup task — cleanup still runs and a later aclose() completes.
+    gw = LLMGateway(_slow_strategy(0.3), config=ProcessorConfig(max_workers=2))
+    running = asyncio.create_task(gw.submit_result("slow"))
+    await asyncio.sleep(0.05)  # in-flight
+
+    first = asyncio.create_task(gw.aclose())
+    await asyncio.sleep(0.05)  # let it reach the drain wait
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    # The in-flight request finishes; cleanup still happens and a fresh aclose()
+    # returns normally rather than raising CancelledError.
+    result = await running
+    assert result.success
+    await asyncio.wait_for(gw.aclose(), timeout=2.0)
+    assert gw._host._strategy_lifecycle._cleaned_up

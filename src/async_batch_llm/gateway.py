@@ -181,19 +181,22 @@ class LLMGateway(Generic[TOutput]):
         Marks the gateway closed (new submits raise immediately), then waits for
         already-admitted requests — running *or* still waiting on the semaphore —
         to drain before cleaning up the shared strategy, whose clients/caches may
-        still be in use. ``submit_timeout`` bounds how long an admitted request
-        can hold up shutdown.
+        still be in use. Set ``submit_timeout`` to bound how long an admitted
+        request can hold up shutdown (otherwise the drain waits indefinitely).
 
         Concurrent callers share one drain+cleanup task, so *every*
         ``await gw.aclose()`` returns only once cleanup has actually completed —
-        not just because another call set the closed flag first.
+        not just because another call set the closed flag first. The shared task
+        is ``shield``-ed, so cancelling one caller's ``aclose()`` doesn't abort
+        the drain/cleanup for the others.
         """
         # Set synchronously so new submits are rejected immediately, even before
         # the cleanup task below is scheduled.
         self._closed = True
         if self._close_task is None:
             self._close_task = asyncio.ensure_future(self._drain_and_close())
-        await self._close_task
+        # shield so a cancelled waiter doesn't cancel the shared drain/cleanup.
+        await asyncio.shield(self._close_task)
 
     async def _drain_and_close(self) -> None:
         # No new admissions once _closed is set, so _inflight only decreases.

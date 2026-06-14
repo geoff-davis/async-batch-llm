@@ -122,7 +122,8 @@ processor per request:
 - **Shutdown drains admitted requests.** `aclose()` (the `async with` exit) stops
   accepting new work, then waits for already-admitted requests to finish before
   cleaning up the shared strategy, so in-flight calls aren't cut off mid-flight.
-  `submit_timeout` bounds how long that drain can take.
+  Set `submit_timeout` to bound how long shutdown waits for that drain; with no
+  timeout it waits as long as the admitted work takes.
 
 For a single ad-hoc call, [`call()` / `call_result()`](api/single-gateway.md)
 run one prompt through the same resilience pipeline with no pool at all.

@@ -38,8 +38,8 @@ async with LLMGateway(
 
 - **`call()` / `LLMGateway.submit()`** re-raise the **provider's own exception**
   on failure, preserving its type. [`LLMCallError`](#llmcallerror) is raised only
-  when no provider exception was preserved — a middleware filter-skip, or the
-  gateway's `max_pending` / `submit_timeout` rejections.
+  when no provider exception was preserved — the gateway's `max_pending` /
+  `submit_timeout` rejections.
 - **`call_result()` / `LLMGateway.submit_result()`** never raise for a request
   failure; they return the full
   [`WorkItemResult`](core.md#workitemresult) — inspect `success`, `error`,
@@ -53,7 +53,8 @@ if not result.success:
 
 The gateway drains already-admitted requests on `aclose()` (the `async with`
 exit) before cleaning up the shared strategy, so in-flight calls aren't cut off
-by shutdown; `submit_timeout` bounds how long that drain can take.
+by shutdown. Set `submit_timeout` to bound how long shutdown waits for that
+drain — otherwise it waits as long as the admitted work takes.
 
 ## call
 
