@@ -12,7 +12,7 @@
 | src/async\_batch\_llm/\_internal/item\_executor.py           |      275 |       11 |       74 |       11 |     93.12% |106-\>exit, 108-\>exit, 117-\>exit, 207, 266, 282-\>288, 314, 355-362, 460-\>exit, 546, 677-\>690, 681, 761, 768-\>771 |
 | src/async\_batch\_llm/\_internal/rate\_limit\_coordinator.py |      114 |       13 |       22 |        2 |     88.97% |89, 95-97, 171, 220-232 |
 | src/async\_batch\_llm/\_internal/strategy\_lifecycle.py      |       40 |        2 |       10 |        1 |     94.00% |79-\>78, 100, 104 |
-| src/async\_batch\_llm/base.py                                |      378 |       39 |      104 |       12 |     87.76% |91, 274-\>exit, 671-672, 701-702, 709-710, 714-724, 735-736, 809, 837, 850, 855-\>exit, 889, 893, 944-960, 1021, 1053-\>exit, 1057, 1059, 1076, 1091-\>exit, 1100-1104, 1121-1123 |
+| src/async\_batch\_llm/base.py                                |      379 |       39 |      104 |       12 |     87.78% |92, 275-\>exit, 672-673, 702-703, 710-711, 715-725, 736-737, 810, 838, 851, 856-\>exit, 890, 894, 945-961, 1022, 1054-\>exit, 1058, 1060, 1077, 1092-\>exit, 1101-1105, 1122-1124 |
 | src/async\_batch\_llm/classifiers/\_\_init\_\_.py            |        4 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/classifiers/gemini.py                  |       45 |        9 |       18 |        1 |     84.13% |45-47, 55-57, 105-106, 140-141 |
 | src/async\_batch\_llm/classifiers/openai.py                  |       82 |       17 |       36 |        3 |     83.05% |59-70, 119-120, 128, 138, 204-205, 277 |
@@ -36,7 +36,7 @@
 | src/async\_batch\_llm/strategies/rate\_limit.py              |       31 |        0 |        2 |        0 |    100.00% |           |
 | src/async\_batch\_llm/streaming.py                           |       55 |        0 |       20 |        0 |    100.00% |           |
 | src/async\_batch\_llm/token\_extractor.py                    |       60 |        3 |       28 |        6 |     89.77% |51-\>57, 53-\>57, 61-\>65, 66-\>83, 108, 126-\>131, 142-143 |
-| **TOTAL**                                                    | **2482** |  **211** |  **732** |   **97** | **89.98%** |           |
+| **TOTAL**                                                    | **2483** |  **211** |  **732** |   **97** | **89.98%** |           |
 
 
 ## Setup coverage badge
