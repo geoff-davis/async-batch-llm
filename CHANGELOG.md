@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exact exception, preserving the provider's type, instead of always wrapping it
   in `LLMCallError`. `None` for successes and non-error outcomes (e.g. a
   middleware filter-skip). Excluded from result equality.
+- **`ModelStrategy(generation_config=...)`** — an optional default config
+  forwarded to `model.generate(config=...)` on every call, so a built-in
+  strategy (`GeminiStrategy`/`OpenAIStrategy`/`OpenRouterStrategy`/`DeepSeekStrategy`)
+  can carry native structured output or grounding (Gemini `response_schema` /
+  `response_mime_type` / `tools`, OpenAI-compatible `response_format` /
+  `max_tokens`) without subclassing `execute()`. Defaults to `None` (unchanged
+  behavior); a subclass overriding `execute()` can read `self.generation_config`
+  to merge a per-attempt config.
 
 ### Changed
 

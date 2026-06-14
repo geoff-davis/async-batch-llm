@@ -17,6 +17,7 @@ from async_batch_llm.base import LLMResponse
 from async_batch_llm.llm_strategies import (
     GeminiStrategy,
     LLMCallStrategy,
+    ModelStrategy,
     PydanticAIStrategy,
 )
 from async_batch_llm.models import GeminiCachedModel
@@ -553,3 +554,38 @@ async def test_on_error_not_called_on_success():
 
     assert result.succeeded == 1
     assert not strategy.on_error_called
+
+
+def _recording_model() -> AsyncMock:
+    m = AsyncMock()
+    m.generate = AsyncMock(
+        return_value=LLMResponse(text="ok", input_tokens=1, output_tokens=1, total_tokens=2)
+    )
+    return m
+
+
+@pytest.mark.asyncio
+async def test_generation_config_forwarded_to_model():
+    """ModelStrategy(generation_config=...) forwards it to model.generate(config=...)
+    on every call — lets a built-in strategy carry response_schema/tools/etc.
+    without overriding execute()."""
+    model = _recording_model()
+    cfg = {"response_mime_type": "application/json", "response_schema": {"x": 1}}
+    strategy = ModelStrategy(model, generation_config=cfg)
+
+    await strategy.execute("prompt", 1, 10.0)
+
+    assert model.generate.call_args.kwargs["config"] == cfg
+
+
+@pytest.mark.asyncio
+async def test_generation_config_omitted_when_unset():
+    """Omitting generation_config calls generate() WITHOUT a config kwarg, so a
+    custom LLMModel whose generate() doesn't accept config keeps working (the
+    pre-generation_config call shape is preserved)."""
+    model = _recording_model()
+    strategy = ModelStrategy(model)
+
+    await strategy.execute("prompt", 1, 10.0)
+
+    assert "config" not in model.generate.call_args.kwargs

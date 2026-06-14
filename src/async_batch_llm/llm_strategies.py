@@ -279,6 +279,7 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
         response_parser: None = None,
         *,
         temperature: float | None = 0.0,
+        generation_config: dict[str, Any] | None = None,
     ) -> None: ...
 
     @overload
@@ -288,6 +289,7 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
         response_parser: Callable[[LLMResponse], TOutput],
         *,
         temperature: float | None = 0.0,
+        generation_config: dict[str, Any] | None = None,
     ) -> None: ...
 
     def __init__(
@@ -296,6 +298,7 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
         response_parser: Callable[[LLMResponse], TOutput] | None = None,
         *,
         temperature: float | None = 0.0,
+        generation_config: dict[str, Any] | None = None,
     ) -> None:
         """
         Initialize strategy.
@@ -309,12 +312,21 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
             temperature: Default sampling temperature. Pass ``None`` to omit the
                 parameter and use the provider default (e.g. for OpenAI
                 reasoning models that reject an explicit temperature).
+            generation_config: Provider-specific config forwarded to
+                ``model.generate(config=...)`` on every call — e.g. Gemini's
+                ``response_schema`` / ``response_mime_type`` / ``tools``, or an
+                OpenAI-compatible ``response_format`` / ``max_tokens`` (merged
+                into the model's ``extra_body``). Lets a built-in strategy carry
+                native structured output or grounding without subclassing
+                ``execute()``. A subclass that overrides ``execute()`` and needs a
+                *per-attempt* config can read ``self.generation_config`` and merge.
         """
         self.model = model
         # The overloads restrict the None-parser path to TOutput=str, so the cast
         # below is sound at static-analysis time.
         self.response_parser = response_parser or (lambda response: cast(TOutput, response.text))
         self.temperature = temperature
+        self.generation_config = generation_config
 
     async def prepare(self) -> None:
         """Delegate to model.prepare() if the model has a managed lifecycle."""
@@ -344,7 +356,13 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
             framework still accepts the legacy 2-tuple shape from custom
             strategies via a compat shim.
         """
-        llm_response = await self.model.generate(prompt, temperature=self.temperature)
+        # Only pass `config` when set, so a custom LLMModel whose generate()
+        # doesn't accept the kwarg keeps working — the default path is identical
+        # to before generation_config existed.
+        gen_kwargs: dict[str, Any] = {"temperature": self.temperature}
+        if self.generation_config is not None:
+            gen_kwargs["config"] = self.generation_config
+        llm_response = await self.model.generate(prompt, **gen_kwargs)
 
         try:
             output = self.response_parser(llm_response)
