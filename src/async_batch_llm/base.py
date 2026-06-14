@@ -236,6 +236,13 @@ class WorkItemResult(Generic[TOutput, TContext]):
         gemini_safety_ratings: **Deprecated.** Use ``metadata['safety_ratings']``
             instead. Still populated when the underlying model surfaces them,
             for backward compat. To be removed in a future release.
+        exception: The originating exception for a failed result, when one was
+            raised (all retries exhausted, or a permanent non-retryable error).
+            ``None`` for successes and for non-error outcomes such as a
+            middleware filter-skip. ``call()`` / ``LLMGateway.submit()`` re-raise
+            this exact exception (preserving the provider's type) rather than a
+            generic ``LLMCallError``. Excluded from equality so two failed
+            results with distinct exception instances still compare equal.
     """
 
     item_id: str
@@ -248,6 +255,7 @@ class WorkItemResult(Generic[TOutput, TContext]):
     )
     metadata: dict[str, Any] | None = None
     gemini_safety_ratings: dict[str, str] | None = None
+    exception: Exception | None = field(default=None, compare=False)
 
     def __post_init__(self):
         """Backfill ``gemini_safety_ratings`` from ``metadata['safety_ratings']``

@@ -56,9 +56,8 @@ def unwrap_result(result: WorkItemResult[TOutput, Any]) -> TOutput:
     if result.success:
         # non-None on success
         return result.output  # type: ignore[return-value]  # ty:ignore[invalid-return-type]
-    exc = getattr(result, "exception", None)
-    if exc is not None:
-        raise exc
+    if result.exception is not None:
+        raise result.exception
     raise LLMCallError(result.error or "LLM call failed", result=result)
 
 

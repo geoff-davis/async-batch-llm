@@ -224,6 +224,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 error=f"{type(e).__name__}: {str(e)[:ERROR_MESSAGE_MAX_LENGTH]}",
                 context=work_item.context,
                 token_usage=cast(TokenUsage, failed_tokens),
+                exception=e,
             )
 
         # Emit ITEM_FAILED here too. Items that exhaust retries reach
@@ -736,4 +737,5 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             error=f"{error_name}: {error_msg[:ERROR_MESSAGE_DETAILED_LENGTH]}",
             context=work_item.context,
             token_usage=cast(TokenUsage, failed_token_usage),
+            exception=exception,
         )

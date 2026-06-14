@@ -3,12 +3,11 @@
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Generic, cast
+from typing import TYPE_CHECKING, Generic
 
 if TYPE_CHECKING:
     from types import TracebackType
 
-from ._internal.error_logging import log_retryable_error, log_validation_error
 from ._internal.event_dispatcher import EventDispatcher
 from ._internal.item_executor import ItemExecutor
 from ._internal.rate_limit_coordinator import RateLimitCoordinator
@@ -21,7 +20,6 @@ from .base import (
     RetryState,
     TContext,
     TInput,
-    TokenUsage,
     TOutput,
     WorkItemResult,
 )
@@ -671,45 +669,6 @@ class ParallelBatchProcessor(
         """
         return await self._executor._process_item_with_retries(work_item, worker_id)
 
-    @staticmethod
-    def _attach_failed_tokens(exception: Exception, tokens: dict[str, int]) -> None:
-        """Stamp cumulative failed-attempt tokens onto an exception for the worker
-        to surface in the failed ``WorkItemResult``. No-op if the exception has
-        no writable ``__dict__``."""
-        if hasattr(exception, "__dict__"):
-            exception.__dict__["_failed_token_usage"] = tokens
-
-    @staticmethod
-    def _cumulative_token_summary(tokens: dict[str, int]) -> str:
-        """Format the cross-attempt token total for final-failure logs (or '')."""
-        if tokens.get("total_tokens", 0) > 0:
-            return f"\n  Total tokens consumed across all attempts: {tokens['total_tokens']}"
-        return ""
-
-    @staticmethod
-    def _merge_failed_tokens(
-        result: WorkItemResult[TOutput, TContext], failed_tokens: dict[str, int]
-    ) -> None:
-        """Add tokens consumed by prior failed attempts into ``result.token_usage``.
-
-        Mutates ``result.token_usage`` in place. Keys that would stay zero and
-        weren't already present are left out so a clean success keeps its tidy
-        ``{input, output, total}`` shape.
-        """
-        existing = cast("dict[str, int]", result.token_usage)
-        usage: dict[str, int] = {}
-        for key in ("input_tokens", "output_tokens", "total_tokens", "cached_input_tokens"):
-            combined = existing.get(key, 0) + failed_tokens.get(key, 0)
-            if combined or key in existing:
-                usage[key] = combined
-        result.token_usage = cast(TokenUsage, usage)
-
-    def _get_strategy(
-        self, work_item: LLMWorkItem[TInput, TOutput, TContext]
-    ) -> LLMCallStrategy[TOutput]:
-        """Get the LLM call strategy for this work item."""
-        return work_item.strategy
-
     async def _process_item(  # type: ignore[override]  # ty:ignore[invalid-method-override]
         self,
         work_item: LLMWorkItem[TInput, TOutput, TContext],
@@ -739,26 +698,6 @@ class ParallelBatchProcessor(
         return await self._executor._handle_execution_error(
             exception, work_item, worker_id, attempt_number
         )
-
-    def _log_retryable_error(
-        self,
-        exception: Exception,
-        work_item: LLMWorkItem[TInput, TOutput, TContext],
-        attempt_number: int,
-        failed_token_usage: dict[str, int],
-    ) -> None:
-        """Delegate to :func:`_internal.error_logging.log_retryable_error`."""
-        log_retryable_error(exception, work_item.item_id, attempt_number, failed_token_usage)
-
-    def _log_validation_error(
-        self,
-        exception: Exception,
-        work_item: LLMWorkItem[TInput, TOutput, TContext],
-        attempt_number: int,
-        token_msg: str,
-    ) -> None:
-        """Delegate to :func:`_internal.error_logging.log_validation_error`."""
-        log_validation_error(exception, work_item.item_id, attempt_number, token_msg)
 
     async def shutdown(self):
         """Clean up resources: flush observers and cancel pending tasks."""

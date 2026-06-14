@@ -75,6 +75,20 @@ async def test_call_failure_raises_and_call_result_does_not():
     result = await call_result(_strategy(failure_rate=1.0), "boom", config=cfg)
     assert not result.success
     assert result.error
+    # The originating exception is preserved on the failed result.
+    assert result.exception is not None
+
+
+@pytest.mark.asyncio
+async def test_call_reraises_provider_exception():
+    # call() re-raises the provider's actual exception (message preserved), not
+    # a generic LLMCallError wrapper — because the executor records it on
+    # WorkItemResult.exception and unwrap_result re-raises it.
+    cfg = ProcessorConfig(max_workers=1, retry=RetryConfig(max_attempts=2))
+    with pytest.raises(Exception) as exc_info:
+        await call(_strategy(failure_rate=1.0), "boom", config=cfg)
+    assert not isinstance(exc_info.value, LLMCallError)
+    assert "Random failure" in str(exc_info.value)
 
 
 # ── gateway ──────────────────────────────────────────────────────────────

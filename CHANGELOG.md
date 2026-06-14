@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (running + waiting) and rejects over-cap submits instantly instead of growing
   an unbounded waiter list; `submit_timeout` bounds per-caller latency. See
   `examples/example_gateway.py` and `docs/api/single-gateway.md`.
+- **`WorkItemResult.exception`** — failed results now carry the originating
+  exception (when one was raised). `call()` / `LLMGateway.submit()` re-raise that
+  exact exception, preserving the provider's type, instead of always wrapping it
+  in `LLMCallError`. `None` for successes and non-error outcomes (e.g. a
+  middleware filter-skip). Excluded from result equality.
 
 ### Changed
 
