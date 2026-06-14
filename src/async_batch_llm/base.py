@@ -241,8 +241,11 @@ class WorkItemResult(Generic[TOutput, TContext]):
             ``None`` for successes and for non-error outcomes such as a
             middleware filter-skip. ``call()`` / ``LLMGateway.submit()`` re-raise
             this exact exception (preserving the provider's type) rather than a
-            generic ``LLMCallError``. Excluded from equality so two failed
-            results with distinct exception instances still compare equal.
+            generic ``LLMCallError``. Its traceback is detached before storage
+            (the full failure is already logged at the failure site) so
+            accumulated failed results don't pin frame locals; a re-raise gets a
+            fresh traceback. Excluded from equality so two failed results with
+            distinct exception instances still compare equal.
     """
 
     item_id: str

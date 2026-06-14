@@ -91,6 +91,17 @@ async def test_call_reraises_provider_exception():
     assert "Random failure" in str(exc_info.value)
 
 
+@pytest.mark.asyncio
+async def test_failed_result_exception_traceback_is_detached():
+    # The stored exception keeps its type/message but has no traceback, so
+    # accumulated failed results don't pin frame locals.
+    cfg = ProcessorConfig(max_workers=1, retry=RetryConfig(max_attempts=2))
+    result = await call_result(_strategy(failure_rate=1.0), "boom", config=cfg)
+    assert result.exception is not None
+    assert result.exception.__traceback__ is None
+    assert "Random failure" in str(result.exception)
+
+
 # ── gateway ──────────────────────────────────────────────────────────────
 
 
@@ -196,3 +207,20 @@ def test_gateway_rejects_invalid_knobs():
         LLMGateway(_strategy(), max_pending=-1)
     with pytest.raises(ValueError):
         LLMGateway(_strategy(), submit_timeout=0)
+
+
+@pytest.mark.asyncio
+async def test_gateway_aclose_drains_inflight_before_cleanup():
+    # aclose() must not clean up the shared strategy while a request is still
+    # running — it waits for already-admitted work to drain first.
+    gw = LLMGateway(_slow_strategy(0.3), config=ProcessorConfig(max_workers=2))
+    running = asyncio.create_task(gw.submit_result("slow"))
+    await asyncio.sleep(0.05)  # let it become in-flight
+
+    closing = asyncio.create_task(gw.aclose())
+    await asyncio.sleep(0.05)
+    assert not closing.done(), "aclose() returned before the in-flight request drained"
+
+    result = await running
+    assert result.success
+    await asyncio.wait_for(closing, timeout=2.0)  # drains, then completes

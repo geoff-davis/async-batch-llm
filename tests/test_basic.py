@@ -274,3 +274,54 @@ async def test_type_aliases_equivalent_to_full_types():
     assert full_result.succeeded == alias_result.succeeded
     assert full_result.failed == alias_result.failed
     assert isinstance(alias_result.results[0].output, type(full_result.results[0].output))
+
+
+@pytest.mark.asyncio
+async def test_processor_subclass_override_points_are_honored():
+    """A ParallelBatchProcessor subclass that overrides the documented per-item
+    hooks must still have those overrides called during a batch run, even though
+    the per-item engine now lives on ItemExecutor (the executor invokes them
+    through the host). Guards the v0.13.x ItemExecutor extraction.
+    """
+
+    def mock_response(prompt: str) -> BookSummary:
+        return BookSummary(title="T", summary=f"S:{prompt[:10]}", genre="Fiction")
+
+    class CustomProcessor(ParallelBatchProcessor[str, BookSummary, None]):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.process_item_calls = 0
+            self.extract_token_calls = 0
+
+        async def _process_item(self, work_item, worker_id, *args, **kwargs):
+            self.process_item_calls += 1
+            return await super()._process_item(work_item, worker_id, *args, **kwargs)
+
+        def _extract_token_usage(self, exception):
+            self.extract_token_calls += 1
+            return super()._extract_token_usage(exception)
+
+    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+
+    # One always-failing item exercises _extract_token_usage; the rest succeed
+    # and exercise _process_item.
+    processor = CustomProcessor(config=config)
+    for i in range(3):
+        await processor.add_work(
+            LLMWorkItem(
+                item_id=f"ok_{i}",
+                strategy=PydanticAIStrategy(agent=MockAgent(response_factory=mock_response)),
+                prompt=f"summarize {i}",
+            )
+        )
+    await processor.add_work(
+        LLMWorkItem(
+            item_id="boom",
+            strategy=PydanticAIStrategy(agent=MockAgent(failure_rate=1.0)),
+            prompt="fail",
+        )
+    )
+    await processor.process_all()
+
+    assert processor.process_item_calls > 0, "overridden _process_item was bypassed"
+    assert processor.extract_token_calls > 0, "overridden _extract_token_usage was bypassed"

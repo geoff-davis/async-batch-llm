@@ -95,6 +95,10 @@ class LLMGateway(Generic[TOutput]):
         self._max_inflight = None if max_pending is None else cfg.max_workers + max_pending
         self._inflight = 0
         self._submit_timeout = submit_timeout
+        # Set whenever no request is in flight; aclose() waits on it to drain
+        # already-admitted work before cleaning up the shared strategy.
+        self._idle = asyncio.Event()
+        self._idle.set()
 
     async def __aenter__(self) -> LLMGateway[TOutput]:
         return self
@@ -144,6 +148,7 @@ class LLMGateway(Generic[TOutput]):
         )
 
         self._inflight += 1
+        self._idle.clear()
         try:
             run = self._run(work_item)
             if effective_timeout is None:
@@ -159,6 +164,8 @@ class LLMGateway(Generic[TOutput]):
                 )
         finally:
             self._inflight -= 1
+            if self._inflight == 0:
+                self._idle.set()
 
     async def _run(self, work_item: LLMWorkItem[Any, TOutput, Any]) -> WorkItemResult[TOutput, Any]:
         """Acquire a concurrency slot, run the item, release the slot."""
@@ -166,8 +173,18 @@ class LLMGateway(Generic[TOutput]):
             return await self._host.executor.execute(work_item)
 
     async def aclose(self) -> None:
-        """Stop accepting work and run the strategy's cleanup(). Idempotent."""
+        """Stop accepting work and run the strategy's cleanup(). Idempotent.
+
+        Marks the gateway closed (new submits raise immediately), then waits for
+        already-admitted requests — running *or* still waiting on the semaphore —
+        to drain before cleaning up the shared strategy, whose clients/caches may
+        still be in use. ``submit_timeout`` bounds how long an admitted request
+        can hold up shutdown.
+        """
         if self._closed:
             return
         self._closed = True
+        # No new admissions past this point, so _inflight only decreases.
+        if self._inflight > 0:
+            await self._idle.wait()
         await self._host.aclose()

@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Single-call helper** — `call()` / `call_result()` run one prompt through the
   full resilience pipeline (error-aware retries, the coordinated rate-limit
   cooldown, token accounting) with no queue, workers, or result stream. `call()`
-  returns the output (raising `LLMCallError` on failure); `call_result()` returns
-  the full `WorkItemResult`. See `examples/example_single_call.py`.
+  returns the output, re-raising the provider's own exception on failure (or
+  `LLMCallError` when none was preserved); `call_result()` returns the full
+  `WorkItemResult`. See `examples/example_single_call.py`.
 - **`LLMGateway`** — a long-lived, shared entry point for a web service's request
   path. Many concurrent callers `submit()` against one shared
   `RateLimitCoordinator` (so one caller's 429 throttles everyone, then

@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Generic, Protocol, cast
+from typing import TYPE_CHECKING, Generic, Protocol, TypeVar, cast
 
 from ..base import (
     LLMWorkItem,
@@ -52,14 +52,45 @@ logger = logging.getLogger(__name__)
 ERROR_MESSAGE_MAX_LENGTH = 200
 ERROR_MESSAGE_DETAILED_LENGTH = 500
 
+_E = TypeVar("_E", bound=BaseException)
 
-class ExecutorHostProtocol(Protocol):
-    """The attribute surface :class:`ItemExecutor` reads from its host.
+
+def _detach_traceback(exc: _E) -> _E:
+    """Clear tracebacks along an exception's cause/context chain before it is
+    stored on a ``WorkItemResult``.
+
+    A traceback pins every frame's locals — strategies, clients, raw responses —
+    for as long as the result is held, which for a large accumulated batch of
+    failures can retain far more memory than before ``WorkItemResult.exception``
+    existed. The full failure (type, message, stack) is already logged at the
+    point it happens, so the stored exception keeps its type/message/args (enough
+    for ``call()`` to re-raise the provider's type) but drops the frame-pinning
+    tracebacks. A re-raise gets a fresh traceback from the raise site.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        cur.__traceback__ = None
+        cur = cur.__cause__ or cur.__context__
+    return exc
+
+
+class ExecutorHostProtocol(Protocol[TInput, TOutput, TContext]):
+    """The surface :class:`ItemExecutor` reads from its host.
 
     Both hosts — :class:`~async_batch_llm.parallel.ParallelBatchProcessor` and
     the lightweight :class:`~async_batch_llm._internal.executor_host.ExecutorHost`
     — expose exactly these. ``error_classifier`` and ``_stats`` are read live (not
     snapshotted) because the processor reassigns them after construction.
+
+    ``_extract_token_usage``, ``_process_item``, and ``_handle_execution_error``
+    are invoked *through the host* (not as the executor's own methods) so that a
+    ``ParallelBatchProcessor`` subclass overriding any of them — ``_process_item``
+    is abstract on ``BatchProcessor``; ``_extract_token_usage`` is a documented
+    override point — still takes effect during batch runs. The processor's
+    versions delegate back to the executor's implementations, so the base case is
+    one extra hop with no behavior change.
     """
 
     config: ProcessorConfig
@@ -67,10 +98,29 @@ class ExecutorHostProtocol(Protocol):
     _token_extractor: TokenExtractor
     _rate_limit_coord: RateLimitCoordinator
     _proactive_rate_limiter: AsyncLimiter | None
-    _events: EventDispatcher
+    _events: EventDispatcher[TInput, TOutput, TContext]
     _stats: ProcessingStats
     _stats_lock: asyncio.Lock
-    _strategy_lifecycle: StrategyLifecycle
+    _strategy_lifecycle: StrategyLifecycle[TOutput]
+
+    def _extract_token_usage(self, exception: Exception) -> dict[str, int]: ...
+
+    async def _process_item(
+        self,
+        work_item: LLMWorkItem[TInput, TOutput, TContext],
+        worker_id: int,
+        attempt_number: int = 1,
+        strategy: LLMCallStrategy[TOutput] | None = None,
+        retry_state: RetryState | None = None,
+    ) -> WorkItemResult[TOutput, TContext]: ...
+
+    async def _handle_execution_error(
+        self,
+        exception: Exception,
+        work_item: LLMWorkItem[TInput, TOutput, TContext],
+        worker_id: int,
+        attempt_number: int,
+    ) -> WorkItemResult[TOutput, TContext]: ...
 
 
 class ItemExecutor(Generic[TInput, TOutput, TContext]):
@@ -79,7 +129,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
     ``host`` must satisfy :class:`ExecutorHostProtocol`.
     """
 
-    def __init__(self, host: ExecutorHostProtocol) -> None:
+    def __init__(self, host: ExecutorHostProtocol[TInput, TOutput, TContext]) -> None:
         self._host = host
 
     # ── Dependencies (read live from host) ───────────────────────
@@ -140,9 +190,6 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
     async def _ensure_strategy_prepared(self, strategy) -> None:
         await self._strategy_lifecycle.ensure_prepared(strategy)
-
-    def _extract_token_usage(self, exception: Exception) -> dict[str, int]:
-        return self._token_extractor.extract_from_exception(exception)
 
     async def _handle_rate_limit(
         self, worker_id, observed_generation=None, suggested_wait=None
@@ -224,7 +271,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 error=f"{type(e).__name__}: {str(e)[:ERROR_MESSAGE_MAX_LENGTH]}",
                 context=work_item.context,
                 token_usage=cast(TokenUsage, failed_tokens),
-                exception=e,
+                exception=_detach_traceback(e),
             )
 
         # Emit ITEM_FAILED here too. Items that exhaust retries reach
@@ -281,7 +328,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
         while True:
             try:
-                result = await self._process_item(
+                # Through the host so a processor subclass override takes effect.
+                result = await self._host._process_item(
                     work_item,
                     worker_id,
                     attempt_number=attempt,
@@ -293,7 +341,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             except Exception as e:
                 # Accumulate token usage across every attempt (including
                 # rate-limit retries) so users see the true cost of a failure.
-                attempt_tokens = self._extract_token_usage(e)
+                attempt_tokens = self._host._extract_token_usage(e)
                 self._token_extractor.accumulate(cumulative_failed_tokens, attempt_tokens)
 
                 error_info = self.error_classifier.classify(e)
@@ -638,7 +686,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     )
 
             # Delegate error handling to separate method
-            return await self._handle_execution_error(e, work_item, worker_id, attempt_number)
+            # Through the host so a processor subclass override takes effect.
+            return await self._host._handle_execution_error(e, work_item, worker_id, attempt_number)
 
     async def _handle_execution_error(
         self,
@@ -668,7 +717,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         """
         # Try to extract token usage from failed LLM calls using robust extraction
         # Even if validation fails, the LLM consumed tokens
-        failed_token_usage = self._extract_token_usage(exception)
+        failed_token_usage = self._host._extract_token_usage(exception)
         if failed_token_usage and failed_token_usage.get("total_tokens", 0) > 0:
             logger.debug(
                 f"Extracted token usage from failed attempt for {work_item.item_id}: "
@@ -737,5 +786,5 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             error=f"{error_name}: {error_msg[:ERROR_MESSAGE_DETAILED_LENGTH]}",
             context=work_item.context,
             token_usage=cast(TokenUsage, failed_token_usage),
-            exception=exception,
+            exception=_detach_traceback(exception),
         )

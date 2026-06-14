@@ -1,8 +1,14 @@
 # async-batch-llm
 
-**Run thousands of individual LLM calls in parallel — with coordinated rate-limit handling,
-error-type-aware retries, and per-call cost accounting — when you need the results *now*, not from
-a 24-hour batch API.**
+**async-batch-llm is an asyncio toolkit for latency-sensitive LLM workloads made
+of independent calls: bulk prompt runs you want back during the current workflow,
+plus single-call and service request paths that need the same retry/rate-limit
+behavior. It provides a provider-agnostic worker pool with coordinated cooldowns
+for rate limits, error-type-aware retries, bounded streaming, and token/cost
+accounting, including failed attempts.**
+
+Use it when provider batch APIs are too slow for the job; use those batch APIs
+when a cheaper 24-hour turnaround is acceptable.
 
 Provider-agnostic (OpenAI, Anthropic, Google, DeepSeek, OpenRouter, PydanticAI, or your own)
 through a simple strategy pattern; built on asyncio for I/O-bound throughput.

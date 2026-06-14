@@ -73,8 +73,22 @@ async def main() -> None:
     recovered = await call(_strategy(rate_limit_on_call=1), "Try me once.", config=cfg)
     print(f"recovered after a 429 -> {recovered.headline!r}")
 
-    # 4. When a call fails for good, call() raises LLMCallError; the originating
-    #    result (error string, any tokens consumed) is on the exception.
+    # 4. When a call fails for good, call_result() returns the failed
+    #    WorkItemResult — inspect .error / .exception / .token_usage without
+    #    exception handling.
+    failed = await call_result(
+        _strategy(failure_rate=1.0),
+        "This one always fails.",
+        config=ProcessorConfig(retry=RetryConfig(max_attempts=2)),
+    )
+    print(
+        f"call_result() on failure -> success={failed.success}, "
+        f"error={failed.error!r}, exception={type(failed.exception).__name__}"
+    )
+
+    # call() instead re-raises the provider's own exception, preserving its type.
+    # (LLMCallError is the fallback only when no provider exception was preserved,
+    # e.g. a middleware-skipped item.)
     try:
         await call(
             _strategy(failure_rate=1.0),
@@ -83,6 +97,8 @@ async def main() -> None:
         )
     except LLMCallError as exc:
         print(f"call() raised LLMCallError -> {exc.result.error}")
+    except Exception as exc:
+        print(f"call() re-raised the provider exception -> {type(exc).__name__}: {exc}")
 
 
 if __name__ == "__main__":

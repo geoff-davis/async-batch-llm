@@ -17,7 +17,15 @@ from __future__ import annotations
 import asyncio
 from typing import Generic
 
-from ..base import ProcessingStats, TContext, TInput, TOutput
+from ..base import (
+    LLMWorkItem,
+    ProcessingStats,
+    RetryState,
+    TContext,
+    TInput,
+    TOutput,
+    WorkItemResult,
+)
 from ..core import ProcessorConfig
 from ..llm_strategies import LLMCallStrategy
 from ..strategies import (
@@ -100,6 +108,35 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
             self._proactive_rate_limiter = None
 
         self.executor: ItemExecutor[TInput, TOutput, TContext] = ItemExecutor(self)
+
+    # These three satisfy ExecutorHostProtocol's override-point hooks. On the
+    # queue-less path there's no subclass to override them, so they delegate
+    # straight back to the executor (the processor's versions do the same).
+    def _extract_token_usage(self, exception: Exception) -> dict[str, int]:
+        return self._token_extractor.extract_from_exception(exception)
+
+    async def _process_item(
+        self,
+        work_item: LLMWorkItem[TInput, TOutput, TContext],
+        worker_id: int,
+        attempt_number: int = 1,
+        strategy: LLMCallStrategy[TOutput] | None = None,
+        retry_state: RetryState | None = None,
+    ) -> WorkItemResult[TOutput, TContext]:
+        return await self.executor._process_item(
+            work_item, worker_id, attempt_number, strategy, retry_state
+        )
+
+    async def _handle_execution_error(
+        self,
+        exception: Exception,
+        work_item: LLMWorkItem[TInput, TOutput, TContext],
+        worker_id: int,
+        attempt_number: int,
+    ) -> WorkItemResult[TOutput, TContext]:
+        return await self.executor._handle_execution_error(
+            exception, work_item, worker_id, attempt_number
+        )
 
     async def aclose(self) -> None:
         """Run cleanup() on every strategy this host prepared."""
