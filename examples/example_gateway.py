@@ -85,6 +85,35 @@ async def main() -> None:
     except RuntimeError as exc:
         print(f"submit after close -> {exc}")
 
+    await demo_load_shedding()
+
+
+async def demo_load_shedding() -> None:
+    """The two opt-in knobs that bound the request path under load.
+
+    `max_pending` caps in-flight requests (running + waiting) and rejects
+    over-cap submits instantly; `submit_timeout` bounds per-caller latency. Both
+    return a failed WorkItemResult rather than raising (or raise via submit()).
+    """
+    print("\nLoad-shedding knobs:")
+    slow = MockAgent(response_factory=lambda p: Reply(text=f"answer to: {p}"), latency=0.3)
+    strategy = PydanticAIStrategy(agent=slow)
+
+    # Admission cap: max_workers=1 + max_pending=0 → at most 1 in flight.
+    async with LLMGateway(strategy, config=ProcessorConfig(max_workers=1), max_pending=0) as gw:
+        held = asyncio.create_task(gw.submit_result("holds the slot"))
+        await asyncio.sleep(0.05)  # let it become in-flight
+        rejected = await gw.submit_result("over the cap")
+        print(f"  over-cap submit -> success={rejected.success}, error={rejected.error!r}")
+        await held
+
+    # Latency budget: the call takes ~0.3s but the budget is 0.05s.
+    async with LLMGateway(
+        strategy, config=ProcessorConfig(max_workers=2), submit_timeout=0.05
+    ) as gw:
+        timed_out = await gw.submit_result("too slow for the budget")
+        print(f"  timed-out submit -> success={timed_out.success}, error={timed_out.error!r}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

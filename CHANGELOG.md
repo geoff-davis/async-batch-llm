@@ -20,7 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slow-starts), with global concurrency bounded by a semaphore. `submit()` raises
   on failure; `submit_result()` returns the full `WorkItemResult`. No queue,
   worker pool, or per-request Future demux: each caller runs the request itself
-  under the semaphore, so a cancelled caller simply frees its slot. See
+  under the semaphore, so a cancelled caller simply frees its slot. Two opt-in
+  load-shedding knobs (off by default): `max_pending` caps in-flight requests
+  (running + waiting) and rejects over-cap submits instantly instead of growing
+  an unbounded waiter list; `submit_timeout` bounds per-caller latency. See
   `examples/example_gateway.py` and `docs/api/single-gateway.md`.
 
 ### Changed

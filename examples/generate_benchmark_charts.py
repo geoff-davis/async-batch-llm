@@ -171,7 +171,9 @@ def main() -> None:
     throughput_path = RESULTS_DIR / "throughput.json"
     if throughput_path.exists():
         shutil.copyfile(throughput_path, ASSETS_DIR / "benchmark-throughput.json")
-        throughput_chart(json.loads(throughput_path.read_text()), ASSETS_DIR / "benchmark-throughput.png")
+        throughput_chart(
+            json.loads(throughput_path.read_text()), ASSETS_DIR / "benchmark-throughput.png"
+        )
     else:
         print("(no throughput.json yet — run with --throughput for the throughput chart)")
 

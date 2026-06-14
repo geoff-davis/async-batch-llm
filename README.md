@@ -358,8 +358,11 @@ summary = await call(strategy, "Summarize: ...")          # returns output, or r
 
 # A long-lived, shared entry point for a web service's request path. Many
 # concurrent callers share one cooldown (one caller's 429 throttles everyone,
-# then slow-starts); a semaphore bounds global concurrency.
-async with LLMGateway(strategy, config=ProcessorConfig(max_workers=5)) as gw:
+# then slow-starts); a semaphore bounds global concurrency. Opt into
+# load-shedding with max_pending (admission cap) and submit_timeout (latency budget).
+async with LLMGateway(
+    strategy, config=ProcessorConfig(max_workers=5), max_pending=100, submit_timeout=30
+) as gw:
     reply = await gw.submit("Answer this one request")
 ```
 

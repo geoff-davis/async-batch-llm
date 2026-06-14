@@ -29,6 +29,12 @@ def _strategy(**kwargs):
     return PydanticAIStrategy(agent=_agent(**kwargs))
 
 
+def _slow_strategy(latency: float) -> PydanticAIStrategy:
+    # _agent() pins latency=0.01, so build a slow agent directly.
+    agent = MockAgent(response_factory=lambda p: Out(text=f"ok:{p}"), latency=latency)
+    return PydanticAIStrategy(agent=agent)
+
+
 # ── single call ──────────────────────────────────────────────────────────
 
 
@@ -122,3 +128,57 @@ async def test_gateway_cancelled_submit_frees_slot():
             await slow
         out = await asyncio.wait_for(gw.submit("after"), timeout=2.0)
     assert out.text == "ok:after"
+
+
+# ── admission cap + submit_timeout ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_gateway_admission_cap_rejects_when_saturated():
+    # max_workers=1, max_pending=0 → at most 1 in flight. A slow request holds
+    # the only slot; the next submit is rejected instantly instead of waiting.
+    cfg = ProcessorConfig(max_workers=1)
+    async with LLMGateway(_slow_strategy(0.3), config=cfg, max_pending=0) as gw:
+        held = asyncio.create_task(gw.submit_result("slow"))
+        await asyncio.sleep(0.05)  # let it acquire the slot and become in-flight
+        rejected = await gw.submit_result("over-cap")
+        assert not rejected.success
+        assert "saturated" in (rejected.error or "")
+        # The held request still completes normally.
+        ok = await held
+        assert ok.success and ok.output.text == "ok:slow"
+
+
+@pytest.mark.asyncio
+async def test_gateway_submit_timeout_rejects_slow_call():
+    # The call takes ~0.5s but the per-caller budget is 0.05s → failed result.
+    cfg = ProcessorConfig(max_workers=2)
+    async with LLMGateway(_slow_strategy(0.5), config=cfg, submit_timeout=0.05) as gw:
+        result = await gw.submit_result("slow")
+    assert not result.success
+    assert "timed out" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_gateway_per_call_timeout_override():
+    # A per-call timeout overrides the gateway default (here: no default).
+    async with LLMGateway(_slow_strategy(0.5), config=ProcessorConfig(max_workers=2)) as gw:
+        result = await gw.submit_result("slow", timeout=0.05)
+    assert not result.success
+    assert "timed out" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_gateway_cap_off_admits_beyond_workers():
+    # No max_pending → pure backpressure: callers beyond max_workers wait, and
+    # all of them ultimately succeed (behavior unchanged from before the cap).
+    async with LLMGateway(_strategy(), config=ProcessorConfig(max_workers=2)) as gw:
+        outs = await asyncio.gather(*(gw.submit(f"p{i}") for i in range(8)))
+    assert [o.text for o in outs] == [f"ok:p{i}" for i in range(8)]
+
+
+def test_gateway_rejects_invalid_knobs():
+    with pytest.raises(ValueError):
+        LLMGateway(_strategy(), max_pending=-1)
+    with pytest.raises(ValueError):
+        LLMGateway(_strategy(), submit_timeout=0)
