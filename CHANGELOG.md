@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-06-16
+
 ### Added
 
 - **Pluggable metadata extraction** ([#52]) — every built-in model now accepts
@@ -28,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `metadata_extractors=[grounding_metadata_extractor]`. New public exports:
   `MetadataExtractor`, `grounding_metadata_extractor`. See
   `docs/GEMINI_INTEGRATION.md`.
+
+### Changed
+
+- **Dependency maintenance** — bumped `pyjwt` 2.12.1 → 2.13.0 ([#51]); pinned
+  `js-yaml`/`markdown-it` to patched versions via npm `overrides` to clear newly
+  published moderate-severity DoS advisories
+  (GHSA-h67p-54hq-rp68, GHSA-6v5v-wf23-fmfq) in the markdownlint dev-tooling
+  chain. No runtime impact.
 
 ## [0.14.0] - 2026-06-14
 
@@ -314,6 +324,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     traversal — docs build only).
 
 [#8]: https://github.com/geoff-davis/async-batch-llm/issues/8
+[#51]: https://github.com/geoff-davis/async-batch-llm/pull/51
 [#52]: https://github.com/geoff-davis/async-batch-llm/issues/52
 
 ## [0.8.0] - 2026-04-24
