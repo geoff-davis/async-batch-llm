@@ -555,6 +555,18 @@ assert result.total_items == result.succeeded + result.failed
 
 Most recent first. See `CHANGELOG.md` for full per-release detail.
 
+- **Unreleased** — pluggable metadata extraction ([#52]). Built-in models take
+  a `metadata_extractors: list[MetadataExtractor]` constructor argument (and the
+  OpenAI-compatible family also accepts it via `from_api_key`; Gemini models
+  have no `from_api_key`) that contribute extra keys to `LLMResponse.metadata` /
+  `WorkItemResult.metadata`, merged on top of the built-in allowlist (user keys
+  win; a failing extractor is logged and skipped). Ships an opt-in
+  `grounding_metadata_extractor` that maps a grounded Gemini response onto
+  `metadata['grounding']` (`sources`/`queries`/`supports`). New exports:
+  `MetadataExtractor`, `grounding_metadata_extractor`. This is Phase 1 of #52;
+  the typed `LLMResponse` aux-field surface (Phase 2) was deferred. The
+  per-provider `_extract_metadata` allowlists are still the built-in default —
+  `_run_extractors` (`models.py`) merges user extractors over them.
 - **v0.10.0** — response metadata reaches `WorkItemResult` ([#8]), plus
   DeepSeek support, a strategy refactor, and rate-limit/temperature fixes.
   - `LLMCallStrategy.execute()` may now return a 3-tuple

@@ -310,6 +310,62 @@ dedicated `GeminiModel(safety_settings=...)` argument.)
 
 See: <https://ai.google.dev/gemini-api/docs/models/generative-models#model-parameters>
 
+### Grounding & custom metadata extraction
+
+By default `LLMResponse.metadata` (which flows to `WorkItemResult.metadata`)
+carries a fixed built-in payload — for Gemini that's `safety_ratings` and
+`finish_reason`. To surface *other* provider-specific output (grounding
+citations, reasoning traces, logprobs, …) through the same channel without
+subclassing the model, pass **metadata extractors**: hooks that receive the raw
+provider response and return extra metadata keys.
+
+```python
+from async_batch_llm import GeminiModel, GeminiStrategy, grounding_metadata_extractor
+from google.genai import types
+
+# Request grounding (the google_search tool) via generation_config, and surface
+# the resulting citations through metadata with the shipped extractor.
+model = GeminiModel(
+    "gemini-2.5-flash",
+    client,
+    metadata_extractors=[grounding_metadata_extractor],
+)
+strategy = GeminiStrategy(
+    model,
+    generation_config={"tools": [types.Tool(google_search=types.GoogleSearch())]},
+)
+
+# After processing, grounding is available provider-agnostically:
+#   result.metadata["grounding"]["sources"]  -> [{"uri": ..., "title": ...}, ...]
+#   result.metadata["grounding"]["queries"]  -> the web_search_queries the model ran
+#   result.metadata["grounding"]["supports"] -> answer-span -> source-index links
+```
+
+`grounding_metadata_extractor` is **opt-in** — it's not registered unless you
+pass it, so the default metadata payload is unchanged for everyone else. It
+returns `None` when a response carries no grounding metadata, so mixing grounded
+and non-grounded calls through the same model is fine.
+
+Write your own extractor for anything else (it's any
+`Callable[[Any], dict | None]`):
+
+```python
+def reasoning_extractor(response):
+    """Surface a thinking/reasoning trace under metadata['reasoning']."""
+    candidate = (response.candidates or [None])[0]
+    thought = getattr(candidate, "thought", None) if candidate else None
+    return {"reasoning": thought} if thought else None
+
+model = GeminiModel("gemini-2.5-flash", client, metadata_extractors=[reasoning_extractor])
+```
+
+Extractors merge on top of the built-in metadata (your keys win on collision),
+run independently, and a failing extractor is logged and skipped rather than
+breaking the call. The same `metadata_extractors=` constructor argument is
+available on `GeminiCachedModel`, `OpenAIModel`, `OpenRouterModel`, and
+`DeepSeekModel`; the OpenAI-compatible models (`OpenAIModel`, `OpenRouterModel`,
+`DeepSeekModel`) also accept it through their `from_api_key(...)` constructor.
+
 ### Error Handling
 
 async-batch-llm includes `GeminiErrorClassifier` for Gemini-specific errors:

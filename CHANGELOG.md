@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Pluggable metadata extraction** ([#52]) — every built-in model now accepts
+  `metadata_extractors: list[MetadataExtractor]`, hooks that contribute extra
+  keys to `LLMResponse.metadata` (and therefore `WorkItemResult.metadata`)
+  without subclassing the model or overriding `execute()`. User extractors merge
+  on top of the built-in payload (`safety_ratings`/`finish_reason` for Gemini,
+  `finish_reason`/`model`/`provider` for OpenAI-compatible); user keys win, and
+  a failing extractor is logged and skipped rather than breaking the call.
+  Available as a constructor argument on `GeminiModel`, `GeminiCachedModel`,
+  `OpenAICompatibleModel`, `OpenAIModel`, `OpenRouterModel`, and `DeepSeekModel`;
+  the OpenAI-compatible models also accept it through `from_api_key(...)`
+  (Gemini models have no `from_api_key`).
+- **`grounding_metadata_extractor`** ([#52]) — an opt-in extractor that maps a
+  grounded Gemini response (`google_search` tool) onto
+  `metadata['grounding']` (`sources`, `queries`, `supports`) as plain dicts, so
+  callers get web-search citations through the framework instead of reaching into
+  `LLMResponse.raw`. Not registered by default — pass it explicitly via
+  `metadata_extractors=[grounding_metadata_extractor]`. New public exports:
+  `MetadataExtractor`, `grounding_metadata_extractor`. See
+  `docs/GEMINI_INTEGRATION.md`.
+
 ## [0.14.0] - 2026-06-14
 
 ### Added
@@ -292,6 +314,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     traversal — docs build only).
 
 [#8]: https://github.com/geoff-davis/async-batch-llm/issues/8
+[#52]: https://github.com/geoff-davis/async-batch-llm/issues/52
 
 ## [0.8.0] - 2026-04-24
 

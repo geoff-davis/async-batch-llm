@@ -10,9 +10,16 @@ Added in v0.6.0.
 import json
 import logging
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from .base import LLMResponse
+
+# A user-supplied hook that maps a raw provider response onto extra metadata
+# keys. Returns None (or an empty dict) to contribute nothing. Extractors run
+# best-effort and merge on top of the model's built-in metadata — see
+# _run_extractors. Added in v0.15.0 (issue #52).
+MetadataExtractor = Callable[[Any], dict[str, Any] | None]
 
 # Sentinel prefix for encoding cache_tags into Gemini's CachedContent.display_name.
 # google-genai's CreateCachedContentConfig does not expose a metadata field, so we
@@ -104,6 +111,87 @@ def _extract_metadata(response: Any) -> dict[str, Any] | None:
     return metadata or None
 
 
+def _run_extractors(
+    response: Any,
+    extractors: list[MetadataExtractor] | None,
+    base: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Merge user-supplied metadata extractors on top of the built-in ``base``.
+
+    Each extractor runs best-effort: a failing extractor is logged and skipped
+    so it can't break the call. Later extractors win key collisions, and any
+    user extractor overrides a built-in key of the same name. Returns ``None``
+    when nothing was extracted, preserving the "empty → None" contract that
+    ``LLMResponse.metadata`` expects.
+
+    Added in v0.15.0 (issue #52).
+    """
+    merged: dict[str, Any] = dict(base) if base else {}
+    for extractor in extractors or ():
+        try:
+            extra = extractor(response)
+        except Exception as e:
+            # Keep `except Exception` (not bare) so KeyboardInterrupt propagates.
+            logger.warning(f"Metadata extractor {extractor!r} failed: {e}", exc_info=True)
+            continue
+        if extra:
+            merged.update(extra)
+    return merged or None
+
+
+def grounding_metadata_extractor(response: Any) -> dict[str, Any] | None:
+    """Opt-in metadata extractor for Gemini grounding (``google_search``).
+
+    Pass via ``GeminiModel(..., metadata_extractors=[grounding_metadata_extractor])``
+    to surface web-search citations under ``metadata['grounding']`` — a plain
+    dict with ``sources`` (``[{"uri", "title"}]``), ``queries`` (the
+    ``web_search_queries`` the model issued), and ``supports`` (answer-span →
+    source-index links). Not registered by default, so non-grounded calls and
+    callers who don't opt in see an unchanged metadata payload.
+
+    Returns ``None`` when the response carries no grounding metadata.
+
+    Added in v0.15.0 (issue #52).
+    """
+    candidates = getattr(response, "candidates", None)
+    if not candidates:
+        return None
+    gm = getattr(candidates[0], "grounding_metadata", None)
+    if gm is None:
+        return None
+
+    grounding: dict[str, Any] = {}
+
+    sources: list[dict[str, Any]] = []
+    for chunk in getattr(gm, "grounding_chunks", None) or ():
+        web = getattr(chunk, "web", None)
+        if web is None:
+            continue
+        sources.append({"uri": getattr(web, "uri", None), "title": getattr(web, "title", None)})
+    if sources:
+        grounding["sources"] = sources
+
+    queries = [q for q in (getattr(gm, "web_search_queries", None) or ()) if q]
+    if queries:
+        grounding["queries"] = queries
+
+    supports: list[dict[str, Any]] = []
+    for support in getattr(gm, "grounding_supports", None) or ():
+        segment = getattr(support, "segment", None)
+        supports.append(
+            {
+                "text": getattr(segment, "text", None),
+                "start_index": getattr(segment, "start_index", None),
+                "end_index": getattr(segment, "end_index", None),
+                "chunk_indices": list(getattr(support, "grounding_chunk_indices", None) or ()),
+            }
+        )
+    if supports:
+        grounding["supports"] = supports
+
+    return {"grounding": grounding} if grounding else None
+
+
 def _extract_tokens(response: Any) -> tuple[int, int, int, int]:
     """Extract token counts from a Gemini response.
 
@@ -151,6 +239,7 @@ class GeminiModel:
         *,
         safety_settings: list[dict[str, Any]] | None = None,
         system_instruction: str | None = None,
+        metadata_extractors: list[MetadataExtractor] | None = None,
     ):
         """
         Args:
@@ -158,6 +247,10 @@ class GeminiModel:
             client: Initialized genai.Client.
             safety_settings: Default safety settings for all calls.
             system_instruction: Default system instruction (overridable per-call).
+            metadata_extractors: Optional hooks that contribute extra keys to
+                ``LLMResponse.metadata`` (e.g. ``grounding_metadata_extractor``).
+                Merged on top of the built-in ``safety_ratings``/``finish_reason``;
+                user keys win. Added in v0.15.0.
         """
         if genai is None:
             raise ImportError(
@@ -169,6 +262,11 @@ class GeminiModel:
         self._client = client
         self._safety_settings = safety_settings
         self._default_system_instruction = system_instruction
+        self._metadata_extractors = metadata_extractors
+
+    def _build_metadata(self, response: Any) -> dict[str, Any] | None:
+        """Built-in Gemini metadata plus any user-supplied extractors."""
+        return _run_extractors(response, self._metadata_extractors, _extract_metadata(response))
 
     async def generate(
         self,
@@ -233,7 +331,7 @@ class GeminiModel:
             output_tokens=output_tokens,
             total_tokens=total_tokens,
             cached_input_tokens=cached_tokens,
-            metadata=_extract_metadata(response),
+            metadata=self._build_metadata(response),
             raw=response,
         )
 
@@ -278,6 +376,7 @@ class GeminiCachedModel:
         auto_renew: bool = True,
         cache_tags: dict[str, str] | None = None,
         safety_settings: list[dict[str, Any]] | None = None,
+        metadata_extractors: list[MetadataExtractor] | None = None,
     ):
         """
         Args:
@@ -293,6 +392,10 @@ class GeminiCachedModel:
                 has no ``metadata`` field) and decoded on lookup. Keep tag values
                 short — Gemini's ``display_name`` has a 128-character limit.
             safety_settings: Default safety settings for all calls.
+            metadata_extractors: Optional hooks that contribute extra keys to
+                ``LLMResponse.metadata`` (e.g. ``grounding_metadata_extractor``).
+                Merged on top of the built-in metadata; user keys win.
+                Added in v0.15.0.
         """
         if genai is None:
             raise ImportError(
@@ -336,11 +439,16 @@ class GeminiCachedModel:
         self._auto_renew = auto_renew
         self._cache_tags = cache_tags or {}
         self._safety_settings = safety_settings
+        self._metadata_extractors = metadata_extractors
 
         self._cache: Any = None
         self._cache_created_at: float | None = None
         self._cache_lock: Any = None
         self._prepared = False
+
+    def _build_metadata(self, response: Any) -> dict[str, Any] | None:
+        """Built-in Gemini metadata plus any user-supplied extractors."""
+        return _run_extractors(response, self._metadata_extractors, _extract_metadata(response))
 
     @property
     def cache_name(self) -> str | None:
@@ -504,7 +612,7 @@ class GeminiCachedModel:
             output_tokens=output_tokens,
             total_tokens=total_tokens,
             cached_input_tokens=cached_tokens,
-            metadata=_extract_metadata(response),
+            metadata=self._build_metadata(response),
             raw=response,
         )
 
@@ -697,6 +805,7 @@ class OpenAICompatibleModel:
         system_instruction: str | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
+        metadata_extractors: list[MetadataExtractor] | None = None,
     ):
         """
         Args:
@@ -712,6 +821,11 @@ class OpenAICompatibleModel:
                 OpenRouter's ``HTTP-Referer``/``X-Title``).
             extra_body: Default extra body fields forwarded on every call
                 (e.g. OpenRouter ``provider`` routing config).
+            metadata_extractors: Optional hooks that contribute extra keys to
+                ``LLMResponse.metadata`` (e.g. ``reasoning_content`` or
+                ``logprobs``). Merged on top of the built-in
+                ``finish_reason``/``model`` metadata; user keys win.
+                Added in v0.15.0.
         """
         if AsyncOpenAI is None:
             raise ImportError(
@@ -724,6 +838,7 @@ class OpenAICompatibleModel:
         self._default_system_instruction = system_instruction
         self._default_extra_headers = extra_headers
         self._default_extra_body = extra_body
+        self._metadata_extractors = metadata_extractors
         # Set to True only by from_api_key(); cleanup() uses this to decide
         # whether to close the underlying httpx connections.
         self._owns_client: bool = False
@@ -805,11 +920,21 @@ class OpenAICompatibleModel:
             output_tokens=output_tokens,
             total_tokens=total_tokens,
             cached_input_tokens=cached_tokens,
-            metadata=self._extract_metadata(response),
+            metadata=self._build_metadata(response),
             raw=response,
         )
 
     # ── Overridable extraction hooks ────────────────────────────────────
+
+    def _build_metadata(self, response: Any) -> dict[str, Any] | None:
+        """Built-in ``_extract_metadata`` plus any user-supplied extractors.
+
+        Subclasses customize the built-in payload by overriding
+        ``_extract_metadata``; user extractors merge on top of that here.
+        """
+        return _run_extractors(
+            response, self._metadata_extractors, self._extract_metadata(response)
+        )
 
     def _extract_tokens(self, response: Any) -> tuple[int, int, int, int]:
         """Extract (input, output, total, cached) token counts.
@@ -892,6 +1017,7 @@ class OpenAICompatibleModel:
         extra_body: dict[str, Any] | None = None,
         json_mode: bool = False,
         max_connections: int | None = None,
+        metadata_extractors: list[MetadataExtractor] | None = None,
         **client_kwargs: Any,
     ) -> TM:
         """Build the model with a freshly-constructed AsyncOpenAI client.
@@ -994,6 +1120,7 @@ class OpenAICompatibleModel:
             system_instruction=system_instruction,
             extra_headers=extra_headers,
             extra_body=extra_body,
+            metadata_extractors=metadata_extractors,
         )
         instance._owns_client = True
         return instance
@@ -1071,6 +1198,7 @@ class OpenRouterModel(OpenAICompatibleModel):
         max_connections: int | None = None,
         referer: str | None = None,
         title: str | None = None,
+        metadata_extractors: list[MetadataExtractor] | None = None,
         **client_kwargs: Any,
     ) -> "OpenRouterModel":
         """Build an OpenRouterModel.
@@ -1102,6 +1230,7 @@ class OpenRouterModel(OpenAICompatibleModel):
             extra_body=extra_body,
             json_mode=json_mode,
             max_connections=max_connections,
+            metadata_extractors=metadata_extractors,
             **client_kwargs,
         )
 
@@ -1173,6 +1302,7 @@ class DeepSeekModel(OpenAICompatibleModel):
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
         thinking: bool | None = None,
+        metadata_extractors: list[MetadataExtractor] | None = None,
     ):
         """See :class:`OpenAICompatibleModel`; adds the DeepSeek ``thinking``
         toggle (``True``/``False`` to force thinking on/off, ``None`` for the
@@ -1183,6 +1313,7 @@ class DeepSeekModel(OpenAICompatibleModel):
             system_instruction=system_instruction,
             extra_headers=extra_headers,
             extra_body=_merge_thinking(extra_body, thinking),
+            metadata_extractors=metadata_extractors,
         )
 
     @classmethod
@@ -1198,6 +1329,7 @@ class DeepSeekModel(OpenAICompatibleModel):
         json_mode: bool = False,
         max_connections: int | None = None,
         thinking: bool | None = None,
+        metadata_extractors: list[MetadataExtractor] | None = None,
         **client_kwargs: Any,
     ) -> "DeepSeekModel":
         """Build a DeepSeekModel; reads ``DEEPSEEK_API_KEY`` when ``api_key`` is
@@ -1212,6 +1344,7 @@ class DeepSeekModel(OpenAICompatibleModel):
             extra_body=_merge_thinking(extra_body, thinking),
             json_mode=json_mode,
             max_connections=max_connections,
+            metadata_extractors=metadata_extractors,
             **client_kwargs,
         )
 

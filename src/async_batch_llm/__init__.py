@@ -110,9 +110,11 @@ from .models import (
     DeepSeekModel,
     GeminiCachedModel,
     GeminiModel,
+    MetadataExtractor,
     OpenAICompatibleModel,
     OpenAIModel,
     OpenRouterModel,
+    grounding_metadata_extractor,
 )
 
 # Observers
@@ -213,6 +215,8 @@ __all__ = [
     "OpenAICompatibleModel",
     "OpenAIModel",
     "OpenRouterModel",
+    "MetadataExtractor",
+    "grounding_metadata_extractor",
     # Protocols
     "LLMModel",
     "LLMResponse",
