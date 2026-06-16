@@ -27,6 +27,8 @@
     "markdownlint-cli2": "^0.22.1"
   },
   "overrides": {
-    "smol-toml": "^1.6.1"
+    "smol-toml": "^1.6.1",
+    "js-yaml": "^4.2.0",
+    "markdown-it": "^14.2.0"
   }
 }
