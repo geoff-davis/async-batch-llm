@@ -9,13 +9,35 @@ TOutput = TypeVar("TOutput")
 
 
 class MockUsage:
-    """Mock usage information."""
+    """Mock usage information mirroring pydantic-ai's v1 ``RunUsage`` names.
 
-    def __init__(self, request_tokens: int = 100, response_tokens: int = 50):
+    Stores the modern ``input_tokens``/``output_tokens``/``cache_read_tokens``
+    fields; ``request_tokens``/``response_tokens`` remain as read-only aliases
+    for code written against pydantic-ai's legacy (pre-v1) usage API. The
+    constructor keeps the legacy keyword names for backward compatibility.
+    """
+
+    def __init__(
+        self,
+        request_tokens: int = 100,
+        response_tokens: int = 50,
+        cache_read_tokens: int = 0,
+    ):
         """Initialize mock usage."""
-        self.request_tokens = request_tokens
-        self.response_tokens = response_tokens
+        self.input_tokens = request_tokens
+        self.output_tokens = response_tokens
+        self.cache_read_tokens = cache_read_tokens
         self.total_tokens = request_tokens + response_tokens
+
+    @property
+    def request_tokens(self) -> int:
+        """Legacy alias for ``input_tokens``."""
+        return self.input_tokens
+
+    @property
+    def response_tokens(self) -> int:
+        """Legacy alias for ``output_tokens``."""
+        return self.output_tokens
 
 
 class MockResult(Generic[TOutput]):
@@ -141,6 +163,7 @@ class MockAgent(Generic[TOutput]):
         usage_info = MockUsage(
             request_tokens=self.tokens_per_call.get("input_tokens", 10),
             response_tokens=self.tokens_per_call.get("output_tokens", 20),
+            cache_read_tokens=self.tokens_per_call.get("cached_input_tokens", 0),
         )
 
         return MockResult(output, usage_info=usage_info)

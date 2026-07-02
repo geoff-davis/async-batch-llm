@@ -161,6 +161,70 @@ async def test_pydantic_ai_strategy():
     assert result.results[0].token_usage["total_tokens"] > 0
 
 
+@pytest.mark.asyncio
+async def test_pydantic_ai_reads_v1_usage_fields_and_cached_tokens(recwarn):
+    """Regression: the strategy read the deprecated request_tokens /
+    response_tokens properties (removal slated in pydantic-ai) and never
+    mapped cache_read_tokens into cached_input_tokens."""
+    from pydantic_ai.usage import RunUsage
+
+    class FakeResult:
+        output = TestOutput(text="ok")
+
+        def usage(self):
+            return RunUsage(input_tokens=10, output_tokens=5, cache_read_tokens=3)
+
+    class FakeAgent:
+        async def run(self, prompt, **kwargs):
+            return FakeResult()
+
+    strategy = PydanticAIStrategy(agent=FakeAgent())
+    output, tokens, metadata = await strategy.execute("p", 1, 30.0)
+
+    assert output.text == "ok"
+    assert tokens["input_tokens"] == 10
+    assert tokens["output_tokens"] == 5
+    assert tokens["cached_input_tokens"] == 3
+    assert metadata is None
+
+    deprecations = [
+        w
+        for w in recwarn.list
+        if issubclass(w.category, DeprecationWarning)
+        and ("request_tokens" in str(w.message) or "response_tokens" in str(w.message))
+    ]
+    assert not deprecations, f"deprecated usage fields accessed: {deprecations}"
+
+
+@pytest.mark.asyncio
+async def test_pydantic_ai_falls_back_to_legacy_usage_fields():
+    """Usage objects from pre-v1 pydantic-ai (request_tokens/response_tokens
+    only) still extract correctly."""
+
+    class LegacyUsage:
+        request_tokens = 7
+        response_tokens = 2
+        total_tokens = 9
+
+    class FakeResult:
+        output = TestOutput(text="ok")
+
+        def usage(self):
+            return LegacyUsage()
+
+    class FakeAgent:
+        async def run(self, prompt, **kwargs):
+            return FakeResult()
+
+    strategy = PydanticAIStrategy(agent=FakeAgent())
+    _, tokens, _ = await strategy.execute("p", 1, 30.0)
+
+    assert tokens["input_tokens"] == 7
+    assert tokens["output_tokens"] == 2
+    assert tokens["total_tokens"] == 9
+    assert "cached_input_tokens" not in tokens
+
+
 # Test Gemini strategies (mock-based since we don't want to make real API calls)
 
 

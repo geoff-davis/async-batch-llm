@@ -40,16 +40,16 @@ class ResultLike(Protocol[TOutput]):
 
 
 class UsageLike(Protocol):
-    """Protocol for token usage."""
+    """Protocol for token usage (pydantic-ai v1 field names)."""
 
     @property
-    def request_tokens(self) -> int:
-        """Number of tokens in the request."""
+    def input_tokens(self) -> int:
+        """Number of tokens in the request/prompt."""
         ...
 
     @property
-    def response_tokens(self) -> int:
-        """Number of tokens in the response."""
+    def output_tokens(self) -> int:
+        """Number of tokens in the response/completion."""
         ...
 
     @property

@@ -398,6 +398,37 @@ class DeepSeekStrategy(ModelStrategy[TOutput]):
     """
 
 
+def _pydantic_ai_usage_to_tokens(usage: Any) -> "TokenUsage":
+    """Map a pydantic-ai usage object to our ``TokenUsage`` shape.
+
+    pydantic-ai v1 renamed ``request_tokens``/``response_tokens`` to
+    ``input_tokens``/``output_tokens`` (the old names are deprecated
+    properties slated for removal) and added ``cache_read_tokens``. Read the
+    new names first and fall back to the legacy ones, so both API generations
+    work and modern versions never touch the deprecated properties (which
+    emit a ``DeprecationWarning`` on every access).
+    """
+    if usage is None:
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    input_tokens = getattr(usage, "input_tokens", None)
+    if input_tokens is None:
+        input_tokens = getattr(usage, "request_tokens", 0)
+    output_tokens = getattr(usage, "output_tokens", None)
+    if output_tokens is None:
+        output_tokens = getattr(usage, "response_tokens", 0)
+
+    tokens: TokenUsage = {
+        "input_tokens": input_tokens or 0,
+        "output_tokens": output_tokens or 0,
+        "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+    }
+    cached = getattr(usage, "cache_read_tokens", 0) or 0
+    if cached:
+        tokens["cached_input_tokens"] = cached
+    return tokens
+
+
 class PydanticAIStrategy(LLMCallStrategy[TOutput]):
     """
     Strategy for using PydanticAI agents.
@@ -446,12 +477,7 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
         result = await self.agent.run(prompt)
 
         # Extract token usage FIRST (before accessing result.output which may fail validation)
-        usage = result.usage()
-        tokens: TokenUsage = {
-            "input_tokens": usage.request_tokens if usage else 0,
-            "output_tokens": usage.response_tokens if usage else 0,
-            "total_tokens": usage.total_tokens if usage else 0,
-        }
+        tokens = _pydantic_ai_usage_to_tokens(result.usage())
 
         # Access result.output (may raise validation errors)
         try:

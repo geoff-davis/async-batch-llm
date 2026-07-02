@@ -79,6 +79,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`PydanticAIStrategy` no longer reads pydantic-ai's deprecated usage
+  fields, and now tracks cached tokens.** The strategy (and
+  `TokenExtractor`) read `usage.request_tokens`/`response_tokens`, which
+  emit a `DeprecationWarning` on every call in pydantic-ai v1 and are
+  slated for removal — at which point every call would have raised
+  `AttributeError`. Both now read `input_tokens`/`output_tokens` first
+  with the legacy names as fallback, and map pydantic-ai's
+  `cache_read_tokens` into `cached_input_tokens`, so
+  `effective_input_tokens()` no longer overbills PydanticAI users.
+  `MockUsage` mirrors the v1 field names (legacy names remain as aliases)
+  and `MockAgent` honors `tokens_per_call["cached_input_tokens"]`.
+- **`TokenExtractor` checks the framework-stamped exact count first.**
+  `_failed_token_usage` (exact, per-attempt) was checked *after* the
+  heuristic `.usage`/`__cause__` paths, which could shadow it; non-`int`
+  numeric counts are now coerced instead of silently zeroed.
 - **`get_stats()["total_cached_tokens"]` always reported 0.** The
   "preferred alias" was stored as a second `ProcessingStats` field that
   nothing ever incremented (only `cached_input_tokens` was updated). The

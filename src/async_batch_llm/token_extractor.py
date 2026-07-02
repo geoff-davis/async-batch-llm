@@ -5,10 +5,11 @@ so users see accurate cost/usage telemetry. Different providers surface
 usage in different ways:
 
 1. **Custom framework attribute** — strategies attach `_failed_token_usage`
-   to exceptions via `__dict__` when they know the count.
-2. **Direct `.usage` attribute** on the exception (OpenAI-style wrappers).
-3. **PydanticAI-style** — exception's `__cause__` has a `.result` with a
+   to exceptions via `__dict__` when they know the count. Checked first:
+   it's an exact per-attempt count, so it must win over the heuristics.
+2. **PydanticAI-style** — exception's `__cause__` has a `.result` with a
    callable `.usage()`.
+3. **Direct `.usage` attribute** on the exception (OpenAI-style wrappers).
 
 Previously this logic lived inline on `ParallelBatchProcessor`. Extracting
 it makes each path testable in isolation and keeps the processor lean.
@@ -42,7 +43,18 @@ class TokenExtractor:
         extraction failures — only `asyncio.CancelledError` propagates.
         """
         try:
-            # Strategy 1: PydanticAI-style exception with result in __cause__
+            # Strategy 1: Custom _failed_token_usage attribute (set by this
+            # framework). Checked first — it carries the exact per-attempt
+            # count and must not be shadowed by the heuristic paths below.
+            exc_dict = getattr(exception, "__dict__", None)
+            if isinstance(exc_dict, dict):
+                failed = exc_dict.get("_failed_token_usage")
+                if isinstance(failed, dict):
+                    merged = dict(_EMPTY_USAGE)
+                    merged.update({k: _int(v) for k, v in failed.items()})
+                    return merged
+
+            # Strategy 2: PydanticAI-style exception with result in __cause__
             cause = getattr(exception, "__cause__", None)
             if cause is not None:
                 result = getattr(cause, "result", None)
@@ -53,22 +65,13 @@ class TokenExtractor:
                         if usage is not None:
                             return _coerce_usage(usage)
 
-            # Strategy 2: Direct .usage attribute on exception
+            # Strategy 3: Direct .usage attribute on exception
             usage = getattr(exception, "usage", None)
             if usage is not None:
                 if callable(usage):
                     usage = usage()
                 if usage is not None:
                     return _coerce_usage(usage)
-
-            # Strategy 3: Custom _failed_token_usage attribute (set by this framework)
-            exc_dict = getattr(exception, "__dict__", None)
-            if isinstance(exc_dict, dict):
-                failed = exc_dict.get("_failed_token_usage")
-                if isinstance(failed, dict):
-                    merged = dict(_EMPTY_USAGE)
-                    merged.update({k: int(v) for k, v in failed.items() if isinstance(v, int)})
-                    return merged
 
         except asyncio.CancelledError:
             raise
@@ -92,30 +95,35 @@ class TokenExtractor:
             cumulative[key] = cumulative.get(key, 0) + attempt_tokens.get(key, 0)
 
 
+def _first_attr(usage: Any, *names: str) -> Any:
+    """Return the first non-None attribute among ``names``, else 0."""
+    for name in names:
+        value = getattr(usage, name, None)
+        if value is not None:
+            return value
+    return 0
+
+
 def _coerce_usage(usage: Any) -> dict[str, int]:
     """Convert a provider-specific usage object into our dict shape.
 
     Field-name aliasing covers the common providers:
 
-    - PydanticAI: ``request_tokens`` / ``response_tokens``
-    - Anthropic / our normalized shape: ``input_tokens`` / ``output_tokens``
+    - Anthropic / pydantic-ai v1 / our normalized shape: ``input_tokens`` /
+      ``output_tokens``
     - OpenAI / OpenRouter: ``prompt_tokens`` / ``completion_tokens``
+    - pydantic-ai legacy: ``request_tokens`` / ``response_tokens`` — checked
+      last, so modern usage objects never touch the deprecated properties
+      (which emit a ``DeprecationWarning`` on access).
     """
-    input_tokens = _int(
-        getattr(
-            usage,
-            "request_tokens",
-            getattr(usage, "input_tokens", getattr(usage, "prompt_tokens", 0)),
-        )
-    )
+    input_tokens = _int(_first_attr(usage, "input_tokens", "prompt_tokens", "request_tokens"))
     output_tokens = _int(
-        getattr(
-            usage,
-            "response_tokens",
-            getattr(usage, "output_tokens", getattr(usage, "completion_tokens", 0)),
-        )
+        _first_attr(usage, "output_tokens", "completion_tokens", "response_tokens")
     )
     cached = _int(getattr(usage, "cached_input_tokens", 0))
+    if not cached:
+        # pydantic-ai v1 surfaces cache hits as cache_read_tokens.
+        cached = _int(getattr(usage, "cache_read_tokens", 0))
     if not cached:
         # OpenAI surfaces cached prompt tokens nested under prompt_tokens_details.
         details = getattr(usage, "prompt_tokens_details", None)
