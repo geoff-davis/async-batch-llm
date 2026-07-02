@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call). Subclasses `ValueError` (existing handlers keep working) and
   carries the tokens the provider already billed as `_failed_token_usage`,
   so failed-attempt accounting reflects real spend.
+- **`ProviderResponseError`** (exported at top level) — OpenRouter reports
+  upstream failures (no provider available, upstream 5xx, upstream rate
+  limits) as HTTP 200 with an `error` object and no choices, so the openai
+  SDK never raises. That path used to surface as a non-retryable "No choices
+  returned" error. `OpenRouterModel` now raises `ProviderResponseError`
+  (carrying the embedded code and raw payload) via a
+  `_raise_on_response_error` hook on `OpenAICompatibleModel`;
+  `OpenRouterErrorClassifier` retries it, treating embedded 429s as rate
+  limits so the coordinated cooldown engages.
 - **PEP 561 `py.typed` marker** — downstream mypy/pyright now consume the
   package's inline annotations instead of treating it as untyped. Also adds
   the `Typing :: Typed` trove classifier.

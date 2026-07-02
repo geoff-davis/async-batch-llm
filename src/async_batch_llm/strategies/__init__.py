@@ -6,6 +6,7 @@ from .errors import (
     ErrorClassifier,
     ErrorInfo,
     FrameworkTimeoutError,
+    ProviderResponseError,
     RateLimitRetriesExceeded,
     TokenTrackingError,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "DefaultErrorClassifier",
     "EmptyResponseError",
     "FrameworkTimeoutError",
+    "ProviderResponseError",
     "RateLimitRetriesExceeded",
     "TokenTrackingError",
     "RateLimitStrategy",
