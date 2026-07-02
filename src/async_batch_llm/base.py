@@ -477,11 +477,15 @@ class ProcessingStats:
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_tokens: int = 0
-    cached_input_tokens: int = 0  # Gemini context caching (same as total_cached_tokens)
-    total_cached_tokens: int = 0  # v0.2.0: Alias for cached_input_tokens (preferred name)
+    cached_input_tokens: int = 0  # Input tokens served from cache (any provider)
 
     def copy(self) -> dict[str, Any]:
-        """Return a dictionary copy of the stats for backwards compatibility."""
+        """Return a dictionary copy of the stats for backwards compatibility.
+
+        The dict exposes the cached-token count under both keys:
+        ``cached_input_tokens`` (the stored field) and ``total_cached_tokens``
+        (the preferred alias, matching ``BatchResult.total_cached_tokens``).
+        """
         return {
             "total": self.total,
             "processed": self.processed,
@@ -494,7 +498,7 @@ class ProcessingStats:
             "total_output_tokens": self.total_output_tokens,
             "total_tokens": self.total_tokens,
             "cached_input_tokens": self.cached_input_tokens,
-            "total_cached_tokens": self.total_cached_tokens,
+            "total_cached_tokens": self.cached_input_tokens,
         }
 
 

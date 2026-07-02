@@ -79,6 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`get_stats()["total_cached_tokens"]` always reported 0.** The
+  "preferred alias" was stored as a second `ProcessingStats` field that
+  nothing ever incremented (only `cached_input_tokens` was updated). The
+  duplicate field is gone; the stats dict now maps both keys to the one
+  real counter.
 - **`GeminiErrorClassifier` now dispatches on HTTP status codes** (via
   `google.genai.errors.APIError.code`) instead of string-matching the
   message, fixing two inverted classifications:

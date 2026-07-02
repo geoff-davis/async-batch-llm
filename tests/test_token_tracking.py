@@ -65,6 +65,27 @@ async def test_cached_token_aggregation():
 
 
 @pytest.mark.asyncio
+async def test_get_stats_reports_cached_tokens_under_both_keys():
+    """Regression: get_stats()['total_cached_tokens'] was always 0 because the
+    duplicate ProcessingStats field was never incremented; the dict now maps
+    both keys to the single stored counter."""
+    strategy = CachedTokenStrategy(input_tokens=500, output_tokens=100, cached_tokens=450)
+    config = ProcessorConfig(max_workers=2)
+
+    async with ParallelBatchProcessor[str, str, None](config=config) as processor:
+        for i in range(4):
+            await processor.add_work(
+                LLMWorkItem(item_id=f"item_{i}", strategy=strategy, prompt="Test")
+            )
+
+        await processor.process_all()
+        stats = await processor.get_stats()
+
+    assert stats["cached_input_tokens"] == 1800  # 450 * 4
+    assert stats["total_cached_tokens"] == 1800  # preferred alias, same counter
+
+
+@pytest.mark.asyncio
 async def test_cache_hit_rate_calculation():
     """Test cache_hit_rate() method."""
     strategy = CachedTokenStrategy(
