@@ -540,7 +540,10 @@ class ParallelBatchProcessor(
         if delay > 0:
             await asyncio.sleep(delay)
 
-        # Process the item
+        # Process the item. (Explicit declaration guides ty's inference for
+        # the except-branch construction — the PEP 696 defaults on
+        # TOutput/TContext otherwise make it infer the defaulted parameters.)
+        result: WorkItemResult[TOutput, TContext]
         try:
             result = await self._process_item_with_retries(work_item, worker_id)
         except asyncio.CancelledError:
@@ -1014,8 +1017,9 @@ class ParallelBatchProcessor(
                     f"[INFO]\n{'=' * 80}\nRESULT for {work_item.item_id}:\n{'=' * 80}\n{output}\n{'=' * 80}"
                 )
 
-            # Create result
-            work_result = WorkItemResult(
+            # Create result (explicit annotation guides ty past the PEP 696
+            # TContext default)
+            work_result: WorkItemResult[TOutput, TContext] = WorkItemResult(
                 item_id=work_item.item_id,
                 success=True,
                 output=output,

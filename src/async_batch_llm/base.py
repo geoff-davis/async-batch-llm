@@ -294,7 +294,7 @@ def _set_gemini_safety_ratings(self: "WorkItemResult", value: dict[str, str] | N
 # has generated __init__: reads emit a DeprecationWarning, writes (including
 # the generated __init__'s assignment and the __post_init__ backfill) go
 # straight to the instance __dict__.
-WorkItemResult.gemini_safety_ratings = property(  # type: ignore[assignment,method-assign]
+WorkItemResult.gemini_safety_ratings = property(  # type: ignore[assignment,method-assign]  # ty:ignore[invalid-assignment]
     _get_gemini_safety_ratings, _set_gemini_safety_ratings
 )
 
