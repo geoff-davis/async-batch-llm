@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`get_stats()['total_cached_tokens']` always reported 0** — the "preferred
+  alias" was a second `ProcessingStats` field that nothing ever incremented;
+  only `cached_input_tokens` was updated by the worker loop. The duplicate
+  storage is gone and `copy()` now maps both dict keys to the single real
+  counter.
+
 ## [0.15.0] - 2026-06-16
 
 ### Added

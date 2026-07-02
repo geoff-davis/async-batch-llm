@@ -542,8 +542,7 @@ class ProcessingStats:
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_tokens: int = 0
-    cached_input_tokens: int = 0  # Gemini context caching (same as total_cached_tokens)
-    total_cached_tokens: int = 0  # v0.2.0: Alias for cached_input_tokens (preferred name)
+    cached_input_tokens: int = 0  # Tokens served from provider-side caches
 
     def copy(self) -> dict[str, Any]:
         """Return a dictionary copy of the stats for backwards compatibility."""
@@ -559,7 +558,10 @@ class ProcessingStats:
             "total_output_tokens": self.total_output_tokens,
             "total_tokens": self.total_tokens,
             "cached_input_tokens": self.cached_input_tokens,
-            "total_cached_tokens": self.total_cached_tokens,
+            # Alias kept for backward compatibility: the duplicate field was
+            # never incremented, so it always read 0. Both keys now come from
+            # the single counter that is actually updated.
+            "total_cached_tokens": self.cached_input_tokens,
         }
 
 
