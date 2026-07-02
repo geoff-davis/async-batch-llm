@@ -262,9 +262,13 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
         # Try middleware error handlers
         middleware_result = await self._run_middlewares_on_error(work_item, e)
+        result: WorkItemResult[TOutput, TContext]
         if middleware_result is not None:
             result = middleware_result
         else:
+            # Annotated above: ty infers unannotated constructions against
+            # the PEP 696 defaults ([Any, None]) instead of the executor's
+            # type parameters.
             result = WorkItemResult(
                 item_id=work_item.item_id,
                 success=False,
@@ -639,8 +643,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     "=" * 80,
                 )
 
-            # Create result
-            work_result = WorkItemResult(
+            # Create result (annotated: ty infers unannotated constructions
+            # against the PEP 696 defaults instead of the executor's params)
+            work_result: WorkItemResult[TOutput, TContext] = WorkItemResult(
                 item_id=work_item.item_id,
                 success=True,
                 output=output,

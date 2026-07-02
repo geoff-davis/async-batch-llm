@@ -207,7 +207,7 @@ class TestWorkItemResultMetadata:
 class TestGeminiSafetyRatingsBackcompat:
     """The legacy ``gemini_safety_ratings`` field is populated from
     ``metadata['safety_ratings']`` so existing user code keeps working
-    until that field is removed."""
+    until that field is removed. Reading it emits a DeprecationWarning."""
 
     def test_backfill_from_metadata(self):
         result = WorkItemResult(
@@ -215,7 +215,8 @@ class TestGeminiSafetyRatingsBackcompat:
             success=True,
             metadata={"safety_ratings": {"HARM_HATE": "LOW"}},
         )
-        assert result.gemini_safety_ratings == {"HARM_HATE": "LOW"}
+        with pytest.warns(DeprecationWarning, match="safety_ratings"):
+            assert result.gemini_safety_ratings == {"HARM_HATE": "LOW"}
 
     def test_explicit_field_takes_precedence(self):
         result = WorkItemResult(
@@ -225,11 +226,13 @@ class TestGeminiSafetyRatingsBackcompat:
             gemini_safety_ratings={"HARM_HATE": "LOW"},
         )
         # Caller-provided explicit value should not be overwritten.
-        assert result.gemini_safety_ratings == {"HARM_HATE": "LOW"}
+        with pytest.warns(DeprecationWarning):
+            assert result.gemini_safety_ratings == {"HARM_HATE": "LOW"}
 
     def test_no_metadata_no_ratings(self):
         result = WorkItemResult(item_id="x", success=True)
-        assert result.gemini_safety_ratings is None
+        with pytest.warns(DeprecationWarning):
+            assert result.gemini_safety_ratings is None
         assert result.metadata is None
 
     def test_metadata_without_safety_ratings(self):
@@ -238,5 +241,18 @@ class TestGeminiSafetyRatingsBackcompat:
             success=True,
             metadata={"finish_reason": "stop"},
         )
-        assert result.gemini_safety_ratings is None
+        with pytest.warns(DeprecationWarning):
+            assert result.gemini_safety_ratings is None
         assert result.metadata == {"finish_reason": "stop"}
+
+    def test_construction_and_repr_do_not_warn(self, recwarn):
+        """Only *reads* of the deprecated field warn — creating results and
+        repr()ing them (framework-internal operations) must stay silent."""
+        result = WorkItemResult(
+            item_id="x",
+            success=True,
+            metadata={"safety_ratings": {"HARM_HATE": "LOW"}},
+        )
+        repr(result)
+        deprecations = [w for w in recwarn.list if issubclass(w.category, DeprecationWarning)]
+        assert not deprecations

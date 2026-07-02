@@ -30,6 +30,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **PEP 696 defaults on the framework type variables** —
+  `TInput`/`TOutput`/`TContext` default to `str`/`Any`/`None` (via
+  `typing_extensions.TypeVar`), so trailing parameters can be dropped:
+  `ParallelBatchProcessor[str, MyOutput]`. `typing-extensions>=4.4` is now
+  an explicit dependency (already present transitively via pydantic).
+  `TInput` remains unused by the framework (prompts are always `str`) and is
+  slated for removal at the next major.
+- **`BatchResult` derived fields are `init=False`** — `total_items`,
+  `succeeded`, `failed`, and the token totals were constructor arguments
+  that `__post_init__` silently recomputed and discarded; the constructor
+  signature no longer advertises them.
+- **Reading `WorkItemResult.gemini_safety_ratings` emits a
+  `DeprecationWarning`** — read `result.metadata['safety_ratings']` instead.
+  Construction, `repr()`, and comparisons stay silent (the field is excluded
+  from repr/equality), so framework-internal operations don't warn.
 - **Pre-push guard against stale branches** — `scripts/check_branch_fresh.sh`
   runs as a `pre-push` hook (installed by `pre-commit install` via
   `default_install_hook_types`) and refuses pushes from branches missing
