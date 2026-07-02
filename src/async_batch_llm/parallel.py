@@ -419,6 +419,16 @@ class ParallelBatchProcessor(
                     context=work_item.context,
                     token_usage=cast(TokenUsage, failed_tokens),
                 )
+
+            # Emit ITEM_FAILED for the retries-exhausted path. (The
+            # non-retryable path emits inside _handle_execution_error and
+            # returns a result instead of raising, so there's no double
+            # emit here.) Skip it if a middleware recovered the item.
+            if not result.success:
+                await self._emit_event(
+                    ProcessingEvent.ITEM_FAILED,
+                    {"item_id": work_item.item_id, "error_type": type(e).__name__},
+                )
             # Fall through to store result
 
         # Store result (thread-safe)
@@ -734,6 +744,10 @@ class ParallelBatchProcessor(
             processed_item = await self._run_middlewares_before(work_item)
             if processed_item is None:
                 logger.info(f"[INFO]Skipping {original_item_id} (filtered by middleware)")
+                await self._emit_event(
+                    ProcessingEvent.ITEM_FAILED,
+                    {"item_id": original_item_id, "error_type": "middleware_skip"},
+                )
                 return WorkItemResult(
                     item_id=original_item_id,
                     success=False,
@@ -958,6 +972,11 @@ class ParallelBatchProcessor(
         # Try middleware error handlers
         middleware_result = await self._run_middlewares_on_error(work_item, exception)
         if middleware_result is not None:
+            if not middleware_result.success:
+                await self._emit_event(
+                    ProcessingEvent.ITEM_FAILED,
+                    {"item_id": work_item.item_id, "error_type": type(exception).__name__},
+                )
             return middleware_result
 
         # Log non-retryable error with full details

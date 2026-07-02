@@ -101,6 +101,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ITEM_FAILED` now fires for every failure path.** Only the
+  non-retryable branch emitted it; the retries-exhausted path (the most
+  common failure mode), middleware skips, and failed middleware-recovery
+  results emitted nothing — so `MetricsObserver.items_failed`
+  undercounted. All failed results now emit the event.
 - **OpenRouter errors embedded in HTTP-200 bodies are now retryable.**
   OpenRouter frequently reports upstream failures (no provider available,
   upstream 5xx, upstream rate limits) as HTTP 200 with an `error` object

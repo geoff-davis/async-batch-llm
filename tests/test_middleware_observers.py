@@ -651,3 +651,83 @@ async def test_metrics_observer_processing_times_bounded():
     assert metrics["processing_times_count"] == 250
     assert metrics["items_processed"] == 250
     assert metrics["avg_processing_time"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_item_failed_emitted_when_retries_exhausted():
+    """Regression: the retries-exhausted path (the most common failure mode)
+    never emitted ITEM_FAILED, so MetricsObserver undercounted failures."""
+    from async_batch_llm.core import RetryConfig
+    from async_batch_llm.llm_strategies import LLMCallStrategy
+    from async_batch_llm.observers.metrics import MetricsObserver
+
+    class AlwaysNetworkError(LLMCallStrategy[TestOutput]):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            raise Exception("connection reset by peer")
+
+    events = []
+
+    class RecordingObserver(BaseObserver):
+        async def on_event(self, event, data):
+            events.append((event, dict(data)))
+
+    metrics = MetricsObserver()
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=5.0,
+        retry=RetryConfig(max_attempts=2, initial_wait=0.01, max_wait=0.01, jitter=False),
+    )
+    processor = ParallelBatchProcessor[str, TestOutput, None](
+        config=config,
+        observers=[metrics, RecordingObserver()],
+    )
+
+    await processor.add_work(
+        LLMWorkItem(item_id="exhausted", strategy=AlwaysNetworkError(), prompt="x")
+    )
+    result = await processor.process_all()
+
+    assert result.failed == 1
+    collected = await metrics.get_metrics()
+    assert collected["items_failed"] == 1
+
+    failed_events = [d for e, d in events if e == ProcessingEvent.ITEM_FAILED]
+    assert len(failed_events) == 1
+    assert failed_events[0]["item_id"] == "exhausted"
+
+
+@pytest.mark.asyncio
+async def test_item_failed_emitted_on_middleware_skip():
+    """Items filtered out by a before_process middleware count as failures in
+    stats, so observers must see ITEM_FAILED for them too."""
+    events = []
+
+    class RecordingObserver(BaseObserver):
+        async def on_event(self, event, data):
+            events.append((event, dict(data)))
+
+    class SkipEverything(BaseMiddleware):
+        async def before_process(self, work_item):
+            return None
+
+    mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="ok"), latency=0.0)
+    config = ProcessorConfig(max_workers=1, timeout_per_item=5.0)
+    processor = ParallelBatchProcessor[str, TestOutput, None](
+        config=config,
+        middlewares=[SkipEverything()],
+        observers=[RecordingObserver()],
+    )
+
+    await processor.add_work(
+        LLMWorkItem(
+            item_id="skipped",
+            strategy=PydanticAIStrategy(agent=mock_agent),
+            prompt="x",
+        )
+    )
+    result = await processor.process_all()
+
+    assert result.failed == 1
+    failed_events = [d for e, d in events if e == ProcessingEvent.ITEM_FAILED]
+    assert len(failed_events) == 1
+    assert failed_events[0]["error_type"] == "middleware_skip"
