@@ -6,11 +6,48 @@ on:
       - 'v*'
 
 permissions:
+  contents: read
   id-token: write  # Required for trusted publishing (OIDC)
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+
+    - name: Set up Python
+      run: uv python install 3.12
+
+    - name: Install dependencies
+      run: uv sync --all-extras
+
+    - name: Verify tag matches pyproject.toml version
+      run: |
+        PKG_VERSION="$(uv run python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+        if [ "v${PKG_VERSION}" != "${GITHUB_REF_NAME}" ]; then
+          echo "::error::Tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${PKG_VERSION}."
+          echo "::error::Publishing would upload mislabeled code to PyPI. Bump the version (release-prep flow) before tagging."
+          exit 1
+        fi
+
+    - name: Run tests
+      run: uv run pytest
+
+    - name: Lint
+      run: uv run ruff check src/ tests/
+
+    - name: Type check
+      run: uv run mypy src/async_batch_llm/ --ignore-missing-imports
+
   publish:
     runs-on: ubuntu-latest
+    needs: test
     environment:
       name: pypi
       url: https://pypi.org/project/async-batch-llm/
