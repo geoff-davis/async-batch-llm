@@ -111,16 +111,16 @@ Switch reads from the named field to the metadata key when you next touch
 the relevant code:
 
 ```python
-# Before
+# Before (now emits a DeprecationWarning on read)
 ratings = result.gemini_safety_ratings
 
 # After
 ratings = (result.metadata or {}).get("safety_ratings")
 ```
 
-No urgency — both paths work today and will continue to work for at
-least one more minor release. We'll add a `DeprecationWarning` when the
-removal date is set.
+Both paths still return the same data, but reading
+`gemini_safety_ratings` now emits a `DeprecationWarning`. The field will
+be removed alongside the 2-tuple compat shim in a future release.
 
 ## New: provider-aware billing with `CachedTokenRates`
 

@@ -158,3 +158,6 @@ node_modules/
 
 # Internal documentation (development history)
 docs/internal/
+
+# Codex CLI
+.codex
