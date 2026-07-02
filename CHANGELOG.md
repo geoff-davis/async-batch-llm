@@ -61,6 +61,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Rate-limited attempts no longer consume the retry budget by default.**
+  Previously an item in flight during three 429 bursts permanently failed
+  despite never getting a clean attempt — even though the framework
+  globally paused and cooled down each time. Rate limits are now exempt
+  from `retry.max_attempts`, with a separate `retry.max_rate_limit_retries`
+  cap (default 10) so a persistently-throttled item still terminates. Set
+  `RetryConfig(count_rate_limits=True)` to restore the old accounting.
+- **Retries re-check the cooldown pause.** The pause gate was only checked
+  once per item at the top of the worker loop, so a retry could fire
+  mid-cooldown (started by another worker) and burn quota. Each retry
+  attempt now waits for the gate first.
+- **Cooldown generation is snapshotted before the request is issued** (was:
+  in the error handler, microseconds before use, making the stale-report
+  guard cover only the lock-acquisition window). A 429 that surfaces after
+  a later cooldown has already completed now correctly no-ops instead of
+  starting a redundant cooldown and lengthening the backoff.
 - `OpenAICompatibleModel.from_api_key` is now generic over `cls` (a `TypeVar`
   bound to `OpenAICompatibleModel`), so it returns the calling subclass type
   (`OpenAIModel`/`OpenRouterModel`/`DeepSeekModel`) instead of the base. Subclass

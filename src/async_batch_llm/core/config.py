@@ -8,13 +8,32 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RetryConfig:
-    """Configuration for retry behavior."""
+    """Configuration for retry behavior.
+
+    Attributes:
+        max_attempts: Maximum attempts per item for ordinary retryable
+            errors (network, timeout, validation).
+        initial_wait: Base wait before the first retry (seconds).
+        max_wait: Cap on the exponential-backoff wait (seconds).
+        exponential_base: Backoff multiplier per failed attempt.
+        jitter: Randomize waits to 50-100% to avoid thundering herds.
+        count_rate_limits: When False (default), rate-limited attempts do
+            NOT consume the ``max_attempts`` budget — the framework already
+            paused and cooled down globally, so the item never got a clean
+            attempt. Set True to restore pre-v0.10 accounting where a 429
+            counts like any other failure.
+        max_rate_limit_retries: Hard cap on budget-exempt rate-limited
+            attempts per item (only used when ``count_rate_limits`` is
+            False), so a persistently-throttled item can't retry forever.
+    """
 
     max_attempts: int = 3
     initial_wait: float = 1.0
     max_wait: float = 60.0
     exponential_base: float = 2.0
     jitter: bool = True
+    count_rate_limits: bool = False
+    max_rate_limit_retries: int = 10
 
     def __post_init__(self) -> None:
         """Validate configuration on construction."""
@@ -26,6 +45,12 @@ class RetryConfig:
             raise ValueError(
                 f"max_attempts must be >= 1 (got {self.max_attempts}). "
                 f"Set retry.max_attempts to a positive integer."
+            )
+        if self.max_rate_limit_retries < 1:
+            raise ValueError(
+                f"max_rate_limit_retries must be >= 1 (got {self.max_rate_limit_retries}). "
+                f"Set retry.max_rate_limit_retries to a positive integer, or set "
+                f"retry.count_rate_limits=True to count rate limits against max_attempts."
             )
         if self.initial_wait <= 0:
             raise ValueError(

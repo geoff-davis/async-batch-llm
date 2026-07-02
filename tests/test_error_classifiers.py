@@ -1,5 +1,7 @@
 """Tests for error classifiers."""
 
+import asyncio
+
 import pytest
 from pydantic import BaseModel
 
@@ -191,12 +193,16 @@ async def test_gemini_classifier_rate_limit_retries_after_processor_cooldown():
 
 @pytest.mark.asyncio
 async def test_persistent_rate_limit_exhausts_max_attempts():
-    """A rate limit that never clears must respect retry.max_attempts and
-    record a permanent failure instead of looping forever.
+    """With count_rate_limits=True, a rate limit that never clears must
+    respect retry.max_attempts and record a permanent failure instead of
+    looping forever.
 
     Regression test for the is_retryable: False -> True change: before the
     classifier flip, rate-limited items failed fast after one attempt; now
     they retry, so we need to ensure the retry loop still terminates.
+    (Since v0.10.x the default exempts rate limits from the budget — see
+    test_persistent_rate_limit_capped_by_max_rate_limit_retries for the
+    default-path termination guarantee.)
     """
     max_attempts = 3
     strategy = _PersistentRateLimitStrategy()
@@ -208,6 +214,7 @@ async def test_persistent_rate_limit_exhausts_max_attempts():
             initial_wait=0.001,
             max_wait=0.001,
             jitter=False,
+            count_rate_limits=True,
         ),
         rate_limit=RateLimitConfig(
             cooldown_seconds=0.001,
@@ -240,6 +247,191 @@ async def test_persistent_rate_limit_exhausts_max_attempts():
     failure = result.results[0]
     assert failure.success is False
     assert "429" in (failure.error or "") or "RESOURCE_EXHAUSTED" in (failure.error or "")
+
+
+class _RateLimitThenSuccessStrategy(LLMCallStrategy[ClassifierTestOutput]):
+    """Test helper: raises rate-limit errors for the first N calls, then succeeds."""
+
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.call_count = 0
+
+    async def execute(
+        self,
+        prompt: str,
+        attempt: int,
+        timeout: float,
+        state: RetryState | None = None,
+    ) -> tuple[ClassifierTestOutput, TokenUsage]:
+        self.call_count += 1
+        if self.call_count <= self.failures:
+            raise Exception("429 RESOURCE_EXHAUSTED")
+        return ClassifierTestOutput(value="ok"), {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "total_tokens": 2,
+        }
+
+
+def _fast_rate_limit_config(retry: RetryConfig) -> ProcessorConfig:
+    return ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=1.0,
+        retry=retry,
+        rate_limit=RateLimitConfig(
+            cooldown_seconds=0.001,
+            slow_start_items=0,
+            slow_start_initial_delay=0.0,
+            slow_start_final_delay=0.0,
+            backoff_multiplier=1.0,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_rate_limits_do_not_consume_retry_budget_by_default():
+    """An item unlucky enough to be in flight during several 429 bursts must
+    not permanently fail: the framework cooled down each time, so the item
+    never got a clean attempt. (v0.10.x: count_rate_limits defaults False.)"""
+    strategy = _RateLimitThenSuccessStrategy(failures=3)
+    config = _fast_rate_limit_config(
+        RetryConfig(max_attempts=2, initial_wait=0.001, max_wait=0.001, jitter=False)
+    )
+    processor = ParallelBatchProcessor[str, ClassifierTestOutput, None](config=config)
+
+    await processor.add_work(LLMWorkItem(item_id="bursty_rl", strategy=strategy, prompt="Test"))
+    result = await processor.process_all()
+
+    # 3 rate-limited attempts (exempt from the 2-attempt budget) + 1 success.
+    assert result.succeeded == 1
+    assert result.failed == 0
+    assert strategy.call_count == 4
+
+
+@pytest.mark.asyncio
+async def test_persistent_rate_limit_capped_by_max_rate_limit_retries():
+    """With the default budget exemption, a persistently-throttled item still
+    terminates: max_rate_limit_retries caps the exempted attempts."""
+    strategy = _PersistentRateLimitStrategy()
+    config = _fast_rate_limit_config(
+        RetryConfig(
+            max_attempts=2,
+            initial_wait=0.001,
+            max_wait=0.001,
+            jitter=False,
+            max_rate_limit_retries=4,
+        )
+    )
+    processor = ParallelBatchProcessor[str, ClassifierTestOutput, None](config=config)
+
+    await processor.add_work(
+        LLMWorkItem(item_id="persistent_rl_capped", strategy=strategy, prompt="Test")
+    )
+    result = await processor.process_all()
+
+    assert result.succeeded == 0
+    assert result.failed == 1
+    assert strategy.call_count == 4
+
+
+@pytest.mark.asyncio
+async def test_retry_waits_for_cooldown_started_mid_retry():
+    """A retry must re-check the cooldown gate: if another worker started a
+    cooldown while this item was between attempts, the retry must not fire
+    mid-cooldown and burn quota."""
+
+    class NetworkErrorThenSuccess(LLMCallStrategy[ClassifierTestOutput]):
+        def __init__(self, pause_event: asyncio.Event) -> None:
+            self.pause_event = pause_event
+            self.call_count = 0
+
+        async def execute(
+            self,
+            prompt: str,
+            attempt: int,
+            timeout: float,
+            state: RetryState | None = None,
+        ) -> tuple[ClassifierTestOutput, TokenUsage]:
+            self.call_count += 1
+            if self.call_count == 1:
+                # Simulate another worker triggering a cooldown while this
+                # item's first attempt fails with a transient network error.
+                self.pause_event.clear()
+                raise Exception("connection reset by peer")
+            return ClassifierTestOutput(value="ok"), {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "total_tokens": 2,
+            }
+
+    config = _fast_rate_limit_config(
+        RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.01, jitter=False)
+    )
+    processor = ParallelBatchProcessor[str, ClassifierTestOutput, None](config=config)
+    pause_event = processor._rate_limit_coord._rate_limit_event
+    strategy = NetworkErrorThenSuccess(pause_event)
+
+    work_item = LLMWorkItem(item_id="paused_retry", strategy=strategy, prompt="Test")
+    task = asyncio.create_task(processor._process_item_with_retries(work_item, worker_id=0))
+
+    # Give the first attempt and its (0.01s) retry wait plenty of time to
+    # elapse; the retry must still be gated on the cleared pause event.
+    await asyncio.sleep(0.2)
+    assert strategy.call_count == 1, "retry fired while workers were paused"
+
+    pause_event.set()
+    result = await asyncio.wait_for(task, timeout=2.0)
+    assert result.success is True
+    assert strategy.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stale_rate_limit_does_not_start_second_cooldown():
+    """A 429 from a request issued before a cooldown that has since completed
+    must not coordinate a redundant new cooldown (generation snapshot is
+    taken before the request goes out, not in the error handler)."""
+
+    processor_config = _fast_rate_limit_config(
+        RetryConfig(max_attempts=3, initial_wait=0.001, max_wait=0.001, jitter=False)
+    )
+    processor = ParallelBatchProcessor[str, ClassifierTestOutput, None](config=processor_config)
+    coord = processor._rate_limit_coord
+
+    class StaleRateLimitStrategy(LLMCallStrategy[ClassifierTestOutput]):
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        async def execute(
+            self,
+            prompt: str,
+            attempt: int,
+            timeout: float,
+            state: RetryState | None = None,
+        ) -> tuple[ClassifierTestOutput, TokenUsage]:
+            self.call_count += 1
+            if self.call_count == 1:
+                # While our request is "in flight", another worker triggers a
+                # full cooldown cycle (start + finish)...
+                await coord.handle_rate_limit(
+                    worker_id=99, observed_generation=coord.current_generation
+                )
+                # ...then our own (older) request surfaces its 429.
+                raise Exception("429 RESOURCE_EXHAUSTED")
+            return ClassifierTestOutput(value="ok"), {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "total_tokens": 2,
+            }
+
+    strategy = StaleRateLimitStrategy()
+    await processor.add_work(LLMWorkItem(item_id="stale_429", strategy=strategy, prompt="Test"))
+    result = await processor.process_all()
+
+    assert result.succeeded == 1
+    # Only the simulated cooldown cycle ran; the stale 429 must not have
+    # incremented the generation with a redundant second cooldown.
+    assert processor._cooldown_generation == 1
+    assert strategy.call_count == 2
 
 
 @pytest.mark.asyncio

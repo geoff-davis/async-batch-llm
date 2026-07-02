@@ -575,7 +575,17 @@ class ParallelBatchProcessor(
             logger.error(f"[FAIL]Strategy prepare() failed for {work_item.item_id}: {e}")
             raise
 
-        for attempt in range(1, self.config.retry.max_attempts + 1):
+        retry_cfg = self.config.retry
+        attempt = 0  # Total attempts made (including rate-limited ones)
+        budget_used = 0  # Failed attempts counted against retry.max_attempts
+        rate_limited_attempts = 0  # Failed attempts exempted from the budget
+
+        while True:
+            # Re-check the cooldown gate before every attempt — another worker
+            # may have started a cooldown while this item was between retries,
+            # and firing a retry mid-cooldown burns quota.
+            await self._rate_limit_coord.wait_if_paused()
+            attempt += 1
             try:
                 return await self._process_item(
                     work_item,
@@ -598,15 +608,32 @@ class ParallelBatchProcessor(
                     if hasattr(e, "__dict__"):
                         e.__dict__["_failed_token_usage"] = cumulative_failed_tokens
                     raise
-                if attempt >= self.config.retry.max_attempts:
+
+                # Classify error to determine budget accounting and delay
+                error_info = self.error_classifier.classify(e)
+
+                # Rate-limited attempts are exempt from the retry budget by
+                # default: the framework already paused and cooled down, so the
+                # item never got a clean attempt — an item that happened to be
+                # in flight during several 429 bursts shouldn't permanently
+                # fail. A separate cap (max_rate_limit_retries) keeps a
+                # persistently-throttled item from looping forever.
+                if error_info.is_rate_limit and not retry_cfg.count_rate_limits:
+                    rate_limited_attempts += 1
+                    exhausted = rate_limited_attempts >= retry_cfg.max_rate_limit_retries
+                else:
+                    budget_used += 1
+                    exhausted = budget_used >= retry_cfg.max_attempts
+
+                if exhausted:
                     error_msg = str(e)
                     token_summary = ""
                     if cumulative_failed_tokens["total_tokens"] > 0:
                         total = cumulative_failed_tokens["total_tokens"]
                         token_summary = f"\n  Total tokens consumed across all attempts: {total}"
                     logger.error(
-                        f"[FAIL]ALL {self.config.retry.max_attempts} ATTEMPTS EXHAUSTED "
-                        f"for {work_item.item_id}:\n"
+                        f"[FAIL]ALL ATTEMPTS EXHAUSTED for {work_item.item_id} "
+                        f"({attempt} attempts, {rate_limited_attempts} rate-limited):\n"
                         f"  Final error type: {type(e).__name__}\n"
                         f"  Final error message: {error_msg[:ERROR_MESSAGE_DETAILED_LENGTH]}{token_summary}"
                     )
@@ -614,9 +641,6 @@ class ParallelBatchProcessor(
                     if hasattr(e, "__dict__"):
                         e.__dict__["_failed_token_usage"] = cumulative_failed_tokens
                     raise
-
-                # Classify error to determine if we should delay
-                error_info = self.error_classifier.classify(e)
 
                 # Only delay for network/timeout errors, not for validation errors
                 # Validation errors are immediate - strategy can adjust its behavior on retry
@@ -636,15 +660,16 @@ class ParallelBatchProcessor(
                     # cooldown; adding exponential backoff here would double the delay.
                     wait_time = 0.0
                 else:
-                    # Calculate wait time with exponential backoff for network/timeout errors
+                    # Calculate wait time with exponential backoff for network/timeout
+                    # errors. The exponent uses budget-counted failures so interleaved
+                    # rate limits don't inflate the backoff.
                     wait_time = min(
-                        self.config.retry.initial_wait
-                        * (self.config.retry.exponential_base ** (attempt - 1)),
-                        self.config.retry.max_wait,
+                        retry_cfg.initial_wait * (retry_cfg.exponential_base ** (budget_used - 1)),
+                        retry_cfg.max_wait,
                     )
 
                     # Apply jitter if enabled to prevent thundering herd
-                    if self.config.retry.jitter:
+                    if retry_cfg.jitter:
                         import random
 
                         # Apply jitter: multiply by random factor between 0.5 and 1.0
@@ -662,18 +687,14 @@ class ParallelBatchProcessor(
                 else:
                     retry_desc = f"in {wait_time:.1f}s"
                 logger.warning(
-                    f"[WARN]Attempt {attempt}/{self.config.retry.max_attempts} failed for "
+                    f"[WARN]Attempt {budget_used}/{retry_cfg.max_attempts} "
+                    f"(+{rate_limited_attempts} rate-limited) failed for "
                     f"{work_item.item_id}: {error_type} - {error_snippet}. "
                     f"Retrying {retry_desc}..."
                 )
 
                 if wait_time > 0:
                     await asyncio.sleep(wait_time)
-
-        # Unreachable - all paths raise or return
-        raise RuntimeError(
-            f"Unexpected: all retry attempts should have raised for {work_item.item_id}"
-        )
 
     def _get_strategy(
         self, work_item: LLMWorkItem[TInput, TOutput, TContext]
@@ -691,6 +712,14 @@ class ParallelBatchProcessor(
     ) -> WorkItemResult[TOutput, TContext]:
         """Process a single work item using the provided strategy."""
         start_time = time.time()
+
+        # Snapshot the cooldown generation BEFORE issuing the request. If this
+        # attempt's 429 surfaces after a cooldown that started later has
+        # already completed, the stale snapshot lets the coordinator no-op
+        # instead of starting a redundant second cooldown. (Snapshotting in
+        # the error handler — microseconds before use — made the guard cover
+        # only the lock-acquisition window.)
+        observed_generation = self._rate_limit_coord.current_generation
 
         # Store original item_id before middleware might return None
         original_item_id = work_item.item_id
@@ -850,7 +879,9 @@ class ParallelBatchProcessor(
                     )
 
             # Delegate error handling to separate method
-            return await self._handle_execution_error(e, work_item, worker_id, attempt_number)
+            return await self._handle_execution_error(
+                e, work_item, worker_id, attempt_number, observed_generation
+            )
 
     async def _handle_execution_error(
         self,
@@ -858,6 +889,7 @@ class ParallelBatchProcessor(
         work_item: LLMWorkItem[TInput, TOutput, TContext],
         worker_id: int,
         attempt_number: int,
+        observed_generation: int | None = None,
     ) -> WorkItemResult[TOutput, TContext]:
         """
         Handle exceptions from LLM execution.
@@ -870,6 +902,8 @@ class ParallelBatchProcessor(
             work_item: The work item being processed
             worker_id: ID of the worker processing this item
             attempt_number: Current attempt number (for logging)
+            observed_generation: Cooldown generation snapshotted before the
+                request was issued; lets the coordinator drop stale reports
 
         Returns:
             WorkItemResult for permanent failures
@@ -903,8 +937,11 @@ class ParallelBatchProcessor(
 
             # Handle rate limit (cooldown) - this will pause all workers.
             # Pass the classifier's suggested_wait (e.g. a parsed Retry-After)
-            # as a floor on the cooldown duration.
-            observed_generation = self._rate_limit_coord.current_generation
+            # as a floor on the cooldown duration. observed_generation was
+            # snapshotted before the request went out (see _process_item);
+            # fall back to a late snapshot only if a subclass didn't pass one.
+            if observed_generation is None:
+                observed_generation = self._rate_limit_coord.current_generation
             await self._handle_rate_limit(worker_id, observed_generation, error_info.suggested_wait)
 
             # Re-raise the original exception to trigger retry logic
