@@ -6,7 +6,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from async_batch_llm.base import TokenUsage
@@ -38,6 +38,39 @@ def matches_any_pattern(text: str, patterns: tuple[str, ...]) -> bool:
     """Case-insensitively test ``text`` against ``patterns`` (see :func:`pattern_in`)."""
     lowered = text.lower()
     return any(pattern_in(lowered, pattern) for pattern in patterns)
+
+
+def _retry_after_seconds(exception: Exception) -> float | None:
+    """Parse a ``Retry-After`` header off an SDK exception, if present.
+
+    Both the ``openai`` and ``google-genai`` SDKs attach the underlying HTTP
+    response (with headers) to their exceptions as ``.response``.
+    ``Retry-After`` may be either a number of seconds or an HTTP-date; we
+    handle both and return the delay in seconds, or ``None`` when no usable
+    header is present (including malformed or non-positive values).
+    """
+    response = getattr(exception, "response", None)
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return None
+    raw = headers.get("retry-after") or headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        delay = float(raw)
+        return delay if delay > 0 else None
+    except (TypeError, ValueError):
+        pass
+    # HTTP-date form: compute the delay relative to now.
+    try:
+        import time
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(raw)
+        delay = when.timestamp() - time.time()
+        return delay if delay > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 class TokenTrackingError(Exception):
@@ -73,6 +106,52 @@ class TokenTrackingError(Exception):
         """
         super().__init__(message)
         self._failed_token_usage = token_usage or {}
+
+
+class EmptyResponseError(ValueError):
+    """The provider returned a billed response with no usable text.
+
+    Raised by the built-in models when the API call succeeded (and was
+    billed) but produced no content — e.g. a Gemini safety block, or an
+    OpenAI response whose ``finish_reason`` is ``length``/``content_filter``
+    or a tool call.
+
+    Subclasses ``ValueError`` so existing handlers and classifiers keep
+    treating it as a deterministic, non-retryable failure. The tokens the
+    provider already billed are attached as ``_failed_token_usage`` so
+    failed-attempt accounting (``WorkItemResult.token_usage``) reflects the
+    real spend.
+
+    Added in v0.16.
+    """
+
+    def __init__(self, message: str, *, token_usage: TokenUsage | dict[str, int] | None = None):
+        super().__init__(message)
+        if token_usage:
+            self._failed_token_usage = dict(token_usage)
+
+
+class ProviderResponseError(Exception):
+    """Provider signaled failure inside an HTTP-200 response body.
+
+    Some gateways (notably OpenRouter) report upstream failures — no
+    provider available, upstream 5xx, upstream rate limits — as HTTP 200
+    with an ``error`` object in the body and no choices, so the SDK never
+    raises. These are typically transient routing failures: classifiers
+    treat them as retryable, and as rate limits when the embedded code
+    is 429.
+
+    Attributes:
+        code: Numeric error code embedded in the body, if any.
+        provider_error: The raw error payload from the response body.
+
+    Added in v0.16.
+    """
+
+    def __init__(self, message: str, *, code: int | None = None, provider_error: Any = None):
+        super().__init__(message)
+        self.code = code
+        self.provider_error = provider_error
 
 
 class FrameworkTimeoutError(TimeoutError):

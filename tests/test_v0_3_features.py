@@ -8,6 +8,7 @@ from async_batch_llm import (
     LLMWorkItem,
     ParallelBatchProcessor,
     ProcessorConfig,
+    RetryConfig,
     RetryState,
 )
 from async_batch_llm.base import TokenUsage
@@ -74,7 +75,11 @@ class RetryStateStrategy(LLMCallStrategy[str]):
 async def test_retry_state_persistence():
     """Test that RetryState persists across retry attempts."""
     strategy = RetryStateStrategy(fail_until_attempt=3)
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=10.0,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
+    )
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         await processor.add_work(
@@ -109,7 +114,11 @@ async def test_retry_state_persistence():
 async def test_retry_state_isolation():
     """Test that each work item gets its own isolated RetryState."""
     strategy = RetryStateStrategy(fail_until_attempt=2)
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(
+        max_workers=2,
+        timeout_per_item=10.0,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
+    )
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         # Add 5 work items that will all retry
@@ -211,7 +220,11 @@ async def test_on_error_receives_state():
             self.on_error_calls.append((exception, attempt, state))
 
     strategy = ErrorTrackingStrategy()
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=10.0,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
+    )
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
@@ -348,7 +361,11 @@ async def test_shared_strategy_with_retry_state():
 
     # Use SAME strategy instance for all items
     strategy = SharedStrategy()
-    config = ProcessorConfig(max_workers=3, timeout_per_item=10.0)
+    config = ProcessorConfig(
+        max_workers=3,
+        timeout_per_item=10.0,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
+    )
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         for i in range(5):

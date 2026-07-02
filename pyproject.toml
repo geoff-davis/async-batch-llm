@@ -45,12 +45,14 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Framework :: AsyncIO",
-    "Operating System :: OS Independent"
+    "Operating System :: OS Independent",
+    "Typing :: Typed"
 ]
 
 dependencies = [
     "aiolimiter>=1.2.1",
     "pydantic>=2.0.0",
+    "typing-extensions>=4.4.0",  # PEP 696 TypeVar defaults on Python < 3.13
 ]
 
 [project.optional-dependencies]
@@ -85,6 +87,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
+    "pytest-timeout>=2.3.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
     "ty>=0.0.1a16",
@@ -186,6 +189,8 @@ markers = [
     "benchmark: marks tests as performance benchmarks (deselected by default)",
 ]
 addopts = "-m 'not slow and not integration and not benchmark'"  # Skip slow, integration, and benchmark tests by default
+# Deadlock/hang regressions fail loudly instead of hanging CI forever.
+timeout = 60
 filterwarnings = [
     "ignore::pytest.PytestCollectionWarning",
 ]

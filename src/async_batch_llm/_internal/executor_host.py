@@ -79,20 +79,26 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         self.error_classifier = _resolve_classifier(strategy, error_classifier)
         self.rate_limit_strategy = rate_limit_strategy or ExponentialBackoffStrategy(
             initial_cooldown=config.rate_limit.cooldown_seconds,
+            max_cooldown=config.rate_limit.max_cooldown_seconds,
             backoff_multiplier=config.rate_limit.backoff_multiplier,
             slow_start_items=config.rate_limit.slow_start_items,
             slow_start_initial_delay=config.rate_limit.slow_start_initial_delay,
             slow_start_final_delay=config.rate_limit.slow_start_final_delay,
         )
 
-        # No observers/middlewares on the request path.
-        self._events: EventDispatcher = EventDispatcher(observers=[], middlewares=[])
+        # No observers/middlewares on the request path. (Parameterized
+        # explicitly: with PEP 696 defaults a bare `EventDispatcher` would
+        # resolve to [str, Any, None] and break ExecutorHostProtocol
+        # conformance.)
+        self._events: EventDispatcher[TInput, TOutput, TContext] = EventDispatcher(
+            observers=[], middlewares=[]
+        )
         # One shared coordinator → coordinated cooldown across all callers.
         self._rate_limit_coord = RateLimitCoordinator(
             rate_limit_strategy=self.rate_limit_strategy,
             events=self._events,
         )
-        self._strategy_lifecycle: StrategyLifecycle = StrategyLifecycle()
+        self._strategy_lifecycle: StrategyLifecycle[TOutput] = StrategyLifecycle()
         self._stats = ProcessingStats()
         self._stats_lock = asyncio.Lock()
         self._token_extractor = TokenExtractor()

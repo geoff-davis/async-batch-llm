@@ -779,3 +779,121 @@ class TestOpenRouterErrorClassifier:
         info = classifier.classify(ValueError("bad input"))
         assert info.is_retryable is False
         assert info.error_category == "logic_error"
+
+
+class TestGeminiSDKErrorClassification:
+    """GeminiErrorClassifier against real google.genai error instances.
+
+    Regression tests for the status-code rewrite: classification dispatches
+    on APIError.code instead of string-matching str(exception), so transient
+    500/502 errors retry and deterministic 4xx errors fail fast.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_genai(self):
+        pytest.importorskip("google.genai.errors")
+
+    @staticmethod
+    def _client_error(code: int, message: str, response=None):
+        from google.genai.errors import ClientError
+
+        return ClientError(code, {"error": {"message": message}}, response)
+
+    @staticmethod
+    def _server_error(code: int, message: str):
+        from google.genai.errors import ServerError
+
+        return ServerError(code, {"error": {"message": message}})
+
+    def test_429_is_rate_limit(self):
+        classifier = GeminiErrorClassifier()
+        info = classifier.classify(self._client_error(429, "Resource has been exhausted"))
+        assert info.is_rate_limit is True
+        assert info.is_retryable is True
+        assert info.error_category == "rate_limit"
+
+    def test_429_parses_retry_after_as_suggested_wait(self):
+        class FakeResponse:
+            headers = {"retry-after": "7"}
+
+        classifier = GeminiErrorClassifier()
+        info = classifier.classify(
+            self._client_error(429, "Resource has been exhausted", FakeResponse())
+        )
+        assert info.is_rate_limit is True
+        assert info.suggested_wait == 7.0
+
+    @pytest.mark.parametrize(
+        ("code", "message"),
+        [
+            (400, "Invalid request"),
+            (401, "API key not valid"),
+            (403, "Permission denied"),
+            (404, "Model not found"),
+        ],
+    )
+    def test_deterministic_client_errors_fail_fast(self, code, message):
+        """4xx errors are deterministic; retrying an invalid API key on every
+        item in the batch just multiplies latency."""
+        classifier = GeminiErrorClassifier()
+        info = classifier.classify(self._client_error(code, message))
+        assert info.is_retryable is False
+        assert info.error_category == "client_error"
+
+    @pytest.mark.parametrize(
+        ("code", "message"),
+        [
+            (500, "Internal error encountered"),
+            (502, "Bad gateway"),
+        ],
+    )
+    def test_transient_server_errors_retry(self, code, message):
+        """500/502 are transient one-offs; they must retry even though their
+        messages match no timeout pattern."""
+        classifier = GeminiErrorClassifier()
+        info = classifier.classify(self._server_error(code, message))
+        assert info.is_retryable is True
+        assert info.is_rate_limit is False
+        assert info.error_category == "server_error"
+
+    def test_503_is_server_overload(self):
+        """503 keeps its dedicated category: per-item backoff, no coordinated
+        cooldown (which is reserved for 429/quota)."""
+        classifier = GeminiErrorClassifier()
+        info = classifier.classify(
+            self._server_error(503, "The model is overloaded. Please try again later.")
+        )
+        assert info.is_retryable is True
+        assert info.is_rate_limit is False
+        assert info.error_category == "server_overload"
+
+    def test_504_is_retryable_timeout(self):
+        classifier = GeminiErrorClassifier()
+        info = classifier.classify(self._server_error(504, "Deadline exceeded"))
+        assert info.is_retryable is True
+        assert info.is_timeout is True
+        assert info.error_category == "server_timeout"
+
+    def test_unrecognized_status_retries_conservatively(self):
+        classifier = GeminiErrorClassifier()
+        info = classifier.classify(self._client_error(418, "I'm a teapot"))
+        assert info.is_retryable is True
+        assert info.error_category == "api_error"
+
+
+def test_gemini_generic_fallback_still_runs_without_genai_sdk(monkeypatch):
+    """Without the [gemini] extra, rate limits and logic bugs must still
+    classify via the generic chain (previously the ImportError path
+    returned unknown/retryable immediately, so cooldowns never engaged)."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "google.genai.errors", None)
+    classifier = GeminiErrorClassifier()
+
+    rate_info = classifier.classify(Exception("429 RESOURCE_EXHAUSTED: rate limit"))
+    assert rate_info.is_rate_limit is True
+    assert rate_info.is_retryable is True
+
+    bug_info = classifier.classify(ValueError("deterministic parse bug"))
+    assert bug_info.is_retryable is False
+    assert bug_info.error_category == "logic_error"

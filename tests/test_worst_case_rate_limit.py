@@ -11,11 +11,15 @@ from async_batch_llm.strategies.rate_limit import FixedDelayStrategy
 
 
 class FastRateLimitStrategy(FixedDelayStrategy):
-    """Rate limit strategy with short cooldown for testing."""
+    """Rate limit strategy with a near-zero cooldown for testing.
+
+    The coordination logic under test (pause/resume, generations, retry
+    interplay) is identical regardless of the cooldown length, so keep it
+    in the milliseconds — a 1s cooldown made these three tests cost >10s
+    of wall time."""
 
     def __init__(self):
-        """Initialize with 1 second cooldown instead of default 300 seconds."""
-        super().__init__(cooldown=1.0, delay_between_requests=0.1)
+        super().__init__(cooldown=0.05, delay_between_requests=0.01)
 
 
 @pytest.mark.asyncio

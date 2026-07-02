@@ -1,6 +1,5 @@
 """Tests for edge cases and error conditions."""
 
-import asyncio
 from typing import Annotated, Any
 
 import pytest
@@ -167,6 +166,7 @@ async def test_very_short_timeout():
     config = ProcessorConfig(
         max_workers=1,
         timeout_per_item=0.01,  # 10ms timeout - will timeout
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
@@ -438,6 +438,7 @@ async def test_negative_timeout():
 @pytest.mark.asyncio
 async def test_adding_work_after_processing_started():
     """Test that work added during processing is handled correctly."""
+    import asyncio
 
     # This is an edge case - normally not recommended
     # but should work as queue is async
@@ -597,6 +598,12 @@ async def test_config_auto_validation():
 
     with pytest.raises(ValueError, match="backoff_multiplier must be >= 1.0"):
         RateLimitConfig(backoff_multiplier=0.5)
+
+    with pytest.raises(ValueError, match="max_cooldown_seconds must be >= cooldown_seconds"):
+        RateLimitConfig(cooldown_seconds=300.0, max_cooldown_seconds=60.0)
+
+    with pytest.raises(ValueError, match="slow_start_final_delay must be >= 0"):
+        RateLimitConfig(slow_start_final_delay=-0.1)
 
     # Test ProcessorConfig auto-validation
     with pytest.raises(ValueError, match="max_requests_per_minute must be > 0 or None"):

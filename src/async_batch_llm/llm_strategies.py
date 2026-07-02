@@ -8,6 +8,7 @@ v0.6.0: Strategies now accept an LLMModel instead of raw client + model name.
         GeminiStrategy(model=GeminiCachedModel(...)) instead.
 """
 
+import inspect
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -33,6 +34,21 @@ else:
 logger = logging.getLogger(__name__)
 
 TOutput = TypeVar("TOutput")
+
+
+def _run_result_usage(result: Any) -> Any:
+    """Read usage off a pydantic-ai run result across API generations.
+
+    pydantic-ai 1.x exposes ``AgentRunResult.usage`` as a property (calling
+    the returned ``RunUsage`` only works through a deprecation shim slated
+    for removal); older results — and test doubles like ``MockAgent``'s —
+    expose a ``usage()`` method. Prefer the property form, calling only
+    bound methods.
+    """
+    usage = getattr(result, "usage", None)
+    if inspect.ismethod(usage) or inspect.isfunction(usage):
+        return usage()
+    return usage
 
 
 def _usage_field(usage: Any, *names: str) -> int:
@@ -528,7 +544,7 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
         # pydantic-ai 1.x renamed request_tokens/response_tokens -> input_tokens/output_tokens
         # (the old names still exist but emit DeprecationWarning). Prefer the new
         # names, falling back to the legacy ones so both 0.x and 1.x work cleanly.
-        usage = result.usage()
+        usage = _run_result_usage(result)
         tokens: TokenUsage = {
             "input_tokens": _usage_field(usage, "input_tokens", "request_tokens"),
             "output_tokens": _usage_field(usage, "output_tokens", "response_tokens"),

@@ -222,7 +222,8 @@ class TestGeminiModel:
 
     @pytest.mark.asyncio
     async def test_generate_none_text_raises(self):
-        """Test generate raises ValueError when text is None (safety blocked)."""
+        """Test generate raises ValueError when text is None (safety blocked),
+        carrying the billed token counts for failed-attempt accounting."""
         mock_response = MagicMock()
         mock_response.text = None
         mock_response.usage_metadata = MagicMock()
@@ -236,8 +237,13 @@ class TestGeminiModel:
 
         model = GeminiModel("gemini-test", mock_client)
 
-        with pytest.raises(ValueError, match="Empty response from model"):
+        with pytest.raises(ValueError, match="Empty response from model") as exc_info:
             await model.generate("test prompt")
+
+        # The safety-blocked call still billed the prompt tokens.
+        usage = exc_info.value._failed_token_usage
+        assert usage["input_tokens"] == 10
+        assert usage["total_tokens"] == 10
 
     def test_import_error_when_genai_not_available(self):
         """Test that ImportError is raised when google-genai is not available."""

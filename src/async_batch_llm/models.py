@@ -11,9 +11,10 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
 from .base import LLMResponse
+from .strategies.errors import EmptyResponseError, ProviderResponseError
 
 # A user-supplied hook that maps a raw provider response onto extra metadata
 # keys. Returns None (or an empty dict) to contribute nothing. Extractors run
@@ -192,6 +193,25 @@ def grounding_metadata_extractor(response: Any) -> dict[str, Any] | None:
     return {"grounding": grounding} if grounding else None
 
 
+def _raise_empty_response(message: str, tokens: tuple[int, int, int, int]) -> NoReturn:
+    """Raise EmptyResponseError carrying the tokens the provider already billed.
+
+    The API call succeeded (and was billed) even though it produced no usable
+    text — without attaching the counts, the framework's failed-attempt
+    accounting would report zero spend for the attempt.
+    """
+    input_tokens, output_tokens, total_tokens, cached_tokens = tokens
+    raise EmptyResponseError(
+        message,
+        token_usage={
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "cached_input_tokens": cached_tokens,
+        },
+    )
+
+
 def _extract_tokens(response: Any) -> tuple[int, int, int, int]:
     """Extract token counts from a Gemini response.
 
@@ -312,7 +332,8 @@ class GeminiModel:
         )
 
         # Extract tokens
-        input_tokens, output_tokens, total_tokens, cached_tokens = _extract_tokens(response)
+        tokens = _extract_tokens(response)
+        input_tokens, output_tokens, total_tokens, cached_tokens = tokens
 
         # Extract text (may be None if safety-blocked)
         text = response.text
@@ -321,8 +342,9 @@ class GeminiModel:
             safety_info = ""
             if metadata and "safety_ratings" in metadata:
                 safety_info = f" Safety ratings: {metadata['safety_ratings']}"
-            raise ValueError(
-                f"Empty response from model (likely blocked by safety filter).{safety_info}"
+            _raise_empty_response(
+                f"Empty response from model (likely blocked by safety filter).{safety_info}",
+                tokens,
             )
 
         return LLMResponse(
@@ -594,7 +616,8 @@ class GeminiCachedModel:
             config=call_config,  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
         )
 
-        input_tokens, output_tokens, total_tokens, cached_tokens = _extract_tokens(response)
+        tokens = _extract_tokens(response)
+        input_tokens, output_tokens, total_tokens, cached_tokens = tokens
 
         text = response.text
         if text is None:
@@ -602,8 +625,9 @@ class GeminiCachedModel:
             safety_info = ""
             if metadata and "safety_ratings" in metadata:
                 safety_info = f" Safety ratings: {metadata['safety_ratings']}"
-            raise ValueError(
-                f"Empty response from model (likely blocked by safety filter).{safety_info}"
+            _raise_empty_response(
+                f"Empty response from model (likely blocked by safety filter).{safety_info}",
+                tokens,
             )
 
         return LLMResponse(
@@ -897,22 +921,30 @@ class OpenAICompatibleModel:
 
         response = await self._client.chat.completions.create(**call_kwargs)
 
+        # Some gateways report upstream failures inside an HTTP-200 body;
+        # surface those before interpreting the (empty) choices list.
+        self._raise_on_response_error(response)
+
+        # Extract tokens up front: even a no-content response was billed for
+        # the prompt (and, for finish_reason="length", the full output).
+        tokens = self._extract_tokens(response)
+        input_tokens, output_tokens, total_tokens, cached_tokens = tokens
+
         # Validate content present (None typically means a tool call or a
         # finish-reason like "length"/"content_filter").
         if not response.choices:
-            raise ValueError(f"No choices returned from {type(self).__name__}.")
+            _raise_empty_response(f"No choices returned from {type(self).__name__}.", tokens)
         message = response.choices[0].message
         text = getattr(message, "content", None)
         if text is None:
             finish_reason = getattr(response.choices[0], "finish_reason", "unknown")
-            raise ValueError(
+            _raise_empty_response(
                 f"Empty response content from model "
                 f"(finish_reason={finish_reason!r}). "
                 "This typically indicates a tool call, content filter, "
-                "or token limit was reached."
+                "or token limit was reached.",
+                tokens,
             )
-
-        input_tokens, output_tokens, total_tokens, cached_tokens = self._extract_tokens(response)
 
         return LLMResponse(
             text=text,
@@ -925,6 +957,15 @@ class OpenAICompatibleModel:
         )
 
     # ── Overridable extraction hooks ────────────────────────────────────
+
+    def _raise_on_response_error(self, response: Any) -> None:
+        """Hook: raise if the provider embedded an error in a 200 response.
+
+        No-op here — OpenAI proper signals errors via HTTP status codes.
+        Gateway subclasses that use error-in-body semantics (OpenRouter)
+        override this.
+        """
+        return
 
     def _build_metadata(self, response: Any) -> dict[str, Any] | None:
         """Built-in ``_extract_metadata`` plus any user-supplied extractors.
@@ -1175,6 +1216,31 @@ class OpenRouterModel(OpenAICompatibleModel):
     _default_base_url: str | None = "https://openrouter.ai/api/v1"
     _install_extras: str = "openrouter"
     _api_key_env_var: str | None = "OPENROUTER_API_KEY"
+
+    def _raise_on_response_error(self, response: Any) -> None:
+        """Raise :class:`ProviderResponseError` for error-in-200 bodies.
+
+        OpenRouter reports upstream failures (no provider available,
+        upstream errors, upstream rate limits) as HTTP 200 with an
+        ``error`` object and empty ``choices``, so the SDK never raises.
+        Without this check the empty choices list would surface as a
+        non-retryable ``EmptyResponseError`` even though these are
+        precisely the transient failures the classifier is built to retry.
+        """
+        error = getattr(response, "error", None)
+        if not error:
+            return
+        if isinstance(error, dict):
+            message = error.get("message") or str(error)
+            code = error.get("code")
+        else:
+            message = str(getattr(error, "message", None) or error)
+            code = getattr(error, "code", None)
+        raise ProviderResponseError(
+            f"OpenRouter returned an error in the response body (code={code}): {message}",
+            code=code if isinstance(code, int) else None,
+            provider_error=error,
+        )
 
     def _extract_metadata(self, response: Any) -> dict[str, Any] | None:
         """Add OpenRouter's ``provider`` field to the metadata."""

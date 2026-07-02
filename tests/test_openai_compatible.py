@@ -248,8 +248,15 @@ class TestOpenAICompatibleGenerate:
         client = _build_client(response)
 
         model = OpenAIModel("gpt-4o-mini", client)
-        with pytest.raises(ValueError, match="finish_reason='length'"):
+        with pytest.raises(ValueError, match="finish_reason='length'") as exc_info:
             await model.generate("hi")
+
+        # The provider billed the call even though it produced no content —
+        # the raised error must carry the usage for failed-attempt accounting.
+        usage = exc_info.value._failed_token_usage
+        assert usage["input_tokens"] == 10
+        assert usage["output_tokens"] == 5
+        assert usage["total_tokens"] == 15
 
     @pytest.mark.asyncio
     async def test_no_choices_raises(self):
@@ -258,8 +265,11 @@ class TestOpenAICompatibleGenerate:
         client = _build_client(response)
 
         model = OpenAIModel("gpt-4o-mini", client)
-        with pytest.raises(ValueError, match="No choices returned"):
+        with pytest.raises(ValueError, match="No choices returned") as exc_info:
             await model.generate("hi")
+
+        usage = exc_info.value._failed_token_usage
+        assert usage["total_tokens"] == 15
 
     @pytest.mark.asyncio
     async def test_extract_tokens_overridable(self):

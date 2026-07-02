@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Any
 
 from ..observers import ProcessingEvent
 from ..strategies import RateLimitStrategy
@@ -38,7 +39,10 @@ class RateLimitCoordinator:
     def __init__(
         self,
         rate_limit_strategy: RateLimitStrategy,
-        events: EventDispatcher,
+        # Parameterized explicitly: with PEP 696 defaults, a bare
+        # `EventDispatcher` annotation would resolve to [str, Any, None] and
+        # reject the processor's concrete dispatcher.
+        events: EventDispatcher[Any, Any, Any],
     ) -> None:
         self._strategy = rate_limit_strategy
         self._events = events
@@ -198,7 +202,14 @@ class RateLimitCoordinator:
             },
         )
 
-        if cooldown_error is None and cooldown > 0:
+        if cooldown_error is not None:
+            logger.warning(
+                "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). "
+                "Skipping cooldown due to prior error.",
+                worker_id,
+                generation,
+            )
+        elif cooldown > 0:
             logger.warning(
                 "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). "
                 "Pausing all workers for %.1fs...",
@@ -207,9 +218,11 @@ class RateLimitCoordinator:
                 cooldown,
             )
         else:
+            # A strategy can legitimately return 0.0 (no cooldown wanted);
+            # don't mislabel that as an error.
             logger.warning(
                 "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). "
-                "Skipping cooldown due to prior error.",
+                "Strategy requested no cooldown; resuming immediately.",
                 worker_id,
                 generation,
             )

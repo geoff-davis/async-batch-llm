@@ -16,9 +16,13 @@ def _build_response(
     content: str = "out",
     provider: str | None = None,
     model: str = "anthropic/claude-haiku-4-5",
+    error: dict | None = None,
 ) -> MagicMock:
     response = MagicMock()
     response.model = model
+    # Mirror a real ChatCompletion: no error field unless the body had one
+    # (MagicMock would otherwise auto-create a truthy .error attribute).
+    response.error = error
     if provider is not None:
         response.provider = provider
     else:
@@ -123,6 +127,80 @@ class TestOpenRouterMetadata:
 
         assert result.metadata is not None
         assert "provider" not in result.metadata
+
+
+class TestErrorInResponseBody:
+    """OpenRouter reports upstream failures as HTTP 200 + `error` object.
+
+    Regression: these used to fall through to the "No choices returned"
+    ValueError and classify as a non-retryable logic error, even though
+    they're precisely the transient failures the classifier should retry.
+    """
+
+    @pytest.mark.asyncio
+    async def test_error_body_raises_provider_response_error(self):
+        from async_batch_llm import ProviderResponseError
+
+        response = _build_response(
+            error={"message": "Upstream provider is overloaded", "code": 502}
+        )
+        response.choices = []
+        client = _build_client(response)
+
+        model = OpenRouterModel("anthropic/claude-haiku-4-5", client)
+        with pytest.raises(ProviderResponseError, match="overloaded") as exc_info:
+            await model.generate("hi")
+
+        assert exc_info.value.code == 502
+        assert exc_info.value.provider_error == {
+            "message": "Upstream provider is overloaded",
+            "code": 502,
+        }
+
+    @pytest.mark.asyncio
+    async def test_no_error_body_generates_normally(self):
+        response = _build_response(content="fine")
+        client = _build_client(response)
+
+        model = OpenRouterModel("anthropic/claude-haiku-4-5", client)
+        result = await model.generate("hi")
+
+        assert result.text == "fine"
+
+    def test_classifier_retries_provider_response_error(self):
+        from async_batch_llm import ProviderResponseError
+        from async_batch_llm.classifiers import OpenRouterErrorClassifier
+
+        classifier = OpenRouterErrorClassifier()
+        info = classifier.classify(
+            ProviderResponseError("Upstream provider error (code=502)", code=502)
+        )
+        assert info.is_retryable is True
+        assert info.is_rate_limit is False
+        assert info.error_category == "upstream_error"
+
+    def test_classifier_flags_embedded_429_as_rate_limit(self):
+        from async_batch_llm import ProviderResponseError
+        from async_batch_llm.classifiers import OpenRouterErrorClassifier
+
+        classifier = OpenRouterErrorClassifier()
+        info = classifier.classify(
+            ProviderResponseError("Provider returned error (code=429)", code=429)
+        )
+        assert info.is_rate_limit is True
+        assert info.is_retryable is True
+        assert info.error_category == "rate_limit"
+
+    def test_classifier_flags_no_provider_as_network_error(self):
+        from async_batch_llm import ProviderResponseError
+        from async_batch_llm.classifiers import OpenRouterErrorClassifier
+
+        classifier = OpenRouterErrorClassifier()
+        info = classifier.classify(
+            ProviderResponseError("OpenRouter returned an error: no_provider_available", code=None)
+        )
+        assert info.is_retryable is True
+        assert info.error_category == "network_error"
 
 
 class TestOpenRouterStrategy:

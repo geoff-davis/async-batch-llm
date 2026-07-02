@@ -397,13 +397,19 @@ async def test_multiple_observers_all_receive_events():
 
 
 @pytest.mark.asyncio
-async def test_observer_timeout_doesnt_break_processing():
-    """Test that slow observers don't break processing."""
+async def test_observer_timeout_doesnt_break_processing(monkeypatch):
+    """Test that slow observers don't break processing.
+
+    The observer timeout is shrunk via monkeypatch — with the production
+    5s value this test burned ~30s of real sleep (5s per emitted event)."""
+    monkeypatch.setattr(
+        "async_batch_llm._internal.event_dispatcher.OBSERVER_CALLBACK_TIMEOUT", 0.05
+    )
 
     class SlowObserver(BaseObserver):
         async def on_event(self, event: ProcessingEvent, data: dict[str, Any]):
-            # Sleep longer than observer timeout (5s)
-            await asyncio.sleep(10.0)
+            # Sleep longer than the (patched) observer timeout.
+            await asyncio.sleep(0.5)
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
@@ -620,8 +626,8 @@ async def test_metrics_observer_reset():
     metrics = await observer.get_metrics()
     assert metrics["items_processed"] == 2
 
-    # Reset
-    observer.reset()
+    # Reset (async since v0.16 — acquires the same lock as on_event)
+    await observer.reset()
 
     # Verify metrics are cleared
     metrics_after = await observer.get_metrics()
@@ -651,3 +657,130 @@ async def test_metrics_observer_processing_times_bounded():
     assert metrics["processing_times_count"] == 250
     assert metrics["items_processed"] == 250
     assert metrics["avg_processing_time"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_raising_middleware_is_isolated(caplog):
+    """A middleware that raises in before/after/on_error is logged and
+    skipped; the item still processes and later middlewares still run."""
+    import logging
+
+    calls: list[str] = []
+
+    class RaisingMiddleware(BaseMiddleware):
+        async def before_process(self, work_item):
+            raise RuntimeError("before boom")
+
+        async def after_process(self, result):
+            raise RuntimeError("after boom")
+
+        async def on_error(self, work_item, error):
+            raise RuntimeError("on_error boom")
+
+    class TrackingMiddleware(BaseMiddleware):
+        async def before_process(self, work_item):
+            calls.append("before")
+            return work_item
+
+        async def after_process(self, result):
+            calls.append("after")
+            return result
+
+    mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="ok"), latency=0.0)
+    config = ProcessorConfig(max_workers=1, timeout_per_item=5.0)
+    processor = ParallelBatchProcessor[str, TestOutput, None](
+        config=config,
+        middlewares=[RaisingMiddleware(), TrackingMiddleware()],
+    )
+
+    await processor.add_work(
+        LLMWorkItem(
+            item_id="isolated",
+            strategy=PydanticAIStrategy(agent=mock_agent),
+            prompt="x",
+        )
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = await processor.process_all()
+
+    assert result.succeeded == 1, "a buggy middleware must not fail the item"
+    assert "before" in calls and "after" in calls, "later middlewares must still run"
+    warning_text = " ".join(r.getMessage() for r in caplog.records)
+    assert "Middleware before_process error" in warning_text
+    assert "Middleware after_process error" in warning_text
+
+
+@pytest.mark.asyncio
+async def test_raising_on_error_middleware_falls_back_to_default_handling(caplog):
+    """A middleware whose on_error raises must not mask default error
+    handling — the item is still recorded as failed."""
+    import logging
+
+    from async_batch_llm.core import RetryConfig
+    from async_batch_llm.llm_strategies import LLMCallStrategy
+
+    class AlwaysFails(LLMCallStrategy[TestOutput]):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            raise ValueError("deterministic bug")
+
+    class RaisingOnError(BaseMiddleware):
+        async def on_error(self, work_item, error):
+            raise RuntimeError("on_error boom")
+
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=5.0,
+        retry=RetryConfig(max_attempts=2, initial_wait=0.01, max_wait=0.01, jitter=False),
+    )
+    processor = ParallelBatchProcessor[str, TestOutput, None](
+        config=config,
+        middlewares=[RaisingOnError()],
+    )
+
+    await processor.add_work(LLMWorkItem(item_id="err", strategy=AlwaysFails(), prompt="x"))
+
+    with caplog.at_level(logging.WARNING):
+        result = await processor.process_all()
+
+    assert result.failed == 1
+    assert "Middleware on_error error" in " ".join(r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_observers_receive_independent_event_data():
+    """Each observer gets its own copy of the event payload, so a mutating
+    observer can't corrupt what later observers see."""
+
+    seen: list[dict] = []
+
+    class MutatingObserver(BaseObserver):
+        async def on_event(self, event, data):
+            data.clear()
+            data["corrupted"] = True
+
+    class RecordingObserver(BaseObserver):
+        async def on_event(self, event, data):
+            if event == ProcessingEvent.ITEM_COMPLETED:
+                seen.append(dict(data))
+
+    mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="ok"), latency=0.0)
+    config = ProcessorConfig(max_workers=1, timeout_per_item=5.0)
+    processor = ParallelBatchProcessor[str, TestOutput, None](
+        config=config,
+        observers=[MutatingObserver(), RecordingObserver()],
+    )
+
+    await processor.add_work(
+        LLMWorkItem(
+            item_id="payload",
+            strategy=PydanticAIStrategy(agent=mock_agent),
+            prompt="x",
+        )
+    )
+    result = await processor.process_all()
+
+    assert result.succeeded == 1
+    assert len(seen) == 1
+    assert "corrupted" not in seen[0]
+    assert seen[0]["item_id"] == "payload"

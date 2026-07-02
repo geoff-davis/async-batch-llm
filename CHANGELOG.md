@@ -7,6 +7,135 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`RateLimitConfig.max_cooldown_seconds`** (default 600) — configurable cap
+  on the exponentially-backed-off cooldown; previously the
+  `ExponentialBackoffStrategy` cap existed but wasn't reachable through
+  `RateLimitConfig`. Validated `>= cooldown_seconds`;
+  `slow_start_final_delay` is now validated non-negative.
+- **`EmptyResponseError`** (exported at top level) — raised by the built-in
+  models when the API call succeeded but produced no usable text (Gemini
+  safety block, OpenAI `finish_reason` of `length`/`content_filter`/tool
+  call). Subclasses `ValueError` (existing handlers keep working) and
+  carries the tokens the provider already billed as `_failed_token_usage`,
+  so failed-attempt accounting reflects real spend.
+- **`ProviderResponseError`** (exported at top level) — OpenRouter reports
+  upstream failures (no provider available, upstream 5xx, upstream rate
+  limits) as HTTP 200 with an `error` object and no choices, so the openai
+  SDK never raises. That path used to surface as a non-retryable "No choices
+  returned" error. `OpenRouterModel` now raises `ProviderResponseError`
+  (carrying the embedded code and raw payload) via a
+  `_raise_on_response_error` hook on `OpenAICompatibleModel`;
+  `OpenRouterErrorClassifier` retries it, treating embedded 429s as rate
+  limits so the coordinated cooldown engages.
+- **PEP 561 `py.typed` marker** — downstream mypy/pyright now consume the
+  package's inline annotations instead of treating it as untyped. Also adds
+  the `Typing :: Typed` trove classifier.
+
+### Changed
+
+- **Test suite runs in ~15s instead of ~80s** — shared
+  `fast_retry`/`fast_rate_limit` fixtures (`tests/conftest.py`) replace
+  real 1s+ retry waits and 5s observer timeouts with millisecond
+  equivalents; `pytest-timeout` (60s cap) makes deadlock regressions fail
+  instead of hanging CI. No coverage lost.
+- **PEP 696 defaults on the framework type variables** —
+  `TInput`/`TOutput`/`TContext` default to `str`/`Any`/`None` (via
+  `typing_extensions.TypeVar`), so trailing parameters can be dropped:
+  `ParallelBatchProcessor[str, MyOutput]`. `typing-extensions>=4.4` is now
+  an explicit dependency (already present transitively via pydantic).
+  `TInput` remains unused by the framework (prompts are always `str`) and is
+  slated for removal at the next major.
+- **`BatchResult` derived fields are `init=False`** — `total_items`,
+  `succeeded`, `failed`, and the token totals were constructor arguments
+  that `__post_init__` silently recomputed and discarded; the constructor
+  signature no longer advertises them.
+- **Reading `WorkItemResult.gemini_safety_ratings` emits a
+  `DeprecationWarning`** — read `result.metadata['safety_ratings']` instead.
+  Construction, `repr()`, and comparisons stay silent (the field is excluded
+  from repr/equality), so framework-internal operations don't warn.
+- **Pre-push guard against stale branches** — `scripts/check_branch_fresh.sh`
+  runs as a `pre-push` hook (installed by `pre-commit install` via
+  `default_install_hook_types`) and refuses pushes from branches missing
+  commits that are on `origin/main`, printing the rebase fix. Fails open
+  when offline; skip intentionally-behind pushes with
+  `SKIP=check-branch-fresh git push`. Commit-time hooks are pinned to
+  `default_stages: [pre-commit]` so pushes stay fast. See CLAUDE.md
+  "Sync before working".
+- **`GeminiErrorClassifier` dispatches on HTTP status codes** — genai SDK
+  exceptions now classify on `APIError.code` instead of string-matching
+  `str(exception)`. Deterministic 4xx client errors (invalid API key,
+  malformed request, missing model) now **fail fast** instead of burning the
+  whole retry budget; 429 parses `Retry-After` into
+  `ErrorInfo.suggested_wait`; 503 keeps its dedicated `server_overload`
+  category (per-item backoff, no coordinated cooldown). Without the
+  `[gemini]` extra the classifier now falls through to the generic
+  pattern/type chain instead of returning `unknown` immediately, so rate
+  limits from mocks still engage the cooldown. `Retry-After` parsing is
+  shared across classifiers (`strategies/errors.py`) and ignores
+  non-positive values.
+- **`MetricsObserver.reset()` is now async and lock-guarded** (breaking) —
+  the unlocked sync version could lose an in-flight event's counts into the
+  discarded pre-reset dict while advertising itself as thread-safe. Call
+  `await observer.reset()`.
+- **Observers receive independent event payloads** — `EventDispatcher.emit`
+  passes each observer a shallow copy of the event data, so one observer
+  mutating the dict can't corrupt what the next sees. Delivery order
+  (registration order) and middleware onion semantics (before in order,
+  after reversed, first non-None `on_error` wins, failures log and fail
+  open) are now documented on the base classes.
+- **CI hardening** — the Tests workflow now lints `tests/` (CI previously
+  checked less than local tooling and pre-commit), verifies formatting with
+  `ruff format --check`, drops the stale `continue-on-error` for Python 3.14
+  (stable since Oct 2025 and advertised in classifiers), and gains a
+  `docs-build` job running `mkdocs build --strict` on PRs so broken nav/links
+  surface before merge. The docs deploy also builds `--strict` and queues
+  per-ref instead of racing concurrent gh-pages pushes.
+
+### Removed
+
+- **Dead `AgentLike`/`ResultLike`/`UsageLike` protocols**
+  (`async_batch_llm.core`) — never referenced by the framework, never
+  exported at top level, and `UsageLike` documented the deprecated
+  pydantic-ai 0.x field names. The module-private `TOutput` TypeVar in
+  `core.protocols` went with them.
+- **Conceptually-wrong config warnings** — `ProcessorConfig` warned when
+  `timeout_per_item` was smaller than cumulative retry waits, but the
+  timeout is a per-attempt limit enforced around each `execute()` call;
+  between-attempt waits happen outside it, so the comparison was
+  meaningless and confusing.
+
+### Fixed
+
+- **CHANGELOG release dates for 0.1.0–0.4.0** — corrected from placeholder
+  2025-01-xx dates (and a `TBD`) to the actual November 2025 releases.
+- **Cooldown log no longer mislabels a strategy-requested zero cooldown as
+  an error** — the coordinator now distinguishes "strategy errored",
+  "pausing for Ns", and "strategy requested no cooldown".
+- **`TokenExtractor` checks the framework-stamped count first** — the exact
+  per-attempt `_failed_token_usage` stamped by strategies was checked last,
+  so an exception that also exposed a heuristic `.usage` attribute (or a
+  cause chain) had its exact count shadowed. Float/str counts in the stamped
+  dict are now coerced instead of silently dropped, pydantic-ai v1
+  `cache_read_tokens` maps into `cached_input_tokens`, and property-style
+  `result.usage` (pydantic-ai 1.x) is read directly on the `__cause__` path.
+- **`PydanticAIStrategy` reads `result.usage` as a property** — pydantic-ai
+  1.x exposes usage as a property; the old `result.usage()` call only worked
+  through a deprecation shim slated for removal (and failed `ty` checks
+  against current pydantic-ai). Method-style results (older versions, test
+  doubles) still work.
+- **Publish workflow could upload mislabeled code to PyPI** — it published on
+  any `v*` tag with no check that the tag matched `pyproject.toml`'s version
+  and no tests. A `test` job now verifies `tag == v<project.version>`, runs
+  pytest/ruff/mypy, and gates the `publish` job; permissions declare
+  `contents: read` explicitly.
+- **`get_stats()['total_cached_tokens']` always reported 0** — the "preferred
+  alias" was a second `ProcessingStats` field that nothing ever incremented;
+  only `cached_input_tokens` was updated by the worker loop. The duplicate
+  storage is gone and `copy()` now maps both dict keys to the single real
+  counter.
+
 ## [0.15.0] - 2026-06-16
 
 ### Added
@@ -561,7 +690,7 @@ Release focused on developer experience improvements and code quality.
 - **Code duplication** - Deduplicated `_extract_safety_ratings` method from `GeminiStrategy`
   and `GeminiCachedStrategy` into a module-level function.
 
-## [0.4.0] - 2025-01-14
+## [0.4.0] - 2025-11-19
 
 Major release adding strategy lifecycle management with context managers.
 
@@ -686,7 +815,7 @@ Bug fix release for process_all() state contamination.
   - Each process_all() call now gets fresh state
   - Safe to call process_all() multiple times on same processor instance
 
-## [0.3.0] - 2025-01-10
+## [0.3.0] - 2025-11-10
 
 This release adds advanced retry patterns for multi-stage LLM strategies,
 safety ratings access for content moderation, and precise cache tagging for production deployments.
@@ -857,7 +986,7 @@ preserve existing behavior.
 
 ---
 
-## [0.2.0] - 2025-01-09
+## [0.2.0] - 2025-11-09
 
 This release addresses critical production issues identified from real-world usage,
 particularly around shared strategy instances for cost optimization with Gemini prompt caching.
@@ -1003,7 +1132,7 @@ See **[Migration Guide](docs/MIGRATION_V0_2.md)** for complete upgrade instructi
 
 ---
 
-## [0.1.0] - TBD
+## [0.1.0] - 2025-11-09 (untagged)
 
 ### ⚠️ Breaking Changes
 
