@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **PEP 561 `py.typed` marker** — downstream mypy/pyright now consume the
+  package's inline annotations instead of treating it as untyped. Also adds
+  the `Typing :: Typed` trove classifier.
+
 ### Fixed
 
 - **`get_stats()['total_cached_tokens']` always reported 0** — the "preferred

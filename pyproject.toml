@@ -45,7 +45,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Framework :: AsyncIO",
-    "Operating System :: OS Independent"
+    "Operating System :: OS Independent",
+    "Typing :: Typed"
 ]
 
 dependencies = [
