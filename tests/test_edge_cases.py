@@ -1,6 +1,5 @@
 """Tests for edge cases and error conditions."""
 
-import asyncio
 from typing import Annotated, Any
 
 import pytest
@@ -167,6 +166,7 @@ async def test_very_short_timeout():
     config = ProcessorConfig(
         max_workers=1,
         timeout_per_item=0.01,  # 10ms timeout - will timeout
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
@@ -438,6 +438,7 @@ async def test_negative_timeout():
 @pytest.mark.asyncio
 async def test_adding_work_after_processing_started():
     """Test that work added during processing is handled correctly."""
+    import asyncio
 
     # This is an edge case - normally not recommended
     # but should work as queue is async

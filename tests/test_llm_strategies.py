@@ -114,7 +114,9 @@ async def test_strategy_with_retries():
 
     strategy = FailingStrategy(fail_count=3)
     config = ProcessorConfig(
-        max_workers=1, timeout_per_item=10.0, retry=RetryConfig(max_attempts=3)
+        max_workers=1,
+        timeout_per_item=10.0,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 
     async with ParallelBatchProcessor[None, TestOutput, None](config=config) as processor:
@@ -377,7 +379,9 @@ async def test_on_error_callback_called():
 
     strategy = ErrorTrackingStrategy()
     config = ProcessorConfig(
-        max_workers=1, timeout_per_item=10.0, retry=RetryConfig(max_attempts=3)
+        max_workers=1,
+        timeout_per_item=10.0,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 
     async with ParallelBatchProcessor[None, TestOutput, None](config=config) as processor:
@@ -448,7 +452,9 @@ async def test_on_error_callback_with_state():
 
     strategy = SmartRetryStrategy()
     config = ProcessorConfig(
-        max_workers=1, timeout_per_item=10.0, retry=RetryConfig(max_attempts=3)
+        max_workers=1,
+        timeout_per_item=10.0,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 
     async with ParallelBatchProcessor[None, TestOutput, None](config=config) as processor:
@@ -496,7 +502,9 @@ async def test_on_error_callback_exception_handling():
 
     strategy = BuggyCallbackStrategy()
     config = ProcessorConfig(
-        max_workers=1, timeout_per_item=10.0, retry=RetryConfig(max_attempts=2)
+        max_workers=1,
+        timeout_per_item=10.0,
+        retry=RetryConfig(max_attempts=2, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 
     async with ParallelBatchProcessor[None, TestOutput, None](config=config) as processor:
@@ -539,7 +547,11 @@ async def test_on_error_not_called_on_success():
             }
 
     strategy = CallbackTrackingStrategy()
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=10.0,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
+    )
 
     async with ParallelBatchProcessor[None, TestOutput, None](config=config) as processor:
         await processor.add_work(

@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Test suite runs in ~15s instead of ~80s** — shared
+  `fast_retry`/`fast_rate_limit` fixtures (`tests/conftest.py`) replace
+  real 1s+ retry waits and 5s observer timeouts with millisecond
+  equivalents; `pytest-timeout` (60s cap) makes deadlock regressions fail
+  instead of hanging CI. No coverage lost.
 - **PEP 696 defaults on the framework type variables** —
   `TInput`/`TOutput`/`TContext` default to `str`/`Any`/`None` (via
   `typing_extensions.TypeVar`), so trailing parameters can be dropped:

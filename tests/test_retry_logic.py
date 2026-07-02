@@ -25,7 +25,7 @@ class TestOutput(BaseModel):
 
 @pytest.mark.asyncio
 async def test_retry_on_timeout():
-    """Test that timeouts trigger retries."""
+    """Test that a timeout on the first attempt triggers a retry that succeeds."""
 
     call_attempts = []
 
@@ -33,7 +33,7 @@ async def test_retry_on_timeout():
         call_attempts.append(len(call_attempts) + 1)
         return TestOutput(value=f"Attempt {len(call_attempts)}")
 
-    # Agent that times out on first call, succeeds on second
+    # Agent that times out on first call only, succeeds on second
     mock_agent = MockAgent(
         response_factory=track_attempt,
         latency=0.01,
@@ -42,8 +42,8 @@ async def test_retry_on_timeout():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=0.1,  # Short timeout
-        retry=RetryConfig(max_attempts=3),
+        timeout_per_item=0.1,  # Short timeout so attempt 1 fails fast
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
@@ -58,9 +58,14 @@ async def test_retry_on_timeout():
 
     result = await processor.process_all()
 
-    # Should succeed on retry after timeout
-    assert result.succeeded == 1 or result.failed == 1  # Depends on retry timing
-    assert len(call_attempts) >= 1  # At least one attempt
+    # Attempt 1 times out, attempt 2 succeeds
+    assert result.succeeded == 1
+    assert result.failed == 0
+    assert mock_agent.call_count == 2, "Exactly two attempts should have been made"
+    # The response factory only runs on the successful (second) attempt;
+    # the first call sleeps past the timeout and never produces a response.
+    assert call_attempts == [1]
+    assert result.results[0].output.value == "Attempt 1"
 
 
 @pytest.mark.asyncio
@@ -86,6 +91,7 @@ async def test_retry_with_exponential_backoff():
             max_attempts=3,
             initial_wait=0.1,
             exponential_base=2.0,
+            jitter=False,  # Deterministic waits so the gap assertion is exact
         ),
     )
 
@@ -104,11 +110,11 @@ async def test_retry_with_exponential_backoff():
     # Should eventually succeed
     assert result.succeeded == 1
 
-    # Verify exponential backoff (allow some timing variance)
-    if len(attempt_times) >= 2:
-        gap1 = attempt_times[1] - attempt_times[0]
-        # First retry should wait ~0.1s
-        assert 0.05 < gap1 < 0.3, f"First retry gap: {gap1}"
+    # Verify backoff wait between attempts (allow scheduling variance on CI)
+    assert len(attempt_times) == 2
+    gap1 = attempt_times[1] - attempt_times[0]
+    # First retry should wait ~0.1s (jitter disabled)
+    assert 0.05 < gap1 < 0.5, f"First retry gap: {gap1}"
 
 
 @pytest.mark.asyncio
@@ -432,7 +438,7 @@ async def test_token_usage_tracked_across_retries():
     config = ProcessorConfig(
         max_workers=1,
         timeout_per_item=10.0,
-        retry=RetryConfig(max_attempts=3),
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)

@@ -397,13 +397,19 @@ async def test_multiple_observers_all_receive_events():
 
 
 @pytest.mark.asyncio
-async def test_observer_timeout_doesnt_break_processing():
-    """Test that slow observers don't break processing."""
+async def test_observer_timeout_doesnt_break_processing(monkeypatch):
+    """Test that slow observers don't break processing.
+
+    The observer timeout is shrunk via monkeypatch — with the production
+    5s value this test burned ~30s of real sleep (5s per emitted event)."""
+    monkeypatch.setattr(
+        "async_batch_llm._internal.event_dispatcher.OBSERVER_CALLBACK_TIMEOUT", 0.05
+    )
 
     class SlowObserver(BaseObserver):
         async def on_event(self, event: ProcessingEvent, data: dict[str, Any]):
-            # Sleep longer than observer timeout (5s)
-            await asyncio.sleep(10.0)
+            # Sleep longer than the (patched) observer timeout.
+            await asyncio.sleep(0.5)
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 

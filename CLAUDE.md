@@ -384,10 +384,15 @@ the project's release-prep flow.
 
 ## Testing strategy
 
-321 tests as of v0.9.0. Coverage spans happy paths, concurrency stress
-(100–200 items × 10–20 workers), edge cases, and per-provider
-integration with mocked SDKs. Real API calls live behind the
-`integration` pytest marker and are skipped by default.
+~516 tests; the default run takes ~15 seconds (no real sleeps — see
+`tests/conftest.py` for the shared `fast_retry`/`fast_rate_limit`
+fixtures; use them in any test that triggers a retry, or you'll pay
+1s+ per retry against the library defaults). `pytest-timeout` caps
+every test at 60s so deadlock regressions fail instead of hanging CI.
+Coverage spans happy paths, concurrency stress (100–200 items × 10–20
+workers), edge cases, and per-provider integration with mocked SDKs.
+Real API calls live behind the `integration` pytest marker and are
+skipped by default.
 
 Key test files:
 
