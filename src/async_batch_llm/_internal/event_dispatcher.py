@@ -41,8 +41,12 @@ class EventDispatcher(Generic[TInput, TOutput, TContext]):
     # ── Observer events ──────────────────────────────────────────
 
     async def emit(self, event: ProcessingEvent, data: dict | None = None) -> None:
-        """Notify every observer of `event`. Individual observer failures
-        are logged but don't abort the batch."""
+        """Notify every observer of `event`, in registration order.
+
+        Individual observer failures are logged but don't abort the batch.
+        Each observer receives its own shallow copy of the event data, so
+        one observer mutating the dict can't corrupt what the next sees.
+        """
         if not self.observers:
             return
 
@@ -50,7 +54,7 @@ class EventDispatcher(Generic[TInput, TOutput, TContext]):
         for observer in self.observers:
             try:
                 await asyncio.wait_for(
-                    observer.on_event(event, event_data),
+                    observer.on_event(event, dict(event_data)),
                     timeout=OBSERVER_CALLBACK_TIMEOUT,
                 )
             except asyncio.CancelledError:

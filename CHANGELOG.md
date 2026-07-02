@@ -61,6 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Observer/middleware hardening.** Each observer now receives its own
+  shallow copy of the event payload (one observer mutating the dict can no
+  longer corrupt what the next sees). `MetricsObserver.reset()` is now
+  `async` and takes the same lock as `on_event`, so an in-flight event's
+  counts can't land in the discarded pre-reset dict. Middleware ordering
+  and failure semantics (before in registration order, after in reverse
+  onion order, first non-None `on_error` wins, exceptions fail open) are
+  now documented on the `Middleware` base class. Removed the dead
+  `processing_times` key from `MetricsObserver.metrics` internal storage
+  (the `get_metrics()` output is unchanged).
 - **Generic type parameters now have PEP 696 defaults**
   (`TInput=str`, `TOutput=Any`, `TContext=None`), so trailing parameters
   can be dropped: `ParallelBatchProcessor[str, MyOutput]` (context
