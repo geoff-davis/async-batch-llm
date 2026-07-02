@@ -13,7 +13,7 @@ import time
 from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
 from .base import LLMResponse
-from .strategies.errors import EmptyResponseError
+from .strategies.errors import EmptyResponseError, ProviderResponseError
 
 # Sentinel prefix for encoding cache_tags into Gemini's CachedContent.display_name.
 # google-genai's CreateCachedContentConfig does not expose a metadata field, so we
@@ -735,6 +735,10 @@ class OpenAICompatibleModel:
 
         response = await self._client.chat.completions.create(**call_kwargs)
 
+        # Some gateways report upstream failures inside an HTTP-200 body;
+        # surface those before interpreting the (empty) choices list.
+        self._raise_on_response_error(response)
+
         # Extract tokens up front: even a no-content response was billed for
         # the prompt (and, for finish_reason="length", the full output).
         tokens = self._extract_tokens(response)
@@ -767,6 +771,15 @@ class OpenAICompatibleModel:
         )
 
     # ── Overridable extraction hooks ────────────────────────────────────
+
+    def _raise_on_response_error(self, response: Any) -> None:
+        """Hook: raise if the provider embedded an error in a 200 response.
+
+        No-op here — OpenAI proper signals errors via HTTP status codes.
+        Gateway subclasses that use error-in-body semantics (OpenRouter)
+        override this.
+        """
+        return
 
     def _extract_tokens(self, response: Any) -> tuple[int, int, int, int]:
         """Extract (input, output, total, cached) token counts.
@@ -958,6 +971,31 @@ class OpenRouterModel(OpenAICompatibleModel):
     _default_base_url: str | None = "https://openrouter.ai/api/v1"
     _install_extras: str = "openrouter"
     _api_key_env_var: str | None = "OPENROUTER_API_KEY"
+
+    def _raise_on_response_error(self, response: Any) -> None:
+        """Raise :class:`ProviderResponseError` for error-in-200 bodies.
+
+        OpenRouter reports upstream failures (no provider available,
+        upstream errors, upstream rate limits) as HTTP 200 with an
+        ``error`` object and empty ``choices``, so the SDK never raises.
+        Without this check the empty choices list would surface as a
+        non-retryable ``EmptyResponseError`` even though these are
+        precisely the transient failures the classifier is built to retry.
+        """
+        error = getattr(response, "error", None)
+        if not error:
+            return
+        if isinstance(error, dict):
+            message = error.get("message") or str(error)
+            code = error.get("code")
+        else:
+            message = str(getattr(error, "message", None) or error)
+            code = getattr(error, "code", None)
+        raise ProviderResponseError(
+            f"OpenRouter returned an error in the response body (code={code}): {message}",
+            code=code if isinstance(code, int) else None,
+            provider_error=error,
+        )
 
     def _extract_metadata(self, response: Any) -> dict[str, Any] | None:
         """Add OpenRouter's ``provider`` field to the metadata."""

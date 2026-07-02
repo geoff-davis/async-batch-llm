@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from async_batch_llm.base import TokenUsage
@@ -69,6 +69,29 @@ class EmptyResponseError(ValueError):
         super().__init__(message)
         if token_usage:
             self._failed_token_usage = dict(token_usage)
+
+
+class ProviderResponseError(Exception):
+    """Provider signaled failure inside an HTTP-200 response body.
+
+    Some gateways (notably OpenRouter) report upstream failures — no
+    provider available, upstream 5xx, upstream rate limits — as HTTP 200
+    with an ``error`` object in the body and no choices, so the SDK never
+    raises. These are typically transient routing failures: classifiers
+    treat them as retryable, and as rate limits when the embedded code
+    is 429.
+
+    Attributes:
+        code: Numeric error code embedded in the body, if any.
+        provider_error: The raw error payload from the response body.
+
+    Added in v0.10.0.
+    """
+
+    def __init__(self, message: str, *, code: int | None = None, provider_error: Any = None):
+        super().__init__(message)
+        self.code = code
+        self.provider_error = provider_error
 
 
 class FrameworkTimeoutError(TimeoutError):

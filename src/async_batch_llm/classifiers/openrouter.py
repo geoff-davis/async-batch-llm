@@ -13,8 +13,8 @@ Added in v0.9.0.
 
 from __future__ import annotations
 
-from ..strategies.errors import ErrorInfo
-from .openai import OpenAIErrorClassifier
+from ..strategies.errors import ErrorInfo, ProviderResponseError
+from .openai import RATE_LIMIT_PATTERNS, OpenAIErrorClassifier
 
 # OpenRouter-specific body markers we look for on APIStatusError responses.
 NO_PROVIDER_PATTERNS = (
@@ -26,6 +26,35 @@ NO_PROVIDER_PATTERNS = (
 
 class OpenRouterErrorClassifier(OpenAIErrorClassifier):
     """OpenAI-compatible classifier with OpenRouter-specific overrides."""
+
+    def classify(self, exception: Exception) -> ErrorInfo:
+        # OpenRouter reports upstream failures inside HTTP-200 bodies;
+        # OpenRouterModel surfaces those as ProviderResponseError. They're
+        # transient routing failures — retry, and treat embedded 429s as
+        # rate limits so the coordinated cooldown engages.
+        if isinstance(exception, ProviderResponseError):
+            error_str = str(exception)
+            if exception.code == 429 or self._matches_any_pattern(error_str, RATE_LIMIT_PATTERNS):
+                return ErrorInfo(
+                    is_retryable=True,
+                    is_rate_limit=True,
+                    is_timeout=False,
+                    error_category="rate_limit",
+                )
+            if self._matches_any_pattern(error_str, NO_PROVIDER_PATTERNS):
+                return ErrorInfo(
+                    is_retryable=True,
+                    is_rate_limit=False,
+                    is_timeout=False,
+                    error_category="network_error",
+                )
+            return ErrorInfo(
+                is_retryable=True,
+                is_rate_limit=False,
+                is_timeout=False,
+                error_category="upstream_error",
+            )
+        return super().classify(exception)
 
     def _classify_status_error(self, exception: Exception) -> ErrorInfo:
         # OpenRouter wraps "no upstream available" as a 502 with a specific

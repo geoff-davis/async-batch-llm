@@ -101,6 +101,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **OpenRouter errors embedded in HTTP-200 bodies are now retryable.**
+  OpenRouter frequently reports upstream failures (no provider available,
+  upstream 5xx, upstream rate limits) as HTTP 200 with an `error` object
+  and no `choices` — the SDK never raises, so the empty choices list
+  surfaced as a non-retryable "No choices returned" logic error.
+  `OpenRouterModel` now raises the new `ProviderResponseError` (exported
+  at top level) for these, and `OpenRouterErrorClassifier` retries them —
+  treating embedded 429s as rate limits (coordinated cooldown) and
+  `no_provider_available` as a network-style error.
 - **Billed tokens are no longer lost when a model raises on an
   empty/blocked response.** All built-in models extracted token counts
   *before* checking for missing text, then raised a plain `ValueError`
