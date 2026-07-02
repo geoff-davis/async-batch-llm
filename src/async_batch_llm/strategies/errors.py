@@ -75,6 +75,29 @@ class TokenTrackingError(Exception):
         self._failed_token_usage = token_usage or {}
 
 
+class EmptyResponseError(ValueError):
+    """The provider returned a billed response with no usable text.
+
+    Raised by the built-in models when the API call succeeded (and was
+    billed) but produced no content — e.g. a Gemini safety block, or an
+    OpenAI response whose ``finish_reason`` is ``length``/``content_filter``
+    or a tool call.
+
+    Subclasses ``ValueError`` so existing handlers and classifiers keep
+    treating it as a deterministic, non-retryable failure. The tokens the
+    provider already billed are attached as ``_failed_token_usage`` so
+    failed-attempt accounting (``WorkItemResult.token_usage``) reflects the
+    real spend.
+
+    Added in v0.16.
+    """
+
+    def __init__(self, message: str, *, token_usage: TokenUsage | dict[str, int] | None = None):
+        super().__init__(message)
+        if token_usage:
+            self._failed_token_usage = dict(token_usage)
+
+
 class FrameworkTimeoutError(TimeoutError):
     """
     Timeout enforced by the batch-llm framework (asyncio.wait_for).

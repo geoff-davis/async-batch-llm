@@ -11,9 +11,10 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
 from .base import LLMResponse
+from .strategies.errors import EmptyResponseError
 
 # A user-supplied hook that maps a raw provider response onto extra metadata
 # keys. Returns None (or an empty dict) to contribute nothing. Extractors run
@@ -192,6 +193,25 @@ def grounding_metadata_extractor(response: Any) -> dict[str, Any] | None:
     return {"grounding": grounding} if grounding else None
 
 
+def _raise_empty_response(message: str, tokens: tuple[int, int, int, int]) -> NoReturn:
+    """Raise EmptyResponseError carrying the tokens the provider already billed.
+
+    The API call succeeded (and was billed) even though it produced no usable
+    text — without attaching the counts, the framework's failed-attempt
+    accounting would report zero spend for the attempt.
+    """
+    input_tokens, output_tokens, total_tokens, cached_tokens = tokens
+    raise EmptyResponseError(
+        message,
+        token_usage={
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "cached_input_tokens": cached_tokens,
+        },
+    )
+
+
 def _extract_tokens(response: Any) -> tuple[int, int, int, int]:
     """Extract token counts from a Gemini response.
 
@@ -312,7 +332,8 @@ class GeminiModel:
         )
 
         # Extract tokens
-        input_tokens, output_tokens, total_tokens, cached_tokens = _extract_tokens(response)
+        tokens = _extract_tokens(response)
+        input_tokens, output_tokens, total_tokens, cached_tokens = tokens
 
         # Extract text (may be None if safety-blocked)
         text = response.text
@@ -321,8 +342,9 @@ class GeminiModel:
             safety_info = ""
             if metadata and "safety_ratings" in metadata:
                 safety_info = f" Safety ratings: {metadata['safety_ratings']}"
-            raise ValueError(
-                f"Empty response from model (likely blocked by safety filter).{safety_info}"
+            _raise_empty_response(
+                f"Empty response from model (likely blocked by safety filter).{safety_info}",
+                tokens,
             )
 
         return LLMResponse(
@@ -594,7 +616,8 @@ class GeminiCachedModel:
             config=call_config,  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
         )
 
-        input_tokens, output_tokens, total_tokens, cached_tokens = _extract_tokens(response)
+        tokens = _extract_tokens(response)
+        input_tokens, output_tokens, total_tokens, cached_tokens = tokens
 
         text = response.text
         if text is None:
@@ -602,8 +625,9 @@ class GeminiCachedModel:
             safety_info = ""
             if metadata and "safety_ratings" in metadata:
                 safety_info = f" Safety ratings: {metadata['safety_ratings']}"
-            raise ValueError(
-                f"Empty response from model (likely blocked by safety filter).{safety_info}"
+            _raise_empty_response(
+                f"Empty response from model (likely blocked by safety filter).{safety_info}",
+                tokens,
             )
 
         return LLMResponse(
@@ -897,22 +921,26 @@ class OpenAICompatibleModel:
 
         response = await self._client.chat.completions.create(**call_kwargs)
 
+        # Extract tokens up front: even a no-content response was billed for
+        # the prompt (and, for finish_reason="length", the full output).
+        tokens = self._extract_tokens(response)
+        input_tokens, output_tokens, total_tokens, cached_tokens = tokens
+
         # Validate content present (None typically means a tool call or a
         # finish-reason like "length"/"content_filter").
         if not response.choices:
-            raise ValueError(f"No choices returned from {type(self).__name__}.")
+            _raise_empty_response(f"No choices returned from {type(self).__name__}.", tokens)
         message = response.choices[0].message
         text = getattr(message, "content", None)
         if text is None:
             finish_reason = getattr(response.choices[0], "finish_reason", "unknown")
-            raise ValueError(
+            _raise_empty_response(
                 f"Empty response content from model "
                 f"(finish_reason={finish_reason!r}). "
                 "This typically indicates a tool call, content filter, "
-                "or token limit was reached."
+                "or token limit was reached.",
+                tokens,
             )
-
-        input_tokens, output_tokens, total_tokens, cached_tokens = self._extract_tokens(response)
 
         return LLMResponse(
             text=text,

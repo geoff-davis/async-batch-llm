@@ -130,6 +130,7 @@ from .single import LLMCallError, call, call_result
 # Error classification and rate limit strategies
 from .strategies import (
     DefaultErrorClassifier,
+    EmptyResponseError,
     ErrorClassifier,
     ErrorInfo,
     ExponentialBackoffStrategy,
@@ -225,6 +226,7 @@ __all__ = [
     "ErrorClassifier",
     "ErrorInfo",
     "DefaultErrorClassifier",
+    "EmptyResponseError",
     "FrameworkTimeoutError",
     "RateLimitRetriesExceeded",
     "TokenTrackingError",

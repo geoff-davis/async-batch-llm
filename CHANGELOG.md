@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`EmptyResponseError`** (exported at top level) — raised by the built-in
+  models when the API call succeeded but produced no usable text (Gemini
+  safety block, OpenAI `finish_reason` of `length`/`content_filter`/tool
+  call). Subclasses `ValueError` (existing handlers keep working) and
+  carries the tokens the provider already billed as `_failed_token_usage`,
+  so failed-attempt accounting reflects real spend.
 - **PEP 561 `py.typed` marker** — downstream mypy/pyright now consume the
   package's inline annotations instead of treating it as untyped. Also adds
   the `Typing :: Typed` trove classifier.
