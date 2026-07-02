@@ -1,8 +1,10 @@
 """Parallel batch processor"""
 
 import asyncio
+import contextlib
 import logging
 import time
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Generic, cast
 
 if TYPE_CHECKING:
@@ -220,6 +222,14 @@ class ParallelBatchProcessor(
         # Centralized token-usage extraction across all exception shapes.
         self._token_extractor = TokenExtractor()
 
+        # Streaming/early-stop state (v0.10.x).
+        # When process_iter() is active, completed results are also pushed
+        # onto this queue for incremental consumption.
+        self._stream_queue: asyncio.Queue[WorkItemResult[TOutput, TContext]] | None = None
+        # Set by request_stop(): workers record queued-but-unstarted items
+        # as cancelled failures instead of processing them.
+        self._stop_requested = False
+
     @property
     def _strategies_cleaned_up(self) -> bool:
         return self._strategy_lifecycle._cleaned_up
@@ -299,6 +309,120 @@ class ParallelBatchProcessor(
             # workers stay alive and progress tasks leak.
             await self.cleanup()
         return False  # Don't suppress exceptions
+
+    async def process_iter(self) -> AsyncIterator[WorkItemResult[TOutput, TContext]]:
+        """Process all queued items, yielding each result as it completes.
+
+        Streaming alternative to :meth:`process_all`: instead of waiting for
+        the whole batch, results are yielded in completion order, so callers
+        can persist/inspect them incrementally::
+
+            async with ParallelBatchProcessor[str, MyOutput, None](config=cfg) as processor:
+                for item in items:
+                    await processor.add_work(item)
+                async for result in processor.process_iter():
+                    save(result)
+
+        Results are still accumulated internally, so stats and error
+        accounting behave exactly as with :meth:`process_all`.
+
+        To bail out early, either call :meth:`request_stop` from inside the
+        loop (in-flight items finish; queued ones are recorded as cancelled)
+        or wrap the iterator in :func:`contextlib.aclosing` and ``break`` —
+        closing the generator cancels the remaining work::
+
+            async with contextlib.aclosing(processor.process_iter()) as results:
+                async for result in results:
+                    if enough(result):
+                        break
+
+        (A bare ``break`` without ``aclosing`` defers that cleanup to the
+        event loop's async-generator finalizer, which may run much later.)
+
+        Raises:
+            RuntimeError: If a worker crashes before the queue is drained
+                (same failure surface as :meth:`process_all`).
+
+        Added in v0.10.0.
+        """
+        self._stream_queue = asyncio.Queue()
+        process_task = asyncio.create_task(self.process_all())
+        try:
+            while True:
+                get_task = asyncio.create_task(self._stream_queue.get())
+                done, _ = await asyncio.wait(
+                    {get_task, process_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if get_task in done:
+                    yield get_task.result()
+                    continue
+                # process_all() finished (all pushes happen before it
+                # returns) — drain anything still buffered, then surface
+                # any error it raised.
+                get_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await get_task
+                while not self._stream_queue.empty():
+                    yield self._stream_queue.get_nowait()
+                process_task.result()  # re-raise worker-crash errors etc.
+                return
+        finally:
+            self._stream_queue = None
+            if not process_task.done():
+                # Consumer broke out early (or an exception propagated
+                # through a yield): stop the batch and release workers.
+                process_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await process_task
+                await self.cleanup()
+            else:
+                # Mark any stored exception as observed so an early-exiting
+                # consumer doesn't trigger "exception was never retrieved".
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    process_task.exception()
+
+    def request_stop(self) -> None:
+        """Ask the processor to stop early.
+
+        In-flight items finish normally; items still waiting in the queue
+        are recorded as failed results with error
+        ``"Cancelled: request_stop() called"`` (so
+        ``total_items == succeeded + failed`` still holds) and are not
+        executed. Safe to call from post-processors, progress callbacks,
+        observers, or a :meth:`process_iter` loop — e.g. to abort a batch
+        once an error budget is exhausted.
+
+        Added in v0.10.0.
+        """
+        if not self._stop_requested:
+            self._stop_requested = True
+            logger.warning(
+                "[WARN]request_stop() called — queued items will be recorded "
+                "as cancelled; in-flight items will finish."
+            )
+
+    async def _record_cancelled_item(
+        self, work_item: LLMWorkItem[TInput, TOutput, TContext]
+    ) -> None:
+        """Record a queued-but-unstarted item as cancelled after request_stop()."""
+        result: WorkItemResult[TOutput, TContext] = WorkItemResult(
+            item_id=work_item.item_id,
+            success=False,
+            error="Cancelled: request_stop() called",
+            context=work_item.context,
+        )
+        async with self._results_lock:
+            self._results.append(result)
+        if self._stream_queue is not None:
+            self._stream_queue.put_nowait(result)
+        async with self._stats_lock:
+            self._stats.processed += 1
+            self._stats.failed += 1
+            self._stats.error_counts["Cancelled"] = self._stats.error_counts.get("Cancelled", 0) + 1
+        await self._emit_event(
+            ProcessingEvent.ITEM_FAILED,
+            {"item_id": work_item.item_id, "error_type": "cancelled"},
+        )
 
     async def get_stats(self) -> dict:
         """
@@ -391,7 +515,13 @@ class ParallelBatchProcessor(
                 return
 
             try:
-                await self._handle_work_item(work_item, worker_id)
+                if self._stop_requested:
+                    # Early stop: record the unstarted item as cancelled
+                    # instead of processing it (in-flight items on other
+                    # workers finish normally).
+                    await self._record_cancelled_item(work_item)
+                else:
+                    await self._handle_work_item(work_item, worker_id)
             finally:
                 # Guarantee task_done() even if an unexpected error escapes:
                 # a missed task_done() would leave queue.join() waiting forever.
@@ -462,6 +592,10 @@ class ParallelBatchProcessor(
         # Store result (thread-safe)
         async with self._results_lock:
             self._results.append(result)
+
+        # Stream the result to an active process_iter() consumer.
+        if self._stream_queue is not None:
+            self._stream_queue.put_nowait(result)
 
         # Update stats (thread-safe)
         should_call_progress = False

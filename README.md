@@ -467,6 +467,30 @@ async with ParallelBatchProcessor(
     result = await processor.process_all()
 ```
 
+### Streaming Results and Early Stop
+
+Consume results as they complete instead of waiting for the whole batch,
+and abort early when you've seen enough:
+
+```python
+async with ParallelBatchProcessor[str, MyOutput, None](config=config) as processor:
+    for item in items:
+        await processor.add_work(item)
+
+    failures = 0
+    async for result in processor.process_iter():
+        save(result)  # results arrive in completion order
+        if not result.success:
+            failures += 1
+        if failures > 10:
+            # In-flight items finish; queued items are recorded as
+            # cancelled failures and never execute.
+            processor.request_stop()
+```
+
+`request_stop()` is also safe to call from post-processors, observers, or
+progress callbacks when using `process_all()`.
+
 ---
 
 ## Advanced Patterns

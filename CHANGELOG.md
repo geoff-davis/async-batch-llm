@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Streaming results and early stop.** New
+  `ParallelBatchProcessor.process_iter()` yields each `WorkItemResult` as
+  it completes (an async iterator alternative to `process_all()` — no
+  more waiting for the whole batch to inspect/persist results), and
+  `request_stop()` aborts a batch early: in-flight items finish, queued
+  items are recorded as cancelled failures (accounting stays consistent)
+  and never execute. `request_stop()` is safe to call from
+  post-processors, observers, progress callbacks, or a `process_iter()`
+  loop. Closing the iterator early (`contextlib.aclosing` + `break`)
+  cancels remaining work.
 - **PEP 561 `py.typed` marker.** The package ships extensive type
   annotations (generic processors, protocols, TypedDicts), but without the
   marker downstream mypy/pyright silently treated the installed package as
