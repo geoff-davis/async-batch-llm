@@ -6,7 +6,7 @@ This tests the fix for the bug where failed items don't report token usage.
 import pytest
 from pydantic import BaseModel
 
-from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
+from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, RetryConfig
 
 
 class StrictOutput(BaseModel):
@@ -61,7 +61,11 @@ async def test_tokens_tracked_on_validation_failure():
             return output, tokens
 
     strategy = FailingParserStrategy()
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(
+        max_workers=2,
+        timeout_per_item=10.0,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
+    )
 
     async with ParallelBatchProcessor[str, StrictOutput, None](config=config) as processor:
         # Add 5 items that will all fail validation
@@ -130,7 +134,11 @@ async def test_cached_tokens_tracked_on_failure():
             raise exc
 
     strategy = CachedFailStrategy()
-    config = ProcessorConfig(max_workers=1, timeout_per_item=5.0)
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=5.0,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
+    )
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         await processor.add_work(
@@ -139,7 +147,7 @@ async def test_cached_tokens_tracked_on_failure():
         result = await processor.process_all()
 
     assert result.failed == 1
-    # Default retry config is 3 attempts; ensure cached tokens are counted for every attempt
+    # Retry config allows 3 attempts; ensure cached tokens are counted for every attempt
     expected_cached_tokens = strategy.calls * 7
     assert result.total_cached_tokens == expected_cached_tokens, (
         f"Expected cached tokens {expected_cached_tokens}, got {result.total_cached_tokens}"

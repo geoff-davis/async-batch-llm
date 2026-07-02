@@ -22,12 +22,15 @@ class MockUsage:
         request_tokens: int = 100,
         response_tokens: int = 50,
         cache_read_tokens: int = 0,
+        total_tokens: int | None = None,
     ):
-        """Initialize mock usage."""
+        """Initialize mock usage. ``total_tokens`` defaults to input + output."""
         self.input_tokens = request_tokens
         self.output_tokens = response_tokens
         self.cache_read_tokens = cache_read_tokens
-        self.total_tokens = request_tokens + response_tokens
+        self.total_tokens = (
+            total_tokens if total_tokens is not None else request_tokens + response_tokens
+        )
 
     @property
     def request_tokens(self) -> int:
@@ -74,6 +77,7 @@ class MockAgent(Generic[TOutput]):
         rate_limit_on_call: int | None = None,
         timeout_on_call: int | None = None,
         tokens_per_call: dict[str, int] | None = None,
+        rng: random.Random | None = None,
     ):
         """
         Initialize mock agent.
@@ -84,7 +88,11 @@ class MockAgent(Generic[TOutput]):
             failure_rate: Probability of random failures (0.0 to 1.0)
             rate_limit_on_call: Call number to simulate rate limit (1-indexed, only triggers once)
             timeout_on_call: Call number to simulate timeout (1-indexed, only triggers once)
-            tokens_per_call: Token usage to report per call (default: 10 input, 20 output, 30 total)
+            tokens_per_call: Token usage to report per call (default: 10 input, 20 output,
+                30 total). ``cached_input_tokens`` and ``total_tokens`` are honored too.
+            rng: Random source for ``failure_rate``. Pass a seeded
+                ``random.Random(42)`` for reproducible failure sequences;
+                defaults to a fresh unseeded instance.
         """
         self.response_factory: Callable[[str], TOutput] = response_factory or self._default_response  # type: ignore[assignment,unused-ignore]
         self.latency = latency
@@ -97,6 +105,7 @@ class MockAgent(Generic[TOutput]):
             "total_tokens": 30,
         }
         self.call_count = 0
+        self._rng = rng if rng is not None else random.Random()
         self._rate_limit_triggered = False
         self._timeout_triggered = False
 
@@ -131,17 +140,12 @@ class MockAgent(Generic[TOutput]):
         ):
             self._rate_limit_triggered = True
 
-            # Simulate Gemini rate limit error
-            # Create a simple exception that looks like a rate limit error
+            # The message alone matches the classifiers' rate-limit patterns
+            # ("429", "resource_exhausted") — no class-name spoofing needed.
             class MockRateLimitError(Exception):
-                """Mock rate limit error that mimics Gemini ClientError."""
+                """Mock rate limit error shaped like a Gemini 429."""
 
-                pass
-
-            # Make it look like a ClientError for the classifier
-            error = MockRateLimitError("429 RESOURCE_EXHAUSTED")
-            error.__class__.__name__ = "ClientError"
-            raise error
+            raise MockRateLimitError("429 RESOURCE_EXHAUSTED")
 
         # Simulate timeout (only once)
         if (
@@ -153,7 +157,7 @@ class MockAgent(Generic[TOutput]):
             await asyncio.sleep(999)  # Will trigger timeout in processor
 
         # Simulate random failures
-        if random.random() < self.failure_rate:
+        if self._rng.random() < self.failure_rate:
             raise Exception(f"Random failure on call {self.call_count}")
 
         # Generate response
@@ -164,6 +168,7 @@ class MockAgent(Generic[TOutput]):
             request_tokens=self.tokens_per_call.get("input_tokens", 10),
             response_tokens=self.tokens_per_call.get("output_tokens", 20),
             cache_read_tokens=self.tokens_per_call.get("cached_input_tokens", 0),
+            total_tokens=self.tokens_per_call.get("total_tokens"),
         )
 
         return MockResult(output, usage_info=usage_info)

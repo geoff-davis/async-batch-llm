@@ -72,47 +72,73 @@ async def test_concurrent_stats_updates():
 
 
 @pytest.mark.asyncio
-@pytest.mark.slow
 async def test_concurrent_rate_limit_handling():
     """Test that only one cooldown happens when multiple workers hit rate limit.
 
-    Note: This test is marked as 'slow' because it involves rate limit simulation
-    with cooldown delays. Run with: pytest -m slow
+    All three workers raise a rate-limit error on their first attempt in the
+    same cooldown generation (a barrier guarantees the attempts overlap), so
+    the coordinator must trigger exactly one cooldown; the other two reports
+    are stale and must no-op. Every item then succeeds on its second attempt.
     """
+    from async_batch_llm.core import RateLimitConfig, RetryConfig
+    from async_batch_llm.observers import ProcessingEvent, ProcessorObserver
 
-    def mock_response(prompt: str) -> TestOutput:
-        return TestOutput(value=f"Response: {prompt}")
+    all_workers_ready = asyncio.Event()
+    entered_count = 0
 
-    # Create a mock agent that simulates rate limiting
-    mock_agent = MockAgent(
-        response_factory=mock_response,
-        latency=0.01,
-        rate_limit_on_call=2,  # Trigger rate limit on 2nd call
-    )
+    class RateLimitOnceStrategy(LLMCallStrategy[TestOutput]):
+        """Raise a 429 on attempt 1 (synchronized across items), then succeed."""
+
+        async def execute(
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+        ) -> tuple[TestOutput, dict[str, int]]:
+            nonlocal entered_count
+            if attempt == 1:
+                # Barrier: don't raise until all 3 items are in-flight, so all
+                # rate-limit reports carry the same observed generation.
+                entered_count += 1
+                if entered_count == 3:
+                    all_workers_ready.set()
+                await all_workers_ready.wait()
+                raise Exception("429 RESOURCE_EXHAUSTED")
+            return TestOutput(value=f"Response: {prompt}"), {
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "total_tokens": 30,
+            }
+
+    class EventRecorder(ProcessorObserver):
+        def __init__(self):
+            self.events = []
+
+        async def on_event(self, event, data):
+            self.events.append(event)
 
     # Use fast rate limit config for testing (instead of default 300s cooldown)
-    from async_batch_llm.core import RateLimitConfig
-
     fast_rate_limit = RateLimitConfig(
-        cooldown_seconds=0.2,  # Very short cooldown for testing
+        cooldown_seconds=0.05,  # Very short cooldown for testing
         slow_start_items=2,  # Minimal slow start
-        slow_start_initial_delay=0.05,
+        slow_start_initial_delay=0.02,
         slow_start_final_delay=0.01,
     )
 
     config = ProcessorConfig(
-        max_workers=3,  # Fewer workers
+        max_workers=3,  # One worker per item so all attempts overlap
         timeout_per_item=10.0,
         rate_limit=fast_rate_limit,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
     metrics = MetricsObserver()
-    processor = ParallelBatchProcessor[str, TestOutput, None](config=config, observers=[metrics])
+    recorder = EventRecorder()
+    processor = ParallelBatchProcessor[str, TestOutput, None](
+        config=config, observers=[metrics, recorder]
+    )
 
-    # Add just 3 items - rate limit triggers on 2nd call, so this tests the behavior
+    strategy = RateLimitOnceStrategy()
     for i in range(3):
         work_item = LLMWorkItem(
             item_id=f"item_{i}",
-            strategy=PydanticAIStrategy(agent=mock_agent),
+            strategy=strategy,
             prompt=f"Test {i}",
             context=None,
         )
@@ -123,13 +149,18 @@ async def test_concurrent_rate_limit_handling():
     # Check metrics
     collected_metrics = await metrics.get_metrics()
 
-    # All items should eventually succeed (after rate limit recovery)
-    assert result.succeeded >= 0, "Some items should succeed"
+    # Every item is accounted for, and all succeed on their second attempt
+    # after the cooldown.
+    assert result.total_items == 3
+    assert result.succeeded + result.failed == result.total_items
+    assert result.succeeded == 3, f"All items should succeed after rate-limit recovery: {result}"
 
-    # Rate limit should have been hit
-    if collected_metrics["rate_limits_hit"] > 0:
-        # Verify rate limit was handled
-        assert collected_metrics["total_cooldown_time"] > 0
+    # Each of the three workers hit the rate limit once...
+    assert collected_metrics["rate_limits_hit"] == 3
+    # ...but only ONE cooldown was triggered for the shared generation.
+    cooldown_starts = recorder.events.count(ProcessingEvent.COOLDOWN_STARTED)
+    assert cooldown_starts == 1, f"Expected exactly one cooldown, got {cooldown_starts}"
+    assert collected_metrics["total_cooldown_time"] > 0
 
 
 @pytest.mark.asyncio

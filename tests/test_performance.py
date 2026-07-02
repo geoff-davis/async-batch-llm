@@ -371,26 +371,3 @@ async def test_retry_performance_impact():
     print(f"{'=' * 60}\n")
 
     assert result.succeeded == num_items
-
-
-@pytest.mark.benchmark
-def test_benchmark_suite_summary():
-    """Print summary of benchmark tests."""
-    print("\n" + "=" * 60)
-    print("Performance Benchmark Suite")
-    print("=" * 60)
-    print("\nAvailable benchmarks:")
-    print("  - test_throughput_single_worker")
-    print("  - test_throughput_scaling_workers")
-    print("  - test_memory_usage_many_items")
-    print("  - test_overhead_empty_processing")
-    print("  - test_concurrent_stats_performance")
-    print("  - test_shared_strategy_vs_unique_strategies")
-    print("  - test_retry_performance_impact")
-    print("\nTo run benchmarks:")
-    print("  pytest -m benchmark -v -s")
-    print("\nTo run specific benchmark:")
-    print("  pytest -m benchmark -k throughput -v -s")
-    print("=" * 60 + "\n")
-
-    assert True

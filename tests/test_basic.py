@@ -14,6 +14,7 @@ from async_batch_llm import (
     ParallelBatchProcessor,
     ProcessorConfig,
     PydanticAIStrategy,
+    RetryConfig,
     SimpleBatchProcessor,
     SimpleResult,
     SimpleWorkItem,
@@ -181,7 +182,11 @@ async def test_timeout_handling():
 
     # Mock agent with 1 second latency, but timeout is 0.1 seconds
     mock_agent = MockAgent(response_factory=mock_response, latency=1.0)
-    config = ProcessorConfig(max_workers=1, timeout_per_item=0.1)
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=0.1,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
+    )
     processor = ParallelBatchProcessor[str, BookSummary, None](config=config)
 
     work_item = LLMWorkItem(

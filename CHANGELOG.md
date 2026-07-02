@@ -61,6 +61,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Test suite: 74s → ~7s, with hang protection.** The default-run suite
+  no longer burns real sleeps: the slow-observer test patches the observer
+  timeout instead of waiting 30s, worst-case rate-limit tests use
+  millisecond cooldowns, and every retrying test uses fast retry waits
+  (shared `fast_retry`/`fast_rate_limit` fixtures in `tests/conftest.py`).
+  `pytest-timeout` (60s per test) turns any future deadlock regression
+  into a failure instead of a hung CI job. Tautological tests were fixed
+  or removed, and one concurrency test that never actually triggered its
+  rate limit was rewritten to deterministically exercise the cooldown.
+- **`MockAgent` improvements for deterministic tests.** New `rng`
+  parameter (pass `random.Random(42)` for reproducible `failure_rate`
+  sequences — previously it used the unseedable global RNG),
+  `tokens_per_call` now honors `cached_input_tokens` and `total_tokens`,
+  the rate-limit simulation no longer spoofs `__class__.__name__`
+  (classifiers match the message), and `MockUsage` is exported from
+  `async_batch_llm.testing`.
 - **Classifier fallback chains consolidated with safer ordering.** The
   copy-pasted generic tail in `DefaultErrorClassifier`,
   `GeminiErrorClassifier`, and `OpenAIErrorClassifier` (with drift between

@@ -1,6 +1,5 @@
 """Tests for edge cases and error conditions."""
 
-import asyncio
 from typing import Annotated, Any
 
 import pytest
@@ -167,6 +166,7 @@ async def test_very_short_timeout():
     config = ProcessorConfig(
         max_workers=1,
         timeout_per_item=0.01,  # 10ms timeout - will timeout
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
@@ -433,46 +433,6 @@ async def test_negative_timeout():
     # ProcessorConfig auto-validates on construction, so this raises immediately
     with pytest.raises(ValueError, match="timeout_per_item must be > 0"):
         ProcessorConfig(max_workers=1, timeout_per_item=-1.0)
-
-
-@pytest.mark.asyncio
-async def test_adding_work_after_processing_started():
-    """Test that work added during processing is handled correctly."""
-
-    # This is an edge case - normally not recommended
-    # but should work as queue is async
-
-    mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.05)
-
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
-    processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
-
-    # Add first item
-    await processor.add_work(
-        LLMWorkItem(
-            item_id="item_1",
-            strategy=PydanticAIStrategy(agent=mock_agent),
-            prompt="Test 1",
-            context=None,
-        )
-    )
-
-    # Start processing in background
-    process_task = asyncio.create_task(processor.process_all())
-
-    # Give it a moment to start
-    await asyncio.sleep(0.01)
-
-    # Try to add more work (this might not be processed)
-    # Note: This is not officially supported behavior
-    # Just documenting what happens
-
-    # Wait for completion
-    result = await process_task
-
-    # At least the first item should be processed
-    assert result.total_items >= 1
-    assert result.succeeded >= 1
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from async_batch_llm import (
     ParallelBatchProcessor,
     ProcessorConfig,
     PydanticAIStrategy,
+    RetryConfig,
     RetryState,
 )
 from async_batch_llm.testing import MockAgent
@@ -79,7 +80,11 @@ async def test_custom_strategy_with_progressive_temperature():
                 "total_tokens": 30,
             }
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=10.0,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
+    )
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     # Test with custom strategy
@@ -177,7 +182,11 @@ async def test_custom_strategy_with_retries():
                 {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
             )
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(
+        max_workers=1,
+        timeout_per_item=10.0,
+        retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
+    )
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     work_item = LLMWorkItem(
@@ -214,8 +223,6 @@ async def test_custom_strategy_timeout_handling():
             return TestOutput(value="Should timeout"), {}
 
     # Use very short timeout and no retries to make test fast
-    from async_batch_llm.core import RetryConfig
-
     config = ProcessorConfig(
         max_workers=1,
         timeout_per_item=0.05,  # Very short timeout (50ms)

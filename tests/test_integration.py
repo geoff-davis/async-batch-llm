@@ -299,52 +299,6 @@ async def test_retry_on_real_validation_error():
         print(f"Validation test failed after all retries: {result.results[0].error}")
 
 
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_integration_suite_summary():
-    """Print summary of which integration tests can run."""
-    available_tests = []
-    missing_keys = []
-
-    if GOOGLE_API_KEY:
-        available_tests.append("Google Gemini API tests (GOOGLE_API_KEY detected)")
-    else:
-        missing_keys.append("GOOGLE_API_KEY (or legacy GEMINI_API_KEY) not set")
-
-    if OPENAI_API_KEY:
-        available_tests.append("OpenAI API tests (not yet implemented)")
-    else:
-        missing_keys.append("OPENAI_API_KEY not set")
-
-    if ANTHROPIC_API_KEY:
-        available_tests.append("Anthropic API tests (not yet implemented)")
-    else:
-        missing_keys.append("ANTHROPIC_API_KEY not set")
-
-    print("\n" + "=" * 60)
-    print("Integration Test Suite Configuration")
-    print("=" * 60)
-
-    if available_tests:
-        print("\nAvailable tests:")
-        for test in available_tests:
-            print(f"  {test}")
-
-    if missing_keys:
-        print("\nMissing API keys (tests will be skipped):")
-        for key in missing_keys:
-            print(f"  {key}")
-
-    print("\nTo run integration tests:")
-    print("  pytest -m integration -v")
-    print("\nTo skip integration tests:")
-    print("  pytest -m 'not integration'")
-    print("=" * 60 + "\n")
-
-    # This test always passes - it's just informational
-    assert True
-
-
 # Placeholder tests for future implementation
 @pytest.mark.integration
 @pytest.mark.skipif(not OPENAI_API_KEY, reason="Requires OPENAI_API_KEY environment variable")
