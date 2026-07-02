@@ -14,6 +14,7 @@ from ..strategies.errors import (
     ErrorClassifier,
     ErrorInfo,
     FrameworkTimeoutError,
+    _retry_after_seconds,
     matches_any_pattern,
 )
 
@@ -37,37 +38,6 @@ _INSUFFICIENT_BALANCE_HINT = (
     "(e.g. top up your prepaid DeepSeek balance at "
     "https://platform.deepseek.com/). Not retryable."
 )
-
-
-def _retry_after_seconds(exception: Exception) -> float | None:
-    """Parse a ``Retry-After`` header off an openai-SDK exception, if present.
-
-    The openai SDK attaches the underlying ``httpx`` response (with headers) to
-    ``RateLimitError`` / ``APIStatusError``. ``Retry-After`` may be either an
-    integer number of seconds or an HTTP-date; we handle both and return the
-    delay in seconds, or ``None`` when no usable header is present.
-    """
-    response = getattr(exception, "response", None)
-    headers = getattr(response, "headers", None)
-    if not headers:
-        return None
-    raw = headers.get("retry-after") or headers.get("Retry-After")
-    if raw is None:
-        return None
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        pass
-    # HTTP-date form: compute the delay relative to now.
-    try:
-        import time
-        from email.utils import parsedate_to_datetime
-
-        when = parsedate_to_datetime(raw)
-        delay = when.timestamp() - time.time()
-        return delay if delay > 0 else None
-    except (TypeError, ValueError):
-        return None
 
 
 class OpenAIErrorClassifier(ErrorClassifier):

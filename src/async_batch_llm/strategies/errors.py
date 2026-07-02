@@ -40,6 +40,39 @@ def matches_any_pattern(text: str, patterns: tuple[str, ...]) -> bool:
     return any(pattern_in(lowered, pattern) for pattern in patterns)
 
 
+def _retry_after_seconds(exception: Exception) -> float | None:
+    """Parse a ``Retry-After`` header off an SDK exception, if present.
+
+    Both the ``openai`` and ``google-genai`` SDKs attach the underlying HTTP
+    response (with headers) to their exceptions as ``.response``.
+    ``Retry-After`` may be either a number of seconds or an HTTP-date; we
+    handle both and return the delay in seconds, or ``None`` when no usable
+    header is present (including malformed or non-positive values).
+    """
+    response = getattr(exception, "response", None)
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return None
+    raw = headers.get("retry-after") or headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        delay = float(raw)
+        return delay if delay > 0 else None
+    except (TypeError, ValueError):
+        pass
+    # HTTP-date form: compute the delay relative to now.
+    try:
+        import time
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(raw)
+        delay = when.timestamp() - time.time()
+        return delay if delay > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 class TokenTrackingError(Exception):
     """
     Wrapper exception that preserves token usage from failed LLM calls.

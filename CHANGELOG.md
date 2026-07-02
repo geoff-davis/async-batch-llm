@@ -30,6 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`GeminiErrorClassifier` dispatches on HTTP status codes** — genai SDK
+  exceptions now classify on `APIError.code` instead of string-matching
+  `str(exception)`. Deterministic 4xx client errors (invalid API key,
+  malformed request, missing model) now **fail fast** instead of burning the
+  whole retry budget; 429 parses `Retry-After` into
+  `ErrorInfo.suggested_wait`; 503 keeps its dedicated `server_overload`
+  category (per-item backoff, no coordinated cooldown). Without the
+  `[gemini]` extra the classifier now falls through to the generic
+  pattern/type chain instead of returning `unknown` immediately, so rate
+  limits from mocks still engage the cooldown. `Retry-After` parsing is
+  shared across classifiers (`strategies/errors.py`) and ignores
+  non-positive values.
 - **`MetricsObserver.reset()` is now async and lock-guarded** (breaking) —
   the unlocked sync version could lose an in-flight event's counts into the
   discarded pre-reset dict while advertising itself as thread-safe. Call
