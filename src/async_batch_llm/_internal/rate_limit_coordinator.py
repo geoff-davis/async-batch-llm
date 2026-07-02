@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Any
 
 from ..observers import ProcessingEvent
 from ..strategies import RateLimitStrategy
@@ -38,7 +39,10 @@ class RateLimitCoordinator:
     def __init__(
         self,
         rate_limit_strategy: RateLimitStrategy,
-        events: EventDispatcher,
+        # Any-parameterized explicitly: with PEP 696 defaults, a bare
+        # `EventDispatcher` would resolve to [str, Any, None] and reject
+        # dispatchers from differently-parameterized processors.
+        events: EventDispatcher[Any, Any, Any],
     ) -> None:
         self._strategy = rate_limit_strategy
         self._events = events

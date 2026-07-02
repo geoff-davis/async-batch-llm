@@ -3,19 +3,27 @@
 import asyncio
 import logging
 import time
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Generic, TypedDict, TypeVar  # noqa: F401
+from typing import TYPE_CHECKING, Any, Generic, TypedDict  # noqa: F401
+
+from typing_extensions import TypeVar  # PEP 696 defaults on Python < 3.13
 
 # Conditional imports for type checking
 if TYPE_CHECKING:
     from .llm_strategies import LLMCallStrategy
 
-# Type variables for generic typing
-TInput = TypeVar("TInput")  # Input data type
-TOutput = TypeVar("TOutput")  # Agent output type
-TContext = TypeVar("TContext")  # Optional context passed through
+# Type variables for generic typing. PEP 696 defaults let common usage drop
+# trailing parameters: ``ParallelBatchProcessor[str, MyOutput]`` (context
+# defaults to None), or even ``ParallelBatchProcessor[str]``.
+# Note: TInput is currently unused by the framework (prompts are always str);
+# it is kept for backward compatibility and slated for removal in the next
+# major release.
+TInput = TypeVar("TInput", default=str)  # Input data type
+TOutput = TypeVar("TOutput", default=Any)  # Agent output type
+TContext = TypeVar("TContext", default=None)  # Optional context passed through
 
 # Module-level logger
 logger = logging.getLogger(__name__)
@@ -246,21 +254,48 @@ class WorkItemResult(Generic[TOutput, TContext]):
         default_factory=lambda: {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     )
     metadata: dict[str, Any] | None = None
-    gemini_safety_ratings: dict[str, str] | None = None
+    # Deprecated — derived from metadata; excluded from repr/eq so the
+    # deprecation warning on read (see the property attached below the class)
+    # doesn't fire on every repr()/comparison.
+    gemini_safety_ratings: dict[str, str] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         """Backfill ``gemini_safety_ratings`` from ``metadata['safety_ratings']``
         for backward compatibility. Once ``gemini_safety_ratings`` is removed,
-        this method goes away.
+        this method goes away. (Reads/writes go through ``__dict__`` directly
+        so the framework itself never triggers the deprecation warning.)
         """
         if (
-            self.gemini_safety_ratings is None
+            self.__dict__.get("gemini_safety_ratings") is None
             and self.metadata is not None
             and "safety_ratings" in self.metadata
         ):
             ratings = self.metadata["safety_ratings"]
             if isinstance(ratings, dict):
-                self.gemini_safety_ratings = ratings
+                self.__dict__["gemini_safety_ratings"] = ratings
+
+
+def _get_gemini_safety_ratings(self: "WorkItemResult") -> dict[str, str] | None:
+    warnings.warn(
+        "WorkItemResult.gemini_safety_ratings is deprecated and will be removed "
+        "in a future release; read result.metadata['safety_ratings'] instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return self.__dict__.get("gemini_safety_ratings")
+
+
+def _set_gemini_safety_ratings(self: "WorkItemResult", value: dict[str, str] | None) -> None:
+    self.__dict__["gemini_safety_ratings"] = value
+
+
+# Replace the plain dataclass attribute with a property AFTER the decorator
+# has generated __init__: reads emit a DeprecationWarning, writes (including
+# the generated __init__'s assignment and the __post_init__ backfill) go
+# straight to the instance __dict__.
+WorkItemResult.gemini_safety_ratings = property(  # type: ignore[assignment,method-assign]
+    _get_gemini_safety_ratings, _set_gemini_safety_ratings
+)
 
 
 class CachedTokenRates:
@@ -320,12 +355,15 @@ class BatchResult(Generic[TOutput, TContext]):
     """
 
     results: list[WorkItemResult[TOutput, TContext]]
-    total_items: int = 0
-    succeeded: int = 0
-    failed: int = 0
-    total_input_tokens: int = 0
-    total_output_tokens: int = 0
-    total_cached_tokens: int = 0  # v0.2.0: Track cached tokens separately
+    # Derived fields — always recomputed from `results` in __post_init__.
+    # init=False so the constructor signature doesn't advertise arguments
+    # that would be silently discarded.
+    total_items: int = field(init=False, default=0)
+    succeeded: int = field(init=False, default=0)
+    failed: int = field(init=False, default=0)
+    total_input_tokens: int = field(init=False, default=0)
+    total_output_tokens: int = field(init=False, default=0)
+    total_cached_tokens: int = field(init=False, default=0)  # v0.2.0
 
     def __post_init__(self):
         """Calculate summary statistics from results."""

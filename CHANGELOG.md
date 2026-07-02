@@ -61,6 +61,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Generic type parameters now have PEP 696 defaults**
+  (`TInput=str`, `TOutput=Any`, `TContext=None`), so trailing parameters
+  can be dropped: `ParallelBatchProcessor[str, MyOutput]` (context
+  defaults to `None`). `TInput` remains unused by the framework and is
+  slated for removal in the next major release. Adds an explicit
+  `typing-extensions>=4.4` dependency (already present transitively via
+  pydantic).
+- **`BatchResult` derived fields are `init=False`.** `total_items`,
+  `succeeded`, `failed`, and the token totals were constructor arguments
+  that `__post_init__` silently recomputed and discarded; passing them now
+  raises `TypeError` instead of misleading callers.
+- **Reading `WorkItemResult.gemini_safety_ratings` now emits a
+  `DeprecationWarning`** (it has been documented as deprecated since the
+  v0.10 metadata work; now there's a runtime migration signal ahead of
+  removal). The field is also excluded from `repr()`/equality so
+  framework-internal operations stay silent.
 - **Rate-limited attempts no longer consume the retry budget by default.**
   Previously an item in flight during three 429 bursts permanently failed
   despite never getting a clean attempt — even though the framework
