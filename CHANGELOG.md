@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Pre-push guard against stale branches** — `scripts/check_branch_fresh.sh`
+  runs as a `pre-push` hook (installed by `pre-commit install` via
+  `default_install_hook_types`) and refuses pushes from branches missing
+  commits that are on `origin/main`, printing the rebase fix. Fails open
+  when offline; skip intentionally-behind pushes with
+  `SKIP=check-branch-fresh git push`. Commit-time hooks are pinned to
+  `default_stages: [pre-commit]` so pushes stay fast. See CLAUDE.md
+  "Sync before working".
 - **`GeminiErrorClassifier` dispatches on HTTP status codes** — genai SDK
   exceptions now classify on `APIError.code` instead of string-matching
   `str(exception)`. Deterministic 4xx client errors (invalid API key,

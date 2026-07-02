@@ -276,6 +276,14 @@ collected = await metrics.get_metrics()
 
 ### Workflow pitfalls
 
+- **Fetch before you branch.** `git fetch origin` and cut new branches from
+  `origin/main`, not local `main` — this repo is developed from multiple
+  machines and the local clone has gone weeks stale before. On 2026-07-02 a
+  full review + 22-commit fix batch was built against v0.10-era code while
+  origin/main was already at v0.15.0; the resulting PR (#59) was conflicting
+  and much of the work duplicated fixes main already had. See "Sync before
+  working" below; the `check-branch-fresh` pre-push hook catches what the
+  routine can't.
 - **Use the right tool for file ops.** Read/Edit/Write/Glob/Grep — not
   bash `cat`/`sed`/`awk`. Bash is for git, npm, pytest, etc.
 - **Read before editing.** The Edit tool requires a prior Read of the same
@@ -289,6 +297,27 @@ collected = await metrics.get_metrics()
 ---
 
 ## Development workflow
+
+### Sync before working
+
+This repo is developed from multiple machines, so a locally-green checkout
+can silently trail `origin/main`. Start every session with:
+
+```bash
+git fetch origin
+git log --oneline main..origin/main   # anything here = local main is stale
+git checkout main && git merge --ff-only origin/main
+git checkout -b my-feature            # branch from the updated main
+```
+
+The `check-branch-fresh` pre-push hook (`scripts/check_branch_fresh.sh`)
+covers what the routine can't: main moving mid-session, between when you
+branched and when you push. It fetches `origin/main` (failing open when
+offline) and refuses the push if the branch is missing commits from main,
+printing the rebase fix. For an intentionally-behind push, skip once with
+`SKIP=check-branch-fresh git push`. The hook is installed per machine/clone
+by `uv run pre-commit install` (it installs both the pre-commit and
+pre-push hook types via `default_install_hook_types`).
 
 ### One-liner commands
 
@@ -313,12 +342,14 @@ uv run mypy src/async_batch_llm/ --ignore-missing-imports
 
 ### Pre-commit hooks
 
-`uv run pre-commit install` once. Hooks then run on every commit: ruff
+`uv run pre-commit install` once per machine/clone (installs both the
+pre-commit and pre-push hook types). Hooks then run on every commit: ruff
 (format + lint, with `examples/` excluded), mypy, trailing whitespace,
 EOF newline, YAML/TOML validation, markdownlint, prevention of commits
-to `main`/`master`. Manual run on all files:
-`uv run pre-commit run --all-files`. Bypass with `--no-verify` only if
-you know what you're doing.
+to `main`/`master`. On every push, `check-branch-fresh` blocks branches
+based on a stale main (see "Sync before working"). Manual run on all
+files: `uv run pre-commit run --all-files`. Bypass with `--no-verify`
+only if you know what you're doing.
 
 ### Markdown config
 
