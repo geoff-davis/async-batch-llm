@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [ main, develop ]
 
+# Cancel superseded runs for the same ref (PR branches pushed to the repo
+# otherwise run everything twice, and stale pushes keep running).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Permissions needed for coverage action to push to data branch and comment on PRs
 permissions:
   contents: write
@@ -14,7 +20,6 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    continue-on-error: ${{ matrix.python-version == '3.14' }}
     strategy:
       fail-fast: false
       matrix:
@@ -24,7 +29,7 @@ jobs:
     - uses: actions/checkout@v4
 
     - name: Install uv
-      uses: astral-sh/setup-uv@v4
+      uses: astral-sh/setup-uv@v6
       with:
         enable-cache: true
 
@@ -41,7 +46,11 @@ jobs:
 
     - name: Run linter
       run: |
-        uv run ruff check src/
+        uv run ruff check src/ tests/
+
+    - name: Check formatting
+      run: |
+        uv run ruff format --check src/ tests/
 
     - name: Run type checker (mypy)
       run: |
@@ -58,13 +67,34 @@ jobs:
       with:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  docs-build:
+    # Catch broken nav/links in PRs instead of discovering them after the
+    # post-merge gh-pages deploy.
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        enable-cache: true
+
+    - name: Set up Python
+      run: uv python install 3.12
+
+    - name: Install dependencies
+      run: uv sync --extra docs
+
+    - name: Build docs (strict)
+      run: uv run mkdocs build --strict
+
   security:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
 
     - name: Install uv
-      uses: astral-sh/setup-uv@v4
+      uses: astral-sh/setup-uv@v6
       with:
         enable-cache: true
 

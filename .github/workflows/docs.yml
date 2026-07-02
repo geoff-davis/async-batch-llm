@@ -5,6 +5,11 @@ on:
     branches:
       - main
 
+# Queue deploys per-ref without cancelling a mid-flight gh-pages push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -20,7 +25,7 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
 
@@ -31,4 +36,4 @@ jobs:
         run: uv sync --extra docs
 
       - name: Build and deploy docs
-        run: uv run mkdocs gh-deploy --force
+        run: uv run mkdocs gh-deploy --force --strict
