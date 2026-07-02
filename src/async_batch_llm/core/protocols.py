@@ -2,60 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
-
-from pydantic import BaseModel
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from async_batch_llm.base import LLMResponse
-
-# Constrain output to Pydantic models for validation
-# Use covariant for protocols (output positions only)
-TOutput = TypeVar("TOutput", bound=BaseModel, covariant=True)
-
-
-class AgentLike(Protocol[TOutput]):
-    """Protocol that any agent must satisfy."""
-
-    async def run(self, prompt: str, **kwargs) -> ResultLike[TOutput]:
-        """Run the agent with the given prompt."""
-        ...
-
-
-class ResultLike(Protocol[TOutput]):
-    """Protocol for agent results."""
-
-    @property
-    def output(self) -> TOutput:
-        """Get the agent output."""
-        ...
-
-    def usage(self) -> UsageLike | None:
-        """Get token usage information."""
-        ...
-
-    def all_messages(self) -> list[Any]:
-        """Get all messages in the conversation."""
-        ...
-
-
-class UsageLike(Protocol):
-    """Protocol for token usage."""
-
-    @property
-    def request_tokens(self) -> int:
-        """Number of tokens in the request."""
-        ...
-
-    @property
-    def response_tokens(self) -> int:
-        """Number of tokens in the response."""
-        ...
-
-    @property
-    def total_tokens(self) -> int:
-        """Total number of tokens."""
-        ...
 
 
 @runtime_checkable

@@ -79,6 +79,7 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         self.error_classifier = _resolve_classifier(strategy, error_classifier)
         self.rate_limit_strategy = rate_limit_strategy or ExponentialBackoffStrategy(
             initial_cooldown=config.rate_limit.cooldown_seconds,
+            max_cooldown=config.rate_limit.max_cooldown_seconds,
             backoff_multiplier=config.rate_limit.backoff_multiplier,
             slow_start_items=config.rate_limit.slow_start_items,
             slow_start_initial_delay=config.rate_limit.slow_start_initial_delay,

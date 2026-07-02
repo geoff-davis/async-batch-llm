@@ -598,6 +598,12 @@ async def test_config_auto_validation():
     with pytest.raises(ValueError, match="backoff_multiplier must be >= 1.0"):
         RateLimitConfig(backoff_multiplier=0.5)
 
+    with pytest.raises(ValueError, match="max_cooldown_seconds must be >= cooldown_seconds"):
+        RateLimitConfig(cooldown_seconds=300.0, max_cooldown_seconds=60.0)
+
+    with pytest.raises(ValueError, match="slow_start_final_delay must be >= 0"):
+        RateLimitConfig(slow_start_final_delay=-0.1)
+
     # Test ProcessorConfig auto-validation
     with pytest.raises(ValueError, match="max_requests_per_minute must be > 0 or None"):
         ProcessorConfig(max_workers=1, timeout_per_item=10.0, max_requests_per_minute=-1.0)

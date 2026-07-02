@@ -202,7 +202,14 @@ class RateLimitCoordinator:
             },
         )
 
-        if cooldown_error is None and cooldown > 0:
+        if cooldown_error is not None:
+            logger.warning(
+                "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). "
+                "Skipping cooldown due to prior error.",
+                worker_id,
+                generation,
+            )
+        elif cooldown > 0:
             logger.warning(
                 "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). "
                 "Pausing all workers for %.1fs...",
@@ -211,9 +218,11 @@ class RateLimitCoordinator:
                 cooldown,
             )
         else:
+            # A strategy can legitimately return 0.0 (no cooldown wanted);
+            # don't mislabel that as an error.
             logger.warning(
                 "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). "
-                "Skipping cooldown due to prior error.",
+                "Strategy requested no cooldown; resuming immediately.",
                 worker_id,
                 generation,
             )

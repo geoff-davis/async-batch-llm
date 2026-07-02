@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`RateLimitConfig.max_cooldown_seconds`** (default 600) — configurable cap
+  on the exponentially-backed-off cooldown; previously the
+  `ExponentialBackoffStrategy` cap existed but wasn't reachable through
+  `RateLimitConfig`. Validated `>= cooldown_seconds`;
+  `slow_start_final_delay` is now validated non-negative.
 - **`EmptyResponseError`** (exported at top level) — raised by the built-in
   models when the API call succeeded but produced no usable text (Gemini
   safety block, OpenAI `finish_reason` of `length`/`content_filter`/tool
@@ -83,8 +88,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   surface before merge. The docs deploy also builds `--strict` and queues
   per-ref instead of racing concurrent gh-pages pushes.
 
+### Removed
+
+- **Dead `AgentLike`/`ResultLike`/`UsageLike` protocols**
+  (`async_batch_llm.core`) — never referenced by the framework, never
+  exported at top level, and `UsageLike` documented the deprecated
+  pydantic-ai 0.x field names. The module-private `TOutput` TypeVar in
+  `core.protocols` went with them.
+- **Conceptually-wrong config warnings** — `ProcessorConfig` warned when
+  `timeout_per_item` was smaller than cumulative retry waits, but the
+  timeout is a per-attempt limit enforced around each `execute()` call;
+  between-attempt waits happen outside it, so the comparison was
+  meaningless and confusing.
+
 ### Fixed
 
+- **CHANGELOG release dates for 0.1.0–0.4.0** — corrected from placeholder
+  2025-01-xx dates (and a `TBD`) to the actual November 2025 releases.
+- **Cooldown log no longer mislabels a strategy-requested zero cooldown as
+  an error** — the coordinator now distinguishes "strategy errored",
+  "pausing for Ns", and "strategy requested no cooldown".
 - **`TokenExtractor` checks the framework-stamped count first** — the exact
   per-attempt `_failed_token_usage` stamped by strategies was checked last,
   so an exception that also exposed a heuristic `.usage` attribute (or a
@@ -662,7 +685,7 @@ Release focused on developer experience improvements and code quality.
 - **Code duplication** - Deduplicated `_extract_safety_ratings` method from `GeminiStrategy`
   and `GeminiCachedStrategy` into a module-level function.
 
-## [0.4.0] - 2025-01-14
+## [0.4.0] - 2025-11-19
 
 Major release adding strategy lifecycle management with context managers.
 
@@ -787,7 +810,7 @@ Bug fix release for process_all() state contamination.
   - Each process_all() call now gets fresh state
   - Safe to call process_all() multiple times on same processor instance
 
-## [0.3.0] - 2025-01-10
+## [0.3.0] - 2025-11-10
 
 This release adds advanced retry patterns for multi-stage LLM strategies,
 safety ratings access for content moderation, and precise cache tagging for production deployments.
@@ -958,7 +981,7 @@ preserve existing behavior.
 
 ---
 
-## [0.2.0] - 2025-01-09
+## [0.2.0] - 2025-11-09
 
 This release addresses critical production issues identified from real-world usage,
 particularly around shared strategy instances for cost optimization with Gemini prompt caching.
@@ -1104,7 +1127,7 @@ See **[Migration Guide](docs/MIGRATION_V0_2.md)** for complete upgrade instructi
 
 ---
 
-## [0.1.0] - TBD
+## [0.1.0] - 2025-11-09 (untagged)
 
 ### ⚠️ Breaking Changes
 
