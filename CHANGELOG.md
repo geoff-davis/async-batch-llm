@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PEP 561 `py.typed` marker.** The package ships extensive type
+  annotations (generic processors, protocols, TypedDicts), but without the
+  marker downstream mypy/pyright silently treated the installed package as
+  untyped and discarded all of them. Also adds the `Typing :: Typed`
+  classifier.
+
 - **First-class DeepSeek provider.** New `DeepSeekModel` (subclass of
   `OpenAICompatibleModel`, base URL `https://api.deepseek.com`, reads
   `DEEPSEEK_API_KEY`) and `DeepSeekStrategy`. `DeepSeekModel._extract_tokens`
