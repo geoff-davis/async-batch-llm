@@ -1,4 +1,4 @@
-.PHONY: help test test-ci coverage lint typecheck typecheck-ty format check-all pre-commit clean
+.PHONY: help test test-fast test-all test-ci coverage coverage-report lint lint-fix format typecheck typecheck-ty markdown-lint markdown-lint-fix check-all ci pre-commit-install pre-commit-run pre-commit-update clean
 
 help:  ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'

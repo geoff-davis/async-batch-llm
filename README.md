@@ -157,7 +157,7 @@ class MyProviderStrategy(LLMCallStrategy[str]):
         return response.text, tokens, None
 ```
 
-See the [`examples/`](examples/) directory for OpenAI, OpenRouter, DeepSeek, Anthropic,
+See the [`examples/`][examples-dir] directory for OpenAI, OpenRouter, DeepSeek, Anthropic,
 LangChain, and more.
 
 ### Automatic Retries
@@ -551,7 +551,7 @@ class SmartModelEscalationStrategy(LLMCallStrategy[Output]):
 - Most tasks succeed on attempt 1 (cheap)
 - Result: **~60-80% cost reduction**
 
-See [`examples/example_smart_model_escalation.py`](examples/example_smart_model_escalation.py) for complete implementation.
+See [`examples/example_smart_model_escalation.py`][ex-smart-model-escalation] for complete implementation.
 
 ### Partial Recovery with RetryState
 
@@ -731,18 +731,18 @@ if result.succeeded == len(test_items):
 
 ## Examples
 
-Check out the [`examples/`](examples/) directory for complete working examples:
+Check out the [`examples/`][examples-dir] directory for complete working examples:
 
-- [`example_llm_strategies.py`](examples/example_llm_strategies.py) - All built-in strategies
-- [`example_openai.py`](examples/example_openai.py) - OpenAI integration
-- [`example_openrouter.py`](examples/example_openrouter.py) - OpenRouter (multi-provider)
-- [`example_deepseek.py`](examples/example_deepseek.py) - DeepSeek with native cache-hit tracking
-- [`example_anthropic.py`](examples/example_anthropic.py) - Anthropic Claude
-- [`example_langchain.py`](examples/example_langchain.py) - LangChain & RAG
-- [`example_gemini_direct.py`](examples/example_gemini_direct.py) - Direct Gemini API
-- [`example_gemini_smart_retry.py`](examples/example_gemini_smart_retry.py) - Smart retry patterns
-- [`example_smart_model_escalation.py`](examples/example_smart_model_escalation.py) - Cost optimization
-- [`example_context_manager.py`](examples/example_context_manager.py) - Resource management
+- [`example_llm_strategies.py`][ex-llm-strategies] - All built-in strategies
+- [`example_openai.py`][ex-openai] - OpenAI integration
+- [`example_openrouter.py`][ex-openrouter] - OpenRouter (multi-provider)
+- [`example_deepseek.py`][ex-deepseek] - DeepSeek with native cache-hit tracking
+- [`example_anthropic.py`][ex-anthropic] - Anthropic Claude
+- [`example_langchain.py`][ex-langchain] - LangChain & RAG
+- [`example_gemini_direct.py`][ex-gemini-direct] - Direct Gemini API
+- [`example_gemini_smart_retry.py`][ex-gemini-smart-retry] - Smart retry patterns
+- [`example_smart_model_escalation.py`][ex-smart-model-escalation] - Cost optimization
+- [`example_context_manager.py`][ex-context-manager] - Resource management
 
 ---
 
@@ -782,8 +782,22 @@ make ci
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](https://github.com/geoff-davis/async-batch-llm/blob/main/LICENSE) file for details.
 
 ---
 
 **Questions?** Open an issue on [GitHub](https://github.com/geoff-davis/async-batch-llm/issues) or check the [documentation](https://geoff-davis.github.io/async-batch-llm/).
+
+<!-- Example links (absolute so they work on PyPI's rendered page) -->
+
+[ex-anthropic]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_anthropic.py
+[ex-context-manager]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_context_manager.py
+[ex-deepseek]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_deepseek.py
+[ex-gemini-direct]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_gemini_direct.py
+[ex-gemini-smart-retry]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_gemini_smart_retry.py
+[ex-langchain]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_langchain.py
+[ex-llm-strategies]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_llm_strategies.py
+[ex-openai]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_openai.py
+[ex-openrouter]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_openrouter.py
+[ex-smart-model-escalation]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_smart_model_escalation.py
+[examples-dir]: https://github.com/geoff-davis/async-batch-llm/tree/main/examples/

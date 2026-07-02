@@ -129,7 +129,8 @@ class TokenUsage(TypedDict, total=False):
         input_tokens: Number of tokens in the input/prompt
         output_tokens: Number of tokens in the output/completion
         total_tokens: Total tokens used (input + output)
-        cached_input_tokens: Number of input tokens served from cache (Gemini)
+        cached_input_tokens: Number of input tokens served from cache
+            (Gemini/OpenAI/DeepSeek/pydantic-ai all populate this)
     """
 
     input_tokens: int

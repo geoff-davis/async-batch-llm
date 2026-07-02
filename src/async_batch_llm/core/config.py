@@ -74,6 +74,9 @@ class RateLimitConfig:
     """Configuration for rate limit handling."""
 
     cooldown_seconds: float = 300.0
+    # Cap on the exponentially-backed-off cooldown (cooldown_seconds *
+    # backoff_multiplier^n never exceeds this).
+    max_cooldown_seconds: float = 600.0
     slow_start_items: int = 50
     slow_start_initial_delay: float = 2.0
     slow_start_final_delay: float = 0.1
@@ -90,10 +93,20 @@ class RateLimitConfig:
                 f"cooldown_seconds must be >= 0 (got {self.cooldown_seconds}). "
                 f"Set rate_limit.cooldown_seconds to a non-negative number."
             )
+        if self.max_cooldown_seconds < self.cooldown_seconds:
+            raise ValueError(
+                f"max_cooldown_seconds must be >= cooldown_seconds "
+                f"(got max_cooldown_seconds={self.max_cooldown_seconds}, "
+                f"cooldown_seconds={self.cooldown_seconds})."
+            )
         if self.slow_start_items < 0:
             raise ValueError(
                 f"slow_start_items must be >= 0 (got {self.slow_start_items}). "
                 f"Set rate_limit.slow_start_items to 0 to disable or a positive number."
+            )
+        if self.slow_start_final_delay < 0:
+            raise ValueError(
+                f"slow_start_final_delay must be >= 0 (got {self.slow_start_final_delay})."
             )
         if self.slow_start_initial_delay < self.slow_start_final_delay:
             raise ValueError(
@@ -192,33 +205,11 @@ class ProcessorConfig:
                 f"Consider setting max_queue_size >= max_workers or 0 for unlimited."
             )
 
-        if self.timeout_per_item < self.retry.initial_wait:
-            logger.warning(
-                f"timeout_per_item ({self.timeout_per_item}s) is less than "
-                f"retry.initial_wait ({self.retry.initial_wait}s). "
-                f"This means the timeout may occur before the first retry delay completes. "
-                f"Consider increasing timeout_per_item or decreasing retry.initial_wait."
-            )
-
-        # Calculate maximum possible retry wait time
-        max_total_retry_wait = 0.0
-        for attempt in range(self.retry.max_attempts - 1):  # -1 because first attempt has no wait
-            wait_time = min(
-                self.retry.initial_wait * (self.retry.exponential_base**attempt),
-                self.retry.max_wait,
-            )
-            max_total_retry_wait += wait_time
-
-        if max_total_retry_wait > 0 and self.timeout_per_item < max_total_retry_wait * 0.5:
-            jitter_note = (
-                " (with jitter, actual delays will be 50-100% of this)" if self.retry.jitter else ""
-            )
-            logger.warning(
-                f"timeout_per_item ({self.timeout_per_item}s) may be too short for retry strategy. "
-                f"With {self.retry.max_attempts} attempts, retry delays could total up to "
-                f"{max_total_retry_wait:.1f}s{jitter_note}. "
-                f"Consider increasing timeout_per_item to at least {max_total_retry_wait * 2:.1f}s."
-            )
+        # Note: timeout_per_item is a PER-ATTEMPT limit enforced around each
+        # strategy.execute() call; between-attempt retry waits happen outside
+        # it, so no cross-validation between the two is meaningful. (Earlier
+        # versions warned when timeout_per_item was smaller than cumulative
+        # retry waits — that comparison was conceptually wrong and confusing.)
 
         # Validate proactive rate limit vs workers
         if self.max_requests_per_minute is not None:

@@ -61,6 +61,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Housekeeping sweep.** CHANGELOG release dates for 0.1.0–0.4.0
+  corrected to match the actual git tags (they were off by ~10 months);
+  `package.json` no longer carries a synced version (it's private
+  markdown tooling); pre-commit's markdownlint pinned to the same version
+  as the npm tooling (v0.22) and the ty hook's pydantic-ai floor raised
+  to match pyproject (>=1.0); README example links are now absolute
+  (repo-relative links render as dead URLs on PyPI's project page);
+  `.codex` gitignored; the superseded January-2025 package review moved
+  out of the repo root; Makefile `.PHONY` list matches the actual
+  targets. New `RateLimitConfig.max_cooldown_seconds` (default 600)
+  exposes the exponential-backoff cap that was previously hardcoded and
+  unreachable from config; `slow_start_final_delay` is now validated
+  non-negative. The coordinator no longer logs "Skipping cooldown due to
+  prior error" when a strategy legitimately returns a 0-second cooldown.
 - **Test suite: 74s → ~7s, with hang protection.** The default-run suite
   no longer burns real sleeps: the slow-observer test patches the observer
   timeout instead of waiting 30s, worst-case rate-limit tests use
@@ -144,6 +158,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (e.g. a parsed `Retry-After`); the previously-unused hardcoded
   `DEFAULT_RATE_LIMIT_WAIT` fallbacks were removed from the classifiers (the
   `RateLimitStrategy` owns the default cooldown).
+
+### Removed
+
+- **Dead `AgentLike` / `ResultLike` / `UsageLike` protocols** (and the
+  `core.protocols.TOutput` TypeVar bound to `BaseModel`). They were
+  exported but used nowhere in the package, constrained outputs to
+  pydantic models (contradicting the framework-wide unbound `TOutput`),
+  and codified pydantic-ai's legacy usage field names.
+- **The conceptually-wrong `timeout_per_item` vs retry-wait config
+  warnings.** `timeout_per_item` is a per-attempt limit around each
+  `strategy.execute()` call; between-attempt waits happen outside it, so
+  comparing the two only confused users.
 
 ### Deprecated
 
@@ -506,7 +532,7 @@ Release focused on developer experience improvements and code quality.
 - **Code duplication** - Deduplicated `_extract_safety_ratings` method from `GeminiStrategy`
   and `GeminiCachedStrategy` into a module-level function.
 
-## [0.4.0] - 2025-01-14
+## [0.4.0] - 2025-11-19
 
 Major release adding strategy lifecycle management with context managers.
 
@@ -536,7 +562,7 @@ Major release adding strategy lifecycle management with context managers.
   handling so `ParallelBatchProcessor` no longer swallows cancellations inside retries,
   middlewares, or rate-limit coordination. Ensures shutdown behaves correctly on Python 3.10+.
 
-## [0.3.6] - 2025-01-13
+## [0.3.6] - 2025-11-11
 
 Minor release fixing mypy compatibility and improving code quality standards.
 
@@ -559,7 +585,7 @@ Minor release fixing mypy compatibility and improving code quality standards.
   before ANY commit
 - **Development workflow** - Updated with common mypy issues and solutions
 
-## [0.3.5] - 2025-01-13
+## [0.3.5] - 2025-11-11
 
 Critical bug fix for token tracking when items fail validation.
 
@@ -582,7 +608,7 @@ Critical bug fix for token tracking when items fail validation.
 - **Test coverage** - Added `test_token_tracking_on_failure.py` to verify fix works correctly
 - **MockAgent enhancement** - Added `tokens_per_call` parameter for token tracking tests
 
-## [0.3.4] - 2025-01-12
+## [0.3.4] - 2025-11-10
 
 Compatibility release for google-genai v1.49.0+.
 
@@ -597,7 +623,7 @@ Compatibility release for google-genai v1.49.0+.
 
 - **API version tests** - Added `test_gemini_api_versions.py` to verify version detection works correctly
 
-## [0.3.3] - 2025-01-11
+## [0.3.3] - 2025-11-10
 
 Bug fix release for proactive rate limiting.
 
@@ -611,7 +637,7 @@ Bug fix release for proactive rate limiting.
 
 - **Default error classifier** - Added rate limit detection to default classifier (not just Gemini-specific)
 
-## [0.3.2] - 2025-01-11
+## [0.3.2] - 2025-11-10
 
 Bug fix release for error classification.
 
@@ -621,7 +647,7 @@ Bug fix release for error classification.
   - ValidationError, TypeError, AttributeError, KeyError now marked as non-retryable
   - Saves API costs by not retrying programmer errors
 
-## [0.3.1] - 2025-01-11
+## [0.3.1] - 2025-11-10
 
 Bug fix release for process_all() state contamination.
 
@@ -631,7 +657,7 @@ Bug fix release for process_all() state contamination.
   - Each process_all() call now gets fresh state
   - Safe to call process_all() multiple times on same processor instance
 
-## [0.3.0] - 2025-01-10
+## [0.3.0] - 2025-11-10
 
 This release adds advanced retry patterns for multi-stage LLM strategies,
 safety ratings access for content moderation, and precise cache tagging for production deployments.
@@ -802,7 +828,7 @@ preserve existing behavior.
 
 ---
 
-## [0.2.0] - 2025-01-09
+## [0.2.0] - 2025-11-09
 
 This release addresses critical production issues identified from real-world usage,
 particularly around shared strategy instances for cost optimization with Gemini prompt caching.
@@ -948,7 +974,7 @@ See **[Migration Guide](docs/MIGRATION_V0_2.md)** for complete upgrade instructi
 
 ---
 
-## [0.1.0] - TBD
+## [0.1.0] - 2025-11-09 (untagged)
 
 ### ⚠️ Breaking Changes
 

@@ -37,7 +37,7 @@ repos:
           - "ty>=0.0.1a16"
           - "pydantic>=2.0.0"
           - "google-genai>=1.49.0"
-          - "pydantic-ai>=0.0.1"
+          - "pydantic-ai>=1.0.0"
           - "aiolimiter>=1.2.1"
         pass_filenames: false
 
@@ -66,7 +66,7 @@ repos:
 
   # Markdown linting
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.19.0
+    rev: v0.22.0
     hooks:
       - id: markdownlint-cli2
         args: [--fix]

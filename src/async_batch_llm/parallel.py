@@ -161,6 +161,7 @@ class ParallelBatchProcessor(
         self.error_classifier = error_classifier or DefaultErrorClassifier()
         self.rate_limit_strategy = rate_limit_strategy or ExponentialBackoffStrategy(
             initial_cooldown=config.rate_limit.cooldown_seconds,
+            max_cooldown=config.rate_limit.max_cooldown_seconds,
             backoff_multiplier=config.rate_limit.backoff_multiplier,
             slow_start_items=config.rate_limit.slow_start_items,
             slow_start_initial_delay=config.rate_limit.slow_start_initial_delay,
@@ -845,7 +846,11 @@ class ParallelBatchProcessor(
                     elapsed=elapsed,
                     timeout_limit=self.config.timeout_per_item,
                 )
-                # Preserve token usage if the underlying exception had it (including cached tokens)
+                # Preserve token usage when the caught TimeoutError carries it.
+                # This never applies to wait_for's own timeout (asyncio creates
+                # that exception fresh), but this except clause also catches
+                # TimeoutErrors raised BY the strategy — e.g. an API timeout
+                # after the provider already billed the prompt.
                 if (
                     hasattr(timeout_exc, "__dict__")
                     and "_failed_token_usage" in timeout_exc.__dict__
