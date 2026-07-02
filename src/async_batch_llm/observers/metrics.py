@@ -7,6 +7,19 @@ from typing import Any
 from .base import BaseObserver, ProcessingEvent
 
 
+def _initial_metrics() -> dict[str, Any]:
+    return {
+        "items_processed": 0,
+        "items_succeeded": 0,
+        "items_failed": 0,
+        "rate_limits_hit": 0,
+        "total_cooldown_time": 0.0,
+        "error_counts": {},
+        "processing_times_count": 0,
+        "processing_times_sum": 0.0,
+    }
+
+
 class MetricsObserver(BaseObserver):
     """Collect metrics for monitoring (thread-safe)."""
 
@@ -18,17 +31,7 @@ class MetricsObserver(BaseObserver):
         """Initialize metrics collector."""
         if max_processing_samples <= 0:
             raise ValueError("max_processing_samples must be positive")
-        self.metrics: dict[str, Any] = {
-            "items_processed": 0,
-            "items_succeeded": 0,
-            "items_failed": 0,
-            "rate_limits_hit": 0,
-            "total_cooldown_time": 0.0,
-            "processing_times": [],
-            "error_counts": {},
-            "processing_times_count": 0,
-            "processing_times_sum": 0.0,
-        }
+        self.metrics: dict[str, Any] = _initial_metrics()
         self._processing_times: list[float] = []
         self._max_processing_samples = max_processing_samples
         self._lock = asyncio.Lock()
@@ -71,7 +74,7 @@ class MetricsObserver(BaseObserver):
         """Get collected metrics with computed statistics (thread-safe)."""
         async with self._lock:
             return {
-                **{k: v for k, v in self.metrics.items() if k != "processing_times"},
+                **self.metrics,
                 "processing_times": list(self._processing_times),
                 "avg_processing_time": (
                     self.metrics["processing_times_sum"] / self.metrics["processing_times_count"]
@@ -85,20 +88,16 @@ class MetricsObserver(BaseObserver):
                 ),
             }
 
-    def reset(self) -> None:
-        """Reset all metrics."""
-        self.metrics = {
-            "items_processed": 0,
-            "items_succeeded": 0,
-            "items_failed": 0,
-            "rate_limits_hit": 0,
-            "total_cooldown_time": 0.0,
-            "processing_times": [],
-            "error_counts": {},
-            "processing_times_count": 0,
-            "processing_times_sum": 0.0,
-        }
-        self._processing_times = []
+    async def reset(self) -> None:
+        """Reset all metrics (thread-safe).
+
+        Async since v0.16: the reset acquires the same lock as
+        ``on_event``, so counts from an in-flight event can no longer land
+        in the discarded pre-reset dict.
+        """
+        async with self._lock:
+            self.metrics = _initial_metrics()
+            self._processing_times = []
 
     async def export_json(self) -> str:
         """Export metrics as JSON string.

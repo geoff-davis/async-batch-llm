@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`MetricsObserver.reset()` is now async and lock-guarded** (breaking) —
+  the unlocked sync version could lose an in-flight event's counts into the
+  discarded pre-reset dict while advertising itself as thread-safe. Call
+  `await observer.reset()`.
+- **Observers receive independent event payloads** — `EventDispatcher.emit`
+  passes each observer a shallow copy of the event data, so one observer
+  mutating the dict can't corrupt what the next sees. Delivery order
+  (registration order) and middleware onion semantics (before in order,
+  after reversed, first non-None `on_error` wins, failures log and fail
+  open) are now documented on the base classes.
 - **CI hardening** — the Tests workflow now lints `tests/` (CI previously
   checked less than local tooling and pre-commit), verifies formatting with
   `ruff format --check`, drops the stale `continue-on-error` for Python 3.14
