@@ -107,7 +107,6 @@ class RetryState:
 # Timeout constants (seconds)
 WORKER_CANCELLATION_TIMEOUT = 2.0  # Time to wait for workers to cancel gracefully
 WORKER_SHUTDOWN_TIMEOUT = 30.0  # Time to wait for workers to finish after queue is done
-POST_PROCESSOR_EXECUTION_TIMEOUT = 75.0  # Maximum time for post-processor to execute
 PROGRESS_TASK_CANCELLATION_TIMEOUT = 2.0  # Time to wait for progress callbacks to cancel
 
 
@@ -783,6 +782,10 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         """
         Run the post-processor callback if provided.
 
+        Timeout enforcement lives in the caller (the worker loop wraps this in
+        ``config.post_processor_timeout``); this method only isolates
+        post-processor exceptions so a buggy callback can't fail the item.
+
         Args:
             result: Work item result to post-process
         """
@@ -793,13 +796,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             await_result = self.post_processor(result)
             # Handle both async and sync post-processors
             if asyncio.iscoroutine(await_result):
-                # Inner timeout for the post-processor execution itself
-                # (Outer timeout at worker level handles semaphore waits)
-                await asyncio.wait_for(await_result, timeout=POST_PROCESSOR_EXECUTION_TIMEOUT)
-        except (TimeoutError, asyncio.TimeoutError):  # distinct classes on Python 3.10
-            logger.error(
-                f"[FAIL]Post-processor execution timed out after {POST_PROCESSOR_EXECUTION_TIMEOUT}s for {result.item_id}"
-            )
+                await await_result
         except Exception as e:
             # Log error with full details - this is critical for debugging
             import traceback

@@ -101,6 +101,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Cleanup and cancellation robustness.** `__aexit__` now runs the
+  processor's own cleanup (cancel workers, drain queue, cancel progress
+  tasks) in a `finally`, so a strategy `cleanup()` that raises or is
+  cancelled (Ctrl-C) can no longer leak workers. Deprecated constructor
+  kwargs (`max_workers=`, `timeout_per_item=`, `rate_limit_cooldown=`) no
+  longer mutate the caller's `ProcessorConfig` — the config is copied
+  before overrides are applied — and the config is no longer validated
+  twice (which duplicated every cross-field warning). The post-processor
+  timeout is now solely `config.post_processor_timeout`; the hardcoded
+  inner 75s limit (which silently overrode any configured value above 75s)
+  was removed.
 - **Reused Gemini caches now expire by the provider's `expire_time`.**
   `GeminiCachedModel` estimated an adopted cache's expiry from
   `create_time` + *this* instance's configured TTL — wrong in both

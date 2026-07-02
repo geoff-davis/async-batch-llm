@@ -115,7 +115,9 @@ class ParallelBatchProcessor(
                 stacklevel=2,
             )
 
-        # Handle backward compatibility
+        # Handle backward compatibility. ProcessorConfig validates itself in
+        # __post_init__, so no extra validate() call is needed here (it would
+        # just re-emit the cross-field warnings a second time).
         if config is None:
             from .core import RateLimitConfig
 
@@ -124,16 +126,27 @@ class ParallelBatchProcessor(
                 timeout_per_item=timeout_per_item or 120.0,
                 rate_limit=RateLimitConfig(cooldown_seconds=rate_limit_cooldown or 300.0),
             )
-        else:
-            # Override config with explicit parameters if provided
-            if max_workers is not None:
-                config.max_workers = max_workers
-            if timeout_per_item is not None:
-                config.timeout_per_item = timeout_per_item
-            if rate_limit_cooldown is not None:
-                config.rate_limit.cooldown_seconds = rate_limit_cooldown
+        elif (
+            max_workers is not None
+            or timeout_per_item is not None
+            or rate_limit_cooldown is not None
+        ):
+            # Never mutate the caller's config — it may be shared across
+            # processors. Copy (including the nested rate_limit when it's
+            # being overridden) before applying deprecated overrides.
+            import dataclasses
 
-        config.validate()
+            rate_limit = config.rate_limit
+            if rate_limit_cooldown is not None:
+                rate_limit = dataclasses.replace(rate_limit, cooldown_seconds=rate_limit_cooldown)
+            config = dataclasses.replace(
+                config,
+                max_workers=max_workers if max_workers is not None else config.max_workers,
+                timeout_per_item=timeout_per_item
+                if timeout_per_item is not None
+                else config.timeout_per_item,
+                rate_limit=rate_limit,
+            )
 
         super().__init__(
             config.max_workers,
@@ -266,10 +279,14 @@ class ParallelBatchProcessor(
         Returns:
             False to indicate exceptions should not be suppressed
         """
-        await self._cleanup_strategies()
-
-        # Call parent cleanup to handle workers and queue
-        await self.cleanup()
+        try:
+            await self._cleanup_strategies()
+        finally:
+            # Parent cleanup (cancel workers, drain queue, cancel progress
+            # tasks) must run even if a strategy's cleanup raised or was
+            # cancelled mid-await (e.g. Ctrl-C during __aexit__) — otherwise
+            # workers stay alive and progress tasks leak.
+            await self.cleanup()
         return False  # Don't suppress exceptions
 
     async def get_stats(self) -> dict:

@@ -170,6 +170,62 @@ async def test_delete_cache_error_logged_with_traceback(caplog):
     assert records[0].exc_info is not None, "exc_info should be attached for debugging"
 
 
+@pytest.mark.asyncio
+async def test_aexit_runs_parent_cleanup_when_strategy_cleanup_cancelled():
+    """Regression: __aexit__ called cleanup() only after strategy cleanup, so
+    a CancelledError raised mid-cleanup (e.g. Ctrl-C) skipped worker
+    cancellation and leaked progress tasks."""
+
+    class CancelledCleanupStrategy(LLMCallStrategy[str]):
+        async def execute(
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+        ) -> tuple[str, TokenUsage]:
+            return "ok", {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+
+        async def cleanup(self) -> None:
+            raise asyncio.CancelledError()
+
+    config = ProcessorConfig(max_workers=1, timeout_per_item=5.0)
+    processor = ParallelBatchProcessor[str, str, None](config=config)
+    # Keep a strong reference — prepared strategies are tracked in a WeakSet.
+    strategy = CancelledCleanupStrategy()
+    await processor._ensure_strategy_prepared(strategy)
+
+    cleanup_called = False
+    original_cleanup = processor.cleanup
+
+    async def spy_cleanup() -> None:
+        nonlocal cleanup_called
+        cleanup_called = True
+        await original_cleanup()
+
+    processor.cleanup = spy_cleanup  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await processor.__aexit__(None, None, None)
+
+    assert cleanup_called, "parent cleanup() must run even when strategy cleanup is cancelled"
+
+
+def test_deprecated_kwargs_do_not_mutate_shared_config():
+    """Regression: deprecated ctor kwargs were written into the caller's
+    ProcessorConfig, silently corrupting a config shared across processors."""
+    config = ProcessorConfig(max_workers=5, timeout_per_item=60.0)
+
+    with pytest.warns(DeprecationWarning):
+        processor = ParallelBatchProcessor[str, str, None](config=config, max_workers=2)
+
+    assert processor.config.max_workers == 2
+    assert processor.config is not config
+    assert config.max_workers == 5, "caller's config must not be mutated"
+
+    with pytest.warns(DeprecationWarning):
+        processor2 = ParallelBatchProcessor[str, str, None](config=config, rate_limit_cooldown=1.0)
+
+    assert processor2.config.rate_limit.cooldown_seconds == 1.0
+    assert config.rate_limit.cooldown_seconds == 300.0, "nested config must not be mutated"
+
+
 # Ensure import-only test: async strategy helper class actually imports cleanly
 def test_module_structure_sanity():
     assert asyncio is not None
