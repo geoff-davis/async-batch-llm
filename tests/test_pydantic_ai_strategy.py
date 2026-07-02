@@ -133,13 +133,14 @@ class TestPydanticAIStrategyTokenTracking:
     @pytest.mark.asyncio
     async def test_token_tracking_on_validation_error(self):
         """Test tokens are tracked even when output access fails."""
-        # Create a mock result that raises on output access
+        # Create a mock result that raises on output access. pydantic-ai 1.x
+        # exposes `usage` as a property, so mock it as a plain attribute.
         mock_result = MagicMock()
         mock_usage = MagicMock()
-        mock_usage.request_tokens = 100
-        mock_usage.response_tokens = 50
+        mock_usage.input_tokens = 100
+        mock_usage.output_tokens = 50
         mock_usage.total_tokens = 150
-        mock_result.usage.return_value = mock_usage
+        mock_result.usage = mock_usage
 
         # Make output access raise a custom error
         class OutputAccessError(Exception):
@@ -163,9 +164,9 @@ class TestPydanticAIStrategyTokenTracking:
 
     @pytest.mark.asyncio
     async def test_token_tracking_no_usage(self):
-        """Test handling when usage() returns None."""
+        """Test handling when the usage property is None."""
         mock_result = MagicMock()
-        mock_result.usage.return_value = None
+        mock_result.usage = None
         mock_result.output = SimpleOutput(value="result")
 
         mock_agent = MagicMock()

@@ -70,6 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`PydanticAIStrategy` reads `result.usage` as a property** — pydantic-ai
+  1.x exposes usage as a property; the old `result.usage()` call only worked
+  through a deprecation shim slated for removal (and failed `ty` checks
+  against current pydantic-ai). Method-style results (older versions, test
+  doubles) still work.
 - **Publish workflow could upload mislabeled code to PyPI** — it published on
   any `v*` tag with no check that the tag matched `pyproject.toml`'s version
   and no tests. A `test` job now verifies `tag == v<project.version>`, runs
