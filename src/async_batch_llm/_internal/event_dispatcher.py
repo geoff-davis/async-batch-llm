@@ -55,7 +55,7 @@ class EventDispatcher(Generic[TInput, TOutput, TContext]):
                 )
             except asyncio.CancelledError:
                 raise
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):  # distinct classes on Python 3.10
                 logger.warning(
                     f"[WARN]Observer callback timed out after {OBSERVER_CALLBACK_TIMEOUT}s "
                     f"for event {event.name}"

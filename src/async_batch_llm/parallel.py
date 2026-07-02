@@ -362,152 +362,160 @@ class ParallelBatchProcessor(
                 await self._emit_event(ProcessingEvent.WORKER_STOPPED, {"worker_id": worker_id})
                 return
 
-            logger.info(f"[INFO][Worker {worker_id}] Picked up {work_item.item_id} from queue")
-
-            # Wait if we're in rate limit cooldown, then apply slow-start ramp.
-            await self._rate_limit_coord.wait_if_paused()
-            delay = await self._rate_limit_coord.apply_slow_start()
-            if delay > 0:
-                await asyncio.sleep(delay)
-
-            # Process the item
             try:
-                result = await self._process_item_with_retries(work_item, worker_id)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                # All retries exhausted or unhandled exception
-                # Create a failed result so the item is recorded
+                await self._handle_work_item(work_item, worker_id)
+            finally:
+                # Guarantee task_done() even if an unexpected error escapes:
+                # a missed task_done() would leave queue.join() waiting forever.
+                self._queue.task_done()
 
-                # Extract token usage from exception if available
-                failed_tokens = {}
-                if hasattr(e, "__dict__") and "_failed_token_usage" in e.__dict__:
-                    failed_tokens = e.__dict__["_failed_token_usage"]
+    async def _handle_work_item(
+        self, work_item: LLMWorkItem[TInput, TOutput, TContext], worker_id: int
+    ) -> None:
+        """Process one dequeued item end-to-end: retries, result recording,
+        stats, progress callback, and post-processing."""
+        logger.info(f"[INFO][Worker {worker_id}] Picked up {work_item.item_id} from queue")
 
-                token_msg = ""
-                if failed_tokens.get("total_tokens", 0) > 0:
-                    token_msg = (
-                        f" (consumed {failed_tokens['total_tokens']} tokens across all attempts)"
-                    )
+        # Wait if we're in rate limit cooldown, then apply slow-start ramp.
+        await self._rate_limit_coord.wait_if_paused()
+        delay = await self._rate_limit_coord.apply_slow_start()
+        if delay > 0:
+            await asyncio.sleep(delay)
 
-                logger.error(
-                    f"[FAIL]Worker {worker_id} failed to process {work_item.item_id} after all retries: "
-                    f"{type(e).__name__}: {str(e)[:ERROR_MESSAGE_MAX_LENGTH]}{token_msg}"
+        # Process the item
+        try:
+            result = await self._process_item_with_retries(work_item, worker_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # All retries exhausted or unhandled exception
+            # Create a failed result so the item is recorded
+
+            # Extract token usage from exception if available
+            failed_tokens = {}
+            if hasattr(e, "__dict__") and "_failed_token_usage" in e.__dict__:
+                failed_tokens = e.__dict__["_failed_token_usage"]
+
+            token_msg = ""
+            if failed_tokens.get("total_tokens", 0) > 0:
+                token_msg = (
+                    f" (consumed {failed_tokens['total_tokens']} tokens across all attempts)"
                 )
 
-                # Try middleware error handlers
-                middleware_result = await self._run_middlewares_on_error(work_item, e)
-                if middleware_result is not None:
-                    result = middleware_result
-                else:
-                    result = WorkItemResult(
-                        item_id=work_item.item_id,
-                        success=False,
-                        error=f"{type(e).__name__}: {str(e)[:ERROR_MESSAGE_MAX_LENGTH]}",
-                        context=work_item.context,
-                        token_usage=cast(TokenUsage, failed_tokens),
-                    )
-                # Fall through to store result and call task_done()
+            logger.error(
+                f"[FAIL]Worker {worker_id} failed to process {work_item.item_id} after all retries: "
+                f"{type(e).__name__}: {str(e)[:ERROR_MESSAGE_MAX_LENGTH]}{token_msg}"
+            )
 
-            # Store result (thread-safe)
-            async with self._results_lock:
-                self._results.append(result)
-
-            # Update stats (thread-safe)
-            should_call_progress = False
-            completed = 0
-            total = 0
-            current_item = ""
-
-            async with self._stats_lock:
-                self._stats.processed += 1
-                if result.success:
-                    self._stats.succeeded += 1
-                else:
-                    self._stats.failed += 1
-                    if result.error:
-                        error_type = result.error.split(":")[0]
-                        self._stats.error_counts[error_type] = (
-                            self._stats.error_counts.get(error_type, 0) + 1
-                        )
-
-                # Track token usage in real-time
-                if result.token_usage:
-                    self._stats.total_input_tokens += result.token_usage.get("input_tokens", 0)
-                    self._stats.total_output_tokens += result.token_usage.get("output_tokens", 0)
-                    self._stats.total_tokens += result.token_usage.get("total_tokens", 0)
-                    self._stats.cached_input_tokens += result.token_usage.get(
-                        "cached_input_tokens", 0
-                    )
-
-                # Check if we should call progress callback (based on progress_interval)
-                if (
-                    self.progress_callback
-                    and self._stats.processed % self.config.progress_interval == 0
-                ):
-                    should_call_progress = True
-                    completed = self._stats.processed
-                    total = self._stats.total
-                    current_item = work_item.item_id
-
-            # Invoke progress callback outside of lock
-            if should_call_progress:
-                await self._run_progress_callback(completed, total, current_item)
-
-            # Run post-processor for both success AND failure
-            # Note: Post-processors should check result.success and handle accordingly
-            # Most post-processors return early for failures, but some may want to
-            # save failed items (e.g., dedupe_authors saves failed clusters as singletons)
-            try:
-                await asyncio.wait_for(
-                    self._run_post_processor(result),
-                    timeout=self.config.post_processor_timeout,
+            # Try middleware error handlers
+            middleware_result = await self._run_middlewares_on_error(work_item, e)
+            if middleware_result is not None:
+                result = middleware_result
+            else:
+                result = WorkItemResult(
+                    item_id=work_item.item_id,
+                    success=False,
+                    error=f"{type(e).__name__}: {str(e)[:ERROR_MESSAGE_MAX_LENGTH]}",
+                    context=work_item.context,
+                    token_usage=cast(TokenUsage, failed_tokens),
                 )
-            except TimeoutError:
-                logger.error(f"⏱ Post-processor exceeded timeout for {work_item.item_id}")
+            # Fall through to store result
 
-            self._queue.task_done()
+        # Store result (thread-safe)
+        async with self._results_lock:
+            self._results.append(result)
 
-            # Log completion
-            status = "[OK]" if result.success else "[FAIL]"
-            outcome = "success" if result.success else "failed"
-            logger.info(f"{status} [Worker {worker_id}] Completed {work_item.item_id} ({outcome})")
+        # Update stats (thread-safe)
+        should_call_progress = False
+        completed = 0
+        total = 0
+        current_item = ""
 
-            # Log progress (thread-safe read of stats)
-            async with self._stats_lock:
-                should_log = self._stats.processed % self.config.progress_interval == 0
-                if should_log:
-                    stats_snapshot = self._stats.copy()
+        async with self._stats_lock:
+            self._stats.processed += 1
+            if result.success:
+                self._stats.succeeded += 1
+            else:
+                self._stats.failed += 1
+                if result.error:
+                    error_type = result.error.split(":")[0]
+                    self._stats.error_counts[error_type] = (
+                        self._stats.error_counts.get(error_type, 0) + 1
+                    )
 
+            # Track token usage in real-time
+            if result.token_usage:
+                self._stats.total_input_tokens += result.token_usage.get("input_tokens", 0)
+                self._stats.total_output_tokens += result.token_usage.get("output_tokens", 0)
+                self._stats.total_tokens += result.token_usage.get("total_tokens", 0)
+                self._stats.cached_input_tokens += result.token_usage.get("cached_input_tokens", 0)
+
+            # Check if we should call progress callback (based on progress_interval)
+            if (
+                self.progress_callback
+                and self._stats.processed % self.config.progress_interval == 0
+            ):
+                should_call_progress = True
+                completed = self._stats.processed
+                total = self._stats.total
+                current_item = work_item.item_id
+
+        # Invoke progress callback outside of lock
+        if should_call_progress:
+            await self._run_progress_callback(completed, total, current_item)
+
+        # Run post-processor for both success AND failure
+        # Note: Post-processors should check result.success and handle accordingly
+        # Most post-processors return early for failures, but some may want to
+        # save failed items (e.g., dedupe_authors saves failed clusters as singletons)
+        try:
+            await asyncio.wait_for(
+                self._run_post_processor(result),
+                timeout=self.config.post_processor_timeout,
+            )
+        except (TimeoutError, asyncio.TimeoutError):  # distinct classes on Python 3.10
+            logger.error(f"⏱ Post-processor exceeded timeout for {work_item.item_id}")
+
+        # Log completion
+        status = "[OK]" if result.success else "[FAIL]"
+        outcome = "success" if result.success else "failed"
+        logger.info(f"{status} [Worker {worker_id}] Completed {work_item.item_id} ({outcome})")
+
+        # Log progress (thread-safe read of stats)
+        async with self._stats_lock:
+            should_log = self._stats.processed % self.config.progress_interval == 0
             if should_log:
-                elapsed = time.time() - stats_snapshot["start_time"]
-                calls_per_sec = stats_snapshot["processed"] / elapsed if elapsed > 0 else 0
+                stats_snapshot = self._stats.copy()
 
-                error_breakdown = ""
-                if stats_snapshot["error_counts"]:
-                    error_strs = [
-                        f"{err}: {count}" for err, count in stats_snapshot["error_counts"].items()
-                    ]
-                    error_breakdown = f" | Errors: {', '.join(error_strs)}"
+        if should_log:
+            elapsed = time.time() - stats_snapshot["start_time"]
+            calls_per_sec = stats_snapshot["processed"] / elapsed if elapsed > 0 else 0
 
-                # Token summary
-                token_summary = ""
-                if stats_snapshot["total_tokens"] > 0:
-                    cached_info = ""
-                    if stats_snapshot.get("cached_input_tokens", 0) > 0:
-                        cached_info = f", {stats_snapshot['cached_input_tokens']:,} cached"
-                    token_summary = (
-                        f" | Tokens: {stats_snapshot['total_tokens']:,} "
-                        f"({stats_snapshot['total_input_tokens']:,} in, "
-                        f"{stats_snapshot['total_output_tokens']:,} out{cached_info})"
-                    )
+            error_breakdown = ""
+            if stats_snapshot["error_counts"]:
+                error_strs = [
+                    f"{err}: {count}" for err, count in stats_snapshot["error_counts"].items()
+                ]
+                error_breakdown = f" | Errors: {', '.join(error_strs)}"
 
-                logger.info(
-                    f"[INFO]Progress: {stats_snapshot['processed']}/{stats_snapshot['total']} "
-                    f"({stats_snapshot['processed'] / stats_snapshot['total'] * 100:.1f}%) | "
-                    f"Succeeded: {stats_snapshot['succeeded']}, Failed: {stats_snapshot['failed']}"
-                    f"{error_breakdown} | {calls_per_sec:.2f} calls/sec{token_summary}"
+            # Token summary
+            token_summary = ""
+            if stats_snapshot["total_tokens"] > 0:
+                cached_info = ""
+                if stats_snapshot.get("cached_input_tokens", 0) > 0:
+                    cached_info = f", {stats_snapshot['cached_input_tokens']:,} cached"
+                token_summary = (
+                    f" | Tokens: {stats_snapshot['total_tokens']:,} "
+                    f"({stats_snapshot['total_input_tokens']:,} in, "
+                    f"{stats_snapshot['total_output_tokens']:,} out{cached_info})"
                 )
+
+            logger.info(
+                f"[INFO]Progress: {stats_snapshot['processed']}/{stats_snapshot['total']} "
+                f"({stats_snapshot['processed'] / stats_snapshot['total'] * 100:.1f}%) | "
+                f"Succeeded: {stats_snapshot['succeeded']}, Failed: {stats_snapshot['failed']}"
+                f"{error_breakdown} | {calls_per_sec:.2f} calls/sec{token_summary}"
+            )
 
     async def _handle_rate_limit(
         self,

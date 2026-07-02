@@ -576,7 +576,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                     asyncio.gather(*self._workers, return_exceptions=True),
                     timeout=WORKER_CANCELLATION_TIMEOUT,
                 )
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):  # distinct classes on Python 3.10
                 logger.warning("Some workers did not cancel within timeout")
 
         # Clear any remaining items in queue
@@ -596,7 +596,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                     asyncio.gather(*self._progress_tasks, return_exceptions=True),
                     timeout=PROGRESS_TASK_CANCELLATION_TIMEOUT,
                 )
-            except asyncio.TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):  # distinct classes on Python 3.10
                 logger.warning("[WARN]Some progress callbacks did not cancel in time")
             finally:
                 self._progress_tasks.clear()
@@ -656,13 +656,26 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             asyncio.create_task(self._worker(worker_id)) for worker_id in range(self.max_workers)
         ]
 
-        # Wait for all work to complete
+        # Wait for all work to complete, watching worker tasks so that a
+        # crashed worker surfaces as an error instead of hanging queue.join()
+        # on items nobody can process anymore.
+        join_task = asyncio.create_task(self._queue.join())
         try:
-            await self._queue.join()
+            await self._watch_workers_until_drained(join_task)
         finally:
-            # Unblock workers even if queue.join() is cancelled or fails
+            join_task.cancel()
+            try:
+                await join_task
+            except asyncio.CancelledError:
+                pass
+            # Unblock workers even if queue.join() was cancelled or a worker
+            # crashed. put_nowait: a full bounded queue must never block exit
+            # (workers exiting via cancellation don't need sentinels).
             for _ in range(self.max_workers):
-                await self._queue.put(None)
+                try:
+                    self._queue.put_nowait(None)
+                except asyncio.QueueFull:
+                    break
 
         logger.info("[OK]Queue processing complete, waiting for workers to finish...")
 
@@ -673,7 +686,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 timeout=WORKER_SHUTDOWN_TIMEOUT,
             )
             logger.info(f"[OK]All {len(self._workers)} workers finished successfully")
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):  # distinct classes on Python 3.10
             logger.error(
                 f"[WARN]Workers did not finish within {WORKER_SHUTDOWN_TIMEOUT}s after queue.join(). "
                 "Cancelling workers and proceeding..."
@@ -688,7 +701,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                     asyncio.gather(*self._workers, return_exceptions=True),
                     timeout=WORKER_CANCELLATION_TIMEOUT * 2.5,  # Allow more time during shutdown
                 )
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):  # distinct classes on Python 3.10
                 logger.error("[WARN]Some workers could not be cancelled")
 
         self._is_processing = False
@@ -698,6 +711,40 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         # Snapshot results before returning so callers receive an independent list.
         results_snapshot = list(self._results)
         return BatchResult(results=results_snapshot)
+
+    async def _watch_workers_until_drained(self, join_task: "asyncio.Task[None]") -> None:
+        """Wait for ``queue.join()``, failing fast if a worker dies first.
+
+        Workers only exit normally after consuming a sentinel, and sentinels
+        are queued only after ``join()`` returns — so any worker task that
+        completes while the queue is still draining has crashed. Without this
+        watch, ``queue.join()`` would wait forever on items the dead worker
+        can no longer process.
+        """
+        watched = set(self._workers)
+        while True:
+            done, _ = await asyncio.wait({join_task, *watched}, return_when=asyncio.FIRST_COMPLETED)
+            if join_task in done:
+                return
+            finished = done & watched
+            watched -= finished
+            for task in finished:
+                try:
+                    exc = task.exception()
+                except asyncio.CancelledError:
+                    exc = None  # Externally cancelled worker; treated below.
+                if exc is not None:
+                    for worker in self._workers:
+                        if not worker.done():
+                            worker.cancel()
+                    raise RuntimeError(
+                        f"Worker crashed with {type(exc).__name__} before the queue "
+                        f"was drained; aborting batch: {exc}"
+                    ) from exc
+            if not watched:
+                raise RuntimeError(
+                    "All workers exited before the queue was drained; aborting batch."
+                )
 
     @abstractmethod
     async def _worker(self, worker_id: int):
@@ -745,7 +792,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 # Inner timeout for the post-processor execution itself
                 # (Outer timeout at worker level handles semaphore waits)
                 await asyncio.wait_for(await_result, timeout=POST_PROCESSOR_EXECUTION_TIMEOUT)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):  # distinct classes on Python 3.10
             logger.error(
                 f"[FAIL]Post-processor execution timed out after {POST_PROCESSOR_EXECUTION_TIMEOUT}s for {result.item_id}"
             )
@@ -786,7 +833,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                         asyncio.shield(callback_task),
                         timeout=self.progress_callback_timeout,
                     )
-                except asyncio.TimeoutError:
+                except (TimeoutError, asyncio.TimeoutError):  # distinct classes on Python 3.10
                     logger.warning(
                         "[WARN]Progress callback exceeded timeout of %.2fs; continuing without waiting.",
                         self.progress_callback_timeout,

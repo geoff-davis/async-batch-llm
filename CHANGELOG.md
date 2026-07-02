@@ -77,6 +77,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still populated for backward compat; scheduled for removal alongside
   the 2-tuple compat shim.
 
+### Fixed
+
+- **Python 3.10: a post-processor timeout could hang `process_all()`
+  forever.** On 3.10, `asyncio.wait_for` raises `asyncio.TimeoutError`,
+  which is a *different class* from builtin `TimeoutError` (they were
+  unified in 3.11). The worker loop's `except TimeoutError` missed it, the
+  escaping exception killed the worker after it had dequeued an item but
+  before `task_done()`, and `queue.join()` waited forever. All timeout
+  handlers now catch `(TimeoutError, asyncio.TimeoutError)`.
+- **Worker crashes now fail the batch instead of deadlocking it.** Two
+  layers of protection: the worker loop guarantees `task_done()` via
+  `try/finally`, and `process_all()` now watches worker tasks while
+  waiting on `queue.join()` — if a worker dies before the queue is
+  drained, the batch raises `RuntimeError` (chained to the original
+  exception) rather than hanging. Sentinel injection during shutdown uses
+  `put_nowait`, so a full bounded queue can no longer block cancellation.
+
 ### Security
 
 - Bumped transitive (lockfile-only) dependencies to clear open Dependabot
