@@ -79,6 +79,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`GeminiErrorClassifier` now dispatches on HTTP status codes** (via
+  `google.genai.errors.APIError.code`) instead of string-matching the
+  message, fixing two inverted classifications:
+  - Transient **500/503 server errors** ("The model is overloaded") were
+    non-retryable — items permanently failed on Gemini's most common
+    transient error. They now retry (matching the OpenAI classifier's
+    {408, 425, 500, 502, 503, 504} set).
+  - Deterministic **4xx client errors** (invalid API key, malformed
+    request, missing model) were retried for the full attempt budget on
+    every item. {400, 401, 403, 404, 405, 409, 410, 422} now fail fast.
+
+  Also: Gemini 429s now populate `ErrorInfo.suggested_wait` from a
+  `Retry-After` header when present (the parsing helper moved to
+  `strategies/errors.py` and is shared with `OpenAIErrorClassifier`), and
+  when the `google-genai` SDK is not installed the classifier now falls
+  through to the generic message/type-based chain instead of returning
+  `unknown`/retryable immediately — previously rate limits were never
+  flagged without the `[gemini]` extra, so coordinated cooldowns never
+  engaged. Malformed negative `Retry-After` values are now ignored
+  instead of becoming a negative cooldown floor.
 - **Python 3.10: a post-processor timeout could hang `process_all()`
   forever.** On 3.10, `asyncio.wait_for` raises `asyncio.TimeoutError`,
   which is a *different class* from builtin `TimeoutError` (they were
