@@ -105,6 +105,15 @@ def _extract_metadata(response: Any) -> dict[str, Any] | None:
     return metadata or None
 
 
+def _timestamp_or_none(value: Any) -> float | None:
+    """Best-effort ``value.timestamp()`` returning None for unusable objects."""
+    try:
+        ts = value.timestamp()
+    except Exception:
+        return None
+    return float(ts) if isinstance(ts, (int, float)) else None
+
+
 def _raise_empty_response(message: str, tokens: tuple[int, int, int, int]) -> NoReturn:
     """Raise EmptyResponseError carrying the tokens the provider already billed.
 
@@ -361,6 +370,11 @@ class GeminiCachedModel:
 
         self._cache: Any = None
         self._cache_created_at: float | None = None
+        # Authoritative expiry read from the provider's `expire_time` when a
+        # cache is adopted from a previous run; None means "estimate from
+        # created_at + the configured TTL" (always the case for caches this
+        # instance created itself).
+        self._cache_expires_at: float | None = None
         self._cache_lock: Any = None
         self._prepared = False
 
@@ -423,6 +437,7 @@ class GeminiCachedModel:
             # re-enter see an empty cache and no-op.
             self._cache = None
             self._cache_created_at = None
+            self._cache_expires_at = None
             self._prepared = False
 
             try:
@@ -486,6 +501,7 @@ class GeminiCachedModel:
                     )
                     self._cache = None
                     self._cache_created_at = None
+                    self._cache_expires_at = None
                     self._prepared = False
                     await self._find_or_create_cache()
                     self._prepared = True
@@ -539,11 +555,18 @@ class GeminiCachedModel:
     # ── Cache internals ─────────────────────────────────────────
 
     def _is_cache_expired(self) -> bool:
-        if self._cache is None or self._cache_created_at is None:
+        if self._cache is None:
             return True
-        cache_age = time.time() - self._cache_created_at
-        expires_in = self._cache_ttl_seconds - cache_age
-        return expires_in <= self._cache_renewal_buffer_seconds
+        # Prefer the provider-reported expiry (set when adopting a cache a
+        # previous run created — its TTL may differ from ours); fall back to
+        # estimating from created_at + the configured TTL.
+        if self._cache_expires_at is not None:
+            expires_at = self._cache_expires_at
+        elif self._cache_created_at is not None:
+            expires_at = self._cache_created_at + self._cache_ttl_seconds
+        else:
+            return True
+        return time.time() >= expires_at - self._cache_renewal_buffer_seconds
 
     async def _find_or_create_cache(self) -> None:
         try:
@@ -571,11 +594,32 @@ class GeminiCachedModel:
                         )
                         continue
 
+                # Determine when this cache actually expires. Prefer the
+                # provider-reported expire_time — the cache may have been
+                # created by a previous run with a different TTL, so
+                # estimating from create_time + OUR ttl can be wrong in
+                # both directions.
+                expire_time = getattr(cache, "expire_time", None)
+                expires_at = _timestamp_or_none(expire_time) if expire_time is not None else None
+                create_time = getattr(cache, "create_time", None)
+                created_at = _timestamp_or_none(create_time) if create_time is not None else None
+                if expires_at is None and created_at is not None:
+                    expires_at = created_at + self._cache_ttl_seconds
+                if expires_at is None:
+                    # No usable expiry info at all — adopting it would leave
+                    # us unable to renew correctly. Create a fresh cache.
+                    logger.debug(f"Skipping cache {cache.name}: no usable expire_time/create_time")
+                    continue
+                if time.time() >= expires_at - self._cache_renewal_buffer_seconds:
+                    # Already expired (or about to). Adopting it would make
+                    # the renewal path re-find this same cache on every
+                    # generate() call without ever renewing anything.
+                    logger.debug(f"Skipping cache {cache.name}: expired or within renewal buffer")
+                    continue
+
                 self._cache = cache
-                if hasattr(cache, "create_time") and cache.create_time:
-                    self._cache_created_at = cache.create_time.timestamp()
-                else:
-                    self._cache_created_at = time.time() - self._cache_ttl_seconds
+                self._cache_created_at = created_at if created_at is not None else time.time()
+                self._cache_expires_at = expires_at
 
                 tag_info = f" with tags {self._cache_tags}" if self._cache_tags else ""
                 age = time.time() - self._cache_created_at
@@ -606,6 +650,9 @@ class GeminiCachedModel:
         )
 
         self._cache_created_at = time.time()
+        # We asked for exactly self._cache_ttl_seconds, so the created_at +
+        # TTL estimate is authoritative here; no need to read expire_time.
+        self._cache_expires_at = None
         tag_info = f" with tags {self._cache_tags}" if self._cache_tags else ""
         logger.info(
             f"Created new Gemini cache: {self._cache.name}{tag_info} "

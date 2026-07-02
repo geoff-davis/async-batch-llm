@@ -702,6 +702,75 @@ class TestGeminiCachedModel:
         assert model._is_cache_expired() is True
 
     @pytest.mark.asyncio
+    async def test_reused_cache_uses_provider_expire_time(self):
+        """A cache created by a previous run with a different TTL must be
+        treated as expiring at its actual expire_time, not at create_time +
+        THIS instance's configured TTL."""
+        from datetime import datetime, timedelta, timezone
+
+        cache = self._create_mock_cache(name="short-ttl-cache", create_time=time.time() - 10)
+        # Provider says it expires ~400s from now — far sooner than
+        # create_time + our 3600s TTL would suggest.
+        cache.expire_time = datetime.now(timezone.utc) + timedelta(seconds=400)
+
+        mock_client = self._create_mock_client(caches=[cache])
+        model = GeminiCachedModel(
+            model="gemini-test",
+            client=mock_client,
+            cached_content=[],
+            cache_ttl_seconds=3600,
+            cache_renewal_buffer_seconds=300,
+        )
+        await model.prepare()
+
+        assert model.cache_name == "short-ttl-cache"
+        assert model._is_cache_expired() is False  # 400s left > 300s buffer
+        assert model._cache_expires_at == pytest.approx(
+            datetime.now(timezone.utc).timestamp() + 400, abs=5
+        )
+
+    @pytest.mark.asyncio
+    async def test_already_expired_cache_is_not_adopted(self):
+        """Regression: a recently-created cache whose provider expire_time has
+        already passed (previous run used a tiny TTL) was adopted as live,
+        so subsequent generate() calls would 4xx against a dead cache."""
+        from datetime import datetime, timedelta, timezone
+
+        stale = self._create_mock_cache(name="stale-cache", create_time=time.time() - 10)
+        stale.expire_time = datetime.now(timezone.utc) - timedelta(seconds=30)
+
+        mock_client = self._create_mock_client(caches=[stale])
+        model = GeminiCachedModel(
+            model="gemini-test",
+            client=mock_client,
+            cached_content=[],
+            cache_ttl_seconds=3600,
+        )
+        await model.prepare()
+
+        mock_client.aio.caches.create.assert_called_once()
+        assert model.cache_name == "test-cache"  # the freshly created one
+
+    @pytest.mark.asyncio
+    async def test_cache_without_expiry_info_is_not_adopted(self):
+        """Regression: a listed cache with neither usable expire_time nor
+        create_time was adopted as instantly-expired, putting the renewal
+        path into a re-find loop inside the lock on every generate()."""
+        mystery = self._create_mock_cache(name="mystery-cache", create_time=None)
+        mystery.expire_time = None
+
+        mock_client = self._create_mock_client(caches=[mystery])
+        model = GeminiCachedModel(
+            model="gemini-test",
+            client=mock_client,
+            cached_content=[],
+        )
+        await model.prepare()
+
+        mock_client.aio.caches.create.assert_called_once()
+        assert model.cache_name == "test-cache"
+
+    @pytest.mark.asyncio
     async def test_generate_without_prepare_raises(self):
         """Test generate raises when prepare() not called."""
         mock_client = self._create_mock_client()

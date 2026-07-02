@@ -101,6 +101,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Reused Gemini caches now expire by the provider's `expire_time`.**
+  `GeminiCachedModel` estimated an adopted cache's expiry from
+  `create_time` + *this* instance's configured TTL — wrong in both
+  directions when a previous run created the cache with a different TTL
+  (either 4xx-ing against a dead cache or renewing prematurely). Caches
+  that are already expired (or lack any usable expiry info) are no longer
+  adopted at all — previously the "no `create_time`" fallback marked the
+  cache instantly expired, putting the renewal path into a re-find loop
+  inside the lock on every `generate()` call.
 - **`ITEM_FAILED` now fires for every failure path.** Only the
   non-retryable branch emitted it; the retries-exhausted path (the most
   common failure mode), middleware skips, and failed middleware-recovery
