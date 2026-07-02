@@ -11,6 +11,20 @@ if TYPE_CHECKING:
 
 # Common error pattern constants
 RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota", "rate limit")
+TIMEOUT_PATTERNS = ("timeout",)
+NETWORK_PATTERNS = ("connection",)
+
+# Deterministic programming errors — retrying can't fix these.
+LOGIC_BUG_TYPES = (
+    ValueError,
+    TypeError,
+    AttributeError,
+    KeyError,
+    IndexError,
+    NameError,
+    ZeroDivisionError,
+    AssertionError,
+)
 
 
 class TokenTrackingError(Exception):
@@ -189,7 +203,20 @@ def _retry_after_seconds(exception: Exception) -> float | None:
 
 
 class ErrorClassifier(ABC):
-    """Abstract base class for classifying LLM provider errors."""
+    """Abstract base class for classifying LLM provider errors.
+
+    Provides a shared generic fallback chain (:meth:`_classify_generic`)
+    that provider classifiers delegate to after their SDK-specific
+    dispatch. Subclasses tune the pattern/category knobs below to keep
+    their provider vocabulary.
+    """
+
+    # Knobs for the shared fallback chain. Subclasses override.
+    _rate_limit_patterns: tuple[str, ...] = RATE_LIMIT_PATTERNS
+    _timeout_patterns: tuple[str, ...] = TIMEOUT_PATTERNS
+    _network_patterns: tuple[str, ...] = NETWORK_PATTERNS
+    _timeout_category: str = "api_timeout"
+    _network_category: str = "connection_error"
 
     @abstractmethod
     def classify(self, exception: Exception) -> ErrorInfo:
@@ -204,29 +231,29 @@ class ErrorClassifier(ABC):
         """
         pass
 
+    @staticmethod
+    def _matches_any_pattern(error_str: str, patterns: tuple[str, ...]) -> bool:
+        """Check if error string matches any of the given patterns (case-insensitive)."""
+        error_lower = error_str.lower()
+        return any(pattern in error_lower for pattern in patterns)
 
-class DefaultErrorClassifier(ErrorClassifier):
-    """Default error classifier that handles common error types."""
+    def _classify_generic(self, exception: Exception) -> ErrorInfo:
+        """Shared message/type-based fallback used by all built-in classifiers.
 
-    def _matches_rate_limit(self, error_str: str) -> bool:
-        """Return True if the error string looks like a rate limit."""
-        lowered = error_str.lower()
-        return any(pattern in lowered for pattern in RATE_LIMIT_PATTERNS)
+        Runs after provider-specific SDK dispatch (or as the entire chain
+        for :class:`DefaultErrorClassifier`). Ordering matters:
 
-    def classify(self, exception: Exception) -> ErrorInfo:
-        """Classify common errors with conservative defaults."""
-        error_str = str(exception).lower()
-
-        # Detect rate limit errors from message patterns (works for simple Exception mocks)
-        if self._matches_rate_limit(error_str):
-            return ErrorInfo(
-                is_retryable=True,  # Rate limits are retryable - framework handles cooldown
-                is_rate_limit=True,
-                is_timeout=False,
-                error_category="rate_limit",
-            )
-
-        # Check for framework timeout (retryable but indicates timeout config may need adjustment)
+        1. Framework timeout (our own exception type — unambiguous).
+        2. Validation errors (checked before the logic-bug isinstance test
+           because pydantic's ``ValidationError`` subclasses ``ValueError``).
+        3. Message-pattern transient categories (rate limit, timeout,
+           network) — skipped for logic-bug exception types, so a
+           ``ValueError("invalid connection string")`` isn't retried and a
+           ``KeyError('quota')`` can't trigger a global cooldown.
+        4. Logic bugs → non-retryable.
+        5. Unknown → retryable (conservative; lets custom transient errors
+           and test mocks work).
+        """
         if isinstance(exception, FrameworkTimeoutError):
             return ErrorInfo(
                 is_retryable=True,  # Retry - might succeed if LLM is faster
@@ -235,25 +262,8 @@ class DefaultErrorClassifier(ErrorClassifier):
                 error_category="framework_timeout",
             )
 
-        # Check for API timeout (retryable - might be transient)
-        if isinstance(exception, TimeoutError) or "timeout" in error_str:
-            return ErrorInfo(
-                is_retryable=True,
-                is_rate_limit=False,
-                is_timeout=True,
-                error_category="api_timeout",
-            )
-
-        # Check for connection errors
-        if isinstance(exception, ConnectionError) or "connection" in error_str:
-            return ErrorInfo(
-                is_retryable=True,
-                is_rate_limit=False,
-                is_timeout=False,
-                error_category="connection_error",
-            )
-
-        # Check for Pydantic validation errors (retryable - LLM might generate valid output on retry)
+        # Validation errors: the LLM produced output that failed the schema —
+        # retryable, the model may produce valid output next attempt.
         try:
             from pydantic import ValidationError
 
@@ -267,19 +277,55 @@ class DefaultErrorClassifier(ErrorClassifier):
         except ImportError:
             pass
 
-        # Check for logic bugs (deterministic errors that won't be fixed by retrying)
-        # These are usually programming errors, not transient failures
-        logic_bug_types = (
-            ValueError,
-            TypeError,
-            AttributeError,
-            KeyError,
-            IndexError,
-            NameError,
-            ZeroDivisionError,
-            AssertionError,
-        )
-        if isinstance(exception, logic_bug_types):
+        try:
+            from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+            if isinstance(exception, UnexpectedModelBehavior):
+                return ErrorInfo(
+                    is_retryable=True,
+                    is_rate_limit=False,
+                    is_timeout=False,
+                    error_category="validation_error",
+                )
+        except ImportError:
+            pass
+
+        is_logic_bug = isinstance(exception, LOGIC_BUG_TYPES)
+        error_str = str(exception)
+
+        # Message/type-based transient categories. Deterministic logic-bug
+        # types are excluded: their messages merely *mentioning* "quota" or
+        # "connection" doesn't make them transient.
+        if not is_logic_bug:
+            if self._matches_any_pattern(error_str, self._rate_limit_patterns):
+                return ErrorInfo(
+                    is_retryable=True,  # Framework handles the cooldown
+                    is_rate_limit=True,
+                    is_timeout=False,
+                    error_category="rate_limit",
+                )
+
+            if isinstance(exception, TimeoutError) or self._matches_any_pattern(
+                error_str, self._timeout_patterns
+            ):
+                return ErrorInfo(
+                    is_retryable=True,
+                    is_rate_limit=False,
+                    is_timeout=True,
+                    error_category=self._timeout_category,
+                )
+
+            if isinstance(exception, ConnectionError) or self._matches_any_pattern(
+                error_str, self._network_patterns
+            ):
+                return ErrorInfo(
+                    is_retryable=True,
+                    is_rate_limit=False,
+                    is_timeout=False,
+                    error_category=self._network_category,
+                )
+
+        if is_logic_bug:
             return ErrorInfo(
                 is_retryable=False,  # Don't retry logic bugs (deterministic failures)
                 is_rate_limit=False,
@@ -296,3 +342,15 @@ class DefaultErrorClassifier(ErrorClassifier):
             is_timeout=False,
             error_category="unknown",
         )
+
+
+class DefaultErrorClassifier(ErrorClassifier):
+    """Default error classifier that handles common error types."""
+
+    def _matches_rate_limit(self, error_str: str) -> bool:
+        """Return True if the error string looks like a rate limit."""
+        return self._matches_any_pattern(error_str, RATE_LIMIT_PATTERNS)
+
+    def classify(self, exception: Exception) -> ErrorInfo:
+        """Classify common errors with conservative defaults."""
+        return self._classify_generic(exception)

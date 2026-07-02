@@ -584,6 +584,47 @@ async def test_gemini_classifier_unknown_exception_retryable():
     assert info.is_timeout is False
 
 
+def test_logic_bug_messages_do_not_look_transient():
+    """Regression for the shared fallback chain's ordering: substring checks
+    ran before the isinstance logic-bug test, so a ValueError mentioning
+    "connection" was retried pointlessly and a KeyError('quota') triggered a
+    *global* rate-limit cooldown."""
+    from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+    for classifier in (DefaultErrorClassifier(), GeminiErrorClassifier(), OpenAIErrorClassifier()):
+        info = classifier.classify(ValueError("invalid connection string"))
+        assert info.is_retryable is False, type(classifier).__name__
+        assert info.error_category == "logic_error"
+
+        info = classifier.classify(KeyError("quota"))
+        assert info.is_rate_limit is False, type(classifier).__name__
+        assert info.error_category == "logic_error"
+
+        info = classifier.classify(TypeError("timeout must be a float"))
+        assert info.is_retryable is False, type(classifier).__name__
+        assert info.error_category == "logic_error"
+
+
+@pytest.mark.asyncio
+async def test_current_generation_event_alias_tracks_coordinator():
+    """Regression: the processor's _current_generation_event was a plain
+    alias snapshotted at construction, but the coordinator replaces the
+    event on every cooldown — the alias pointed at the first generation's
+    (permanently set) event forever after."""
+    config = _fast_rate_limit_config(
+        RetryConfig(max_attempts=2, initial_wait=0.001, max_wait=0.001, jitter=False)
+    )
+    processor = ParallelBatchProcessor[str, ClassifierTestOutput, None](config=config)
+    coord = processor._rate_limit_coord
+
+    assert processor._current_generation_event is coord._current_generation_event
+
+    # Run one full cooldown cycle — the coordinator replaces the event.
+    await coord.handle_rate_limit(worker_id=0, observed_generation=0)
+
+    assert processor._current_generation_event is coord._current_generation_event
+
+
 @pytest.mark.asyncio
 async def test_gemini_classifier_without_google_genai():
     """Test GeminiErrorClassifier falls back gracefully without google-genai."""

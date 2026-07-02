@@ -183,9 +183,11 @@ class ParallelBatchProcessor(
             events=self._events,
         )
         # Back-compat aliases — existing private methods and some tests
-        # reach into these attributes directly.
+        # reach into these attributes directly. (_rate_limit_event is safe as
+        # a plain alias because the coordinator mutates it in place;
+        # _current_generation_event is REPLACED on every cooldown, so it's
+        # exposed as a delegating property below instead.)
         self._rate_limit_event = self._rate_limit_coord._rate_limit_event
-        self._current_generation_event = self._rate_limit_coord._current_generation_event
         self._rate_limit_lock = self._rate_limit_coord._lock
 
         # Thread safety locks (stats + results remain processor-owned).
@@ -227,6 +229,14 @@ class ParallelBatchProcessor(
 
     # Back-compat attribute accessors for tests and subclasses that read
     # the rate-limit coordinator's state directly.
+
+    @property
+    def _current_generation_event(self) -> asyncio.Event:
+        # Delegating property (not a plain alias set in __init__): the
+        # coordinator replaces this event with a fresh one on every cooldown,
+        # so a snapshot taken at construction would go permanently stale
+        # after the first cooldown.
+        return self._rate_limit_coord._current_generation_event
 
     @property
     def _in_cooldown(self) -> bool:

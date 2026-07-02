@@ -41,9 +41,12 @@ class OpenAIErrorClassifier(ErrorClassifier):
     # Status codes that should NOT be retried (deterministic client errors).
     _NON_RETRYABLE_STATUS = frozenset({400, 401, 403, 404, 405, 409, 410, 422})
 
-    def _matches_any_pattern(self, error_str: str, patterns: tuple[str, ...]) -> bool:
-        error_lower = error_str.lower()
-        return any(pattern in error_lower for pattern in patterns)
+    # Knobs for the shared generic fallback chain (ErrorClassifier).
+    _rate_limit_patterns = RATE_LIMIT_PATTERNS
+    _timeout_patterns = TIMEOUT_PATTERNS
+    _network_patterns = NETWORK_PATTERNS
+    _timeout_category = "api_timeout"
+    _network_category = "network_error"
 
     def classify(self, exception: Exception) -> ErrorInfo:
         # Framework timeout takes priority over everything else.
@@ -55,85 +58,13 @@ class OpenAIErrorClassifier(ErrorClassifier):
                 error_category="framework_timeout",
             )
 
-        # Try to dispatch on the openai SDK's exception types when available.
+        # Try to dispatch on the openai SDK's exception types when available;
+        # everything else goes through the shared generic chain (validation,
+        # rate-limit/timeout/network patterns, logic bugs, unknown).
         info = self._classify_openai_exception(exception)
         if info is not None:
             return info
-
-        # Pydantic validation — the LLM produced output that failed schema.
-        try:
-            from pydantic import ValidationError
-
-            if isinstance(exception, ValidationError):
-                return ErrorInfo(
-                    is_retryable=True,
-                    is_rate_limit=False,
-                    is_timeout=False,
-                    error_category="validation_error",
-                )
-        except ImportError:
-            pass
-
-        # Generic timeout/connection by exception type or message.
-        error_str = str(exception)
-
-        if isinstance(exception, TimeoutError) or self._matches_any_pattern(
-            error_str, TIMEOUT_PATTERNS
-        ):
-            return ErrorInfo(
-                is_retryable=True,
-                is_rate_limit=False,
-                is_timeout=True,
-                error_category="api_timeout",
-            )
-
-        if isinstance(exception, ConnectionError) or self._matches_any_pattern(
-            error_str, NETWORK_PATTERNS
-        ):
-            return ErrorInfo(
-                is_retryable=True,
-                is_rate_limit=False,
-                is_timeout=False,
-                error_category="network_error",
-            )
-
-        # String-pattern fallback for rate limits when the SDK isn't installed
-        # or for mocked test exceptions. No response object to parse a
-        # Retry-After from, so no server-suggested wait.
-        if self._matches_any_pattern(error_str, RATE_LIMIT_PATTERNS):
-            return ErrorInfo(
-                is_retryable=True,
-                is_rate_limit=True,
-                is_timeout=False,
-                error_category="rate_limit",
-            )
-
-        # Logic bugs — deterministic; don't retry.
-        logic_bug_types = (
-            ValueError,
-            TypeError,
-            AttributeError,
-            KeyError,
-            IndexError,
-            NameError,
-            ZeroDivisionError,
-            AssertionError,
-        )
-        if isinstance(exception, logic_bug_types):
-            return ErrorInfo(
-                is_retryable=False,
-                is_rate_limit=False,
-                is_timeout=False,
-                error_category="logic_error",
-            )
-
-        # Default: unknown but retryable (likely transient).
-        return ErrorInfo(
-            is_retryable=True,
-            is_rate_limit=False,
-            is_timeout=False,
-            error_category="unknown",
-        )
+        return self._classify_generic(exception)
 
     def _classify_openai_exception(self, exception: Exception) -> ErrorInfo | None:
         """Return ErrorInfo for openai-SDK exceptions, or None to defer."""

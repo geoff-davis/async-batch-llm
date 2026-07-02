@@ -3,7 +3,6 @@
 from ..strategies.errors import (
     ErrorClassifier,
     ErrorInfo,
-    FrameworkTimeoutError,
     _retry_after_seconds,
 )
 
@@ -27,106 +26,23 @@ class GeminiErrorClassifier(ErrorClassifier):
     # such as an invalid API key, malformed request, or missing model).
     _NON_RETRYABLE_STATUS = frozenset({400, 401, 403, 404, 405, 409, 410, 422})
 
-    def _matches_any_pattern(self, error_str: str, patterns: tuple[str, ...]) -> bool:
-        """Check if error string matches any of the given patterns (case-insensitive)."""
-        error_lower = error_str.lower()
-        return any(pattern in error_lower for pattern in patterns)
+    # Knobs for the shared generic fallback chain (ErrorClassifier).
+    _rate_limit_patterns = RATE_LIMIT_PATTERNS
+    _timeout_patterns = TIMEOUT_PATTERNS
+    _timeout_category = "timeout"
 
     def classify(self, exception: Exception) -> ErrorInfo:
-        """Classify Gemini-specific errors."""
-        # Check for framework timeout first (highest priority)
-        if isinstance(exception, FrameworkTimeoutError):
-            return ErrorInfo(
-                is_retryable=True,  # Retry - might succeed if LLM is faster
-                is_rate_limit=False,
-                is_timeout=True,
-                error_category="framework_timeout",
-            )
+        """Classify Gemini-specific errors.
 
-        # Dispatch on the genai SDK's exception types when available. When the
-        # SDK isn't installed (or the exception isn't a genai one), fall
-        # through to the generic checks below so rate limits, timeouts, and
-        # logic bugs are still recognized.
+        Dispatches on the genai SDK's exception types when available; when
+        the SDK isn't installed (or the exception isn't a genai one), the
+        shared generic chain still recognizes rate limits, timeouts,
+        validation errors, and logic bugs.
+        """
         info = self._classify_genai_exception(exception)
         if info is not None:
             return info
-
-        # Check for PydanticAI validation errors
-        try:
-            from pydantic_ai.exceptions import UnexpectedModelBehavior
-
-            if isinstance(exception, UnexpectedModelBehavior):
-                return ErrorInfo(
-                    is_retryable=True,  # Retry validation errors
-                    is_rate_limit=False,
-                    is_timeout=False,
-                    error_category="validation_error",
-                )
-        except ImportError:
-            pass
-
-        # Fallback: Check error message for common patterns
-        error_str = str(exception)
-
-        # Check if it looks like a rate limit error (for mocks and other providers)
-        if self._matches_any_pattern(error_str, RATE_LIMIT_PATTERNS):
-            return ErrorInfo(
-                is_retryable=True,
-                is_rate_limit=True,
-                is_timeout=False,
-                error_category="rate_limit",
-            )
-
-        # Check if it looks like a timeout
-        if self._matches_any_pattern(error_str, TIMEOUT_PATTERNS):
-            return ErrorInfo(
-                is_retryable=True,
-                is_rate_limit=False,
-                is_timeout=True,
-                error_category="timeout",
-            )
-
-        # Check for Pydantic validation errors (retryable - LLM might generate valid output on retry)
-        try:
-            from pydantic import ValidationError
-
-            if isinstance(exception, ValidationError):
-                return ErrorInfo(
-                    is_retryable=True,
-                    is_rate_limit=False,
-                    is_timeout=False,
-                    error_category="validation_error",
-                )
-        except ImportError:
-            pass
-
-        # Check for logic bugs (deterministic errors that won't be fixed by retrying)
-        logic_bug_types = (
-            ValueError,
-            TypeError,
-            AttributeError,
-            KeyError,
-            IndexError,
-            NameError,
-            ZeroDivisionError,
-            AssertionError,
-        )
-        if isinstance(exception, logic_bug_types):
-            return ErrorInfo(
-                is_retryable=False,  # Don't retry logic bugs (deterministic failures)
-                is_rate_limit=False,
-                is_timeout=False,
-                error_category="logic_error",
-            )
-
-        # Default: treat unknown generic exceptions as retryable
-        # This allows custom transient errors and test mocks to work
-        return ErrorInfo(
-            is_retryable=True,  # Retry unknown exceptions (might be transient)
-            is_rate_limit=False,
-            is_timeout=False,
-            error_category="unknown",
-        )
+        return self._classify_generic(exception)
 
     def _classify_genai_exception(self, exception: Exception) -> ErrorInfo | None:
         """Return ErrorInfo for google-genai SDK exceptions, or None to defer."""

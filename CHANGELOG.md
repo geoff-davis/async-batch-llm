@@ -61,6 +61,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Classifier fallback chains consolidated with safer ordering.** The
+  copy-pasted generic tail in `DefaultErrorClassifier`,
+  `GeminiErrorClassifier`, and `OpenAIErrorClassifier` (with drift between
+  them) is now one shared `ErrorClassifier._classify_generic` with
+  per-class pattern/category knobs. Ordering fix: deterministic logic-bug
+  exception types are excluded from the substring-based transient checks,
+  so `ValueError("invalid connection string")` is no longer retried and
+  `KeyError('quota')` can no longer trigger a global rate-limit cooldown.
+  All classifiers now also recognize pydantic-ai's
+  `UnexpectedModelBehavior` and network errors (previously Gemini's
+  fallback lacked both).
 - **Observer/middleware hardening.** Each observer now receives its own
   shallow copy of the event payload (one observer mutating the dict can no
   longer corrupt what the next sees). `MetricsObserver.reset()` is now
