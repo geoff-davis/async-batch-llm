@@ -101,6 +101,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Billed tokens are no longer lost when a model raises on an
+  empty/blocked response.** All built-in models extracted token counts
+  *before* checking for missing text, then raised a plain `ValueError`
+  that discarded them — exactly the case failed-attempt accounting exists
+  for (the API billed the prompt; for `finish_reason="length"`, the full
+  output too). They now raise the new `EmptyResponseError` (a `ValueError`
+  subclass, so existing handlers keep working) carrying the usage in
+  `_failed_token_usage`, which flows into `WorkItemResult.token_usage`.
 - **`PydanticAIStrategy` no longer reads pydantic-ai's deprecated usage
   fields, and now tracks cached tokens.** The strategy (and
   `TokenExtractor`) read `usage.request_tokens`/`response_tokens`, which

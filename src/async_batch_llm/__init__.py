@@ -120,6 +120,7 @@ from .parallel import ParallelBatchProcessor
 # Error classification and rate limit strategies
 from .strategies import (
     DefaultErrorClassifier,
+    EmptyResponseError,
     ErrorClassifier,
     ErrorInfo,
     ExponentialBackoffStrategy,
@@ -201,6 +202,7 @@ __all__ = [
     "ErrorClassifier",
     "ErrorInfo",
     "DefaultErrorClassifier",
+    "EmptyResponseError",
     "FrameworkTimeoutError",
     "TokenTrackingError",
     "RateLimitStrategy",
