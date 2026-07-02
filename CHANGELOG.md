@@ -12,7 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`RateLimitConfig.max_cooldown_seconds`** (default 600) — configurable cap
   on the exponentially-backed-off cooldown; previously the
   `ExponentialBackoffStrategy` cap existed but wasn't reachable through
-  `RateLimitConfig`. Validated `>= cooldown_seconds`;
+  `RateLimitConfig`. Validated `>= cooldown_seconds` when set explicitly;
+  when left at its default while `cooldown_seconds` is larger (e.g. 900s
+  for daily-quota waits, including via the legacy `rate_limit_cooldown`
+  kwarg), the cap is lifted to match instead of rejecting the config.
   `slow_start_final_delay` is now validated non-negative.
 - **`EmptyResponseError`** (exported at top level) — raised by the built-in
   models when the API call succeeded but produced no usable text (Gemini
@@ -53,8 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signature no longer advertises them.
 - **Reading `WorkItemResult.gemini_safety_ratings` emits a
   `DeprecationWarning`** — read `result.metadata['safety_ratings']` instead.
-  Construction, `repr()`, and comparisons stay silent (the field is excluded
-  from repr/equality), so framework-internal operations don't warn.
+  Construction, `repr()`, comparisons, and `dataclasses.replace()`/`asdict()`
+  (which read every field via `getattr`) stay silent, so copying a result
+  or framework-internal operations don't warn — only direct reads do.
 - **Pre-push guard against stale branches** — `scripts/check_branch_fresh.sh`
   runs as a `pre-push` hook (installed by `pre-commit install` via
   `default_install_hook_types`) and refuses pushes from branches missing

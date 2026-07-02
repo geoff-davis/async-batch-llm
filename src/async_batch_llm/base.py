@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import sys
 import time
 import warnings
 from abc import ABC, abstractmethod
@@ -289,12 +290,16 @@ class WorkItemResult(Generic[TOutput, TContext]):
 
 
 def _get_gemini_safety_ratings(self: "WorkItemResult") -> dict[str, str] | None:
-    warnings.warn(
-        "WorkItemResult.gemini_safety_ratings is deprecated and will be removed "
-        "in a future release; read result.metadata['safety_ratings'] instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
+    # dataclasses.replace()/asdict()/astuple() read every field via getattr;
+    # copying a result is not a use of the deprecated field, so don't warn on
+    # reads coming from the dataclasses module itself.
+    if sys._getframe(1).f_globals.get("__name__") != "dataclasses":
+        warnings.warn(
+            "WorkItemResult.gemini_safety_ratings is deprecated and will be removed "
+            "in a future release; read result.metadata['safety_ratings'] instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     return self.__dict__.get("gemini_safety_ratings")
 
 

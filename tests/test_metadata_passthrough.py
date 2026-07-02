@@ -15,6 +15,7 @@ contract. Verifies:
 
 from __future__ import annotations
 
+import dataclasses
 from unittest.mock import AsyncMock
 
 import pytest
@@ -256,3 +257,20 @@ class TestGeminiSafetyRatingsBackcompat:
         repr(result)
         deprecations = [w for w in recwarn.list if issubclass(w.category, DeprecationWarning)]
         assert not deprecations
+
+    def test_dataclasses_replace_and_asdict_do_not_warn(self, recwarn):
+        """dataclasses.replace()/asdict() read every field via getattr —
+        copying a result (e.g. in a post-processor or middleware) is not a
+        use of the deprecated field and must stay silent."""
+        result = WorkItemResult(
+            item_id="x",
+            success=True,
+            metadata={"safety_ratings": {"HARM_HATE": "LOW"}},
+        )
+        copied = dataclasses.replace(result, item_id="y")
+        dataclasses.asdict(result)
+        deprecations = [w for w in recwarn.list if issubclass(w.category, DeprecationWarning)]
+        assert not deprecations
+        # The copy carries the value; a direct read still warns as usual.
+        with pytest.warns(DeprecationWarning):
+            assert copied.gemini_safety_ratings == {"HARM_HATE": "LOW"}
