@@ -23,7 +23,8 @@ reads `0.8.0` until the release-prep flow bumps it.
 - Provider-agnostic core: bring your own strategy/model/classifier
 - Built-in Gemini, OpenAI, and OpenRouter support
 - Middleware and observer patterns for extensibility
-- `MockAgent` for testing without API calls
+- Streaming results (`process_iter()`) and early stop (`request_stop()`)
+- `MockAgent` for testing without API calls (seedable `rng` param)
 
 ---
 
@@ -245,8 +246,16 @@ collected = await metrics.get_metrics()
 
 ### API pitfalls
 
-- **Forgetting to `await` async methods.** `ParallelBatchProcessor.get_stats()`
-  and `MetricsObserver.get_metrics()` are async.
+- **Forgetting to `await` async methods.** `ParallelBatchProcessor.get_stats()`,
+  `MetricsObserver.get_metrics()`, and `MetricsObserver.reset()` are async.
+- **Rate limits don't consume the retry budget by default** (since the
+  v0.10 fix batch). A 429 pauses all workers and retries without counting
+  against `retry.max_attempts`; `retry.max_rate_limit_retries` (default 10)
+  caps the exemption. Set `RetryConfig(count_rate_limits=True)` for the old
+  accounting.
+- **Early exit from `process_iter()` needs `contextlib.aclosing`.** A bare
+  `break` defers generator cleanup (worker cancellation) to the event
+  loop's async-generator finalizer. Or call `request_stop()` instead.
 - **Forgetting to wrap an Agent in a strategy.** `LLMWorkItem.strategy`
   expects a strategy instance, not a raw agent or model. Wrap:
   `PydanticAIStrategy(agent=...)`, `GeminiStrategy(model=...)`, etc.
@@ -337,10 +346,15 @@ the project's release-prep flow.
 
 ## Testing strategy
 
-321 tests as of v0.9.0. Coverage spans happy paths, concurrency stress
-(100–200 items × 10–20 workers), edge cases, and per-provider
-integration with mocked SDKs. Real API calls live behind the
-`integration` pytest marker and are skipped by default.
+~415 tests as of the v0.10 fix batch; the default run takes ~7 seconds
+(no real sleeps — see `tests/conftest.py` for the shared
+`fast_retry`/`fast_rate_limit` fixtures; use them in any test that
+triggers a retry, or you'll pay 1s+ per retry against the library
+defaults). `pytest-timeout` caps every test at 60s so deadlock
+regressions fail instead of hanging CI. Coverage spans happy paths,
+concurrency stress (100–200 items × 10–20 workers), edge cases, and
+per-provider integration with mocked SDKs. Real API calls live behind
+the `integration` pytest marker and are skipped by default.
 
 Key test files:
 
@@ -525,6 +539,17 @@ assert result.total_items == result.succeeded + result.failed
 
 Most recent first. See `CHANGELOG.md` for full per-release detail.
 
+- **v0.10.0 (unreleased, July 2026 fix batch)** — a package-review-driven
+  sweep on top of the items below: worker-death/deadlock protection
+  (Py3.10 `asyncio.TimeoutError`, `task_done()` in `finally`, crash
+  watchdog in `process_all()`); `GeminiErrorClassifier` rewritten on
+  status codes (500/503 now retry, 4xx fail fast); rate limits exempt
+  from the retry budget by default; `process_iter()` + `request_stop()`;
+  `EmptyResponseError`/`ProviderResponseError` (billed-token stamping,
+  OpenRouter error-in-200 retries); Gemini caches expire by provider
+  `expire_time`; pydantic-ai v1 usage fields; `py.typed`; consolidated
+  classifier fallback chain; PEP 696 generic defaults; test suite 74s→7s
+  with `pytest-timeout`. See the Unreleased CHANGELOG section for detail.
 - **v0.10.0** — response metadata reaches `WorkItemResult` ([#8]), plus
   DeepSeek support, a strategy refactor, and rate-limit/temperature fixes.
   - `LLMCallStrategy.execute()` may now return a 3-tuple
