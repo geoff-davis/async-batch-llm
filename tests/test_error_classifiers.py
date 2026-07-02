@@ -1058,3 +1058,67 @@ class TestGeminiSDKErrorClassification:
         bug_info = classifier.classify(ValueError("deterministic parse bug"))
         assert bug_info.is_retryable is False
         assert bug_info.error_category == "logic_error"
+
+
+# =============================================================================
+# _retry_after_seconds — Retry-After header parsing
+# =============================================================================
+
+
+def _exception_with_retry_after(value: str) -> Exception:
+    """Fake SDK exception carrying a Retry-After header on .response.headers."""
+
+    class _FakeResponse:
+        headers = {"retry-after": value}
+
+    exc = Exception("429 rate limited")
+    exc.response = _FakeResponse()  # type: ignore[attr-defined]
+    return exc
+
+
+def test_retry_after_http_date_in_future_returns_positive_delay():
+    """The HTTP-date form of Retry-After yields the delay-until-then in
+    seconds, roughly matching the wall-clock difference."""
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+
+    from async_batch_llm.strategies.errors import _retry_after_seconds
+
+    when = datetime.now(timezone.utc) + timedelta(seconds=10)
+    raw = format_datetime(when, usegmt=True)  # RFC-1123, e.g. "Thu, 02 Jul 2026 12:00:10 GMT"
+
+    delay = _retry_after_seconds(_exception_with_retry_after(raw))
+
+    assert delay is not None
+    # RFC-1123 has whole-second resolution and a little time passes during
+    # the test, so allow slack around the nominal 10s.
+    assert 5.0 < delay <= 11.0
+
+
+def test_retry_after_http_date_in_past_returns_none():
+    """A date already behind us is not a usable wait — must be None, not a
+    negative delay."""
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+
+    from async_batch_llm.strategies.errors import _retry_after_seconds
+
+    when = datetime.now(timezone.utc) - timedelta(seconds=30)
+    raw = format_datetime(when, usegmt=True)
+
+    assert _retry_after_seconds(_exception_with_retry_after(raw)) is None
+
+
+def test_retry_after_malformed_value_returns_none():
+    """A value that is neither numeric nor an HTTP-date parses to None."""
+    from async_batch_llm.strategies.errors import _retry_after_seconds
+
+    assert _retry_after_seconds(_exception_with_retry_after("soon")) is None
+
+
+def test_retry_after_negative_numeric_returns_none():
+    """Regression: a negative numeric Retry-After used to come back as -5.0;
+    non-positive values must be rejected."""
+    from async_batch_llm.strategies.errors import _retry_after_seconds
+
+    assert _retry_after_seconds(_exception_with_retry_after("-5")) is None

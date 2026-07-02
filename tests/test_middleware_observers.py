@@ -864,3 +864,47 @@ async def test_observers_receive_independent_event_data():
     assert len(seen) == 1
     assert "corrupted" not in seen[0]
     assert seen[0]["item_id"] == "payload"
+
+
+@pytest.mark.asyncio
+async def test_raising_observer_is_isolated(caplog):
+    """An observer whose on_event raises is logged ("Observer error") and
+    must not prevent other observers from receiving events nor the batch
+    from completing."""
+    import logging
+
+    events_received: list[str] = []
+
+    class RaisingObserver(BaseObserver):
+        async def on_event(self, event: ProcessingEvent, data: dict[str, Any]):
+            raise RuntimeError("observer boom")
+
+    class RecordingObserver(BaseObserver):
+        async def on_event(self, event: ProcessingEvent, data: dict[str, Any]):
+            events_received.append(event.name)
+
+    mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="ok"), latency=0.0)
+    config = ProcessorConfig(max_workers=1, timeout_per_item=5.0)
+    processor = ParallelBatchProcessor[str, TestOutput, None](
+        config=config,
+        # Raising observer registered first, so its failure would mask the
+        # second observer if isolation were broken.
+        observers=[RaisingObserver(), RecordingObserver()],
+    )
+
+    await processor.add_work(
+        LLMWorkItem(
+            item_id="observer_isolated",
+            strategy=PydanticAIStrategy(agent=mock_agent),
+            prompt="x",
+        )
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = await processor.process_all()
+
+    assert result.succeeded == 1, "a buggy observer must not fail the batch"
+    assert "ITEM_COMPLETED" in events_received, "later observers must still receive events"
+    warning_text = " ".join(r.getMessage() for r in caplog.records)
+    assert "Observer error" in warning_text
+    assert "observer boom" in warning_text
