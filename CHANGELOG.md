@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package's inline annotations instead of treating it as untyped. Also adds
   the `Typing :: Typed` trove classifier.
 
+### Changed
+
+- **CI hardening** — the Tests workflow now lints `tests/` (CI previously
+  checked less than local tooling and pre-commit), verifies formatting with
+  `ruff format --check`, drops the stale `continue-on-error` for Python 3.14
+  (stable since Oct 2025 and advertised in classifiers), and gains a
+  `docs-build` job running `mkdocs build --strict` on PRs so broken nav/links
+  surface before merge. The docs deploy also builds `--strict` and queues
+  per-ref instead of racing concurrent gh-pages pushes.
+
 ### Fixed
 
 - **Publish workflow could upload mislabeled code to PyPI** — it published on
