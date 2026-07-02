@@ -85,6 +85,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`TokenExtractor` checks the framework-stamped count first** — the exact
+  per-attempt `_failed_token_usage` stamped by strategies was checked last,
+  so an exception that also exposed a heuristic `.usage` attribute (or a
+  cause chain) had its exact count shadowed. Float/str counts in the stamped
+  dict are now coerced instead of silently dropped, pydantic-ai v1
+  `cache_read_tokens` maps into `cached_input_tokens`, and property-style
+  `result.usage` (pydantic-ai 1.x) is read directly on the `__cause__` path.
 - **`PydanticAIStrategy` reads `result.usage` as a property** — pydantic-ai
   1.x exposes usage as a property; the old `result.usage()` call only worked
   through a deprecation shim slated for removal (and failed `ty` checks

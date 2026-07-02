@@ -214,3 +214,87 @@ def test_cancelled_error_propagates(extractor):
 
     with pytest.raises(asyncio.CancelledError):
         extractor.extract_from_exception(_CancelOnAccess("x"))
+
+
+# ─── Precedence and coercion fixes ────────────────────────────────────
+
+
+def test_failed_token_usage_takes_precedence_over_heuristics(extractor):
+    """The framework-stamped exact count must win over heuristic paths.
+
+    Regression: _failed_token_usage was checked last, so an exception that
+    also exposed .usage (or a cause chain) had its exact count shadowed."""
+
+    class _HeuristicUsage:
+        prompt_tokens = 999
+        completion_tokens = 999
+        total_tokens = 1998
+
+    e = Exception("boom")
+    e.usage = _HeuristicUsage()  # type: ignore[attr-defined]
+    e.__dict__["_failed_token_usage"] = {
+        "input_tokens": 5,
+        "output_tokens": 1,
+        "total_tokens": 6,
+    }
+
+    result = extractor.extract_from_exception(e)
+    assert result["input_tokens"] == 5
+    assert result["output_tokens"] == 1
+    assert result["total_tokens"] == 6
+
+
+def test_failed_token_usage_coerces_non_int_numerics(extractor):
+    """Float/str counts are coerced instead of silently dropped to zero."""
+    e = Exception("boom")
+    e.__dict__["_failed_token_usage"] = {
+        "input_tokens": 5.0,
+        "output_tokens": "7",
+        "total_tokens": 12,
+    }
+
+    result = extractor.extract_from_exception(e)
+    assert result["input_tokens"] == 5
+    assert result["output_tokens"] == 7
+    assert result["total_tokens"] == 12
+
+
+def test_extract_pydantic_ai_v1_usage_shape(extractor):
+    """pydantic-ai v1 renamed fields to input_tokens/output_tokens and
+    surfaces cache hits as cache_read_tokens."""
+
+    class _V1Usage:
+        input_tokens = 10
+        output_tokens = 5
+        total_tokens = 15
+        cache_read_tokens = 4
+
+    e = Exception("x")
+    e.usage = _V1Usage()  # type: ignore[attr-defined]
+
+    result = extractor.extract_from_exception(e)
+    assert result["input_tokens"] == 10
+    assert result["output_tokens"] == 5
+    assert result["cached_input_tokens"] == 4
+
+
+def test_property_style_usage_on_cause_result(extractor):
+    """pydantic-ai 1.x exposes result.usage as a property (not callable);
+    the __cause__ path must read it directly."""
+
+    class _V1Usage:
+        input_tokens = 10
+        output_tokens = 5
+        total_tokens = 15
+
+    class _Result:
+        usage = _V1Usage()  # property-style: plain attribute, not a method
+
+    cause = Exception("cause")
+    cause.result = _Result()  # type: ignore[attr-defined]
+    e = Exception("wrapper")
+    e.__cause__ = cause
+
+    result = extractor.extract_from_exception(e)
+    assert result["input_tokens"] == 10
+    assert result["total_tokens"] == 15
