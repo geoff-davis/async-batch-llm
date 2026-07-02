@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Publish workflow could upload mislabeled code to PyPI** — it published on
+  any `v*` tag with no check that the tag matched `pyproject.toml`'s version
+  and no tests. A `test` job now verifies `tag == v<project.version>`, runs
+  pytest/ruff/mypy, and gates the `publish` job; permissions declare
+  `contents: read` explicitly.
 - **`get_stats()['total_cached_tokens']` always reported 0** — the "preferred
   alias" was a second `ProcessingStats` field that nothing ever incremented;
   only `cached_input_tokens` was updated by the worker loop. The duplicate
