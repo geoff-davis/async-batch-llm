@@ -103,6 +103,12 @@ def _extract_metadata(response: Any) -> dict[str, Any] | None:
             # Finish reason
             if hasattr(candidate, "finish_reason") and candidate.finish_reason:
                 metadata["finish_reason"] = str(candidate.finish_reason)
+
+        # Grounding (google_search tool) — only present when the caller
+        # requested it, so default payloads are unchanged for everyone else.
+        grounding = _extract_grounding(response)
+        if grounding:
+            metadata["grounding"] = grounding
     except Exception as e:
         # Metadata extraction is best-effort; missing/partial attributes on the
         # provider response shouldn't break the call. Keep `except Exception` so
@@ -140,19 +146,14 @@ def _run_extractors(
     return merged or None
 
 
-def grounding_metadata_extractor(response: Any) -> dict[str, Any] | None:
-    """Opt-in metadata extractor for Gemini grounding (``google_search``).
+def _extract_grounding(response: Any) -> dict[str, Any] | None:
+    """Extract Gemini grounding into the documented plain-dict shape.
 
-    Pass via ``GeminiModel(..., metadata_extractors=[grounding_metadata_extractor])``
-    to surface web-search citations under ``metadata['grounding']`` — a plain
-    dict with ``sources`` (``[{"uri", "title"}]``), ``queries`` (the
-    ``web_search_queries`` the model issued), and ``supports`` (answer-span →
-    source-index links). Not registered by default, so non-grounded calls and
-    callers who don't opt in see an unchanged metadata payload.
-
-    Returns ``None`` when the response carries no grounding metadata.
-
-    Added in v0.15.0 (issue #52).
+    Returns the inner ``metadata['grounding']`` value — ``{"sources":
+    [{"uri", "title"}], "queries": [...], "supports": [...]}`` — or ``None``
+    when the response carries no grounding metadata. This dict shape is the
+    public compatibility contract that the typed ``Grounding`` view
+    (``provider_output.py``) reads.
     """
     candidates = getattr(response, "candidates", None)
     if not candidates:
@@ -190,6 +191,28 @@ def grounding_metadata_extractor(response: Any) -> dict[str, Any] | None:
     if supports:
         grounding["supports"] = supports
 
+    return grounding or None
+
+
+def grounding_metadata_extractor(response: Any) -> dict[str, Any] | None:
+    """Metadata extractor for Gemini grounding (``google_search``).
+
+    Since v0.16.0 the built-in Gemini models emit ``metadata['grounding']``
+    **by default** whenever the response carries grounding metadata, so
+    passing this extractor to ``GeminiModel``/``GeminiCachedModel`` is
+    redundant (harmless — it re-emits the same key with the same value). It
+    remains exported for custom models and for callers who prefer the
+    explicit opt-in in their configuration.
+
+    Returns ``{"grounding": {...}}`` with ``sources`` (``[{"uri",
+    "title"}]``), ``queries`` (the ``web_search_queries`` the model issued),
+    and ``supports`` (answer-span → source-index links), or ``None`` when the
+    response carries no grounding metadata. Read the typed view via
+    ``result.grounding`` (see ``provider_output.py``).
+
+    Added in v0.15.0 (issue #52).
+    """
+    grounding = _extract_grounding(response)
     return {"grounding": grounding} if grounding else None
 
 
@@ -1001,13 +1024,66 @@ class OpenAICompatibleModel:
         return input_tokens, output_tokens, total_tokens, cached_tokens
 
     def _extract_metadata(self, response: Any) -> dict[str, Any] | None:
-        """Extract finish_reason and routed model name."""
+        """Extract finish_reason, routed model name, and the reserved
+        provider-output keys (``reasoning``, ``tool_calls``, ``logprobs``).
+
+        The ``isinstance`` guards below are deliberate: they keep the
+        metadata dict JSON-serializable against SDK drift (and keep test
+        doubles like ``MagicMock``, whose auto-attributes are truthy, from
+        leaking into it). Emitted shapes are the documented contract read by
+        the typed views in ``provider_output.py``.
+        """
         metadata: dict[str, Any] = {}
         try:
             if response.choices:
-                finish_reason = getattr(response.choices[0], "finish_reason", None)
+                choice = response.choices[0]
+                finish_reason = getattr(choice, "finish_reason", None)
                 if finish_reason is not None:
                     metadata["finish_reason"] = str(finish_reason)
+
+                message = getattr(choice, "message", None)
+                if message is not None:
+                    # Reasoning trace: DeepSeek reasoning_content, falling
+                    # back to OpenRouter's reasoning.
+                    reasoning = getattr(message, "reasoning_content", None)
+                    if not isinstance(reasoning, str) or not reasoning:
+                        reasoning = getattr(message, "reasoning", None)
+                    if isinstance(reasoning, str) and reasoning:
+                        metadata["reasoning"] = reasoning
+
+                    # Tool calls -> plain dicts; arguments stays the raw JSON
+                    # string. Visibility only — the framework never executes.
+                    calls: list[dict[str, Any]] = []
+                    raw_calls = getattr(message, "tool_calls", None)
+                    if raw_calls:
+                        try:
+                            iterator = iter(raw_calls)
+                        except TypeError:
+                            iterator = iter(())
+                        for tc in iterator:
+                            fn = getattr(tc, "function", None)
+                            name = getattr(fn, "name", None)
+                            if not isinstance(name, str) or not name:
+                                continue
+                            args = getattr(fn, "arguments", None)
+                            tc_id = getattr(tc, "id", None)
+                            calls.append(
+                                {
+                                    "id": tc_id if isinstance(tc_id, str) else None,
+                                    "name": name,
+                                    "arguments": args if isinstance(args, str) else "",
+                                }
+                            )
+                    if calls:
+                        metadata["tool_calls"] = calls
+
+                # Logprobs: model_dump() keeps it JSON-serializable.
+                logprobs = getattr(choice, "logprobs", None)
+                if logprobs is not None:
+                    dumped = logprobs.model_dump() if hasattr(logprobs, "model_dump") else logprobs
+                    if isinstance(dumped, (dict, list)):
+                        metadata["logprobs"] = dumped
+
             routed_model = getattr(response, "model", None)
             if routed_model:
                 metadata["model"] = str(routed_model)

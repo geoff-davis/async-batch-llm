@@ -6,6 +6,7 @@ Covers the v0.15.0 (issue #52) additions:
 - ``metadata_extractors`` wired through GeminiModel and OpenAICompatibleModel
 """
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -159,6 +160,10 @@ def _mock_gemini_response(*, with_grounding: bool = False):
             web_search_queries=["q"],
             grounding_supports=None,
         )
+    else:
+        # Explicit None: a bare MagicMock auto-attribute would be truthy and
+        # only stays out of metadata because MagicMock iterates empty.
+        candidate.grounding_metadata = None
     response.candidates = [candidate]
     return response
 
@@ -212,6 +217,53 @@ async def test_gemini_model_grounding_extractor_end_to_end():
     assert llm_response.metadata["grounding"]["queries"] == ["q"]
 
 
+@pytest.mark.asyncio
+async def test_gemini_model_emits_grounding_by_default():
+    """Since v0.16.0, no extractor is needed: a grounded response lands in
+    metadata['grounding'] by default, readable through the typed view."""
+    response = _mock_gemini_response(with_grounding=True)
+    model = GeminiModel("gemini-test", _mock_gemini_client(response))
+    llm_response = await model.generate("prompt")
+
+    assert llm_response.metadata is not None
+    assert llm_response.metadata["grounding"]["sources"] == [
+        {"uri": "https://src.com", "title": "Src"}
+    ]
+    assert llm_response.grounding is not None
+    assert llm_response.grounding.sources[0].uri == "https://src.com"
+    assert llm_response.grounding.queries == ["q"]
+    json.dumps(llm_response.metadata)
+
+
+@pytest.mark.asyncio
+async def test_gemini_explicit_grounding_extractor_is_redundant_not_conflicting():
+    """Phase-1 callers passing the extractor explicitly get the identical
+    single 'grounding' key — same value, no duplication."""
+    response = _mock_gemini_response(with_grounding=True)
+    with_extractor = GeminiModel(
+        "gemini-test",
+        _mock_gemini_client(response),
+        metadata_extractors=[grounding_metadata_extractor],
+    )
+    without = GeminiModel("gemini-test", _mock_gemini_client(response))
+
+    assert (await with_extractor.generate("p")).metadata == (await without.generate("p")).metadata
+
+
+@pytest.mark.asyncio
+async def test_gemini_user_extractor_overrides_builtin_grounding():
+    response = _mock_gemini_response(with_grounding=True)
+    model = GeminiModel(
+        "gemini-test",
+        _mock_gemini_client(response),
+        metadata_extractors=[lambda r: {"grounding": {"queries": ["custom"]}}],
+    )
+    llm_response = await model.generate("prompt")
+
+    assert llm_response.metadata is not None
+    assert llm_response.metadata["grounding"] == {"queries": ["custom"]}
+
+
 # ── OpenAICompatibleModel wiring ─────────────────────────────────────────────
 
 
@@ -243,3 +295,105 @@ async def test_openai_model_user_extractor_merges_with_builtin():
     assert llm_response.metadata["model"] == "gpt-4o-mini"
     # User extractor key present.
     assert llm_response.metadata["reasoning_content"] == "because"
+
+
+# ── OpenAI-compatible reserved keys (reasoning / tool_calls / logprobs) ──────
+
+
+def _openai_client(response):
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=response)
+    return client
+
+
+def _openai_response(message, *, logprobs=None):
+    choice = SimpleNamespace(message=message, finish_reason="stop", logprobs=logprobs)
+    usage = SimpleNamespace(
+        prompt_tokens=3, completion_tokens=4, total_tokens=7, prompt_tokens_details=None
+    )
+    return SimpleNamespace(choices=[choice], model="gpt-4o-mini", usage=usage)
+
+
+@pytest.mark.asyncio
+async def test_openai_reasoning_content_emitted_by_default():
+    """DeepSeek-style reasoning_content lands in metadata['reasoning']."""
+    message = SimpleNamespace(content="hi", reasoning_content="because")
+    response = _openai_response(message)
+    model = OpenAIModel("gpt-4o-mini", _openai_client(response))
+    llm_response = await model.generate("prompt")
+
+    assert llm_response.metadata is not None
+    assert llm_response.metadata["reasoning"] == "because"
+    assert llm_response.reasoning == "because"
+
+
+@pytest.mark.asyncio
+async def test_openai_reasoning_fallback_field():
+    """OpenRouter-style message.reasoning is the fallback."""
+    message = SimpleNamespace(content="hi", reasoning="thought about it")
+    response = _openai_response(message)
+    model = OpenAIModel("gpt-4o-mini", _openai_client(response))
+    llm_response = await model.generate("prompt")
+
+    assert llm_response.metadata is not None
+    assert llm_response.metadata["reasoning"] == "thought about it"
+
+
+@pytest.mark.asyncio
+async def test_openai_tool_calls_emitted_as_plain_dicts():
+    tool_call = SimpleNamespace(
+        id="call_1",
+        function=SimpleNamespace(name="lookup", arguments='{"q": "a"}'),
+    )
+    message = SimpleNamespace(content="calling a tool", tool_calls=[tool_call])
+    response = _openai_response(message)
+    model = OpenAIModel("gpt-4o-mini", _openai_client(response))
+    llm_response = await model.generate("prompt")
+
+    assert llm_response.metadata is not None
+    assert llm_response.metadata["tool_calls"] == [
+        {"id": "call_1", "name": "lookup", "arguments": '{"q": "a"}'}
+    ]
+    assert llm_response.tool_calls is not None
+    assert llm_response.tool_calls[0].name == "lookup"
+    # arguments stays the raw JSON string, deliberately unparsed.
+    assert llm_response.tool_calls[0].arguments == '{"q": "a"}'
+    json.dumps(llm_response.metadata)
+
+
+@pytest.mark.asyncio
+async def test_openai_logprobs_emitted_via_model_dump():
+    class FakeLogprobs:
+        def model_dump(self):
+            return {"content": [{"token": "hi", "logprob": -0.5}]}
+
+    message = SimpleNamespace(content="hi")
+    response = _openai_response(message, logprobs=FakeLogprobs())
+    model = OpenAIModel("gpt-4o-mini", _openai_client(response))
+    llm_response = await model.generate("prompt")
+
+    assert llm_response.metadata is not None
+    assert llm_response.metadata["logprobs"] == {"content": [{"token": "hi", "logprob": -0.5}]}
+    json.dumps(llm_response.metadata)
+
+
+@pytest.mark.asyncio
+async def test_magicmock_response_emits_no_reserved_keys():
+    """Guard regression: MagicMock auto-attributes are truthy — the isinstance
+    guards must keep them out of metadata (and keep it JSON-serializable).
+    Mirrors the MagicMock response builder in test_openai_compatible.py."""
+    response = MagicMock()
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = "hi"
+    response.choices[0].finish_reason = "stop"
+    response.model = "gpt-4o-mini"
+    response.usage.prompt_tokens = 3
+    response.usage.completion_tokens = 4
+    response.usage.total_tokens = 7
+    response.usage.prompt_tokens_details = None
+    model = OpenAIModel("gpt-4o-mini", _openai_client(response))
+    llm_response = await model.generate("prompt")
+
+    assert llm_response.metadata is not None
+    assert not {"reasoning", "tool_calls", "logprobs"} & set(llm_response.metadata)
+    json.dumps(llm_response.metadata)
