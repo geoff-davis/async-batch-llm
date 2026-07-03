@@ -12,7 +12,7 @@ here.
 **strategy pattern** — provider-agnostic at the framework level, with
 first-class support for several providers built in.
 
-**Current version:** v0.15.0 (see `CHANGELOG.md`; `pyproject.toml` is bumped
+**Current version:** v0.16.0 (see `CHANGELOG.md`; `pyproject.toml` is bumped
 by the release-prep flow, so it may briefly lag `main` between releases).
 
 **Key features:**
@@ -602,7 +602,7 @@ assert result.total_items == result.succeeded + result.failed
 
 Most recent first. See `CHANGELOG.md` for full per-release detail.
 
-- **Unreleased** — typed auxiliary-output views (#52 Phase 2,
+- **v0.16.0** — typed auxiliary-output views (#52 Phase 2,
   **experimental** — shapes/views may change in a minor release until
   they've seen real use). Four reserved `metadata` keys (`grounding`,
   `reasoning`, `tool_calls`, `logprobs`) carry provider-specific output as
