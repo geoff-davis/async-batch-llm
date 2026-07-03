@@ -101,7 +101,8 @@ class WorkItemResult(Generic[TOutput, TContext]):
     error: str | None = None
     context: TContext | None = None
     token_usage: TokenUsage = field(default_factory=dict)  # type: ignore[assignment]
-    gemini_safety_ratings: dict[str, str] | None = None
+    metadata: dict[str, Any] | None = None
+    gemini_safety_ratings: dict[str, str] | None = None  # deprecated — warns on read
 ```
 
 **Fields:**
@@ -116,7 +117,11 @@ class WorkItemResult(Generic[TOutput, TContext]):
   - `output_tokens` (int): Number of tokens in the output/completion
   - `total_tokens` (int): Total tokens used (input + output)
   - `cached_input_tokens` (int): Number of input tokens served from cache (Gemini context caching)
-- `gemini_safety_ratings` (dict[str, str] | None): Gemini API safety ratings if available
+- `metadata` (dict[str, Any] | None): Provider metadata (provider name,
+  finish reason, safety ratings, ...) forwarded from the strategy
+- `gemini_safety_ratings` (dict[str, str] | None): **Deprecated.** Reading
+  it emits a `DeprecationWarning`; use `result.metadata["safety_ratings"]`
+  instead
 
 **Example:**
 
@@ -140,12 +145,14 @@ Result of processing a batch of work items.
 @dataclass
 class BatchResult(Generic[TOutput, TContext]):
     results: list[WorkItemResult[TOutput, TContext]]
-    total_items: int = 0
-    succeeded: int = 0
-    failed: int = 0
-    total_input_tokens: int = 0
-    total_output_tokens: int = 0
-    total_cached_tokens: int = 0
+    # Derived summary fields (init=False) — computed from `results` in
+    # __post_init__; they cannot be passed to the constructor.
+    total_items: int
+    succeeded: int
+    failed: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cached_tokens: int
 ```
 
 **Fields:**
@@ -158,7 +165,9 @@ class BatchResult(Generic[TOutput, TContext]):
 - `total_output_tokens` (int): Sum of output tokens across all items
 - `total_cached_tokens` (int): Sum of cached input tokens from Gemini context caching
 
-**Note:** Summary statistics are calculated automatically in `__post_init__`.
+**Note:** Only `results` is a constructor argument. The summary fields are
+`init=False` and calculated automatically in `__post_init__` — construct
+with `BatchResult(results=[...])`.
 
 **Example:**
 

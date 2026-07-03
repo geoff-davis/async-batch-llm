@@ -602,6 +602,16 @@ async def test_config_auto_validation():
     with pytest.raises(ValueError, match="max_cooldown_seconds must be >= cooldown_seconds"):
         RateLimitConfig(cooldown_seconds=300.0, max_cooldown_seconds=60.0)
 
+    # A long cooldown with the cap left at its default lifts the cap instead
+    # of raising (regression: RateLimitConfig(cooldown_seconds=900) used to
+    # fail validation against the 600s default cap the user never set).
+    long_cooldown = RateLimitConfig(cooldown_seconds=900.0)
+    assert long_cooldown.max_cooldown_seconds == 900.0
+
+    with pytest.warns(DeprecationWarning, match="rate_limit_cooldown"):
+        legacy = ParallelBatchProcessor(rate_limit_cooldown=900.0)
+    assert legacy.config.rate_limit.max_cooldown_seconds == 900.0
+
     with pytest.raises(ValueError, match="slow_start_final_delay must be >= 0"):
         RateLimitConfig(slow_start_final_delay=-0.1)
 

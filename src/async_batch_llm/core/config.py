@@ -66,6 +66,9 @@ class RetryConfig:
             )
 
 
+_DEFAULT_MAX_COOLDOWN_SECONDS = 600.0
+
+
 @dataclass
 class RateLimitConfig:
     """Configuration for rate limit handling."""
@@ -77,10 +80,20 @@ class RateLimitConfig:
     backoff_multiplier: float = 1.5  # Increase cooldown on repeated rate limits
     # Cap on the exponentially-backed-off cooldown (cooldown_seconds *
     # backoff_multiplier^n never exceeds this).
-    max_cooldown_seconds: float = 600.0
+    max_cooldown_seconds: float = _DEFAULT_MAX_COOLDOWN_SECONDS
 
     def __post_init__(self) -> None:
         """Validate configuration on construction."""
+        # The cap applies to the *escalated* cooldown, so it can never sit
+        # below the base cooldown. When the cap was left at its default while
+        # cooldown_seconds is set higher (e.g. 900s for daily-quota waits),
+        # lift the cap to match rather than rejecting the config over a field
+        # the user never set.
+        if (
+            self.max_cooldown_seconds == _DEFAULT_MAX_COOLDOWN_SECONDS
+            and self.cooldown_seconds > self.max_cooldown_seconds
+        ):
+            self.max_cooldown_seconds = self.cooldown_seconds
         self.validate()
 
     def validate(self) -> None:

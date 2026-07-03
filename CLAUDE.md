@@ -424,8 +424,12 @@ src/async_batch_llm/
 ├── __init__.py           # Public API exports
 ├── base.py               # LLMWorkItem, WorkItemResult, BatchResult,
 │                         # LLMResponse, RetryState, CachedTokenRates
+├── py.typed              # PEP 561 marker (ships in wheel + sdist)
 ├── parallel.py           # ParallelBatchProcessor (orchestration)
 ├── streaming.py          # process_prompts / process_stream (streaming API)
+├── single.py             # call / call_result (one-shot convenience API)
+├── gateway.py            # LLMGateway (queue-less shared-cooldown service)
+├── parsing.py            # JSON/code-fence response-parser helpers
 ├── llm_strategies.py     # LLMCallStrategy + built-in strategies
 ├── models.py             # GeminiModel, GeminiCachedModel,
 │                         # OpenAICompatibleModel, OpenAIModel,
@@ -433,10 +437,11 @@ src/async_batch_llm/
 ├── token_extractor.py    # TokenExtractor (failure-path token recovery)
 ├── core/
 │   ├── config.py         # ProcessorConfig, RateLimitConfig, RetryConfig
-│   └── protocols.py      # LLMModel, ManagedLLMModel, AgentLike
+│   └── protocols.py      # LLMModel, ManagedLLMModel
 ├── strategies/
-│   ├── errors.py         # ErrorClassifier, ErrorInfo,
-│   │                     # TokenTrackingError, FrameworkTimeoutError
+│   ├── errors.py         # ErrorClassifier, ErrorInfo, TokenTrackingError,
+│   │                     # FrameworkTimeoutError, EmptyResponseError,
+│   │                     # ProviderResponseError
 │   └── rate_limit.py     # ExponentialBackoffStrategy, FixedDelayStrategy
 ├── classifiers/
 │   ├── gemini.py         # GeminiErrorClassifier
@@ -449,11 +454,14 @@ src/async_batch_llm/
 │   └── base.py           # Middleware protocol
 ├── _internal/            # ParallelBatchProcessor collaborators (v0.7.0)
 │   ├── event_dispatcher.py
+│   ├── executor_host.py  # pool-less host for single.py / gateway.py
+│   ├── item_executor.py  # per-item retry/classification engine
 │   ├── rate_limit_coordinator.py
 │   ├── strategy_lifecycle.py
 │   └── error_logging.py
 └── testing/
-    └── mocks.py          # MockAgent
+    ├── mocks.py          # MockAgent
+    └── strategies.py     # test-strategy helpers
 ```
 
 ### Documentation
