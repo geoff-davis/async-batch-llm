@@ -1184,6 +1184,63 @@ if ratings and ratings.get("HARM_CATEGORY_HATE_SPEECH") == "HIGH":
 
 ---
 
+### Typed auxiliary output (grounding, reasoning, tool calls, logprobs)
+
+> **Experimental.** This surface is new (v0.16.0) and hasn't seen much
+> real-world use yet — the reserved-key dict shapes and the typed views may
+> change in a future minor release while they stabilize. The `metadata`
+> dict channel itself is stable; if you persist these shapes, read them
+> back defensively.
+
+Provider-specific structured output travels through `metadata` under four
+**reserved keys** with documented plain-dict shapes (JSON-serializable, so
+persisting `metadata` as-is works):
+
+| Key | Shape | Emitted by |
+| --- | ----- | ---------- |
+| `grounding` | `{"sources": [{"uri", "title"}], "queries": [str], "supports": [dict]}` | Gemini models, when the response carries `google_search` grounding |
+| `reasoning` | `str` — the model's reasoning/thinking trace | OpenAI-compatible models (`reasoning_content`, e.g. DeepSeek, falling back to `reasoning`, e.g. OpenRouter) |
+| `tool_calls` | `[{"id": str\|None, "name": str, "arguments": str}]` — `arguments` is the raw JSON string | OpenAI-compatible models |
+| `logprobs` | provider-shaped `dict`/`list` (via `model_dump()`) | OpenAI-compatible models, when requested |
+
+Both `LLMResponse` and `WorkItemResult` expose **lazy read-only typed
+views** over these keys — parsed from `metadata` on each access, never
+cached, never stored twice:
+
+```python
+result = await processor.process_all()
+item = result.results[0]
+
+if item.grounding:                       # Grounding | None
+    for source in item.grounding.sources:  # list[GroundingSource]
+        print(source.uri, source.title)
+    print(item.grounding.queries)          # list[str]
+
+print(item.reasoning)                    # str | None
+for call in item.tool_calls or []:       # list[ToolCall] | None
+    print(call.name, call.arguments)     # arguments: raw JSON string
+print(item.logprobs)                     # Any | None (provider-shaped)
+```
+
+The view classes (`Grounding`, `GroundingSource`, `ToolCall`) are exported
+at the top level. Parsing is lenient: malformed metadata yields `None` (or
+drops the bad entry) rather than raising — which also means a future shape
+change degrades to `None` views rather than errors.
+
+**Boundaries:**
+
+- `tool_calls` is **visibility only** — the framework never executes tools.
+  Feed them to your own dispatch loop (or use an agent framework via
+  `PydanticAIStrategy`). Covered for OpenAI-compatible providers only this
+  phase (Gemini function-call parts are not extracted yet).
+- A response whose `content` is `null` (e.g. a pure tool-call turn) still
+  raises `EmptyResponseError` before any result exists, so `tool_calls`
+  surfaces only when the model returned text alongside the calls.
+- Auxiliary output does not survive empty/safety-blocked responses — the
+  call fails first.
+
+---
+
 ### FrameworkTimeoutError
 
 Exception raised when framework-level timeout is exceeded.

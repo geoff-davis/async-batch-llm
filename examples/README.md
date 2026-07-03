@@ -46,6 +46,18 @@ Comprehensive examples demonstrating:
 
 Each example is self-contained and includes detailed comments.
 
+### `example_gemini_grounding.py`
+
+Grounded Gemini batches: requests the `google_search` tool via
+`generation_config` and reads web citations back through the typed views
+(`result.grounding.sources` / `.queries`) — no custom strategy or extractor
+needed. Requires `async-batch-llm[gemini]` and a `GOOGLE_API_KEY`.
+
+Other provider- and pattern-specific examples (`example_openai.py`,
+`example_openrouter.py`, `example_deepseek.py`, smart retry, model
+escalation, benchmarks, …) live alongside this file — each script's module
+docstring covers its own setup.
+
 ## Example Output
 
 ```text

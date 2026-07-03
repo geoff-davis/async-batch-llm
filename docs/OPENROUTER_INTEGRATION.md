@@ -201,6 +201,17 @@ strategy = OpenRouterStrategy(
 Both paths (reading `WorkItemResult.metadata` or capturing into a typed
 output) are fully supported.
 
+### Reasoning traces, tool calls, and logprobs
+
+`OpenRouterModel` shares the OpenAI-compatible extractor, so reasoning
+traces (`message.reasoning` on OpenRouter, `message.reasoning_content` on
+DeepSeek-style upstreams), tool calls, and logprobs land under reserved
+`metadata` keys with typed views on the result: `result.reasoning`,
+`result.tool_calls`, `result.logprobs`. See
+[Typed auxiliary output](API.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs)
+for shapes and boundaries (**experimental** — shapes may change while they
+stabilize).
+
 ### Anthropic prompt caching via OpenRouter
 
 Anthropic requires you to mark the message blocks you want cached with

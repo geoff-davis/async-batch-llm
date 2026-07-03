@@ -128,6 +128,32 @@ emits a `UserWarning` for exactly this reason; passing
 premium on cache *writes* over the normal input price; that write premium is
 not modeled by this helper.
 
+## Reasoning traces, tool calls, and logprobs
+
+The OpenAI-compatible models (`OpenAIModel`, `OpenRouterModel`,
+`DeepSeekModel`) surface additional structured output under reserved
+`metadata` keys, readable through typed views on the result — see
+[Typed auxiliary output](API.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs)
+for the shapes and boundaries (**experimental** — shapes may change while
+they stabilize):
+
+- **`reasoning`** — the model's reasoning/thinking trace, read from
+  `message.reasoning_content` (DeepSeek reasoner models) with a fallback to
+  `message.reasoning` (OpenRouter). Access via `result.reasoning`.
+- **`tool_calls`** — tool/function calls the model requested, as
+  `[{"id", "name", "arguments"}]` with `arguments` kept as the raw JSON
+  string. Access via `result.tool_calls` (a `list[ToolCall] | None`).
+  Visibility only — the framework never executes tools; note that a pure
+  tool-call turn (`content=null`) raises `EmptyResponseError`, so calls
+  surface only alongside returned text.
+- **`logprobs`** — the provider logprobs object (as a plain dict via
+  `model_dump()`), when you requested it, e.g.
+  `OpenAIStrategy(model, generation_config={"logprobs": True})`. Access via
+  `result.logprobs`.
+
+Each key is emitted only when present on the response, so default payloads
+are unchanged unless you asked the model for these features.
+
 ## Error handling
 
 `OpenAIErrorClassifier` understands the openai SDK's exception hierarchy:

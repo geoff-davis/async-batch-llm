@@ -312,42 +312,41 @@ See: <https://ai.google.dev/gemini-api/docs/models/generative-models#model-param
 
 ### Grounding & custom metadata extraction
 
-By default `LLMResponse.metadata` (which flows to `WorkItemResult.metadata`)
-carries a fixed built-in payload — for Gemini that's `safety_ratings` and
-`finish_reason`. To surface *other* provider-specific output (grounding
-citations, reasoning traces, logprobs, …) through the same channel without
-subclassing the model, pass **metadata extractors**: hooks that receive the raw
-provider response and return extra metadata keys.
+Request grounding (the `google_search` tool) via `generation_config`, and the
+built-in Gemini models surface the citations **by default** under
+`metadata['grounding']` — no extractor needed. Read them through the typed
+views on the result (see the [typed auxiliary output section in the API
+reference](API.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs);
+**experimental** — the shapes may change while they stabilize):
 
 ```python
-from async_batch_llm import GeminiModel, GeminiStrategy, grounding_metadata_extractor
+from async_batch_llm import GeminiModel, GeminiStrategy
 from google.genai import types
 
-# Request grounding (the google_search tool) via generation_config, and surface
-# the resulting citations through metadata with the shipped extractor.
-model = GeminiModel(
-    "gemini-2.5-flash",
-    client,
-    metadata_extractors=[grounding_metadata_extractor],
-)
+model = GeminiModel("gemini-2.5-flash", client)
 strategy = GeminiStrategy(
     model,
     generation_config={"tools": [types.Tool(google_search=types.GoogleSearch())]},
 )
 
 # After processing, grounding is available provider-agnostically:
-#   result.metadata["grounding"]["sources"]  -> [{"uri": ..., "title": ...}, ...]
-#   result.metadata["grounding"]["queries"]  -> the web_search_queries the model ran
-#   result.metadata["grounding"]["supports"] -> answer-span -> source-index links
+for source in result.grounding.sources:   # typed view over metadata["grounding"]
+    print(source.uri, source.title)
+print(result.grounding.queries)            # the web_search_queries the model ran
+# result.grounding.supports                -> answer-span -> source-index links
+# Or read the plain dicts directly: result.metadata["grounding"]["sources"], ...
 ```
 
-`grounding_metadata_extractor` is **opt-in** — it's not registered unless you
-pass it, so the default metadata payload is unchanged for everyone else. It
-returns `None` when a response carries no grounding metadata, so mixing grounded
-and non-grounded calls through the same model is fine.
+Grounding data only exists when you requested the tool, so the default
+metadata payload is unchanged for non-grounded calls — mixing grounded and
+non-grounded calls through the same model is fine. (`grounding_metadata_extractor`
+is still exported for custom models and explicit opt-in configurations;
+passing it to the built-in models is redundant but harmless.)
 
-Write your own extractor for anything else (it's any
-`Callable[[Any], dict | None]`):
+To surface *other* provider-specific output through the same channel without
+subclassing the model, pass **metadata extractors**: hooks that receive the
+raw provider response and return extra metadata keys. Write your own for
+anything (it's any `Callable[[Any], dict | None]`):
 
 ```python
 def reasoning_extractor(response):
