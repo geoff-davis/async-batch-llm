@@ -122,7 +122,7 @@ class EmptyResponseError(ValueError):
     failed-attempt accounting (``WorkItemResult.token_usage``) reflects the
     real spend.
 
-    Added in v0.16.
+    Added in v0.16.0.
     """
 
     def __init__(self, message: str, *, token_usage: TokenUsage | dict[str, int] | None = None):
@@ -145,7 +145,7 @@ class ProviderResponseError(Exception):
         code: Numeric error code embedded in the body, if any.
         provider_error: The raw error payload from the response body.
 
-    Added in v0.16.
+    Added in v0.16.0.
     """
 
     def __init__(self, message: str, *, code: int | None = None, provider_error: Any = None):

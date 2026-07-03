@@ -482,7 +482,8 @@ src/async_batch_llm/
 - `docs/MIGRATION_V0_4.md` — earlier migration notes.
 - `docs/archive/` — historical migration guides and design plans.
 - `CHANGELOG.md` — release-by-release changes.
-- `CONTRIBUTING.md`, `PUBLISHING.md` — contributor docs.
+- `CONTRIBUTING.md` — contributor docs, including the release process
+  (`/release-prep` → merge → `/release-tag`; publishing is tag-triggered).
 - `CLAUDE.md` — this file.
 
 ### Examples
@@ -601,17 +602,6 @@ assert result.total_items == result.succeeded + result.failed
 
 Most recent first. See `CHANGELOG.md` for full per-release detail.
 
-- **Unreleased** — pluggable metadata extraction ([#52]). Built-in models take
-  a `metadata_extractors: list[MetadataExtractor]` constructor argument (and the
-  OpenAI-compatible family also accepts it via `from_api_key`; Gemini models
-  have no `from_api_key`) that contribute extra keys to `LLMResponse.metadata` /
-  `WorkItemResult.metadata`, merged on top of the built-in allowlist (user keys
-  win; a failing extractor is logged and skipped). Ships an opt-in
-  `grounding_metadata_extractor` that maps a grounded Gemini response onto
-  `metadata['grounding']` (`sources`/`queries`/`supports`). New exports:
-  `MetadataExtractor`, `grounding_metadata_extractor`. This is Phase 1 of #52;
-  the per-provider `_extract_metadata` allowlists are still the built-in
-  default — `_run_extractors` (`models.py`) merges user extractors over them.
 - **Unreleased** — typed auxiliary-output views (#52 Phase 2,
   **experimental** — shapes/views may change in a minor release until
   they've seen real use). Four reserved `metadata` keys (`grounding`,
@@ -628,7 +618,26 @@ Most recent first. See `CHANGELOG.md` for full per-release detail.
   `logprobs` — all behind `isinstance` guards so SDK drift/mocks can't leak
   non-JSON values. New exports: `Grounding`, `GroundingSource`, `ToolCall`.
   Out of scope: Gemini function-call parts, typed logprobs, aux output on
-  empty/safety-blocked responses (issue Q4).
+  empty/safety-blocked responses (issue Q4). Also in this release (ported
+  package-review fixes): `EmptyResponseError`/`ProviderResponseError`,
+  PEP 561 `py.typed`, PEP 696 TypeVar defaults, async
+  `MetricsObserver.reset()` (breaking), `BatchResult` derived fields
+  `init=False` (breaking), status-code-based `GeminiErrorClassifier`
+  rewrite (non-429 4xx fail fast), `RateLimitConfig.max_cooldown_seconds`,
+  the ~15s test suite, and the `check-branch-fresh` pre-push guard.
+- **v0.15.0** — pluggable metadata extraction (#52 Phase 1). Built-in models
+  take a `metadata_extractors: list[MetadataExtractor]` constructor argument
+  (and the OpenAI-compatible family also accepts it via `from_api_key`;
+  Gemini models have no `from_api_key`) that contribute extra keys to
+  `LLMResponse.metadata` / `WorkItemResult.metadata`, merged on top of the
+  built-in allowlist (user keys win; a failing extractor is logged and
+  skipped). Ships `grounding_metadata_extractor` (opt-in at the time;
+  built-in since the next release). New exports: `MetadataExtractor`,
+  `grounding_metadata_extractor`. The per-provider `_extract_metadata`
+  allowlists are still the built-in default — `_run_extractors`
+  (`models.py`) merges user extractors over them. This release also brought
+  first-class streaming, the retry-budget rate-limit exemption, and the
+  v0.11–v0.15 fix train (see `CHANGELOG.md`).
 - **v0.10.0** — response metadata reaches `WorkItemResult` ([#8]), plus
   DeepSeek support, a strategy refactor, and rate-limit/temperature fixes.
   - `LLMCallStrategy.execute()` may now return a 3-tuple

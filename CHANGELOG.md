@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ⚠️ Breaking Changes
+
+Details for each live under **Changed**/**Removed** below.
+
+- **`MetricsObserver.reset()` is now async** — change `observer.reset()` to
+  `await observer.reset()`. A leftover sync call silently no-ops (and emits
+  a "coroutine was never awaited" `RuntimeWarning`).
+- **`BatchResult` summary fields are `init=False`** — construct with
+  `BatchResult(results=[...])`; passing `total_items=`, `succeeded=`,
+  `failed=`, or the token totals to the constructor now raises `TypeError`
+  (they were always recomputed and discarded anyway).
+- **Gemini non-429 4xx errors fail fast** — `GeminiErrorClassifier` now
+  classifies 400/401/403/404/… as non-retryable client errors instead of
+  retrying them; only genuinely transient statuses are retried.
+- **Dead protocols removed from `async_batch_llm.core`** — `AgentLike`,
+  `ResultLike`, `UsageLike`, and `core.TOutput` are gone (they were unused
+  by the framework). Import `LLMModel`/`ManagedLLMModel` instead.
+- **Gemini grounding lands in `metadata['grounding']` by default** — only
+  when the caller requested the `google_search` tool, so most payloads are
+  unchanged; strict consumers of the metadata dict should expect the new
+  key on grounded calls.
+
 ### Added
 
 - **Typed auxiliary-output views** ([#52] Phase 2, **experimental**) —
@@ -28,10 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`RateLimitConfig.max_cooldown_seconds`** (default 600) — configurable cap
   on the exponentially-backed-off cooldown; previously the
   `ExponentialBackoffStrategy` cap existed but wasn't reachable through
-  `RateLimitConfig`. Validated `>= cooldown_seconds` when set explicitly;
-  when left at its default while `cooldown_seconds` is larger (e.g. 900s
-  for daily-quota waits, including via the legacy `rate_limit_cooldown`
-  kwarg), the cap is lifted to match instead of rejecting the config.
+  `RateLimitConfig`. The cap can never sit below `cooldown_seconds`: a
+  config with a larger cooldown (e.g. 900s for daily-quota waits, including
+  via the legacy `rate_limit_cooldown` kwarg or `dataclasses.replace`)
+  lifts the cap to match — silently when the cap was left at its default,
+  with a logged warning when it overrides an explicitly-set lower value.
   `slow_start_final_delay` is now validated non-negative.
 - **`EmptyResponseError`** (exported at top level) — raised by the built-in
   models when the API call succeeded but produced no usable text (Gemini

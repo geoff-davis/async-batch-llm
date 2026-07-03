@@ -169,13 +169,28 @@ uv run mypy src/async_batch_llm/
 
 ## Release Process
 
-(For maintainers)
+(For maintainers.) Publishing is **tag-triggered and automated** — do not
+run `uv publish` manually; the workflow uses PyPI trusted publishing (OIDC)
+and a manual upload would race or fail on auth.
 
-1. Update version in `pyproject.toml`
-2. Update `CHANGELOG.md` with release notes
-3. Create a git tag: `git tag vX.Y.Z` (matching the version in `pyproject.toml`)
-4. Build: `uv build`
-5. Publish to PyPI: `uv publish`
+1. **Prepare** (the `/release-prep` skill automates this): retitle the
+   CHANGELOG `[Unreleased]` section to `[X.Y.Z] - YYYY-MM-DD` and add a
+   fresh empty `[Unreleased]` above it; bump `version` in `pyproject.toml`;
+   run `uv lock` so the lockfile picks up the new project version; update
+   the "Current version" line in `CLAUDE.md`. Open a
+   "Prepare release vX.Y.Z" PR from a `release/vX.Y.Z` branch and merge it
+   once CI is green.
+2. **Tag** (the `/release-tag` skill automates this): from the updated
+   `main`, `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag push
+   triggers `.github/workflows/publish.yml`, which re-runs the test gate,
+   verifies the tag matches `pyproject.toml`, builds, and publishes to
+   PyPI.
+3. **GitHub release**: `gh release create vX.Y.Z --title "vX.Y.Z" --latest`
+   with the `[X.Y.Z]` CHANGELOG section as the notes (inline any
+   reference-style links such as `[#52]` — their definitions live at the
+   bottom of CHANGELOG.md and won't be copied automatically).
+4. **Verify**: the publish workflow run is green, PyPI shows the new
+   version, and the docs site redeployed (happens on the merge to `main`).
 
 ## Questions?
 

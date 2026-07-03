@@ -25,6 +25,10 @@ Tag a merged release and publish to PyPI + GitHub Releases. Run this after a `/r
 ### 4. Create GitHub Release
 
 - Read the `[<version>]` section from `CHANGELOG.md` to use as release notes.
+- Inline any reference-style links (e.g. `[#52]` → `[#52](https://github.com/...)`)
+  using the definitions at the bottom of `CHANGELOG.md` — the definitions are
+  not copied with the section, so un-inlined refs render as literal `[#52]`
+  text on GitHub (this bit the v0.15.0 release notes).
 - Run `gh release create v<version> --title "v<version>" --latest --notes "<changelog section>"`.
 - Report the release URL to the user.
 
