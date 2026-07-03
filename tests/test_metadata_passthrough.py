@@ -201,6 +201,47 @@ class TestWorkItemResultMetadata:
 
         assert result.results[0].metadata is None
 
+    @pytest.mark.asyncio
+    async def test_reserved_keys_reach_typed_views_end_to_end(self):
+        """The reserved provider-output keys flow through the processor and
+        come out readable via the typed views (issue #52 Phase 2)."""
+        strategy = _ThreeTupleStrategy(
+            metadata={
+                "grounding": {"sources": [{"uri": "https://a", "title": "A"}], "queries": ["q"]},
+                "reasoning": "thought",
+                "tool_calls": [{"id": "c1", "name": "f", "arguments": "{}"}],
+            }
+        )
+        config = ProcessorConfig(max_workers=1, timeout_per_item=2.0)
+
+        async with ParallelBatchProcessor[str, str, None](config=config) as processor:
+            await processor.add_work(LLMWorkItem(item_id="i1", strategy=strategy, prompt="hi"))
+            result = await processor.process_all()
+
+        item = result.results[0]
+        assert item.success
+        assert item.grounding is not None
+        assert item.grounding.sources[0].uri == "https://a"
+        assert item.grounding.queries == ["q"]
+        assert item.reasoning == "thought"
+        assert item.tool_calls is not None and item.tool_calls[0].name == "f"
+        assert item.logprobs is None
+
+    @pytest.mark.asyncio
+    async def test_legacy_two_tuple_strategy_views_are_none(self):
+        strategy = _TwoTupleLegacyStrategy()
+        config = ProcessorConfig(max_workers=1, timeout_per_item=2.0)
+
+        async with ParallelBatchProcessor[str, str, None](config=config) as processor:
+            await processor.add_work(LLMWorkItem(item_id="i1", strategy=strategy, prompt="hi"))
+            result = await processor.process_all()
+
+        item = result.results[0]
+        assert item.grounding is None
+        assert item.reasoning is None
+        assert item.tool_calls is None
+        assert item.logprobs is None
+
 
 # ── Backward-compat: gemini_safety_ratings populated from metadata ───
 

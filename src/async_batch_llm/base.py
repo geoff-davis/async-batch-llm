@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any, Generic, TypedDict  # noqa: F401
 
 from typing_extensions import TypeVar  # PEP 696 defaults on Python < 3.13
 
+from .provider_output import ProviderOutputViews
+
 # Conditional imports for type checking
 if TYPE_CHECKING:
     from .llm_strategies import LLMCallStrategy
@@ -142,7 +144,7 @@ class TokenUsage(TypedDict, total=False):
 
 
 @dataclass
-class LLMResponse:
+class LLMResponse(ProviderOutputViews):
     """
     Normalized response from any LLM provider.
 
@@ -156,6 +158,10 @@ class LLMResponse:
         total_tokens: Total tokens used.
         cached_input_tokens: Input tokens served from cache (0 if no caching).
         metadata: Provider-specific metadata (safety ratings, finish reason, etc.).
+            The keys ``'grounding'``, ``'reasoning'``, ``'tool_calls'``, and
+            ``'logprobs'`` are reserved, with documented dict shapes readable
+            through the typed views ``.grounding``/``.reasoning``/
+            ``.tool_calls``/``.logprobs`` (see ``provider_output.py``).
         raw: The raw provider response object, for edge cases.
 
     Added in v0.6.0.
@@ -225,7 +231,7 @@ class LLMWorkItem(Generic[TInput, TOutput, TContext]):
 
 
 @dataclass
-class WorkItemResult(Generic[TOutput, TContext]):
+class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
     """
     Result of processing a single work item.
 
@@ -241,6 +247,10 @@ class WorkItemResult(Generic[TOutput, TContext]):
             "model": "anthropic/claude-haiku-4-5"}``. Populated when the
             strategy returns a 3-tuple ``(output, tokens, metadata)`` from
             ``execute()``; ``None`` for legacy 2-tuple strategies.
+            The keys ``'grounding'``, ``'reasoning'``, ``'tool_calls'``, and
+            ``'logprobs'`` are reserved, with documented dict shapes readable
+            through the typed views ``.grounding``/``.reasoning``/
+            ``.tool_calls``/``.logprobs`` (see ``provider_output.py``).
             Added in v0.10.0. (For Gemini safety ratings specifically, this
             replaces the older ``gemini_safety_ratings`` field — see below.)
         gemini_safety_ratings: **Deprecated.** Use ``metadata['safety_ratings']``

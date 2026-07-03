@@ -125,6 +125,9 @@ from .parallel import ParallelBatchProcessor
 
 # Structured-output parsing helpers
 from .parsing import pydantic_json_parser, strip_code_fences
+
+# Provider auxiliary output (typed metadata views)
+from .provider_output import Grounding, GroundingSource, ToolCall
 from .single import LLMCallError, call, call_result
 
 # Error classification and rate limit strategies
@@ -219,6 +222,10 @@ __all__ = [
     "OpenRouterModel",
     "MetadataExtractor",
     "grounding_metadata_extractor",
+    # Provider auxiliary output (typed metadata views)
+    "Grounding",
+    "GroundingSource",
+    "ToolCall",
     # Protocols
     "LLMModel",
     "LLMResponse",
