@@ -1,12 +1,18 @@
 """Typed views over the reserved provider-output keys in ``metadata``.
 
+**Experimental.** This surface is new and hasn't seen production use yet:
+the reserved-key dict shapes and the view APIs may change in a future
+minor release while they stabilize. The underlying ``metadata`` dict
+channel itself is stable — pin exact shapes at your own risk, or read the
+dicts defensively.
+
 Provider-specific structured output — Gemini grounding, reasoning traces,
 tool calls, logprobs — travels through the framework as plain dicts under
 **reserved keys** of the ``metadata`` channel (``LLMResponse.metadata`` →
 ``WorkItemResult.metadata``): ``'grounding'``, ``'reasoning'``,
-``'tool_calls'``, ``'logprobs'``. Those dict shapes are the documented
-compatibility contract (see ``docs/API.md``) and stay JSON-serializable so
-results can be persisted as-is.
+``'tool_calls'``, ``'logprobs'``. Those dict shapes are documented in
+``docs/API.md`` and stay JSON-serializable so results can be persisted
+as-is.
 
 This module provides the typed, provider-agnostic *read* surface over that
 contract: small frozen dataclasses plus :class:`ProviderOutputViews`, a
@@ -137,6 +143,8 @@ class ToolCall:
 
 class ProviderOutputViews:
     """Lazy read-only typed views over the ``metadata`` dict channel.
+
+    **Experimental** — see the module docstring.
 
     Mixed into ``LLMResponse`` and ``WorkItemResult``. Each property parses
     the reserved key from ``self.metadata`` on every access — no caching, no

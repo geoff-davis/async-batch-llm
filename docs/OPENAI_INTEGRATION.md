@@ -134,7 +134,8 @@ The OpenAI-compatible models (`OpenAIModel`, `OpenRouterModel`,
 `DeepSeekModel`) surface additional structured output under reserved
 `metadata` keys, readable through typed views on the result — see
 [Typed auxiliary output](API.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs)
-for the full contract:
+for the shapes and boundaries (**experimental** — shapes may change while
+they stabilize):
 
 - **`reasoning`** — the model's reasoning/thinking trace, read from
   `message.reasoning_content` (DeepSeek reasoner models) with a fallback to

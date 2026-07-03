@@ -209,7 +209,8 @@ DeepSeek-style upstreams), tool calls, and logprobs land under reserved
 `metadata` keys with typed views on the result: `result.reasoning`,
 `result.tool_calls`, `result.logprobs`. See
 [Typed auxiliary output](API.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs)
-for shapes and boundaries.
+for shapes and boundaries (**experimental** — shapes may change while they
+stabilize).
 
 ### Anthropic prompt caching via OpenRouter
 

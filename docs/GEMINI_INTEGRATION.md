@@ -316,7 +316,8 @@ Request grounding (the `google_search` tool) via `generation_config`, and the
 built-in Gemini models surface the citations **by default** under
 `metadata['grounding']` — no extractor needed. Read them through the typed
 views on the result (see the [typed auxiliary output section in the API
-reference](API.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs)):
+reference](API.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs);
+**experimental** — the shapes may change while they stabilize):
 
 ```python
 from async_batch_llm import GeminiModel, GeminiStrategy

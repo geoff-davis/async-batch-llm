@@ -9,11 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Typed auxiliary-output views** ([#52] Phase 2) — provider-specific
-  structured output travels under four reserved, documented `metadata` keys
-  (`grounding`, `reasoning`, `tool_calls`, `logprobs`; plain JSON-serializable
-  dicts, now a public compatibility contract), and both `LLMResponse` and
-  `WorkItemResult` expose lazy read-only typed views over them:
+- **Typed auxiliary-output views** ([#52] Phase 2, **experimental**) —
+  provider-specific structured output travels under four reserved,
+  documented `metadata` keys (`grounding`, `reasoning`, `tool_calls`,
+  `logprobs`; plain JSON-serializable dicts — the shapes and view APIs may
+  change in a minor release while they stabilize), and both `LLMResponse`
+  and `WorkItemResult` expose lazy read-only typed views over them:
   `.grounding` (`Grounding`/`GroundingSource`), `.reasoning` (`str`),
   `.tool_calls` (`list[ToolCall]`, visibility only — the framework never
   executes tools), and `.logprobs`. Views parse the dict on each access —

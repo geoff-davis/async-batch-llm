@@ -1186,10 +1186,15 @@ if ratings and ratings.get("HARM_CATEGORY_HATE_SPEECH") == "HIGH":
 
 ### Typed auxiliary output (grounding, reasoning, tool calls, logprobs)
 
+> **Experimental.** This surface is new (v0.16.0) and hasn't seen much
+> real-world use yet — the reserved-key dict shapes and the typed views may
+> change in a future minor release while they stabilize. The `metadata`
+> dict channel itself is stable; if you persist these shapes, read them
+> back defensively.
+
 Provider-specific structured output travels through `metadata` under four
-**reserved keys** whose plain-dict shapes are a public compatibility
-contract (they stay JSON-serializable, so persisting `metadata` as-is is
-safe):
+**reserved keys** with documented plain-dict shapes (JSON-serializable, so
+persisting `metadata` as-is works):
 
 | Key | Shape | Emitted by |
 | --- | ----- | ---------- |
@@ -1219,7 +1224,8 @@ print(item.logprobs)                     # Any | None (provider-shaped)
 
 The view classes (`Grounding`, `GroundingSource`, `ToolCall`) are exported
 at the top level. Parsing is lenient: malformed metadata yields `None` (or
-drops the bad entry) rather than raising.
+drops the bad entry) rather than raising — which also means a future shape
+change degrades to `None` views rather than errors.
 
 **Boundaries:**
 

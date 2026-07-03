@@ -612,10 +612,12 @@ Most recent first. See `CHANGELOG.md` for full per-release detail.
   `MetadataExtractor`, `grounding_metadata_extractor`. This is Phase 1 of #52;
   the per-provider `_extract_metadata` allowlists are still the built-in
   default — `_run_extractors` (`models.py`) merges user extractors over them.
-- **Unreleased** — typed auxiliary-output views (#52 Phase 2). Four reserved
-  `metadata` keys (`grounding`, `reasoning`, `tool_calls`, `logprobs`) carry
-  provider-specific output as plain JSON-serializable dicts — a documented
-  public contract — and `LLMResponse`/`WorkItemResult` expose lazy read-only
+- **Unreleased** — typed auxiliary-output views (#52 Phase 2,
+  **experimental** — shapes/views may change in a minor release until
+  they've seen real use). Four reserved `metadata` keys (`grounding`,
+  `reasoning`, `tool_calls`, `logprobs`) carry provider-specific output as
+  plain JSON-serializable dicts, and `LLMResponse`/`WorkItemResult` expose
+  lazy read-only
   typed views over them (`.grounding`/`.reasoning`/`.tool_calls`/`.logprobs`,
   via the `ProviderOutputViews` mixin in `provider_output.py`; parsed on each
   access, nothing stored twice, strategy return contract untouched). Gemini
