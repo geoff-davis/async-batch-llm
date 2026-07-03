@@ -435,6 +435,8 @@ src/async_batch_llm/
 │                         # OpenAICompatibleModel, OpenAIModel,
 │                         # OpenRouterModel, DeepSeekModel
 ├── token_extractor.py    # TokenExtractor (failure-path token recovery)
+├── provider_output.py    # Grounding/GroundingSource/ToolCall + typed
+│                         # metadata views mixin (issue #52 Phase 2)
 ├── core/
 │   ├── config.py         # ProcessorConfig, RateLimitConfig, RetryConfig
 │   └── protocols.py      # LLMModel, ManagedLLMModel
@@ -608,9 +610,23 @@ Most recent first. See `CHANGELOG.md` for full per-release detail.
   `grounding_metadata_extractor` that maps a grounded Gemini response onto
   `metadata['grounding']` (`sources`/`queries`/`supports`). New exports:
   `MetadataExtractor`, `grounding_metadata_extractor`. This is Phase 1 of #52;
-  the typed `LLMResponse` aux-field surface (Phase 2) was deferred. The
-  per-provider `_extract_metadata` allowlists are still the built-in default —
-  `_run_extractors` (`models.py`) merges user extractors over them.
+  the per-provider `_extract_metadata` allowlists are still the built-in
+  default — `_run_extractors` (`models.py`) merges user extractors over them.
+- **Unreleased** — typed auxiliary-output views (#52 Phase 2). Four reserved
+  `metadata` keys (`grounding`, `reasoning`, `tool_calls`, `logprobs`) carry
+  provider-specific output as plain JSON-serializable dicts — a documented
+  public contract — and `LLMResponse`/`WorkItemResult` expose lazy read-only
+  typed views over them (`.grounding`/`.reasoning`/`.tool_calls`/`.logprobs`,
+  via the `ProviderOutputViews` mixin in `provider_output.py`; parsed on each
+  access, nothing stored twice, strategy return contract untouched). Gemini
+  models emit `grounding` **by default** now (`grounding_metadata_extractor`
+  remains exported, redundant for built-ins); OpenAI-compatible models emit
+  `reasoning` (DeepSeek `reasoning_content` → OpenRouter `reasoning`
+  fallback), `tool_calls` (visibility only, raw JSON-string arguments), and
+  `logprobs` — all behind `isinstance` guards so SDK drift/mocks can't leak
+  non-JSON values. New exports: `Grounding`, `GroundingSource`, `ToolCall`.
+  Out of scope: Gemini function-call parts, typed logprobs, aux output on
+  empty/safety-blocked responses (issue Q4).
 - **v0.10.0** — response metadata reaches `WorkItemResult` ([#8]), plus
   DeepSeek support, a strategy refactor, and rate-limit/temperature fixes.
   - `LLMCallStrategy.execute()` may now return a 3-tuple

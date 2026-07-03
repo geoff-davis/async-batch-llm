@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed auxiliary-output views** ([#52] Phase 2) — provider-specific
+  structured output travels under four reserved, documented `metadata` keys
+  (`grounding`, `reasoning`, `tool_calls`, `logprobs`; plain JSON-serializable
+  dicts, now a public compatibility contract), and both `LLMResponse` and
+  `WorkItemResult` expose lazy read-only typed views over them:
+  `.grounding` (`Grounding`/`GroundingSource`), `.reasoning` (`str`),
+  `.tool_calls` (`list[ToolCall]`, visibility only — the framework never
+  executes tools), and `.logprobs`. Views parse the dict on each access —
+  nothing is stored twice, and the strategy `execute()` return contract is
+  untouched. New top-level exports: `Grounding`, `GroundingSource`,
+  `ToolCall`. OpenAI-compatible models now emit `reasoning` (DeepSeek
+  `reasoning_content`, falling back to OpenRouter `reasoning`), `tool_calls`
+  (arguments kept as the raw JSON string), and `logprobs` (via
+  `model_dump()`) when present. New example:
+  `examples/example_gemini_grounding.py`.
 - **`RateLimitConfig.max_cooldown_seconds`** (default 600) — configurable cap
   on the exponentially-backed-off cooldown; previously the
   `ExponentialBackoffStrategy` cap existed but wasn't reachable through
@@ -38,6 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Gemini grounding is emitted by default** ([#52] Phase 2) — a grounded
+  response (`google_search` tool) now lands in `metadata['grounding']`
+  without opting in; previously this required passing
+  `grounding_metadata_extractor`, which remains exported (for custom models
+  and explicit configurations) and is now redundant-but-harmless on the
+  built-in Gemini models. Non-grounded calls are unaffected — the key only
+  appears when the caller requested the tool.
 - **Test suite runs in ~15s instead of ~80s** — shared
   `fast_retry`/`fast_rate_limit` fixtures (`tests/conftest.py`) replace
   real 1s+ retry waits and 5s observer timeouts with millisecond

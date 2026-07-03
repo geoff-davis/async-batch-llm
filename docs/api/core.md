@@ -19,3 +19,15 @@
 ## BatchResult
 
 ::: async_batch_llm.BatchResult
+
+## Grounding
+
+::: async_batch_llm.Grounding
+
+## GroundingSource
+
+::: async_batch_llm.GroundingSource
+
+## ToolCall
+
+::: async_batch_llm.ToolCall
