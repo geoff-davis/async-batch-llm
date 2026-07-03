@@ -1,5 +1,6 @@
 """Tests for edge cases and error conditions."""
 
+import dataclasses
 from typing import Annotated, Any
 
 import pytest
@@ -599,8 +600,11 @@ async def test_config_auto_validation():
     with pytest.raises(ValueError, match="backoff_multiplier must be >= 1.0"):
         RateLimitConfig(backoff_multiplier=0.5)
 
-    with pytest.raises(ValueError, match="max_cooldown_seconds must be >= cooldown_seconds"):
-        RateLimitConfig(cooldown_seconds=300.0, max_cooldown_seconds=60.0)
+    # An explicit cap below the cooldown is lifted to match (with a warning
+    # logged), not rejected — the cap bounds the *escalated* cooldown, so it
+    # can never meaningfully sit below the base.
+    explicit_low_cap = RateLimitConfig(cooldown_seconds=300.0, max_cooldown_seconds=60.0)
+    assert explicit_low_cap.max_cooldown_seconds == 300.0
 
     # A long cooldown with the cap left at its default lifts the cap instead
     # of raising (regression: RateLimitConfig(cooldown_seconds=900) used to
@@ -608,9 +612,24 @@ async def test_config_auto_validation():
     long_cooldown = RateLimitConfig(cooldown_seconds=900.0)
     assert long_cooldown.max_cooldown_seconds == 900.0
 
+    # The lift must be idempotent under dataclasses.replace(), which re-runs
+    # __post_init__ on the resolved values: replacing an already-lifted config
+    # with a still-higher cooldown must lift again, not raise (regression).
+    relifted = dataclasses.replace(long_cooldown, cooldown_seconds=1200.0)
+    assert relifted.max_cooldown_seconds == 1200.0
+
     with pytest.warns(DeprecationWarning, match="rate_limit_cooldown"):
         legacy = ParallelBatchProcessor(rate_limit_cooldown=900.0)
     assert legacy.config.rate_limit.max_cooldown_seconds == 900.0
+
+    # Legacy kwarg overriding an already-lifted nested config (the #60×#61
+    # interaction): must construct, not raise.
+    with pytest.warns(DeprecationWarning, match="rate_limit_cooldown"):
+        legacy_override = ParallelBatchProcessor(
+            config=ProcessorConfig(rate_limit=RateLimitConfig(cooldown_seconds=900.0)),
+            rate_limit_cooldown=1200.0,
+        )
+    assert legacy_override.config.rate_limit.max_cooldown_seconds == 1200.0
 
     with pytest.raises(ValueError, match="slow_start_final_delay must be >= 0"):
         RateLimitConfig(slow_start_final_delay=-0.1)

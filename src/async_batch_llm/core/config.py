@@ -85,14 +85,20 @@ class RateLimitConfig:
     def __post_init__(self) -> None:
         """Validate configuration on construction."""
         # The cap applies to the *escalated* cooldown, so it can never sit
-        # below the base cooldown. When the cap was left at its default while
-        # cooldown_seconds is set higher (e.g. 900s for daily-quota waits),
-        # lift the cap to match rather than rejecting the config over a field
-        # the user never set.
-        if (
-            self.max_cooldown_seconds == _DEFAULT_MAX_COOLDOWN_SECONDS
-            and self.cooldown_seconds > self.max_cooldown_seconds
-        ):
+        # below the base cooldown — lift it to match rather than rejecting
+        # the config. This must be an unconditional, idempotent lift (not an
+        # error, and not gated on the cap equaling its default) because
+        # dataclasses.replace() re-runs __post_init__ on the *resolved*
+        # values of the source config: a previously lifted cap no longer
+        # equals the default and is indistinguishable from an explicit one.
+        # Warn when the lift overrides a value the user plausibly set.
+        if self.max_cooldown_seconds < self.cooldown_seconds:
+            if self.max_cooldown_seconds != _DEFAULT_MAX_COOLDOWN_SECONDS:
+                logger.warning(
+                    f"max_cooldown_seconds ({self.max_cooldown_seconds}) is below "
+                    f"cooldown_seconds ({self.cooldown_seconds}); lifting the cap to "
+                    f"match. Set max_cooldown_seconds >= cooldown_seconds to silence."
+                )
             self.max_cooldown_seconds = self.cooldown_seconds
         self.validate()
 
@@ -119,12 +125,8 @@ class RateLimitConfig:
                 f"backoff_multiplier must be >= 1.0 (got {self.backoff_multiplier}). "
                 f"Set rate_limit.backoff_multiplier to 1.0 (no increase) or higher (typical: 1.5-2.0)."
             )
-        if self.max_cooldown_seconds < self.cooldown_seconds:
-            raise ValueError(
-                f"max_cooldown_seconds must be >= cooldown_seconds "
-                f"(got max_cooldown_seconds={self.max_cooldown_seconds}, "
-                f"cooldown_seconds={self.cooldown_seconds})."
-            )
+        # No max_cooldown_seconds >= cooldown_seconds check here: __post_init__
+        # lifts the cap unconditionally, so the invariant holds by construction.
         if self.slow_start_final_delay < 0:
             raise ValueError(
                 f"slow_start_final_delay must be >= 0 (got {self.slow_start_final_delay})."

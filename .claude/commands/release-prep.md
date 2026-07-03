@@ -46,11 +46,17 @@ generation, version bumping, and creating the release PR.
 ### 4. Bump version
 
 - Update `version` in `pyproject.toml` to the new version.
+- Run `uv lock` — the lockfile records the project's own version, so it must
+  be regenerated with the bump (otherwise `uv lock --check` / `--frozen`
+  consumers, e.g. the CI security job's `uv export --frozen`, fail).
+- Update the "Current version" line near the top of `CLAUDE.md`, and retitle
+  the `**Unreleased**` entry in its "Version history" section to the new
+  version.
 
 ### 5. Create release branch and PR
 
 - Create branch `release/v<version>` from `origin/main`.
-- Stage `CHANGELOG.md` and `pyproject.toml`.
+- Stage `CHANGELOG.md`, `pyproject.toml`, `uv.lock`, and `CLAUDE.md`.
 - Commit with message: `Prepare release v<version>`
 - Push the branch.
 - Create a PR with title `Prepare release v<version>` and body summarizing the changelog entries.
