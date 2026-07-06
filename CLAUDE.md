@@ -502,6 +502,13 @@ src/async_batch_llm/
   token tracking (v0.10.0).
 - `example_anthropic.py`, `example_langchain.py` — custom-strategy
   references for providers without built-in support yet.
+- `example_embeddings.py` — batch embedding generation via custom
+  strategies (OpenAI `text-embedding-3-small` + Gemini
+  `gemini-embedding-2`); one JSON-encoded chunk of texts per work item.
+  Note the Gemini gotcha: `gemini-embedding-2` aggregates a plain string
+  list into ONE embedding — wrap each text in a `Content` object for
+  per-text vectors. DeepSeek offers no embeddings endpoint (as of
+  2026-07).
 - `example_llm_strategies.py` — custom-strategy patterns.
 - `example_context_manager.py` — async context manager usage.
 - `example_model_escalation.py` — earlier escalation example.

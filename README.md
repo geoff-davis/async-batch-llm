@@ -520,6 +520,7 @@ Check out the [`examples/`](examples/) directory for complete working examples:
 - [`example_gemini_direct.py`](examples/example_gemini_direct.py) - Direct Gemini API
 - [`example_gemini_smart_retry.py`](examples/example_gemini_smart_retry.py) - Smart retry patterns
 - [`example_smart_model_escalation.py`](examples/example_smart_model_escalation.py) - Cost optimization
+- [`example_embeddings.py`](examples/example_embeddings.py) - Batch embedding generation (OpenAI + Gemini)
 - [`example_context_manager.py`](examples/example_context_manager.py) - Resource management
 - [`example_batch_benchmark.py`](examples/example_batch_benchmark.py) - Flagship bulk-benchmark demo
 
