@@ -286,3 +286,71 @@ def test_docs_were_discovered() -> None:
     assert len(DOC_FILES) > 10
     assert len(ALL_SNIPPETS) > 50
     assert any(s.path.name == "API.md" for s in ALL_SNIPPETS)
+
+
+# --- PyPI MathJax dollar-sign guard -----------------------------------
+
+# pypi.org runs MathJax over the rendered project description with $...$
+# enabled as inline math, so two bare dollar signs in one text run get
+# typeset as TeX (and a "%" between them starts a TeX comment that eats
+# the rest of the text). GitHub's math heuristics don't fire on currency,
+# which is how the v0.16.0 "A Sense of Scale" bullet shipped garbled to
+# PyPI while looking fine on GitHub. MathJax only pairs delimiters inside
+# a single DOM text node, so any element boundary between two dollars —
+# bold, italics, a code span — defuses the pair. The check mirrors that:
+# within each markdown block, drop code, split on emphasis markers, and
+# flag any remaining text run holding two or more "$".
+
+PYPI_DESCRIPTION = REPO_ROOT / "README.md"
+
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s")
+_CODE_SPAN_RE = re.compile(r"`[^`]*`")
+_EMPHASIS_SPLIT_RE = re.compile(r"\*\*|\*|__|_(?=\s)|(?<=\s)_")
+
+
+def _mathjax_dollar_traps(markdown: str) -> list[tuple[int, str]]:
+    """Return (line, text) for blocks MathJax would misrender on PyPI."""
+    blocks: list[tuple[int, list[str]]] = []
+    in_fence = False
+    for lineno, line in enumerate(markdown.splitlines(), start=1):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        # Blank lines and new list items start a fresh DOM text container.
+        if in_fence or not line.strip():
+            blocks.append((lineno, []))
+            continue
+        if _LIST_ITEM_RE.match(line) or not blocks or not blocks[-1][1]:
+            blocks.append((lineno, [line]))
+        else:
+            blocks[-1][1].append(line)
+
+    traps = []
+    for lineno, lines in blocks:
+        text = _CODE_SPAN_RE.sub(" ", " ".join(lines))
+        if any(run.count("$") >= 2 for run in _EMPHASIS_SPLIT_RE.split(text)):
+            traps.append((lineno, text.strip()))
+    return traps
+
+
+def test_readme_has_no_mathjax_dollar_traps() -> None:
+    traps = _mathjax_dollar_traps(PYPI_DESCRIPTION.read_text(encoding="utf-8"))
+    assert not traps, (
+        "README paragraphs with two bare '$' in one text run render as TeX "
+        "math on PyPI. Break the pair with bold/code around the amounts "
+        f"(see this test's header comment): {traps}"
+    )
+
+
+def test_dollar_trap_checker_catches_known_bad() -> None:
+    garbled = "DeepSeek completed for $0.054 at 97.0% accuracy; Gemini cost $0.433."
+    assert _mathjax_dollar_traps(garbled)
+    # An element boundary (bold) between the dollars defuses the pair.
+    assert not _mathjax_dollar_traps(
+        "DeepSeek completed for **$0.054** at 97.0% accuracy; Gemini cost **$0.433**."
+    )
+    # Code spans and fenced blocks are skipped by MathJax entirely.
+    assert not _mathjax_dollar_traps("Costs `$0.10` each, `$10.00` total.")
+    assert not _mathjax_dollar_traps("```text\n$1 and $2\n```")
+    # Separate list items are separate DOM containers.
+    assert not _mathjax_dollar_traps("- costs $0.10\n- costs $0.03")
