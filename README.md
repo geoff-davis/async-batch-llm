@@ -41,8 +41,9 @@ model latency, account limits, pricing, and network all move the numbers.
   run-specific; the durable point is bounded workers and backpressure without
   scheduling every coroutine up front.
 - **The full 1,319-item split made provider tradeoffs visible.** DeepSeek Flash
-  completed for $0.054 at 97.0% accuracy; Gemini 3.1 cost $0.433 at 96.6%;
-  Gemini 2.5 cost $0.261 at 95.4% but took ~21.5 minutes because it was capped
+  completed for **$0.054** at 97.0% accuracy; Gemini 3.1 cost **$0.433** at
+  96.6%; Gemini 2.5 cost **$0.261** at 95.4% but took ~21.5 minutes because it
+  was capped
   at 5 workers. The package does not make provider calls cheaper; it makes the
   cost/latency/accuracy tradeoffs visible and keeps the provider swap small.
 - **Retries are part of the run, not an afterthought.** DeepSeek recovered 9
