@@ -67,7 +67,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[PersonData]):
         self.temps = temps if temps is not None else [0.0, 0.5, 1.0]
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[PersonData, TokenUsage]:
         temp = self.temps[min(attempt - 1, len(self.temps) - 1)]
 
@@ -120,7 +120,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
         self.last_response = None  # Track last response for smart retry
         self.last_error = None  # Track last error for smart retry
 
-    async def on_error(self, exception: Exception, attempt: int) -> None:
+    async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
         """
         Track validation errors and failed responses for smart retry.
 
@@ -133,7 +133,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
             # is raised after parsing. We need to save it during execute().
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[PersonData, TokenUsage]:
         # Adjust prompt based on attempt
         if attempt == 1:

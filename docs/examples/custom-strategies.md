@@ -12,7 +12,7 @@ class OpenAIStrategy(LLMCallStrategy[str]):
         self.client = client
         self.model = model
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
+    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": prompt}]
@@ -45,7 +45,7 @@ class CachedStrategy(LLMCallStrategy[str]):
             content=self.system_instruction
         )
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
+    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
         # Use the cached content
         response = await self.client.generate(
             prompt=prompt,
@@ -71,12 +71,12 @@ class SmartRetryStrategy(LLMCallStrategy[dict]):
         self.client = client
         self.validation_failures = 0
 
-    async def on_error(self, exception: Exception, attempt: int):
+    async def on_error(self, exception: Exception, attempt: int, state=None):
         """Track validation errors for smart escalation."""
         if isinstance(exception, ValidationError):
             self.validation_failures += 1
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
+    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
         # Use cheaper model initially, escalate only on validation errors
         if self.validation_failures == 0:
             model = "cheap-model"
@@ -99,7 +99,7 @@ class ProgressiveTempStrategy(LLMCallStrategy[str]):
         self.client = client
         self.temperatures = temperatures or [0.0, 0.5, 1.0]
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
+    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
         # Use progressively higher temperature on retries
         temp_index = min(attempt - 1, len(self.temperatures) - 1)
         temperature = self.temperatures[temp_index]
@@ -122,7 +122,7 @@ class AnthropicStrategy(LLMCallStrategy[str]):
         self.client = client
         self.model = model
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
+    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
         response = await self.client.messages.create(
             model=self.model,
             max_tokens=1024,

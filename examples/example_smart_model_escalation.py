@@ -96,7 +96,7 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
         self.validation_failures = 0  # Count of validation errors only
         self.total_attempts = 0
 
-    async def on_error(self, exception: Exception, attempt: int) -> None:
+    async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
         """
         Track error type to make smart escalation decisions.
 
@@ -121,7 +121,7 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
                 print(f"  ⚠️  {error_type} on attempt {attempt} (will retry same model)")
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[PersonData, TokenUsage]:
         """
         Select model based on validation failure count (not total attempts).
@@ -215,7 +215,7 @@ class BlindEscalationStrategy(LLMCallStrategy[PersonData]):
         self.verbose = verbose
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[PersonData, TokenUsage]:
         """Always escalate model on retry."""
         model = self.MODELS[min(attempt - 1, len(self.MODELS) - 1)]

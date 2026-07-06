@@ -19,12 +19,12 @@ class SmartModelEscalation(LLMCallStrategy[dict]):
         self.client = client
         self.validation_failures = 0
 
-    async def on_error(self, exception: Exception, attempt: int):
+    async def on_error(self, exception: Exception, attempt: int, state=None):
         """Only escalate on validation errors, not network/rate limit errors."""
         if isinstance(exception, ValidationError):
             self.validation_failures += 1
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
+    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
         # Network error on attempt 2? Retry with same cheap model
         # Validation error on attempt 2? Escalate to better model
         model_index = min(self.validation_failures, len(self.MODELS) - 1)
@@ -47,11 +47,11 @@ class SmartRetryStrategy(LLMCallStrategy[PersonData]):
         self.last_error = None
         self.last_response = None
 
-    async def on_error(self, exception: Exception, attempt: int):
+    async def on_error(self, exception: Exception, attempt: int, state=None):
         if isinstance(exception, ValidationError):
             self.last_error = exception
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
+    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
         if attempt == 1:
             final_prompt = prompt
         else:
@@ -119,21 +119,30 @@ async def process_with_caching():
 Inject custom behavior into the processing pipeline:
 
 ```python
-from async_batch_llm.middleware import Middleware
-from async_batch_llm import LLMWorkItem, WorkItemResult
+from async_batch_llm import BaseMiddleware, LLMWorkItem, WorkItemResult
 
-class LoggingMiddleware(Middleware):
+class LoggingMiddleware(BaseMiddleware):
+    """Subclass BaseMiddleware to get no-op defaults for the hooks you skip.
+
+    Return values matter: before_process must return the work item
+    (returning None SKIPS the item, recording it as failed), and
+    after_process must return the result.
+    """
+
     async def before_process(self, work_item: LLMWorkItem):
         print(f"Starting {work_item.item_id}")
+        return work_item
 
     async def after_process(self, result: WorkItemResult):
         if result.success:
             print(f"Success: {result.item_id}")
         else:
             print(f"Failed: {result.item_id} - {result.error}")
+        return result
 
-    async def on_retry(self, work_item: LLMWorkItem, attempt: int, error: Exception):
-        print(f"Retry {attempt} for {work_item.item_id}: {error}")
+    async def on_error(self, work_item: LLMWorkItem, error: Exception):
+        print(f"Error in {work_item.item_id}: {error}")
+        return None  # None = use default error handling; a WorkItemResult would replace it
 
 async def main():
     logging_middleware = LoggingMiddleware()
@@ -162,9 +171,8 @@ class CostTracker(BaseObserver):
 
     async def on_event(self, event: ProcessingEvent, data: dict[str, Any]) -> None:
         if event == ProcessingEvent.ITEM_COMPLETED:
-            # Calculate cost based on tokens
-            tokens = data.get("tokens", {})
-            total = tokens.get("total_tokens", 0)
+            # The ITEM_COMPLETED payload carries the item's total tokens as an int
+            total = data.get("tokens", 0)
             self.total_tokens += total
             self.total_cost += total * 0.00001  # Example rate
 
@@ -182,27 +190,33 @@ async def main():
         print(f"Estimated cost: ${cost_tracker.total_cost:.4f}")
 ```
 
-## Dynamic Worker Scaling
+## Adapting Worker Count Between Batches
 
-Adjust workers based on rate limits:
+Processors are one-shot (`add_work()` raises after `process_all()`), and the
+worker count is captured at construction — so adapt by inspecting the stats
+and building the *next* processor with a different config:
 
 ```python
-async def adaptive_processing():
+async def adaptive_processing(items, max_workers=10):
     config = ProcessorConfig(
-        max_workers=10,  # Start optimistic
+        max_workers=max_workers,  # Start optimistic
         timeout_per_item=30.0
     )
 
     async with ParallelBatchProcessor(config=config) as processor:
-        # Add work...
+        for item in items:
+            await processor.add_work(item)
         result = await processor.process_all()
-
-        # Check if rate limited
         stats = await processor.get_stats()
-        if stats["rate_limit_count"] > 5:
-            # Too many rate limits, reduce workers for next batch
-            processor.config.max_workers = 3
+
+    if stats["rate_limit_count"] > 5:
+        # Too many rate limits — use fewer workers for the next batch
+        return result, 3
+    return result, max_workers
 ```
+
+(Within a single batch you don't need this: the rate-limit cooldown and
+slow-start ramp already throttle all workers automatically.)
 
 ## Progressive Temperature on Retries
 
@@ -267,7 +281,8 @@ class PartialRecoveryStrategy(LLMCallStrategy[dict]):
                 f"\nNow extract only: {', '.join(needed)}"
             )
 
-        result = parse_response(await self.client.generate(final_prompt))
+        response = await self.client.generate(final_prompt)
+        result = parse_response(response)
         if attempt > 1:
             result = {**partial, **result}
 

@@ -129,7 +129,8 @@ be removed alongside the 2-tuple compat shim in a future release.
 `BatchResult.effective_input_tokens()` previously hardcoded Gemini's 90%
 cached-token discount, producing wrong numbers for OpenAI (50% discount),
 Anthropic (90% on cache reads, 25% premium on writes), and DeepSeek
-(90%). It now accepts a `cached_token_rate` parameter, with named
+(98% since DeepSeek's April 2026 price cut; ~90% at the time of this
+release). It now accepts a `cached_token_rate` parameter, with named
 constants on `CachedTokenRates`:
 
 ```python
@@ -230,7 +231,7 @@ from async_batch_llm import CachedTokenRates, DeepSeekModel, DeepSeekStrategy
 
 model = DeepSeekModel.from_api_key("deepseek-chat")  # reads DEEPSEEK_API_KEY
 strategy = DeepSeekStrategy(model)
-# DeepSeek cache reads cost 10% of normal:
+# DeepSeek cache reads cost ~2% of normal (April 2026 pricing):
 billable = result.effective_input_tokens(CachedTokenRates.DEEPSEEK)
 ```
 
