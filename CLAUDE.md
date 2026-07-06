@@ -384,7 +384,13 @@ the project's release-prep flow.
 
 ## Testing strategy
 
-~516 tests; the default run takes ~15 seconds (no real sleeps — see
+~546 unit tests (565 collected, `integration` deselected by default) plus
+~480 parametrized doc-snippet checks (`tests/test_doc_examples.py` —
+parses every fenced python block in the docs, resolves
+`async_batch_llm` imports, and diffs framework-hook overrides in doc
+classes against the live base-class signatures; opt a block out with
+`<!-- doc-snippet: skip -->` above the fence). The default run takes
+~15 seconds (no real sleeps — see
 `tests/conftest.py` for the shared `fast_retry`/`fast_rate_limit`
 fixtures; use them in any test that triggers a retry, or you'll pay
 1s+ per retry against the library defaults). `pytest-timeout` caps
@@ -502,6 +508,13 @@ src/async_batch_llm/
   token tracking (v0.10.0).
 - `example_anthropic.py`, `example_langchain.py` — custom-strategy
   references for providers without built-in support yet.
+- `example_embeddings.py` — batch embedding generation via custom
+  strategies (OpenAI `text-embedding-3-small` + Gemini
+  `gemini-embedding-2`); one JSON-encoded chunk of texts per work item.
+  Note the Gemini gotcha: `gemini-embedding-2` aggregates a plain string
+  list into ONE embedding — wrap each text in a `Content` object for
+  per-text vectors. DeepSeek offers no embeddings endpoint (as of
+  2026-07).
 - `example_llm_strategies.py` — custom-strategy patterns.
 - `example_context_manager.py` — async context manager usage.
 - `example_model_escalation.py` — earlier escalation example.
