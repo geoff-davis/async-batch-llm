@@ -206,8 +206,9 @@ output) are fully supported.
 `OpenRouterModel` shares the OpenAI-compatible extractor, so reasoning
 traces (`message.reasoning` on OpenRouter, `message.reasoning_content` on
 DeepSeek-style upstreams), tool calls, and logprobs land under reserved
-`metadata` keys with typed views on the result: `result.reasoning`,
-`result.tool_calls`, `result.logprobs`. See
+`metadata` keys with typed views on each per-item `WorkItemResult` (not the
+batch-level `BatchResult`): `item_result.reasoning`,
+`item_result.tool_calls`, `item_result.logprobs`. See
 [Typed auxiliary output](API.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs)
 for shapes and boundaries (**experimental** — shapes may change while they
 stabilize).

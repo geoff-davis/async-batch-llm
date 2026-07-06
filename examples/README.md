@@ -53,6 +53,16 @@ Grounded Gemini batches: requests the `google_search` tool via
 (`result.grounding.sources` / `.queries`) — no custom strategy or extractor
 needed. Requires `async-batch-llm[gemini]` and a `GOOGLE_API_KEY`.
 
+### `example_embeddings.py`
+
+Batch embedding generation with OpenAI (`text-embedding-3-small`) and
+Gemini (`gemini-embedding-2`) via custom strategies — the framework has no
+built-in embedding support, but `LLMCallStrategy` is generic over its
+output type, so a strategy can return vectors and still get the worker
+pool, rate-limit coordination, and retries. Each work item carries a
+JSON-encoded *chunk* of texts (embedding APIs accept many inputs per
+request). Runs whichever provider has an SDK + API key available.
+
 Other provider- and pattern-specific examples (`example_openai.py`,
 `example_openrouter.py`, `example_deepseek.py`, smart retry, model
 escalation, benchmarks, …) live alongside this file — each script's module

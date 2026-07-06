@@ -31,7 +31,9 @@ class LangChainStrategy(LLMCallStrategy[str]):
         """
         self.chain = chain
 
-    async def execute(self, prompt: str, attempt: int, timeout: float) -> tuple[str, TokenUsage]:
+    async def execute(
+        self, prompt: str, attempt: int, timeout: float, state=None
+    ) -> tuple[str, TokenUsage]:
         """Execute LangChain chain.
 
         Note: timeout parameter is provided for information but timeout enforcement
@@ -199,7 +201,7 @@ async def example_langchain_rag():
             self.qa_chain = qa_chain
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state=None
         ) -> tuple[str, TokenUsage]:
             # Run the RAG chain
             result = await self.qa_chain.arun(prompt)
