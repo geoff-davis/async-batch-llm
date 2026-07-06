@@ -22,13 +22,14 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v7
 
     - name: Install uv
       uses: astral-sh/setup-uv@v7
@@ -39,22 +40,39 @@ jobs:
       run: uv python install ${{ matrix.python-version }}
 
     - name: Install dependencies
+      # [dev] covers everything the test suite needs (pytest, ruff, mypy, ty,
+      # and the provider SDKs); --all-extras would also drag in the docs stack
+      # (mkdocs, matplotlib) for nothing.
       run: |
-        uv sync --all-extras
+        uv sync --extra dev
 
+    # Coverage instrumentation only pays off on the version whose data feeds
+    # the coverage comment (3.12); the other matrix legs run plain pytest.
     - name: Run tests with coverage
+      if: matrix.python-version == '3.12'
       run: |
         uv run pytest tests/ -v --tb=short --cov --cov-report=term-missing --cov-report=xml
 
+    - name: Run tests
+      if: matrix.python-version != '3.12'
+      run: |
+        uv run pytest tests/ -v --tb=short
+
+    # Lint and type checks are Python-version-independent (ruff targets py310
+    # via pyproject; mypy pins python_version = "3.10" there), so run them on
+    # one matrix leg instead of five.
     - name: Run linter
+      if: matrix.python-version == '3.12'
       run: |
         uv run ruff check src/ tests/
 
     - name: Check formatting
+      if: matrix.python-version == '3.12'
       run: |
         uv run ruff format --check src/ tests/
 
     - name: Run type checker (mypy)
+      if: matrix.python-version == '3.12'
       run: |
         uv run mypy src/async_batch_llm/ --ignore-missing-imports
 
@@ -73,8 +91,9 @@ jobs:
     # Catch broken nav/links in PRs instead of discovering them after the
     # post-merge gh-pages deploy.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v7
 
     - name: Install uv
       uses: astral-sh/setup-uv@v7
@@ -92,8 +111,9 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v7
 
     - name: Install uv
       uses: astral-sh/setup-uv@v7
@@ -103,10 +123,8 @@ jobs:
     - name: Set up Python
       run: uv python install 3.12
 
-    - name: Install dependencies
-      run: |
-        uv sync --all-extras
-
+    # No `uv sync` here: `uv export --frozen` reads the lockfile directly and
+    # pip-audit runs as an isolated uv tool, so the project env is never used.
     - name: Python security audit
       # Audit the project's locked runtime deps only, not pip-audit's own
       # venv (which pulls in pip and would report CVEs in pip itself —
@@ -118,7 +136,7 @@ jobs:
         uv tool run pip-audit --disable-pip --require-hashes -r /tmp/abl-deps.txt
 
     - name: Set up Node.js
-      uses: actions/setup-node@v5
+      uses: actions/setup-node@v6
       with:
         node-version: '20'
 

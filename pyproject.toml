@@ -19,13 +19,18 @@ keywords = [
     "AI",
     "orchestration",
     "pydantic",
+    "pydantic-ai",
     "gemini",
     "openai",
+    "openrouter",
+    "deepseek",
     "anthropic",
     "langchain",
     "parallel",
+    "concurrency",
     "rate-limiting",
     "retry",
+    "streaming",
     "structured-output",
     "prompt-engineering"
 ]
