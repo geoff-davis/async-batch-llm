@@ -391,7 +391,7 @@ class MyStrategy(LLMCallStrategy[Output]):
         return mock_output, mock_tokens
 ```
 
-#### `async def on_error(exception: Exception, attempt: int) -> None`
+#### `async def on_error(exception: Exception, attempt: int, state: RetryState | None = None) -> None`
 
 Handle errors that occur during execute().
 
@@ -407,6 +407,7 @@ Called by the framework when `execute()` raises an exception, before deciding wh
 
 - `exception` (Exception): The exception that was raised during `execute()`
 - `attempt` (int): Which attempt number failed (1, 2, 3, ...)
+- `state` (RetryState | None): Retry state that persists across attempts (v0.3.0)
 
 **Default:** No-op
 
@@ -420,11 +421,11 @@ Called by the framework when `execute()` raises an exception, before deciding wh
        def __init__(self):
            self.validation_failures = 0
 
-       async def on_error(self, exception: Exception, attempt: int) -> None:
+       async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
            if isinstance(exception, ValidationError):
                self.validation_failures += 1
 
-       async def execute(self, prompt: str, attempt: int, timeout: float):
+       async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
            # Only escalate model on validation errors
            model_index = min(self.validation_failures, len(MODELS) - 1)
            model = MODELS[model_index]
@@ -439,12 +440,12 @@ Called by the framework when `execute()` raises an exception, before deciding wh
            self.last_error = None
            self.last_response = None
 
-       async def on_error(self, exception: Exception, attempt: int) -> None:
+       async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
            if isinstance(exception, ValidationError):
                self.last_error = exception
                # last_response set in execute() before raising
 
-       async def execute(self, prompt: str, attempt: int, timeout: float):
+       async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
            if attempt > 1 and self.last_error:
                # Build smart retry prompt with partial parsing feedback
                prompt = self._create_retry_prompt_with_partial_data(prompt)
@@ -460,7 +461,7 @@ Called by the framework when `execute()` raises an exception, before deciding wh
            self.network_errors = 0
            self.rate_limit_errors = 0
 
-       async def on_error(self, exception: Exception, attempt: int) -> None:
+       async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
            if isinstance(exception, ValidationError):
                self.validation_errors += 1
            elif isinstance(exception, ConnectionError):
@@ -499,7 +500,7 @@ from async_batch_llm import LLMCallStrategy, TokenUsage
 
 class MyCustomStrategy(LLMCallStrategy[str]):
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[str, TokenUsage]:
         # Your custom LLM API call
         response = await my_llm_api.generate(prompt)

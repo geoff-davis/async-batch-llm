@@ -82,7 +82,7 @@ async-batch-llm uses a strategy pattern to support any LLM provider. A strategy 
 from async_batch_llm import LLMCallStrategy
 
 class MyCustomStrategy(LLMCallStrategy[str]):
-    async def execute(self, prompt: str, attempt: int, timeout: float):
+    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
         # Call your LLM here
         response = await my_llm.generate(prompt)
         tokens = {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}

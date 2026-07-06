@@ -19,12 +19,12 @@ class SmartModelEscalation(LLMCallStrategy[dict]):
         self.client = client
         self.validation_failures = 0
 
-    async def on_error(self, exception: Exception, attempt: int):
+    async def on_error(self, exception: Exception, attempt: int, state=None):
         """Only escalate on validation errors, not network/rate limit errors."""
         if isinstance(exception, ValidationError):
             self.validation_failures += 1
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
+    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
         # Network error on attempt 2? Retry with same cheap model
         # Validation error on attempt 2? Escalate to better model
         model_index = min(self.validation_failures, len(self.MODELS) - 1)
@@ -47,11 +47,11 @@ class SmartRetryStrategy(LLMCallStrategy[PersonData]):
         self.last_error = None
         self.last_response = None
 
-    async def on_error(self, exception: Exception, attempt: int):
+    async def on_error(self, exception: Exception, attempt: int, state=None):
         if isinstance(exception, ValidationError):
             self.last_error = exception
 
-    async def execute(self, prompt: str, attempt: int, timeout: float):
+    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
         if attempt == 1:
             final_prompt = prompt
         else:

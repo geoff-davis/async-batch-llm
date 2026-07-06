@@ -209,7 +209,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
         self.temps = temps
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[SummaryOutput, dict[str, int]]:
         # Use higher temperature for retries
         temp = self.temps[min(attempt - 1, len(self.temps) - 1)]
@@ -427,7 +427,7 @@ class GeminiVisionStrategy(LLMCallStrategy[str]):
         self.image_path = image_path
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[str, dict[str, int]]:
         # Read image
         with open(self.image_path, "rb") as f:
@@ -625,7 +625,7 @@ class SmartGeminiStrategy(LLMCallStrategy[PersonData]):
         self.validation_failures = 0  # Track quality issues only
         self.safety_blocks = 0        # Track Gemini safety blocks
 
-    async def on_error(self, exception: Exception, attempt: int) -> None:
+    async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
         """Track Gemini-specific error types."""
         if isinstance(exception, ValidationError):
             self.validation_failures += 1
@@ -634,7 +634,7 @@ class SmartGeminiStrategy(LLMCallStrategy[PersonData]):
             # Note: Could adjust safety_settings on retry
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[PersonData, TokenUsage]:
         # Select model based on validation failures (not total attempts)
         model_index = min(self.validation_failures, len(self.MODELS) - 1)
@@ -690,13 +690,13 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
         self.last_error = None
         self.last_response = None
 
-    async def on_error(self, exception: Exception, attempt: int) -> None:
+    async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
         """Track validation errors for smart retry."""
         if isinstance(exception, ValidationError):
             self.last_error = exception
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[PersonData, TokenUsage]:
         if attempt == 1:
             final_prompt = prompt
