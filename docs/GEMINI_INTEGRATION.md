@@ -329,12 +329,15 @@ strategy = GeminiStrategy(
     generation_config={"tools": [types.Tool(google_search=types.GoogleSearch())]},
 )
 
-# After processing, grounding is available provider-agnostically:
-for source in result.grounding.sources:   # typed view over metadata["grounding"]
-    print(source.uri, source.title)
-print(result.grounding.queries)            # the web_search_queries the model ran
-# result.grounding.supports                -> answer-span -> source-index links
-# Or read the plain dicts directly: result.metadata["grounding"]["sources"], ...
+# After processing, grounding is available provider-agnostically on each
+# per-item WorkItemResult (the views live on WorkItemResult/LLMResponse,
+# not on the BatchResult):
+for item in result.successes:
+    for source in item.grounding.sources:  # typed view over metadata["grounding"]
+        print(source.uri, source.title)
+    print(item.grounding.queries)          # the web_search_queries the model ran
+    # item.grounding.supports              -> answer-span -> source-index links
+    # Or read the plain dicts directly: item.metadata["grounding"]["sources"], ...
 ```
 
 Grounding data only exists when you requested the tool, so the default
@@ -380,7 +383,8 @@ processor = ParallelBatchProcessor(
 
 The classifier automatically:
 
-- Detects rate limit errors (429) as non-retryable
+- Detects rate limit errors (429) as retryable and triggers the coordinated
+  cooldown (other 4xx client errors fail fast as non-retryable)
 - Marks server errors (500) as retryable
 - Detects timeout errors
 - Handles validation errors

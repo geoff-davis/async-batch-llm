@@ -1,6 +1,6 @@
 # async-batch-llm API Reference
 
-Complete API documentation for async-batch-llm v0.4.0.
+Complete API documentation for async-batch-llm v0.16.0.
 
 ## Table of Contents
 
@@ -100,8 +100,11 @@ class WorkItemResult(Generic[TOutput, TContext]):
     output: TOutput | None = None
     error: str | None = None
     context: TContext | None = None
-    token_usage: TokenUsage = field(default_factory=dict)  # type: ignore[assignment]
+    token_usage: TokenUsage = field(
+        default_factory=lambda: {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    )
     metadata: dict[str, Any] | None = None
+    exception: Exception | None = None  # original exception on failure
     gemini_safety_ratings: dict[str, str] | None = None  # deprecated — warns on read
 ```
 
@@ -119,6 +122,8 @@ class WorkItemResult(Generic[TOutput, TContext]):
   - `cached_input_tokens` (int): Number of input tokens served from cache (Gemini context caching)
 - `metadata` (dict[str, Any] | None): Provider metadata (provider name,
   finish reason, safety ratings, ...) forwarded from the strategy
+- `exception` (Exception | None): The original exception when the item failed
+  (what `call()` / `LLMGateway.submit()` re-raise); None on success
 - `gemini_safety_ratings` (dict[str, str] | None): **Deprecated.** Reading
   it emits a `DeprecationWarning`; use `result.metadata["safety_ratings"]`
   instead
@@ -197,29 +202,40 @@ class ParallelBatchProcessor(
 ):
     def __init__(
         self,
-        config: ProcessorConfig,
+        max_workers: int | None = None,          # deprecated, use config
         post_processor: PostProcessorFunc[TOutput, TContext] | None = None,
-        progress_callback: ProgressCallbackFunc | None = None,
+        timeout_per_item: float | None = None,   # deprecated, use config
+        rate_limit_cooldown: float | None = None,  # deprecated, use config
+        config: ProcessorConfig | None = None,
         error_classifier: ErrorClassifier | None = None,
         rate_limit_strategy: RateLimitStrategy | None = None,
         middlewares: list[Middleware] | None = None,
         observers: list[ProcessorObserver] | None = None,
+        progress_callback: ProgressCallbackFunc | None = None,
     )
 ```
 
+Pass everything by keyword — the first positional parameter is the deprecated
+`max_workers`, not `config`.
+
 **Parameters:**
 
-- `config` (ProcessorConfig): Configuration for the processor
+- `config` (ProcessorConfig | None): Configuration for the processor (recommended)
 - `post_processor` (PostProcessorFunc | None): Optional async function called after each item
 - `progress_callback` (ProgressCallbackFunc | None): Optional callback for progress updates
-- `error_classifier` (ErrorClassifier | None): Custom error classifier. Default: `DefaultErrorClassifier()`
+- `error_classifier` (ErrorClassifier | None): Custom error classifier. Default: auto-selected
+  from the work items' strategies (e.g. `GeminiStrategy` → `GeminiErrorClassifier`), falling
+  back to `DefaultErrorClassifier()` when there is no recommendation or providers conflict
 - `rate_limit_strategy` (RateLimitStrategy | None): Custom rate limit handling. Default: `ExponentialBackoffStrategy()`
 - `middlewares` (list[Middleware] | None): List of middleware for pre/post processing
 - `observers` (list[ProcessorObserver] | None): List of observers for monitoring events
+- `max_workers`, `timeout_per_item`, `rate_limit_cooldown`: deprecated loose parameters;
+  set them on `ProcessorConfig` instead
 
 > **Post-processing:** The optional `post_processor` runs inline on the worker as soon as an item finishes.
 > It should hand off any heavy operations (long DB writes, expensive analytics, etc.) to another system;
-> if the function takes too long the worker sits idle until the 75 s timeout triggers, reducing overall throughput.
+> if the function takes too long the worker sits idle until the timeout triggers
+> (`ProcessorConfig.post_processor_timeout`, default 90 s), reducing overall throughput.
 
 **Methods:**
 
@@ -231,7 +247,9 @@ Add a work item to the processing queue.
 await processor.add_work(work_item)
 ```
 
-**Note:** If `max_queue_size` is set and queue is full, this will block until space is available.
+**Note:** If `max_queue_size` is set and the queue is full, `add_work` raises `ValueError`
+in batch mode. Only streaming mode (`start()`/`results()`/`finish()`) applies backpressure
+by blocking until space is available.
 
 #### `async def process_all() -> BatchResult`
 
@@ -566,6 +584,7 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
         response_parser: Callable[[LLMResponse], TOutput] | None = None,
         *,
         temperature: float | None = 0.0,
+        generation_config: dict[str, Any] | None = None,
     )
 ```
 
@@ -576,6 +595,10 @@ class GeminiStrategy(LLMCallStrategy[TOutput]):
   Defaults to returning `response.text`.
 - `temperature` (float | None): Sampling temperature. Default: 0.0. Pass `None` to
   omit the parameter and use the provider default.
+- `generation_config` (dict | None): Extra provider config merged into each
+  `generate()` call (e.g. tools, `response_mime_type`, logprobs). Also available
+  on `OpenAIStrategy`/`OpenRouterStrategy`/`DeepSeekStrategy` (shared
+  `ModelStrategy` base).
 
 **Requires:** `pip install 'async-batch-llm[gemini]'`
 
@@ -624,6 +647,7 @@ class GeminiCachedModel:
         auto_renew: bool = True,
         cache_tags: dict[str, str] | None = None,
         safety_settings: list[dict[str, Any]] | None = None,
+        metadata_extractors: list[MetadataExtractor] | None = None,
     )
 ```
 
@@ -700,6 +724,8 @@ Complete configuration for batch processor.
 class ProcessorConfig:
     max_workers: int = 5
     timeout_per_item: float = 120.0
+    post_processor_timeout: float = 90.0
+    concurrent_post_processing: bool = False
     retry: RetryConfig = field(default_factory=RetryConfig)
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
     progress_interval: int = 10
@@ -715,6 +741,8 @@ class ProcessorConfig:
 - `max_workers` (int): Maximum number of concurrent workers. Default: 5
 - `timeout_per_item` (float): Timeout applied to each `execute()` attempt in seconds (per-attempt, not a
   total budget across retries). Default: 120.0
+- `post_processor_timeout` (float): Max seconds for the `post_processor` callback per item. Default: 90.0
+- `concurrent_post_processing` (bool): Run the post-processor without holding the results lock. Default: False
 - `retry` ([RetryConfig](#retryconfig)): Retry configuration
 - `rate_limit` ([RateLimitConfig](#ratelimitconfig)): Rate limit handling configuration
 - `progress_interval` (int): Log progress every N items. Default: 10
@@ -805,6 +833,7 @@ class RateLimitConfig:
     slow_start_initial_delay: float = 2.0
     slow_start_final_delay: float = 0.1
     backoff_multiplier: float = 1.5
+    max_cooldown_seconds: float = 600.0
 ```
 
 **Fields:**
@@ -814,6 +843,7 @@ class RateLimitConfig:
 - `slow_start_initial_delay` (float): Initial delay in slow start. Default: 2.0
 - `slow_start_final_delay` (float): Final delay in slow start. Default: 0.1
 - `backoff_multiplier` (float): Increase cooldown on repeated rate limits. Default: 1.5
+- `max_cooldown_seconds` (float): Cap on the escalated cooldown (v0.16). Default: 600.0
 
 **Validation:**
 
@@ -854,12 +884,23 @@ class MyErrorClassifier(ErrorClassifier):
             return ErrorInfo(
                 is_retryable=True,
                 is_rate_limit=True,
-                category="rate_limit",
+                is_timeout=False,
+                error_category="rate_limit",
             )
         elif "timeout" in error_str:
-            return ErrorInfo(is_retryable=True, category="timeout")
+            return ErrorInfo(
+                is_retryable=True,
+                is_rate_limit=False,
+                is_timeout=True,
+                error_category="api_timeout",
+            )
         else:
-            return ErrorInfo(is_retryable=False, category="unknown")
+            return ErrorInfo(
+                is_retryable=False,
+                is_rate_limit=False,
+                is_timeout=False,
+                error_category="unknown",
+            )
 ```
 
 ---
@@ -931,9 +972,16 @@ Interface for custom rate limit handling strategies.
 ```python
 class RateLimitStrategy(ABC):
     @abstractmethod
-    async def handle_rate_limit(
-        self, error_info: ErrorInfo, attempt: int
-    ) -> float: ...
+    async def on_rate_limit(
+        self, worker_id: int, consecutive_limit_count: int
+    ) -> float:
+        """Called when a rate limit is detected. Returns the cooldown in seconds."""
+
+    @abstractmethod
+    def should_apply_slow_start(
+        self, items_since_resume: int
+    ) -> tuple[bool, float]:
+        """Whether to delay the next item after a cooldown, and by how much."""
 ```
 
 **Built-in Implementations:**
@@ -956,19 +1004,25 @@ class Middleware(ABC):
     ) -> LLMWorkItem | None: ...
 
     async def after_process(
-        self, work_item: LLMWorkItem, result: WorkItemResult
+        self, result: WorkItemResult
     ) -> WorkItemResult: ...
 
     async def on_error(
         self, work_item: LLMWorkItem, error: Exception
-    ) -> None: ...
+    ) -> WorkItemResult | None: ...
 ```
 
 **Methods:**
 
-- `before_process()`: Modify work item before processing. Return `None` to skip.
-- `after_process()`: Modify result after processing
-- `on_error()`: Handle errors (doesn't stop processing)
+- `before_process()`: Modify work item before processing. Return `None` to skip
+  the item (it is recorded as failed).
+- `after_process()`: Modify the result after processing (takes only the result).
+- `on_error()`: Handle errors. Return a `WorkItemResult` to substitute it for the
+  error (the first middleware returning non-None wins), or `None` for default
+  error handling.
+
+All three are abstract — subclass `BaseMiddleware` for no-op defaults so you
+only override the hooks you need.
 
 **Example:**
 
@@ -980,8 +1034,8 @@ class LoggingMiddleware(BaseMiddleware):
         print(f"Processing {work_item.item_id}")
         return work_item
 
-    async def after_process(self, work_item, result):
-        print(f"Completed {work_item.item_id}: {result.success}")
+    async def after_process(self, result):
+        print(f"Completed {result.item_id}: {result.success}")
         return result
 ```
 
@@ -1358,7 +1412,7 @@ for item_result in result.results:
 
 ### PostProcessorFunc
 
-Callback function called after each successful item.
+Callback function called after each item (both successes and failures).
 
 ```python
 PostProcessorFunc = Callable[

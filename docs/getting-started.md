@@ -58,7 +58,8 @@ async def main():
 asyncio.run(main())
 ```
 
-`process_stream` is implemented with a post-processor that pushes each completed
+`process_stream` is built on the processor's first-class streaming mode
+(`start()`/`add_work()`/`finish()`/`results()`) — workers push each completed
 result onto an internal queue, so results arrive in **completion order**. When
 you don't pass `error_classifier=`, it's auto-selected from the strategy
 (`OpenAIStrategy` → `OpenAIErrorClassifier`, `GeminiStrategy` →

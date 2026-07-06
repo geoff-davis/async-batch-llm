@@ -120,7 +120,8 @@ async-batch-llm/
 ├── src/async_batch_llm/          # Main package
 │   ├── base.py             # Core data models
 │   ├── parallel.py         # Main processor
-│   ├── llm_strategies/     # Strategy implementations
+│   ├── llm_strategies.py   # LLMCallStrategy + built-in strategies
+│   ├── models.py           # Provider model classes
 │   ├── observers/          # Observer implementations
 │   └── testing/            # Testing utilities
 ├── tests/                  # Test suite
@@ -133,8 +134,8 @@ async-batch-llm/
 
 To add a new LLM provider strategy:
 
-1. Create strategy in `src/async_batch_llm/llm_strategies/`
-2. Implement `LLMCallStrategy` protocol
+1. Add the strategy to `src/async_batch_llm/llm_strategies.py` (or your own module)
+2. Subclass the `LLMCallStrategy` abstract base class
 3. Add tests in `tests/`
 4. Add example in `examples/`
 5. Update documentation in `docs/examples/custom-strategies.md`
@@ -152,8 +153,8 @@ class MyProviderStrategy(LLMCallStrategy[str]):
 
 ## Questions?
 
-- Open an [issue](https://github.com/geoff-davis/async-async-batch-llm/issues)
-- Start a [discussion](https://github.com/geoff-davis/async-async-batch-llm/discussions)
+- Open an [issue](https://github.com/geoff-davis/async-batch-llm/issues)
+- Start a [discussion](https://github.com/geoff-davis/async-batch-llm/discussions)
 
 ## License
 

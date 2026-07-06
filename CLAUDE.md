@@ -384,7 +384,8 @@ the project's release-prep flow.
 
 ## Testing strategy
 
-~516 tests; the default run takes ~15 seconds (no real sleeps — see
+~546 tests (565 collected, `integration` deselected by default); the
+default run takes ~15 seconds (no real sleeps — see
 `tests/conftest.py` for the shared `fast_retry`/`fast_rate_limit`
 fixtures; use them in any test that triggers a retry, or you'll pay
 1s+ per retry against the library defaults). `pytest-timeout` caps

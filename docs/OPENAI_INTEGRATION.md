@@ -132,24 +132,25 @@ not modeled by this helper.
 
 The OpenAI-compatible models (`OpenAIModel`, `OpenRouterModel`,
 `DeepSeekModel`) surface additional structured output under reserved
-`metadata` keys, readable through typed views on the result — see
+`metadata` keys, readable through typed views on each per-item
+`WorkItemResult` (or `LLMResponse`) — not on the batch-level `BatchResult` — see
 [Typed auxiliary output](API.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs)
 for the shapes and boundaries (**experimental** — shapes may change while
 they stabilize):
 
 - **`reasoning`** — the model's reasoning/thinking trace, read from
   `message.reasoning_content` (DeepSeek reasoner models) with a fallback to
-  `message.reasoning` (OpenRouter). Access via `result.reasoning`.
+  `message.reasoning` (OpenRouter). Access via `item_result.reasoning`.
 - **`tool_calls`** — tool/function calls the model requested, as
   `[{"id", "name", "arguments"}]` with `arguments` kept as the raw JSON
-  string. Access via `result.tool_calls` (a `list[ToolCall] | None`).
+  string. Access via `item_result.tool_calls` (a `list[ToolCall] | None`).
   Visibility only — the framework never executes tools; note that a pure
   tool-call turn (`content=null`) raises `EmptyResponseError`, so calls
   surface only alongside returned text.
 - **`logprobs`** — the provider logprobs object (as a plain dict via
   `model_dump()`), when you requested it, e.g.
   `OpenAIStrategy(model, generation_config={"logprobs": True})`. Access via
-  `result.logprobs`.
+  `item_result.logprobs`.
 
 Each key is emitted only when present on the response, so default payloads
 are unchanged unless you asked the model for these features.
