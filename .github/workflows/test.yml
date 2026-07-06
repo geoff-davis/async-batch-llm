@@ -58,34 +58,57 @@ jobs:
       run: |
         uv run pytest tests/ -v --tb=short
 
-    # Lint and type checks are Python-version-independent (ruff targets py310
-    # via pyproject; mypy pins python_version = "3.10" there), so run them on
-    # one matrix leg instead of five.
-    - name: Run linter
-      if: matrix.python-version == '3.12'
-      run: |
-        uv run ruff check src/ tests/
-
-    - name: Check formatting
-      if: matrix.python-version == '3.12'
-      run: |
-        uv run ruff format --check src/ tests/
-
-    - name: Run type checker (mypy)
-      if: matrix.python-version == '3.12'
-      run: |
-        uv run mypy src/async_batch_llm/ --ignore-missing-imports
-
-    - name: Run type checker (ty)
-      if: matrix.python-version == '3.12'
-      run: |
-        uv run ty check src/
-
     - name: Coverage comment
       uses: py-cov-action/python-coverage-comment-action@v3
       if: matrix.python-version == '3.12'
       with:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  quality:
+    # Lint and type checks are Python-version-independent (ruff targets py310
+    # via pyproject; mypy pins python_version = "3.10" there), so they run
+    # once here, in parallel with the test matrix, instead of inside the
+    # 3.12 test leg where mypy's ~20s sat on the critical path.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+
+    - name: Set up Python
+      run: uv python install 3.12
+
+    - name: Install dependencies
+      run: uv sync --extra dev
+
+    # mypy is incremental: with a restored cache it only rechecks modules
+    # whose sources (or dependencies) changed. Keying on github.sha with
+    # restore-keys fallbacks means every run saves a fresh cache and the
+    # next run restores the closest ancestor.
+    - name: Restore mypy cache
+      uses: actions/cache@v4
+      with:
+        path: .mypy_cache
+        key: mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
+        restore-keys: |
+          mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
+          mypy-${{ runner.os }}-
+
+    - name: Run linter
+      run: uv run ruff check src/ tests/
+
+    - name: Check formatting
+      run: uv run ruff format --check src/ tests/
+
+    - name: Run type checker (mypy)
+      run: uv run mypy src/async_batch_llm/ --ignore-missing-imports
+
+    - name: Run type checker (ty)
+      run: uv run ty check src/
 
   docs-build:
     # Catch broken nav/links in PRs instead of discovering them after the
