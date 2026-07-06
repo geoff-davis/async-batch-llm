@@ -251,7 +251,7 @@ async def example_custom_strategy():
             print("  [Strategy] prepare() called - initializing resources")
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state=None
         ) -> tuple[str, TokenUsage]:
             """Execute the LLM call."""
             self.call_count += 1

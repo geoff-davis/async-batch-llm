@@ -86,7 +86,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
         self.temps = temps if temps is not None else [0.0, 0.25, 0.5]
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[SummaryOutput, TokenUsage]:
         """
         Execute Gemini call with temperature based on attempt.

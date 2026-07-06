@@ -94,7 +94,7 @@ class ModelEscalationStrategy(LLMCallStrategy[Analysis]):
         self.total_cost_units = 0  # Track cumulative cost
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[Analysis, TokenUsage]:
         # Select model based on attempt number
         model = self.MODELS[min(attempt - 1, len(self.MODELS) - 1)]
@@ -161,7 +161,7 @@ class ModelAndTempEscalationStrategy(LLMCallStrategy[Analysis]):
         self.verbose = verbose
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float
+        self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[Analysis, TokenUsage]:
         # Select model and temperature based on attempt
         model, temp = self.MODELS[min(attempt - 1, len(self.MODELS) - 1)]
@@ -290,7 +290,7 @@ async def example_cost_comparison():
         def __init__(self, client: genai.Client):
             self.client = client
 
-        async def execute(self, prompt: str, attempt: int, timeout: float):
+        async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
             config = GenerateContentConfig(
                 temperature=0.7,
                 response_mime_type="application/json",

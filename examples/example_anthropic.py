@@ -52,7 +52,9 @@ class AnthropicStrategy(LLMCallStrategy[str]):
         self.temperature = temperature
         self.system_prompt = system_prompt
 
-    async def execute(self, prompt: str, attempt: int, timeout: float) -> tuple[str, TokenUsage]:
+    async def execute(
+        self, prompt: str, attempt: int, timeout: float, state=None
+    ) -> tuple[str, TokenUsage]:
         """Execute Anthropic API call.
 
         Note: timeout parameter is provided for information but timeout enforcement
@@ -283,7 +285,7 @@ async def example_anthropic_progressive_temperature():
             self.base_temps = base_temps if base_temps is not None else [0.3, 0.7, 1.0]
 
         async def execute(
-            self, prompt: str, attempt: int, timeout: float
+            self, prompt: str, attempt: int, timeout: float, state=None
         ) -> tuple[str, TokenUsage]:
             # Use progressively higher temperature for retries
             temp = self.base_temps[min(attempt - 1, len(self.base_temps) - 1)]
