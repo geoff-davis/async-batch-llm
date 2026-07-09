@@ -56,6 +56,23 @@ exit) before cleaning up the shared strategy, so in-flight calls aren't cut off
 by shutdown. Set `submit_timeout` to bound how long shutdown waits for that
 drain — otherwise it waits as long as the admitted work takes.
 
+## Timeout and capacity semantics
+
+The gateway semaphore is acquired before item execution, so semaphore wait does
+not consume `timeout_per_item`. `submit_timeout` is the end-to-end caller budget:
+it includes semaphore wait, provider-capacity admission, coordinated cooldown,
+retry backoff, and every
+attempt. If a model built with `from_api_key(max_connections=N)` advertises less
+capacity than `config.max_workers`, gateway construction emits a `UserWarning`
+and the shared executor gates attempts at `N`. Use
+`ProcessorConfig(max_provider_concurrency=N)` for a custom client whose capacity
+cannot be inspected.
+
+Avoid wrapping an unbounded input in `asyncio.gather(gw.submit(...))`: the
+gateway bounds active provider calls, but every gathered coroutine is still a
+pending task. Bound the outer producer or use `process_stream` with a bounded
+`max_queue_size` for large batch workloads.
+
 ## call
 
 ::: async_batch_llm.call

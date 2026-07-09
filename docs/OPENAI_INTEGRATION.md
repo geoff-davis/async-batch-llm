@@ -204,8 +204,8 @@ OpenAIModel.from_api_key(
 ## Connection pool sizing (`max_connections`)
 
 The openai SDK uses httpx's default connection pool (~100 connections). If you
-raise `ProcessorConfig(max_workers=...)` above that, the extra workers just
-block waiting for a connection — **throughput plateaus with no warning**. This
+raise `ProcessorConfig(max_workers=...)` above an unknown pool capacity, extra
+workers can block waiting for a connection. This
 bites high-concurrency providers like DeepSeek hardest (it allows thousands of
 concurrent connections, so the ~100 default — not the API — is your ceiling).
 
@@ -222,9 +222,37 @@ on the underlying `httpx.AsyncClient`. It's a convenience for the common case;
 if you need finer control, build your own `http_client=httpx.AsyncClient(...)`
 and pass that instead (the two are mutually exclusive).
 
-> **Slow-start, too.** Even with the pool raised, the default
-> `RateLimitConfig` slow-start ramp bounds *time-to-full-throughput* on the
-> first ~50 items. If you're chasing peak throughput, tune that as well.
+ABL records `max_connections` as `model.max_concurrency`; `ModelStrategy`
+forwards it, and processors/gateways warn when `max_workers` exceeds the known
+capacity. The shared executor automatically gates attempts at that capacity
+before `timeout_per_item` starts. For a user-supplied client, declare the limit
+on `ProcessorConfig` because ABL cannot inspect the transport reliably:
+
+```python
+import httpx
+from openai import AsyncOpenAI
+
+http_client = httpx.AsyncClient(
+    limits=httpx.Limits(max_connections=64, max_keepalive_connections=64),
+    timeout=httpx.Timeout(60),
+)
+client = AsyncOpenAI(api_key="sk-...", http_client=http_client)
+model = OpenAIModel("gpt-4o-mini", client)  # caller owns and closes client
+config = ProcessorConfig(
+    max_workers=100,
+    max_provider_concurrency=64,
+    timeout_per_item=60,
+)
+```
+
+The explicit limit keeps attempts from waiting for httpx connections inside
+`strategy.execute()`, where such a wait would count against
+`timeout_per_item`. See the
+[timeout and concurrency semantics](production-checklist.md#4-timeout-and-concurrency-semantics)
+for the full boundary.
+
+> **Post-rate-limit slow-start:** `RateLimitConfig.slow_start_*` applies only
+> after a rate-limit cooldown. It does not ramp the initial batch startup.
 
 ## Subclassing for other OpenAI-compatible providers
 

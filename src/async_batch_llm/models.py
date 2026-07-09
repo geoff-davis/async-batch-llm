@@ -832,6 +832,11 @@ class OpenAICompatibleModel:
     constructed via :meth:`from_api_key`). User-provided clients are left
     alone.
 
+    Models built with :meth:`from_api_key` and ``max_connections=N`` expose
+    ``max_concurrency=N`` so execution surfaces can diagnose worker/pool
+    mismatches. It remains ``None`` for caller-supplied clients because their
+    effective transport capacity cannot be inspected reliably.
+
     Added in v0.9.0.
     """
 
@@ -886,6 +891,10 @@ class OpenAICompatibleModel:
         self._default_extra_headers = extra_headers
         self._default_extra_body = extra_body
         self._metadata_extractors = metadata_extractors
+        # Known only when this class constructs and sizes the underlying httpx
+        # pool via from_api_key(max_connections=...). User-supplied clients are
+        # intentionally not introspected because their transport may be wrapped.
+        self.max_concurrency: int | None = None
         # Set to True only by from_api_key(); cleanup() uses this to decide
         # whether to close the underlying httpx connections.
         self._owns_client: bool = False
@@ -1176,6 +1185,8 @@ class OpenAICompatibleModel:
                 allow thousands of concurrent connections) hit this ceiling
                 first. Mutually exclusive with passing your own
                 ``http_client``; raises ``ValueError`` if you pass both.
+                The value is also exposed as ``model.max_concurrency`` and
+                forwarded by ``ModelStrategy`` for processor/gateway validation.
         """
         if AsyncOpenAI is None:
             raise ImportError(
@@ -1239,6 +1250,7 @@ class OpenAICompatibleModel:
             extra_body=extra_body,
             metadata_extractors=metadata_extractors,
         )
+        instance.max_concurrency = max_connections
         instance._owns_client = True
         return instance
 

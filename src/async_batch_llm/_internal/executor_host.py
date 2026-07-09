@@ -35,6 +35,7 @@ from ..strategies import (
     RateLimitStrategy,
 )
 from ..token_extractor import TokenExtractor
+from .capacity import CapacityLimiter
 from .event_dispatcher import EventDispatcher
 from .item_executor import ItemExecutor
 from .rate_limit_coordinator import RateLimitCoordinator
@@ -99,6 +100,7 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
             events=self._events,
         )
         self._strategy_lifecycle: StrategyLifecycle[TOutput] = StrategyLifecycle()
+        self._capacity_limiter = CapacityLimiter(config.max_provider_concurrency)
         self._stats = ProcessingStats()
         self._stats_lock = asyncio.Lock()
         self._token_extractor = TokenExtractor()

@@ -9,6 +9,7 @@ class ProcessingEvent(Enum):
     """Events that can be observed during processing."""
 
     ITEM_STARTED = "item_started"
+    ITEM_ADMITTED = "item_admitted"
     ITEM_COMPLETED = "item_completed"
     ITEM_FAILED = "item_failed"
     RATE_LIMIT_HIT = "rate_limit_hit"

@@ -105,6 +105,7 @@ class WorkItemResult(Generic[TOutput, TContext]):
     )
     metadata: dict[str, Any] | None = None
     exception: Exception | None = None  # original exception on failure
+    admission_wait_seconds: float = 0.0
     gemini_safety_ratings: dict[str, str] | None = None  # deprecated — warns on read
 ```
 
@@ -123,6 +124,8 @@ class WorkItemResult(Generic[TOutput, TContext]):
 - `metadata` (dict[str, Any] | None): Provider metadata (provider name,
   finish reason, safety ratings, ...) forwarded from the strategy
 - `exception` (Exception | None): The original exception when the item failed
+- `admission_wait_seconds` (float): Cumulative provider-capacity wait across all
+  attempts. This wait occurs before `timeout_per_item` starts.
   (what `call()` / `LLMGateway.submit()` re-raise); None on success
 - `gemini_safety_ratings` (dict[str, str] | None): **Deprecated.** Reading
   it emits a `DeprecationWarning`; use `result.metadata["safety_ratings"]`
@@ -221,7 +224,8 @@ Pass everything by keyword — the first positional parameter is the deprecated
 **Parameters:**
 
 - `config` (ProcessorConfig | None): Configuration for the processor (recommended)
-- `post_processor` (PostProcessorFunc | None): Optional async function called after each item
+- `post_processor` (PostProcessorFunc | None): Optional sync or async function called after each item;
+  synchronous callbacks run in a worker thread
 - `progress_callback` (ProgressCallbackFunc | None): Optional callback for progress updates
 - `error_classifier` (ErrorClassifier | None): Custom error classifier. Default: auto-selected
   from the work items' strategies (e.g. `GeminiStrategy` → `GeminiErrorClassifier`), falling
@@ -232,10 +236,12 @@ Pass everything by keyword — the first positional parameter is the deprecated
 - `max_workers`, `timeout_per_item`, `rate_limit_cooldown`: deprecated loose parameters;
   set them on `ProcessorConfig` instead
 
-> **Post-processing:** The optional `post_processor` runs inline on the worker as soon as an item finishes.
+> **Post-processing:** By default the optional `post_processor` runs inline with the worker's item lifecycle
+> as soon as an item finishes. Synchronous callbacks are offloaded to a thread so they do not block the event loop.
 > It should hand off any heavy operations (long DB writes, expensive analytics, etc.) to another system;
 > if the function takes too long the worker sits idle until the timeout triggers
-> (`ProcessorConfig.post_processor_timeout`, default 90 s), reducing overall throughput.
+> (`ProcessorConfig.post_processor_timeout`, default 90 s), reducing overall throughput. Timing out a synchronous
+> callback stops waiting for its thread; Python cannot forcibly stop code already running in that thread.
 
 **Methods:**
 
@@ -734,15 +740,21 @@ class ProcessorConfig:
     max_queue_size: int = 0
     max_requests_per_minute: float | None = None
     dry_run: bool = False
+    max_provider_concurrency: int | None = None
 ```
 
 **Fields:**
 
 - `max_workers` (int): Maximum number of concurrent workers. Default: 5
+- `max_provider_concurrency` (int | None): Optional provider/client concurrency
+  limit applied before `strategy.execute()` and outside `timeout_per_item`.
+  When the strategy also advertises `max_concurrency`, the lower limit applies.
 - `timeout_per_item` (float): Timeout applied to each `execute()` attempt in seconds (per-attempt, not a
   total budget across retries). Default: 120.0
-- `post_processor_timeout` (float): Max seconds for the `post_processor` callback per item. Default: 90.0
-- `concurrent_post_processing` (bool): Run the post-processor without holding the results lock. Default: False
+- `post_processor_timeout` (float): Max seconds to wait for the sync or async `post_processor`
+  callback per item. Default: 90.0
+- `concurrent_post_processing` (bool): Run post-processors as tracked background tasks, bounded by
+  `max_workers`. Default: False
 - `retry` ([RetryConfig](#retryconfig)): Retry configuration
 - `rate_limit` ([RateLimitConfig](#ratelimitconfig)): Rate limit handling configuration
 - `progress_interval` (int): Log progress every N items. Default: 10
@@ -1056,10 +1068,13 @@ class ProcessorObserver(ABC):
 **Events:**
 
 - `BATCH_STARTED`: `{total, max_workers, start_time}`
-- `BATCH_COMPLETED`: `{processed, succeeded, failed, total, total_tokens, cached_input_tokens, duration}`
+- `BATCH_COMPLETED`: `{processed, succeeded, failed, total, total_tokens,
+  cached_input_tokens, total_admission_wait_seconds,
+  max_admission_wait_seconds, duration}`
 - `WORKER_STARTED` / `WORKER_STOPPED`: `{worker_id}`
 - `ITEM_STARTED`: `{item_id, worker_id}`
-- `ITEM_COMPLETED`: `{item_id, duration, tokens}`
+- `ITEM_ADMITTED`: `{item_id, worker_id, attempt, wait_seconds, capacity}`
+- `ITEM_COMPLETED`: `{item_id, duration, tokens, admission_wait_seconds}`
 - `ITEM_FAILED`: `{item_id, error_type}`
 - `RATE_LIMIT_HIT`: `{item_id, worker_id}`
 - `COOLDOWN_STARTED`: `{worker_id, duration, consecutive}`
@@ -1076,6 +1091,10 @@ class ProcessorObserver(ABC):
 ### MetricsObserver
 
 Built-in observer for collecting metrics.
+
+In addition to item, error, cooldown, and processing-time metrics, it reports
+`admission_wait_count`, `admission_wait_seconds_sum`,
+`admission_wait_seconds_max`, and `avg_admission_wait_seconds`.
 
 ```python
 class MetricsObserver(BaseObserver):

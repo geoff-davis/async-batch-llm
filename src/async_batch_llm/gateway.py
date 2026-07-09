@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Generic, TypeVar
 
+from ._internal.capacity import warn_if_worker_capacity_exceeded
 from ._internal.executor_host import ExecutorHost
 from .base import LLMWorkItem, WorkItemResult
 from .core import ProcessorConfig
@@ -83,6 +84,12 @@ class LLMGateway(Generic[TOutput]):
             raise ValueError(f"submit_timeout must be > 0 (got {submit_timeout})")
 
         cfg = config or ProcessorConfig(max_workers=5)
+        warn_if_worker_capacity_exceeded(
+            strategy=strategy,
+            max_workers=cfg.max_workers,
+            surface="LLMGateway",
+            stacklevel=3,
+        )
         self._strategy = strategy
         self._host: ExecutorHost[Any, TOutput, Any] = ExecutorHost(
             cfg, strategy=strategy, error_classifier=error_classifier

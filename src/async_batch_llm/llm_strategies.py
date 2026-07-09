@@ -267,6 +267,21 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
         """
         return None
 
+    @property
+    def max_concurrency(self) -> int | None:
+        """Maximum safe concurrent calls advertised by this strategy.
+
+        ``None`` means the capacity is unknown. Model-backed strategies forward
+        capacity metadata from their model; custom strategies can override this
+        property when they own a bounded client or transport.
+        """
+        return None
+
+    @property
+    def concurrency_scope(self) -> object:
+        """Identity whose capacity is shared by concurrent calls."""
+        return self
+
 
 class ModelStrategy(LLMCallStrategy[TOutput]):
     """
@@ -343,6 +358,19 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
         self.response_parser = response_parser or (lambda response: cast(TOutput, response.text))
         self.temperature = temperature
         self.generation_config = generation_config
+
+    @property
+    def max_concurrency(self) -> int | None:
+        """Forward optional client/transport capacity advertised by the model."""
+        capacity = getattr(self.model, "max_concurrency", None)
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
+            return None
+        return capacity
+
+    @property
+    def concurrency_scope(self) -> object:
+        """Strategies wrapping the same model share one admission limit."""
+        return self.model
 
     async def prepare(self) -> None:
         """Delegate to model.prepare() if the model has a managed lifecycle."""

@@ -266,6 +266,9 @@ class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
             accumulated failed results don't pin frame locals; a re-raise gets a
             fresh traceback. Excluded from equality so two failed results with
             distinct exception instances still compare equal.
+        admission_wait_seconds: Total time this item spent waiting for provider
+            capacity across all attempts. This wait occurs before the per-attempt
+            execution timeout starts.
     """
 
     item_id: str
@@ -282,6 +285,7 @@ class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
     # doesn't fire on every repr()/comparison.
     gemini_safety_ratings: dict[str, str] | None = field(default=None, repr=False, compare=False)
     exception: Exception | None = field(default=None, compare=False)
+    admission_wait_seconds: float = 0.0
 
     def __post_init__(self):
         """Backfill ``gemini_safety_ratings`` from ``metadata['safety_ratings']``
@@ -596,6 +600,8 @@ class ProcessingStats:
     total_output_tokens: int = 0
     total_tokens: int = 0
     cached_input_tokens: int = 0  # Tokens served from provider-side caches
+    total_admission_wait_seconds: float = 0.0
+    max_admission_wait_seconds: float = 0.0
 
     def copy(self) -> dict[str, Any]:
         """Return a dictionary copy of the stats for backwards compatibility."""
@@ -611,6 +617,8 @@ class ProcessingStats:
             "total_output_tokens": self.total_output_tokens,
             "total_tokens": self.total_tokens,
             "cached_input_tokens": self.cached_input_tokens,
+            "total_admission_wait_seconds": self.total_admission_wait_seconds,
+            "max_admission_wait_seconds": self.max_admission_wait_seconds,
             # Alias kept for backward compatibility: the duplicate field was
             # never incremented, so it always read 0. Both keys now come from
             # the single counter that is actually updated.
@@ -679,6 +687,11 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         """
         self.max_workers = max_workers
         self.post_processor = post_processor
+        self._post_processor_is_async = False
+        if post_processor is not None:
+            self._post_processor_is_async = inspect.iscoroutinefunction(post_processor) or (
+                callable(post_processor) and inspect.iscoroutinefunction(post_processor.__call__)  # type: ignore[operator]
+            )
         self.max_queue_size = max_queue_size
         self.progress_callback = progress_callback
         self.progress_callback_timeout = progress_callback_timeout
@@ -1095,22 +1108,32 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
 
         Args:
             result: Work item result to post-process
-            timeout: Maximum seconds an async post-processor may run before it is
-                cancelled (``None`` = no limit). Threaded through from
+            timeout: Maximum seconds to wait for a post-processor callback
+                (``None`` = no limit). Threaded through from
                 ``ProcessorConfig.post_processor_timeout`` so a single, caller-
                 configured value governs — there is no separate hardcoded cap.
         """
         if self.post_processor is None:
             return
+        post_processor = self.post_processor
+
+        async def invoke() -> None:
+            if self._post_processor_is_async:
+                callback_result = post_processor(result)
+            else:
+                # A synchronous callback may perform blocking DB/file I/O. Keep
+                # it off the event loop just as synchronous progress callbacks are.
+                callback_result = await asyncio.to_thread(post_processor, result)
+            # Also support callable adapters that return an awaitable without
+            # being declared with ``async def``.
+            if inspect.isawaitable(callback_result):
+                await callback_result
 
         try:
-            await_result = self.post_processor(result)
-            # Handle both async and sync post-processors
-            if asyncio.iscoroutine(await_result):
-                if timeout is not None:
-                    await asyncio.wait_for(await_result, timeout=timeout)
-                else:
-                    await await_result
+            if timeout is not None:
+                await asyncio.wait_for(invoke(), timeout=timeout)
+            else:
+                await invoke()
         except TimeoutError:
             logger.error(
                 f"[FAIL]Post-processor execution timed out after {timeout}s for {result.item_id}"

@@ -32,6 +32,7 @@ from ..base import (
 )
 from ..observers import ProcessingEvent
 from ..strategies import FrameworkTimeoutError, RateLimitRetriesExceeded
+from .capacity import CapacityLimiter
 from .error_logging import log_retryable_error, log_validation_error
 
 if TYPE_CHECKING:
@@ -51,6 +52,8 @@ logger = logging.getLogger(__name__)
 # Kept in sync with parallel.py (single source would create an import cycle).
 ERROR_MESSAGE_MAX_LENGTH = 200
 ERROR_MESSAGE_DETAILED_LENGTH = 500
+_ADMISSION_WAIT_STATE_KEY = "_abl_admission_wait_seconds"
+_ADMISSION_WAIT_EXCEPTION_KEY = "_abl_admission_wait_seconds"
 
 _E = TypeVar("_E", bound=BaseException)
 
@@ -102,6 +105,7 @@ class ExecutorHostProtocol(Protocol[TInput, TOutput, TContext]):
     _stats: ProcessingStats
     _stats_lock: asyncio.Lock
     _strategy_lifecycle: StrategyLifecycle[TOutput]
+    _capacity_limiter: CapacityLimiter
 
     def _extract_token_usage(self, exception: Exception) -> dict[str, int]: ...
 
@@ -168,6 +172,10 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
     @property
     def _strategy_lifecycle(self) -> StrategyLifecycle[TOutput]:
         return self._host._strategy_lifecycle
+
+    @property
+    def _capacity_limiter(self) -> CapacityLimiter:
+        return self._host._capacity_limiter
 
     # ── Thin delegators (so moved bodies stay verbatim) ──────────
     async def _emit_event(self, event: ProcessingEvent, data: dict | None = None) -> None:
@@ -250,6 +258,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         failed_tokens = {}
         if hasattr(e, "__dict__") and "_failed_token_usage" in e.__dict__:
             failed_tokens = e.__dict__["_failed_token_usage"]
+        admission_wait_seconds = float(
+            getattr(e, "__dict__", {}).get(_ADMISSION_WAIT_EXCEPTION_KEY, 0.0)
+        )
 
         token_msg = ""
         if failed_tokens.get("total_tokens", 0) > 0:
@@ -276,7 +287,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 context=work_item.context,
                 token_usage=cast(TokenUsage, failed_tokens),
                 exception=_detach_traceback(e),
+                admission_wait_seconds=admission_wait_seconds,
             )
+        result.admission_wait_seconds = admission_wait_seconds
 
         # Emit ITEM_FAILED here too. Items that exhaust retries reach
         # this fallback (the exception propagates out of
@@ -347,6 +360,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 # rate-limit retries) so users see the true cost of a failure.
                 attempt_tokens = self._host._extract_token_usage(e)
                 self._token_extractor.accumulate(cumulative_failed_tokens, attempt_tokens)
+                admission_wait_seconds = float(retry_state.get(_ADMISSION_WAIT_STATE_KEY, 0.0))
+                if hasattr(e, "__dict__"):
+                    e.__dict__[_ADMISSION_WAIT_EXCEPTION_KEY] = admission_wait_seconds
 
                 error_info = self.error_classifier.classify(e)
                 error_snippet = str(e)[:ERROR_MESSAGE_MAX_LENGTH]
@@ -388,6 +404,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                             rate_limit_retries=rate_limit_retries,
                         )
                         exhausted.__dict__["_failed_token_usage"] = cumulative_failed_tokens
+                        exhausted.__dict__[_ADMISSION_WAIT_EXCEPTION_KEY] = admission_wait_seconds
                         raise exhausted from e
                     logger.warning(
                         f"[WARN]Rate-limit retry {rate_limit_retries} for {work_item.item_id} "
@@ -454,6 +471,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 # reporting is aggregated across retries, not just the final
                 # attempt (see README "aggregated across retries").
                 self._merge_failed_tokens(result, cumulative_failed_tokens)
+                result.admission_wait_seconds = float(
+                    retry_state.get(_ADMISSION_WAIT_STATE_KEY, 0.0)
+                )
                 return result
 
     @staticmethod
@@ -543,76 +563,93 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 attempt_number,
                 self.config.timeout_per_item,
             )
-            llm_start_time = time.time()
-
             # Ensure strategy is not None (it shouldn't be since we always pass it)
             if strategy is None:
                 raise RuntimeError("Strategy is None in _process_item - this should not happen")
 
-            try:
-                # Proactive rate limiting: acquire token before making request
-                if self._proactive_rate_limiter:
-                    logger.debug(
-                        "[RATE-LIMIT] Acquiring token for %s (attempt %s)",
-                        work_item.item_id,
-                        attempt_number,
-                    )
-                    await self._proactive_rate_limiter.acquire()
-                    logger.debug(
-                        "[RATE-LIMIT] Token acquired for %s (attempt %s)",
-                        work_item.item_id,
-                        attempt_number,
-                    )
+            # Proactive rate limiting happens before provider-capacity admission,
+            # so an attempt never holds a scarce connection slot while waiting
+            # for its request-rate token.
+            if self._proactive_rate_limiter:
+                logger.debug(
+                    "[RATE-LIMIT] Acquiring token for %s (attempt %s)",
+                    work_item.item_id,
+                    attempt_number,
+                )
+                await self._proactive_rate_limiter.acquire()
+                logger.debug(
+                    "[RATE-LIMIT] Token acquired for %s (attempt %s)",
+                    work_item.item_id,
+                    attempt_number,
+                )
 
-                # Dry-run mode: use strategy's dry_run method instead of making API call
-                if self.config.dry_run:
-                    logger.debug("[DRY-RUN] Skipping API call for %s", work_item.item_id)
-                    # Delegate to strategy's dry_run method for mock output.
-                    # dry_run is fixed at 2-tuple — no metadata for mock data.
-                    output, token_usage = await strategy.dry_run(work_item.prompt)
-                    response_metadata = None
-                else:
+            # Dry-run mode has no provider call and therefore needs no capacity.
+            if self.config.dry_run:
+                logger.debug("[DRY-RUN] Skipping API call for %s", work_item.item_id)
+                llm_start_time = time.time()
+                output, token_usage = await strategy.dry_run(work_item.prompt)
+                response_metadata = None
+            else:
+                async with self._capacity_limiter.admit(strategy) as admission:
+                    previous_wait = (
+                        float(retry_state.get(_ADMISSION_WAIT_STATE_KEY, 0.0))
+                        if retry_state is not None
+                        else 0.0
+                    )
+                    total_admission_wait = previous_wait + admission.wait_seconds
+                    if retry_state is not None:
+                        retry_state.set(_ADMISSION_WAIT_STATE_KEY, total_admission_wait)
+                    if self._events.observers:
+                        await self._emit_event(
+                            ProcessingEvent.ITEM_ADMITTED,
+                            {
+                                "item_id": work_item.item_id,
+                                "worker_id": worker_id,
+                                "attempt": attempt_number,
+                                "wait_seconds": admission.wait_seconds,
+                                "capacity": admission.capacity,
+                            },
+                        )
+
+                    # The execution timer starts only after capacity is acquired.
+                    llm_start_time = time.time()
                     # Call strategy.execute() with prompt, attempt number, timeout, and retry state (v0.3.0)
                     # Wrap in asyncio.wait_for to enforce timeout at framework level.
                     # _unpack_strategy_result accepts both legacy 2-tuple and the
                     # current 3-tuple (output, tokens, metadata) shape (v0.10.0).
-                    raw_result = await asyncio.wait_for(
-                        strategy.execute(
-                            work_item.prompt,
-                            attempt_number,
-                            self.config.timeout_per_item,
-                            retry_state,
-                        ),
-                        timeout=self.config.timeout_per_item,
-                    )
+                    try:
+                        raw_result = await asyncio.wait_for(
+                            strategy.execute(
+                                work_item.prompt,
+                                attempt_number,
+                                self.config.timeout_per_item,
+                                retry_state,
+                            ),
+                            timeout=self.config.timeout_per_item,
+                        )
+                    except (TimeoutError, asyncio.TimeoutError) as timeout_exc:
+                        elapsed = time.time() - llm_start_time
+                        logger.error(
+                            f"⏱ FRAMEWORK TIMEOUT for {work_item.item_id} after {elapsed:.1f}s "
+                            f"(limit: {self.config.timeout_per_item}s, attempt {attempt_number}). "
+                            f"Consider increasing config.timeout_per_item if this error persists."
+                        )
+                        framework_timeout = FrameworkTimeoutError(
+                            f"Framework timeout after {elapsed:.1f}s "
+                            f"(limit: {self.config.timeout_per_item}s)",
+                            item_id=work_item.item_id,
+                            elapsed=elapsed,
+                            timeout_limit=self.config.timeout_per_item,
+                        )
+                        if (
+                            hasattr(timeout_exc, "__dict__")
+                            and "_failed_token_usage" in timeout_exc.__dict__
+                        ):
+                            framework_timeout.__dict__["_failed_token_usage"] = (
+                                timeout_exc.__dict__["_failed_token_usage"]
+                            )
+                        raise framework_timeout from timeout_exc
                     output, token_usage, response_metadata = _unpack_strategy_result(raw_result)
-            except (TimeoutError, asyncio.TimeoutError) as timeout_exc:
-                elapsed = time.time() - llm_start_time
-                logger.error(
-                    f"⏱ FRAMEWORK TIMEOUT for {work_item.item_id} after {elapsed:.1f}s "
-                    f"(limit: {self.config.timeout_per_item}s, attempt {attempt_number}). "
-                    f"Consider increasing config.timeout_per_item if this error persists."
-                )
-                # Wrap in FrameworkTimeoutError to differentiate from API timeouts
-                framework_timeout = FrameworkTimeoutError(
-                    f"Framework timeout after {elapsed:.1f}s (limit: {self.config.timeout_per_item}s)",
-                    item_id=work_item.item_id,
-                    elapsed=elapsed,
-                    timeout_limit=self.config.timeout_per_item,
-                )
-                # This except also catches a TimeoutError *subclass the strategy
-                # raised itself* (not just asyncio.wait_for's own fresh timeout),
-                # and that one can carry token usage. Copy it across so failed-
-                # attempt tokens aren't lost — the token extractor only reads the
-                # top exception's __dict__, not its __cause__'s.
-                if (
-                    hasattr(timeout_exc, "__dict__")
-                    and "_failed_token_usage" in timeout_exc.__dict__
-                ):
-                    framework_timeout.__dict__["_failed_token_usage"] = timeout_exc.__dict__[
-                        "_failed_token_usage"
-                    ]
-                raise framework_timeout from timeout_exc
 
             llm_duration = time.time() - llm_start_time
             logger.debug(
@@ -656,6 +693,11 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
             # Run after middlewares
             work_result = await self._run_middlewares_after(work_result)
+            work_result.admission_wait_seconds = (
+                float(retry_state.get(_ADMISSION_WAIT_STATE_KEY, 0.0))
+                if retry_state is not None
+                else 0.0
+            )
 
             # Skip the duration calc + payload dict when nobody is observing.
             if self._events.observers:
@@ -666,6 +708,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         "item_id": work_item.item_id,
                         "duration": duration,
                         "tokens": token_usage.get("total_tokens", 0),
+                        "admission_wait_seconds": work_result.admission_wait_seconds,
                     },
                 )
 

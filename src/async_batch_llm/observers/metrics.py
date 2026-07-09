@@ -17,6 +17,9 @@ def _initial_metrics() -> dict[str, Any]:
         "error_counts": {},
         "processing_times_count": 0,
         "processing_times_sum": 0.0,
+        "admission_wait_count": 0,
+        "admission_wait_seconds_sum": 0.0,
+        "admission_wait_seconds_max": 0.0,
     }
 
 
@@ -54,6 +57,14 @@ class MetricsObserver(BaseObserver):
                     if len(self._processing_times) > self._max_processing_samples:
                         self._processing_times.pop(0)
 
+            elif event == ProcessingEvent.ITEM_ADMITTED:
+                wait_seconds = float(data.get("wait_seconds", 0.0))
+                self.metrics["admission_wait_count"] += 1
+                self.metrics["admission_wait_seconds_sum"] += wait_seconds
+                self.metrics["admission_wait_seconds_max"] = max(
+                    self.metrics["admission_wait_seconds_max"], wait_seconds
+                )
+
             elif event == ProcessingEvent.ITEM_FAILED:
                 self.metrics["items_processed"] += 1
                 self.metrics["items_failed"] += 1
@@ -79,6 +90,12 @@ class MetricsObserver(BaseObserver):
                 "avg_processing_time": (
                     self.metrics["processing_times_sum"] / self.metrics["processing_times_count"]
                     if self.metrics["processing_times_count"] > 0
+                    else 0
+                ),
+                "avg_admission_wait_seconds": (
+                    self.metrics["admission_wait_seconds_sum"]
+                    / self.metrics["admission_wait_count"]
+                    if self.metrics["admission_wait_count"] > 0
                     else 0
                 ),
                 "success_rate": (
@@ -159,6 +176,10 @@ class MetricsObserver(BaseObserver):
             ("success_rate", "Success rate (0.0 to 1.0)"),
             ("total_cooldown_time", "Total time spent in rate limit cooldown (seconds)"),
             ("processing_times_count", "Number of recorded processing time samples"),
+            ("admission_wait_count", "Number of provider-capacity admissions"),
+            ("admission_wait_seconds_sum", "Total provider-capacity wait time in seconds"),
+            ("admission_wait_seconds_max", "Maximum provider-capacity wait time in seconds"),
+            ("avg_admission_wait_seconds", "Average provider-capacity wait time in seconds"),
         ]
 
         for metric_name, help_text in gauges:

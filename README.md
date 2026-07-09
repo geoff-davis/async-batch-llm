@@ -297,6 +297,13 @@ model = DeepSeekModel.from_api_key(
 strategy = DeepSeekStrategy(model)
 ```
 
+Models built this way advertise `max_connections` to the strategy. The batch
+processor and gateway automatically admit only that many execute attempts before
+`timeout_per_item` starts. For a caller-supplied OpenAI/httpx client, set
+`ProcessorConfig(max_provider_concurrency=N)` explicitly. Admission timing is
+available on each `WorkItemResult` and in processor/observer metrics. See the
+[production timeout and concurrency semantics](docs/production-checklist.md#4-timeout-and-concurrency-semantics).
+
 [`examples/example_deepseek.py`](examples/example_deepseek.py) has the full
 version: JSON mode with markdown-fence-tolerant parsing (`pydantic_json_parser`),
 `402 Insufficient Balance` handling, and cache-hit token accounting

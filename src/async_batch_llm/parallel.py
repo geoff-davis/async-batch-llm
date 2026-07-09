@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Generic
 if TYPE_CHECKING:
     from types import TracebackType
 
+from ._internal.capacity import CapacityLimiter, warn_if_worker_capacity_exceeded
 from ._internal.event_dispatcher import EventDispatcher
 from ._internal.item_executor import ItemExecutor
 from ._internal.rate_limit_coordinator import RateLimitCoordinator
@@ -208,6 +209,7 @@ class ParallelBatchProcessor(
         self.error_classifier: ErrorClassifier = error_classifier or DefaultErrorClassifier()
         self._recommended_classifiers: list[ErrorClassifier] = []
         self._classifier_resolved = self._user_supplied_classifier
+        self._capacity_checked_strategy_ids: set[int] = set()
         self.rate_limit_strategy = rate_limit_strategy or ExponentialBackoffStrategy(
             initial_cooldown=config.rate_limit.cooldown_seconds,
             max_cooldown=config.rate_limit.max_cooldown_seconds,
@@ -248,6 +250,7 @@ class ParallelBatchProcessor(
         # Back-compat aliases used by existing private methods and tests.
         self._prepared_strategies = self._strategy_lifecycle._prepared
         self._strategy_lock = self._strategy_lifecycle._lock
+        self._capacity_limiter = CapacityLimiter(config.max_provider_concurrency)
 
         # Proactive rate limiting (prevents hitting rate limits)
         if config.max_requests_per_minute:
@@ -366,6 +369,15 @@ class ParallelBatchProcessor(
         error classifier at batch start when the caller didn't pass one. A
         no-op recommendation (custom strategies returning ``None``) is ignored.
         """
+        strategy_id = id(work_item.strategy)
+        if strategy_id not in self._capacity_checked_strategy_ids:
+            warn_if_worker_capacity_exceeded(
+                strategy=work_item.strategy,
+                max_workers=self.config.max_workers,
+                surface="ParallelBatchProcessor",
+                stacklevel=3,
+            )
+            self._capacity_checked_strategy_ids.add(strategy_id)
         await super().add_work(work_item)
         if self._user_supplied_classifier or self._classifier_resolved:
             return
@@ -455,6 +467,10 @@ class ParallelBatchProcessor(
                 "total": stats_snapshot["total"],
                 "total_tokens": stats_snapshot["total_tokens"],
                 "cached_input_tokens": stats_snapshot.get("cached_input_tokens", 0),
+                "total_admission_wait_seconds": stats_snapshot.get(
+                    "total_admission_wait_seconds", 0.0
+                ),
+                "max_admission_wait_seconds": stats_snapshot.get("max_admission_wait_seconds", 0.0),
                 "duration": duration,
             },
         )
@@ -561,6 +577,11 @@ class ParallelBatchProcessor(
                     self._stats.cached_input_tokens += result.token_usage.get(
                         "cached_input_tokens", 0
                     )
+                self._stats.total_admission_wait_seconds += result.admission_wait_seconds
+                self._stats.max_admission_wait_seconds = max(
+                    self._stats.max_admission_wait_seconds,
+                    result.admission_wait_seconds,
+                )
 
                 # Both the progress callback and the periodic progress log fire
                 # on the same progress_interval boundary — decide both here.

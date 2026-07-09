@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Model/transport concurrency diagnostics ([#74])** — OpenAI-compatible
+  models created with `from_api_key(max_connections=N)` now expose
+  `max_concurrency=N`; `ModelStrategy` forwards it, and
+  `ParallelBatchProcessor`/`LLMGateway` warn when `max_workers` exceeds the
+  known capacity. User-supplied clients remain capacity-unknown rather than
+  relying on fragile httpx/OpenAI SDK introspection.
+- **Provider-capacity admission outside execution timeout ([#79])** — the shared
+  executor now limits each `strategy.execute()` attempt to the lower of
+  `ProcessorConfig.max_provider_concurrency` and the strategy/model's advertised
+  `max_concurrency`. Capacity is released between retries and shared by
+  strategies wrapping the same model. Admission runs before
+  `timeout_per_item`; cumulative wait is exposed on `WorkItemResult`, processor
+  stats, `ITEM_ADMITTED` observer events, and `MetricsObserver` aggregates.
+
+### Changed
+
+- **Timeout and concurrency semantics documented ([#78])** — the production,
+  OpenAI, gateway, README, and API docs now distinguish queue/admission wait,
+  per-attempt execution timeout, transport-pool wait, cooldown/backoff, and the
+  gateway's end-to-end `submit_timeout`. The docs also correct the old claim
+  that post-rate-limit slow-start applies during initial batch startup.
+
+### Fixed
+
+- **Synchronous post-processors no longer block the event loop or bypass
+  `post_processor_timeout`** — sync callbacks now run through
+  `asyncio.to_thread()` and share the same wait budget as async callbacks.
+  Timing out stops waiting; Python cannot forcibly cancel callback code already
+  running in a worker thread.
+
 ## [0.16.0] - 2026-07-02
 
 ### ⚠️ Breaking Changes

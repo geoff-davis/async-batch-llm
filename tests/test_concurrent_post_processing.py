@@ -9,6 +9,9 @@ semaphore of size max_workers) instead of inline. The guarantees:
 """
 
 import asyncio
+import logging
+import threading
+import time
 
 import pytest
 
@@ -158,3 +161,53 @@ async def test_cleanup_cancels_outstanding_post_processors():
 
     assert processor._post_processor_tasks == set()
     assert cancelled == ["x"]
+
+
+@pytest.mark.asyncio
+async def test_sync_post_processor_does_not_block_event_loop():
+    """A synchronous callback runs in a thread so other async work can advance."""
+    release = threading.Event()
+
+    def post(result: WorkItemResult) -> None:
+        release.wait(timeout=0.5)
+
+    async def release_from_event_loop() -> None:
+        await asyncio.sleep(0.02)
+        release.set()
+
+    config = ProcessorConfig(max_workers=1, post_processor_timeout=0.3)
+    strategy = _InstantStrategy()
+    releaser = asyncio.create_task(release_from_event_loop())
+    started = time.monotonic()
+    async with ParallelBatchProcessor[str, str, None](
+        config=config, post_processor=post
+    ) as processor:
+        await processor.add_work(LLMWorkItem(item_id="x", strategy=strategy, prompt="x"))
+        await processor.process_all()
+    elapsed = time.monotonic() - started
+    await releaser
+
+    assert elapsed < 0.2
+
+
+@pytest.mark.asyncio
+async def test_sync_post_processor_respects_wait_timeout(caplog):
+    """The processor stops waiting when a synchronous callback exceeds its budget."""
+
+    def post(result: WorkItemResult) -> None:
+        time.sleep(0.2)
+
+    config = ProcessorConfig(max_workers=1, post_processor_timeout=0.02)
+    strategy = _InstantStrategy()
+    caplog.set_level(logging.ERROR)
+    started = time.monotonic()
+    async with ParallelBatchProcessor[str, str, None](
+        config=config, post_processor=post
+    ) as processor:
+        await processor.add_work(LLMWorkItem(item_id="x", strategy=strategy, prompt="x"))
+        result = await processor.process_all()
+    elapsed = time.monotonic() - started
+
+    assert result.succeeded == 1
+    assert elapsed < 0.15
+    assert "Post-processor execution timed out" in caplog.text

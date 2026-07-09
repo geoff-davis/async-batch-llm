@@ -22,8 +22,8 @@ contention. Measure with `examples/benchmark_worker_overhead.py` (no network).
 
 For the OpenAI-compatible models (`OpenAIModel` / `OpenRouterModel` /
 `DeepSeekModel`), the SDK uses httpx's **default ~100-connection pool**. If
-`max_workers` exceeds that, the extra workers just block waiting for a
-connection — no extra throughput. **Set `max_connections >= max_workers`:**
+`max_workers` exceeds that without an ABL capacity signal, the extra workers
+block inside httpx — no extra throughput. **Set `max_connections` explicitly:**
 
 ```python
 model = DeepSeekModel.from_api_key(
@@ -31,6 +31,34 @@ model = DeepSeekModel.from_api_key(
     max_connections=200,   # match your ProcessorConfig(max_workers=...)
 )
 ```
+
+Models built with `from_api_key(max_connections=N)` advertise that capacity to
+their strategy. `ParallelBatchProcessor` and `LLMGateway` emit a `UserWarning`
+when `max_workers > N`; the shared executor holds excess attempts in ABL
+admission before `strategy.execute()` and before `timeout_per_item` starts.
+Matching values avoids unnecessary admission wait:
+
+```python
+model = DeepSeekModel.from_api_key("deepseek-v4-flash", max_connections=32)
+strategy = DeepSeekStrategy(model)
+config = ProcessorConfig(max_workers=32)
+```
+
+ABL cannot reliably inspect a caller-supplied `AsyncOpenAI`/httpx transport, so
+models constructed directly with `OpenAIModel(model, client)` advertise unknown
+capacity and do not warn. Set `max_provider_concurrency` to protect a known
+custom-client limit:
+
+```python
+config = ProcessorConfig(
+    max_workers=100,
+    max_provider_concurrency=32,  # outside timeout_per_item
+)
+```
+
+When both the config and strategy advertise a capacity, the lower value wins.
+Limits are scoped to the underlying model, so multiple `ModelStrategy` instances
+sharing one model also share one capacity semaphore.
 
 See [OpenAI integration → connection-pool sizing](OPENAI_INTEGRATION.md#connection-pool-sizing-max_connections).
 
@@ -45,12 +73,44 @@ you. Fix by raising it (`ulimit -n 8192`, or `resource.setrlimit` early in the
 process) or lowering `max_workers`. Full guidance:
 [Getting started → open file limits](getting-started.md#open-file-limits-and-high-concurrency).
 
-## 4. Timeout vs. retry budget
+## 4. Timeout and concurrency semantics
 
 `timeout_per_item` is **per attempt**, enforced via `asyncio.wait_for` around
 each `execute()` — it is **not** a total budget across retries. With
 `retry.max_attempts=3`, a single item can spend up to ~`3 × timeout_per_item`
 in calls, plus backoff waits.
+
+The timeout boundary is deliberately narrow:
+
+| Phase | Counts against `timeout_per_item`? |
+| --- | --- |
+| Batch queue wait / streaming backpressure | No |
+| Worker or gateway semaphore admission | No |
+| Provider-capacity admission | No |
+| Coordinated cooldown / post-cooldown slow-start | No |
+| Proactive request-rate limiter wait | No |
+| `strategy.execute()` | **Yes** |
+| httpx pool wait occurring inside `strategy.execute()` | **Yes** |
+| Retry backoff between attempts | No |
+
+The transport-pool row is the common trap: ABL cannot distinguish provider time
+from a lower-level wait once `strategy.execute()` begins. Advertised or explicit
+capacity prevents that hidden wait by gating attempts first:
+
+```python
+# Safe: 100 workers may do middleware/post-processing, but only 32 attempts
+# enter strategy.execute() at once.
+model = DeepSeekModel.from_api_key("deepseek-v4-flash", max_connections=32)
+config = ProcessorConfig(max_workers=100, timeout_per_item=30)
+```
+
+Aligning the worker count avoids admission queues when the extra workers provide
+no other benefit:
+
+```python
+model = DeepSeekModel.from_api_key("deepseek-v4-flash", max_connections=32)
+config = ProcessorConfig(max_workers=32, timeout_per_item=30)
+```
 
 Rate limits are **exempt** from `max_attempts` (a 429 is "wait and retry", not a
 failed attempt — see below), so a throttled item can sit through many cooldowns
@@ -67,6 +127,15 @@ ProcessorConfig(
     ),
 )
 ```
+
+For `LLMGateway`, semaphore wait is outside `timeout_per_item`, while
+`submit_timeout` wraps the full caller path: both admission waits, cooldown, all
+attempts, and backoff. Use `submit_timeout` for an end-to-end request latency
+budget and `timeout_per_item` for one provider attempt.
+
+Each `WorkItemResult.admission_wait_seconds` reports cumulative provider-capacity
+wait across attempts. `get_stats()` exposes total/max item wait, and
+`MetricsObserver` exposes attempt-level count, sum, max, and average wait.
 
 ## 5. Rate-limit configuration
 

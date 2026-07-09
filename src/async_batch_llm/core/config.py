@@ -181,6 +181,12 @@ class ProcessorConfig:
     # Dry-run mode (for testing configuration without making API calls)
     dry_run: bool = False
 
+    # Optional explicit provider/client capacity. Kept last to preserve the
+    # positional ordering of every pre-existing dataclass field. Attempts above
+    # this limit wait before strategy.execute() and timeout_per_item; when the
+    # strategy advertises max_concurrency, the lower limit applies.
+    max_provider_concurrency: int | None = None
+
     def __post_init__(self) -> None:
         """Validate configuration on construction."""
         self.validate()
@@ -191,6 +197,11 @@ class ProcessorConfig:
             raise ValueError(
                 f"max_workers must be >= 1 (got {self.max_workers}). "
                 f"Set config.max_workers to a positive integer (typical: 5-20)."
+            )
+        if self.max_provider_concurrency is not None and self.max_provider_concurrency < 1:
+            raise ValueError(
+                "max_provider_concurrency must be >= 1 or None "
+                f"(got {self.max_provider_concurrency})."
             )
         if self.timeout_per_item <= 0:
             raise ValueError(
