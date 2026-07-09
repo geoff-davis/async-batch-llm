@@ -184,6 +184,9 @@ The error classifier is auto-selected from the strategy when you don't pass one.
 Need the low-level controls? `processor.start()` / `add_work()` / `finish()` /
 `results()` is the streaming mode `process_stream` is built on (workers run
 while you add work — a bounded queue is backpressure, not a deadlock).
+See [Bounded Work and Backpressure](docs/bounded-work.md) for incremental
+database ingestion, the distinction between queue and provider limits, and
+bounded gateway submission patterns.
 
 #### Full control (advanced)
 
@@ -411,6 +414,10 @@ On failure, `call()` / `gw.submit()` re-raise the provider's own exception (pres
 the full `WorkItemResult` — `success`, `error`, `token_usage`, `metadata`, and the originating
 `exception` — without raising. See [`examples/example_single_call.py`](examples/example_single_call.py)
 and [`examples/example_gateway.py`](examples/example_gateway.py).
+For a large input, do not wrap every gateway call in one `asyncio.gather()`;
+that still materializes one task per item. Use `process_stream` or a bounded
+outer task window as shown in the
+[bounded-work guide](docs/bounded-work.md#gateway-task-counts).
 
 ### Cost Optimization with Caching
 

@@ -1,0 +1,133 @@
+# Bounded Work and Backpressure
+
+Provider concurrency and pending-work memory are different limits. A provider
+gate can keep only 32 calls active while an application still creates a million
+queued items or asyncio tasks. Bound both layers deliberately.
+
+## Limits at a Glance
+
+| Control | Bounds | Behavior at the limit |
+| --- | --- | --- |
+| `ProcessorConfig.max_workers` | Active processor workers | Work remains queued |
+| Model `max_concurrency` / `max_provider_concurrency` | Attempts inside `strategy.execute()` | Workers wait before the execution timeout |
+| `ProcessorConfig.max_queue_size` in streaming mode | Work items waiting for a worker | Producer awaits queue space (backpressure) |
+| `LLMGateway.max_pending` | Gateway calls running or waiting | New calls are rejected immediately |
+| `LLMGateway.submit_timeout` | One caller's total gateway wall time | The call returns a timeout failure |
+
+`max_queue_size` is the batch equivalent of a bounded pending-work buffer. It
+does not change provider concurrency. Set provider capacity independently.
+
+## Recommended Large-Batch Pattern
+
+Use `process_stream` with a positive `max_queue_size`, feed it a lazy sync or
+async iterable, and persist each result as it arrives:
+
+```python
+from collections.abc import AsyncIterator
+
+from async_batch_llm import ProcessorConfig, process_stream
+
+
+async def prompts_from_database() -> AsyncIterator[tuple[str, str, int]]:
+    async for row in database.iter_documents(fetch_size=500):
+        yield row.id, f"Classify:\n{row.text}", row.version
+
+
+config = ProcessorConfig(
+    max_workers=32,
+    max_queue_size=128,
+    max_provider_concurrency=32,
+)
+
+async for result in process_stream(strategy, prompts_from_database(), config=config):
+    await save_result(result.item_id, result.output, result.context)
+```
+
+At most 128 items wait in the processor queue, up to 32 workers process items,
+and at most 32 attempts enter the provider call. When the queue fills,
+`process_stream` pauses `prompts_from_database()` until a worker frees space.
+The database iterator therefore does not run ahead indefinitely.
+
+Results arrive in completion order. Persist or aggregate them incrementally if
+the result set itself is large.
+
+## APIs That Collect Work or Results
+
+- `process_stream(...)` is the constant-memory choice when its input is lazy,
+  `max_queue_size` is positive, and the consumer does not retain every result.
+- `process_prompts(...)` uses streaming execution internally but returns one
+  `BatchResult`, so it retains every completed result. It is convenient for
+  bounded jobs, not constant-memory output handling.
+- `ParallelBatchProcessor.process_all()` starts workers only after work has been
+  added. Adding an entire input first materializes that input. A bounded queue
+  cannot apply backpressure in this mode because no worker is draining it;
+  `add_work()` raises when the queue fills.
+
+Do not use `max_queue_size=0` for an unbounded or poorly bounded source. Zero
+means the processor queue is unlimited.
+
+## Low-Level Streaming Lifecycle
+
+Use the processor directly when items need different strategies or custom
+construction. Start workers before feeding the bounded queue:
+
+```python
+async with ParallelBatchProcessor(config=config) as processor:
+    processor.start()
+
+    async def produce() -> None:
+        try:
+            async for row in database.iter_documents(fetch_size=500):
+                await processor.add_work(
+                    LLMWorkItem(
+                        item_id=row.id,
+                        strategy=strategy_for(row),
+                        prompt=format_prompt(row),
+                        context=row.version,
+                    )
+                )
+        finally:
+            await processor.finish()
+
+    producer = asyncio.create_task(produce())
+    async for result in processor.results():
+        await save_result(result.item_id, result.output, result.context)
+    await producer
+```
+
+`add_work()` is the backpressure point. Always call `finish()` after the
+producer reaches end-of-input so `results()` can terminate.
+
+## Gateway Task Counts
+
+`LLMGateway` bounds calls inside the gateway, but this still creates one asyncio
+task per input item:
+
+```python
+# Avoid for an unbounded or very large source.
+await asyncio.gather(*(gateway.submit(prompt) for prompt in prompts))
+```
+
+`max_pending` rejects overload; it does not prevent the outer `gather()` from
+materializing every coroutine. Use `process_stream` for batch ingestion. When a
+gateway is required, keep the outer task window bounded as well:
+
+```python
+async def submit_windowed(gateway, prompts, *, window: int = 100):
+    pending: set[asyncio.Task] = set()
+    async for prompt in prompts:
+        pending.add(asyncio.create_task(gateway.submit_result(prompt)))
+        if len(pending) >= window:
+            done, pending = await asyncio.wait(
+                pending,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in done:
+                yield task.result()
+
+    for task in asyncio.as_completed(pending):
+        yield await task
+```
+
+For request-serving applications, also set `max_pending` and `submit_timeout`
+so server traffic cannot grow an unlimited gateway waiter list.

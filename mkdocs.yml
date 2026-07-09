@@ -59,6 +59,7 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Production Checklist: production-checklist.md
+  - Bounded Work and Backpressure: bounded-work.md
   - Testing: testing.md
   - Benchmarks: benchmarks.md
   - Provider Integrations:

@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normal token/cost accounting, and increment processor and observer recovery
   and avoided-retry metrics. Malformed JSON, arbitrary prose, multiple values,
   scalar values, and schema-invalid data still follow normal retry behavior.
+- **Bounded-work and backpressure guide ([#80])** — documents the distinct
+  worker, provider-capacity, batch-queue, and gateway-admission limits; provides
+  incremental async-ingestion and low-level streaming recipes; clarifies that
+  `process_prompts()` retains results and `process_all()` cannot backpressure a
+  preloaded batch; and shows how to avoid unbounded gateway task creation.
 
 ### Changed
 

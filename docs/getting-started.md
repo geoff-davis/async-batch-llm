@@ -65,6 +65,11 @@ you don't pass `error_classifier=`, it's auto-selected from the strategy
 (`OpenAIStrategy` → `OpenAIErrorClassifier`, `GeminiStrategy` →
 `GeminiErrorClassifier`, etc.).
 
+For large sources, use a lazy iterable plus
+`ProcessorConfig(max_queue_size=N)` and consume `process_stream` incrementally.
+`process_prompts` collects every result and therefore is not a constant-memory
+output path. See [Bounded Work and Backpressure](bounded-work.md).
+
 The rest of this guide covers the underlying building blocks, which you use
 directly when you need custom queueing, per-item context, middleware, or
 observers.

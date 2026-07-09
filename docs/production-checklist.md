@@ -185,6 +185,12 @@ async for result in process_stream(strategy, huge_prompt_source, config=config):
 a file lazily). The low-level equivalent is
 `processor.start()` / `add_work()` / `finish()` / `results()`.
 
+`process_prompts()` retains every result in its returned `BatchResult`, and
+`process_all()` requires work to be added before workers start. Neither is a
+constant-memory result path for an unbounded workload. See
+[Bounded Work and Backpressure](bounded-work.md) for incremental database input,
+low-level streaming, and separate queue/provider/gateway limits.
+
 ## 7. Single calls and the gateway (request paths)
 
 For a web service's request path — where work arrives one call at a time, not as
@@ -200,6 +206,10 @@ processor per request:
   (rejecting with a failed result) rather than growing an unbounded waiter list;
   `submit_timeout` bounds per-caller latency so a request stuck behind a cooldown
   returns instead of hanging the handler. Both are off by default.
+- **Do not create unbounded outer tasks.** `max_pending` bounds gateway
+  admission, but one large `asyncio.gather()` still materializes every caller
+  task. Use the [bounded batch pattern](bounded-work.md#recommended-large-batch-pattern)
+  for ingestion jobs or an explicitly bounded task window.
 - **Shutdown drains admitted requests.** `aclose()` (the `async with` exit) stops
   accepting new work, then waits for already-admitted requests to finish before
   cleaning up the shared strategy, so in-flight calls aren't cut off mid-flight.

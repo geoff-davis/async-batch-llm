@@ -71,7 +71,9 @@ cannot be inspected.
 Avoid wrapping an unbounded input in `asyncio.gather(gw.submit(...))`: the
 gateway bounds active provider calls, but every gathered coroutine is still a
 pending task. Bound the outer producer or use `process_stream` with a bounded
-`max_queue_size` for large batch workloads.
+`max_queue_size` for large batch workloads. The
+[bounded-work guide](../bounded-work.md#gateway-task-counts) includes both the
+recommended batch path and a bounded gateway task window.
 
 ## call
 
