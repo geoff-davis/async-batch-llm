@@ -21,6 +21,7 @@ import time
 from typing import TYPE_CHECKING, Generic, Protocol, TypeVar, cast
 
 from ..base import (
+    AttemptTiming,
     LLMWorkItem,
     RetryState,
     TContext,
@@ -28,6 +29,7 @@ from ..base import (
     TokenUsage,
     TOutput,
     WorkItemResult,
+    WorkItemTiming,
     _unpack_strategy_result,
 )
 from ..observers import ProcessingEvent
@@ -54,8 +56,62 @@ ERROR_MESSAGE_MAX_LENGTH = 200
 ERROR_MESSAGE_DETAILED_LENGTH = 500
 _ADMISSION_WAIT_STATE_KEY = "_abl_admission_wait_seconds"
 _ADMISSION_WAIT_EXCEPTION_KEY = "_abl_admission_wait_seconds"
+_TIMING_EXCEPTION_KEY = "_abl_work_item_timing"
+_LAST_ADMISSION_KEY = "_abl_last_admission_wait_seconds"
+_LAST_STARTUP_RAMP_KEY = "_abl_last_startup_ramp_wait_seconds"
+_LAST_EXECUTION_KEY = "_abl_last_execution_seconds"
+_LAST_PROVIDER_KEY = "_abl_last_provider_seconds"
+_LAST_COOLDOWN_KEY = "_abl_last_cooldown_wait_seconds"
+_LAST_TIMEOUT_KEY = "_abl_last_timeout_category"
+_LAST_ERROR_CATEGORY_KEY = "_abl_last_error_category"
 
 _E = TypeVar("_E", bound=BaseException)
+
+
+def _state_float(state: RetryState, key: str) -> float:
+    value = state.get(key, 0.0)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _attempt_timing(
+    state: RetryState,
+    *,
+    attempt: int,
+    try_number: int,
+    total_seconds: float,
+    success: bool,
+    error_type: str | None = None,
+    error_category: str | None = None,
+) -> AttemptTiming:
+    provider_value = state.get(_LAST_PROVIDER_KEY)
+    provider_seconds = float(provider_value) if isinstance(provider_value, (int, float)) else None
+    timeout_value = state.get(_LAST_TIMEOUT_KEY)
+    return AttemptTiming(
+        attempt=attempt,
+        try_number=try_number,
+        total_seconds=total_seconds,
+        admission_wait_seconds=_state_float(state, _LAST_ADMISSION_KEY),
+        startup_ramp_wait_seconds=_state_float(state, _LAST_STARTUP_RAMP_KEY),
+        execution_seconds=_state_float(state, _LAST_EXECUTION_KEY),
+        provider_seconds=provider_seconds,
+        cooldown_wait_seconds=_state_float(state, _LAST_COOLDOWN_KEY),
+        success=success,
+        error_type=error_type,
+        error_category=error_category,
+        timeout_category=timeout_value if isinstance(timeout_value, str) else None,
+    )
+
+
+def _work_item_timing(started: float, attempts: list[AttemptTiming]) -> WorkItemTiming:
+    timeout_category = next(
+        (attempt.timeout_category for attempt in reversed(attempts) if attempt.timeout_category),
+        None,
+    )
+    return WorkItemTiming(
+        total_seconds=max(0.0, time.perf_counter() - started),
+        attempts=list(attempts),
+        timeout_category=timeout_category,
+    )
 
 
 def _detach_traceback(exc: _E) -> _E:
@@ -261,6 +317,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         admission_wait_seconds = float(
             getattr(e, "__dict__", {}).get(_ADMISSION_WAIT_EXCEPTION_KEY, 0.0)
         )
+        timing = getattr(e, "__dict__", {}).get(_TIMING_EXCEPTION_KEY)
+        if not isinstance(timing, WorkItemTiming):
+            timing = WorkItemTiming()
 
         token_msg = ""
         if failed_tokens.get("total_tokens", 0) > 0:
@@ -288,8 +347,10 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 token_usage=cast(TokenUsage, failed_tokens),
                 exception=_detach_traceback(e),
                 admission_wait_seconds=admission_wait_seconds,
+                timing=timing,
             )
         result.admission_wait_seconds = admission_wait_seconds
+        result.timing = timing
 
         # Emit ITEM_FAILED here too. Items that exhaust retries reach
         # this fallback (the exception propagates out of
@@ -308,6 +369,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         self, work_item: LLMWorkItem[TInput, TOutput, TContext], worker_id: int
     ) -> WorkItemResult[TOutput, TContext]:
         """Wrapper that applies retry logic and strategy lifecycle."""
+        item_started = time.perf_counter()
+        attempt_timings: list[AttemptTiming] = []
+        try_number = 0
         # Track cumulative token usage across all failed attempts
         cumulative_failed_tokens = {
             "input_tokens": 0,
@@ -344,6 +408,18 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         max_rate_limit_retries = self.config.retry.max_rate_limit_retries
 
         while True:
+            try_number += 1
+            try_started = time.perf_counter()
+            for key in (
+                _LAST_ADMISSION_KEY,
+                _LAST_STARTUP_RAMP_KEY,
+                _LAST_EXECUTION_KEY,
+                _LAST_PROVIDER_KEY,
+                _LAST_COOLDOWN_KEY,
+                _LAST_TIMEOUT_KEY,
+                _LAST_ERROR_CATEGORY_KEY,
+            ):
+                retry_state.delete(key)
             try:
                 # Through the host so a processor subclass override takes effect.
                 result = await self._host._process_item(
@@ -367,6 +443,22 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 error_info = self.error_classifier.classify(e)
                 error_snippet = str(e)[:ERROR_MESSAGE_MAX_LENGTH]
                 error_type = type(e).__name__
+                attempt_timing = _attempt_timing(
+                    retry_state,
+                    attempt=attempt,
+                    try_number=try_number,
+                    total_seconds=max(0.0, time.perf_counter() - try_started),
+                    success=False,
+                    error_type=error_type,
+                    error_category=error_info.error_category,
+                )
+                attempt_timings.append(attempt_timing)
+
+                def attach_timing(exception: Exception) -> None:
+                    if hasattr(exception, "__dict__"):
+                        exception.__dict__[_TIMING_EXCEPTION_KEY] = _work_item_timing(
+                            item_started, attempt_timings
+                        )
 
                 if not error_info.is_retryable:
                     # Surface an operator hint (e.g. a 402 insufficient-balance
@@ -379,6 +471,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     else:
                         logger.debug(f"Error not retryable: {error_type}")
                     self._attach_failed_tokens(e, cumulative_failed_tokens)
+                    attach_timing(e)
                     raise
 
                 if error_info.is_rate_limit:
@@ -405,6 +498,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         )
                         exhausted.__dict__["_failed_token_usage"] = cumulative_failed_tokens
                         exhausted.__dict__[_ADMISSION_WAIT_EXCEPTION_KEY] = admission_wait_seconds
+                        attach_timing(exhausted)
                         raise exhausted from e
                     logger.warning(
                         f"[WARN]Rate-limit retry {rate_limit_retries} for {work_item.item_id} "
@@ -425,6 +519,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         f"{str(e)[:ERROR_MESSAGE_DETAILED_LENGTH]}{token_summary}"
                     )
                     self._attach_failed_tokens(e, cumulative_failed_tokens)
+                    attach_timing(e)
                     raise
 
                 # Validation errors retry immediately — the strategy adjusts on
@@ -463,7 +558,11 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
                 attempt += 1
                 if wait_time > 0:
+                    backoff_started = time.perf_counter()
                     await asyncio.sleep(wait_time)
+                    attempt_timing.retry_backoff_seconds = max(
+                        0.0, time.perf_counter() - backoff_started
+                    )
             else:
                 # _process_item returned without raising (success, or a result
                 # produced by middleware / non-retryable handling). Fold in the
@@ -474,6 +573,25 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 result.admission_wait_seconds = float(
                     retry_state.get(_ADMISSION_WAIT_STATE_KEY, 0.0)
                 )
+                final_error_type: str | None = None
+                if not result.success and result.error:
+                    final_error_type = result.error.split(":", 1)[0]
+                category_value = retry_state.get(_LAST_ERROR_CATEGORY_KEY)
+                attempt_timings.append(
+                    _attempt_timing(
+                        retry_state,
+                        attempt=attempt,
+                        try_number=try_number,
+                        total_seconds=max(0.0, time.perf_counter() - try_started),
+                        success=result.success,
+                        error_type=final_error_type,
+                        error_category=(
+                            category_value if isinstance(category_value, str) else None
+                        ),
+                    )
+                )
+                result.timing = _work_item_timing(item_started, attempt_timings)
+                result.admission_wait_seconds = result.timing.admission_wait_seconds
                 return result
 
     @staticmethod
@@ -587,7 +705,15 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             if self.config.dry_run:
                 logger.debug("[DRY-RUN] Skipping API call for %s", work_item.item_id)
                 llm_start_time = time.time()
-                output, token_usage = await strategy.dry_run(work_item.prompt)
+                execution_started = time.perf_counter()
+                try:
+                    output, token_usage = await strategy.dry_run(work_item.prompt)
+                finally:
+                    if retry_state is not None:
+                        retry_state.set(
+                            _LAST_EXECUTION_KEY,
+                            max(0.0, time.perf_counter() - execution_started),
+                        )
                 response_metadata = None
             else:
                 async with self._capacity_limiter.admit(strategy) as admission:
@@ -599,6 +725,11 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     total_admission_wait = previous_wait + admission.wait_seconds
                     if retry_state is not None:
                         retry_state.set(_ADMISSION_WAIT_STATE_KEY, total_admission_wait)
+                        retry_state.set(_LAST_ADMISSION_KEY, admission.wait_seconds)
+                        retry_state.set(
+                            _LAST_STARTUP_RAMP_KEY,
+                            admission.startup_ramp_wait_seconds,
+                        )
                     if self._events.observers:
                         await self._emit_event(
                             ProcessingEvent.ITEM_ADMITTED,
@@ -608,47 +739,58 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                 "attempt": attempt_number,
                                 "wait_seconds": admission.wait_seconds,
                                 "capacity": admission.capacity,
+                                "startup_ramp_wait_seconds": (admission.startup_ramp_wait_seconds),
                             },
                         )
 
                     # The execution timer starts only after capacity is acquired.
                     llm_start_time = time.time()
+                    execution_started = time.perf_counter()
                     # Call strategy.execute() with prompt, attempt number, timeout, and retry state (v0.3.0)
                     # Wrap in asyncio.wait_for to enforce timeout at framework level.
                     # _unpack_strategy_result accepts both legacy 2-tuple and the
                     # current 3-tuple (output, tokens, metadata) shape (v0.10.0).
                     try:
-                        raw_result = await asyncio.wait_for(
-                            strategy.execute(
-                                work_item.prompt,
-                                attempt_number,
-                                self.config.timeout_per_item,
-                                retry_state,
-                            ),
-                            timeout=self.config.timeout_per_item,
-                        )
-                    except (TimeoutError, asyncio.TimeoutError) as timeout_exc:
-                        elapsed = time.time() - llm_start_time
-                        logger.error(
-                            f"⏱ FRAMEWORK TIMEOUT for {work_item.item_id} after {elapsed:.1f}s "
-                            f"(limit: {self.config.timeout_per_item}s, attempt {attempt_number}). "
-                            f"Consider increasing config.timeout_per_item if this error persists."
-                        )
-                        framework_timeout = FrameworkTimeoutError(
-                            f"Framework timeout after {elapsed:.1f}s "
-                            f"(limit: {self.config.timeout_per_item}s)",
-                            item_id=work_item.item_id,
-                            elapsed=elapsed,
-                            timeout_limit=self.config.timeout_per_item,
-                        )
-                        if (
-                            hasattr(timeout_exc, "__dict__")
-                            and "_failed_token_usage" in timeout_exc.__dict__
-                        ):
-                            framework_timeout.__dict__["_failed_token_usage"] = (
-                                timeout_exc.__dict__["_failed_token_usage"]
+                        try:
+                            raw_result = await asyncio.wait_for(
+                                strategy.execute(
+                                    work_item.prompt,
+                                    attempt_number,
+                                    self.config.timeout_per_item,
+                                    retry_state,
+                                ),
+                                timeout=self.config.timeout_per_item,
                             )
-                        raise framework_timeout from timeout_exc
+                        except (TimeoutError, asyncio.TimeoutError) as timeout_exc:
+                            elapsed = time.time() - llm_start_time
+                            if retry_state is not None:
+                                retry_state.set(_LAST_TIMEOUT_KEY, "framework_execution_timeout")
+                            logger.error(
+                                f"⏱ FRAMEWORK TIMEOUT for {work_item.item_id} after {elapsed:.1f}s "
+                                f"(limit: {self.config.timeout_per_item}s, attempt {attempt_number}). "
+                                f"Consider increasing config.timeout_per_item if this error persists."
+                            )
+                            framework_timeout = FrameworkTimeoutError(
+                                f"Framework timeout after {elapsed:.1f}s "
+                                f"(limit: {self.config.timeout_per_item}s)",
+                                item_id=work_item.item_id,
+                                elapsed=elapsed,
+                                timeout_limit=self.config.timeout_per_item,
+                            )
+                            if (
+                                hasattr(timeout_exc, "__dict__")
+                                and "_failed_token_usage" in timeout_exc.__dict__
+                            ):
+                                framework_timeout.__dict__["_failed_token_usage"] = (
+                                    timeout_exc.__dict__["_failed_token_usage"]
+                                )
+                            raise framework_timeout from timeout_exc
+                    finally:
+                        if retry_state is not None:
+                            retry_state.set(
+                                _LAST_EXECUTION_KEY,
+                                max(0.0, time.perf_counter() - execution_started),
+                            )
                     output, token_usage, response_metadata = _unpack_strategy_result(raw_result)
 
             llm_duration = time.time() - llm_start_time
@@ -733,9 +875,29 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         f"Strategy.on_error callback failed for {work_item.item_id}: {callback_error}"
                     )
 
-            # Delegate error handling to separate method
-            # Through the host so a processor subclass override takes effect.
-            return await self._host._handle_execution_error(e, work_item, worker_id, attempt_number)
+            # Delegate error handling to separate method. Rate-limit handling
+            # includes the coordinated cooldown wait; record it separately from
+            # provider execution and retry backoff.
+            error_info = self.error_classifier.classify(e)
+            if retry_state is not None:
+                retry_state.set(_LAST_ERROR_CATEGORY_KEY, error_info.error_category)
+            if (
+                retry_state is not None
+                and not isinstance(e, FrameworkTimeoutError)
+                and "timeout" in type(e).__name__.lower()
+            ):
+                retry_state.set(_LAST_TIMEOUT_KEY, "provider_or_transport_timeout")
+            cooldown_started = time.perf_counter()
+            try:
+                return await self._host._handle_execution_error(
+                    e, work_item, worker_id, attempt_number
+                )
+            finally:
+                if retry_state is not None and error_info.is_rate_limit:
+                    retry_state.set(
+                        _LAST_COOLDOWN_KEY,
+                        max(0.0, time.perf_counter() - cooldown_started),
+                    )
 
     async def _handle_execution_error(
         self,

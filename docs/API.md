@@ -106,6 +106,7 @@ class WorkItemResult(Generic[TOutput, TContext]):
     metadata: dict[str, Any] | None = None
     exception: Exception | None = None  # original exception on failure
     admission_wait_seconds: float = 0.0
+    timing: WorkItemTiming = field(default_factory=WorkItemTiming)
     gemini_safety_ratings: dict[str, str] | None = None  # deprecated — warns on read
 ```
 
@@ -124,9 +125,12 @@ class WorkItemResult(Generic[TOutput, TContext]):
 - `metadata` (dict[str, Any] | None): Provider metadata (provider name,
   finish reason, safety ratings, ...) forwarded from the strategy
 - `exception` (Exception | None): The original exception when the item failed
+  (what `call()` / `LLMGateway.submit()` re-raise); None on success
 - `admission_wait_seconds` (float): Cumulative provider-capacity wait across all
   attempts. This wait occurs before `timeout_per_item` starts.
-  (what `call()` / `LLMGateway.submit()` re-raise); None on success
+- `timing` (WorkItemTiming): Total wall time and typed per-try timing for
+  admission, startup ramp, execution, provider calls where available, cooldown,
+  retry backoff, error classification, and timeout category.
 - `gemini_safety_ratings` (dict[str, str] | None): **Deprecated.** Reading
   it emits a `DeprecationWarning`; use `result.metadata["safety_ratings"]`
   instead
@@ -741,6 +745,7 @@ class ProcessorConfig:
     max_requests_per_minute: float | None = None
     dry_run: bool = False
     max_provider_concurrency: int | None = None
+    startup_ramp: StartupRampConfig | None = None
 ```
 
 **Fields:**
@@ -749,6 +754,8 @@ class ProcessorConfig:
 - `max_provider_concurrency` (int | None): Optional provider/client concurrency
   limit applied before `strategy.execute()` and outside `timeout_per_item`.
   When the strategy also advertises `max_concurrency`, the lower limit applies.
+- `startup_ramp` (StartupRampConfig | None): Optional initial concurrency ramp.
+  Ramp wait is admission time outside `timeout_per_item`. Default: None.
 - `timeout_per_item` (float): Timeout applied to each `execute()` attempt in seconds (per-attempt, not a
   total budget across retries). Default: 120.0
 - `post_processor_timeout` (float): Max seconds to wait for the sync or async `post_processor`
@@ -863,6 +870,29 @@ class RateLimitConfig:
 - `slow_start_items` must be >= 0
 - `slow_start_initial_delay` must be >= slow_start_final_delay
 - `backoff_multiplier` must be >= 1.0
+
+---
+
+### StartupRampConfig
+
+Optional cold-start concurrency ramp. This is distinct from
+`RateLimitConfig.slow_start_*`, which applies only after a rate-limit cooldown.
+
+```python
+@dataclass
+class StartupRampConfig:
+    initial_concurrency: int = 1
+    concurrency_step: int = 1
+    ramp_interval_seconds: float = 1.0
+    max_concurrency: int | None = None
+    jitter_seconds: float = 0.0
+```
+
+The allowed concurrency begins at `initial_concurrency` and adds
+`concurrency_step` after each interval. The effective maximum is the lowest of
+the ramp maximum, explicit `max_provider_concurrency`, advertised model capacity,
+and host worker limit. Optional jitter spreads cold-start admissions. All ramp
+wait occurs before `timeout_per_item`.
 
 ---
 
@@ -1070,10 +1100,12 @@ class ProcessorObserver(ABC):
 - `BATCH_STARTED`: `{total, max_workers, start_time}`
 - `BATCH_COMPLETED`: `{processed, succeeded, failed, total, total_tokens,
   cached_input_tokens, total_admission_wait_seconds,
-  max_admission_wait_seconds, duration}`
+  max_admission_wait_seconds, admission_wait_p50/p95/p99_seconds,
+  execution_p50/p95/p99_seconds, duration}`
 - `WORKER_STARTED` / `WORKER_STOPPED`: `{worker_id}`
 - `ITEM_STARTED`: `{item_id, worker_id}`
-- `ITEM_ADMITTED`: `{item_id, worker_id, attempt, wait_seconds, capacity}`
+- `ITEM_ADMITTED`: `{item_id, worker_id, attempt, wait_seconds, capacity,
+  startup_ramp_wait_seconds}`
 - `ITEM_COMPLETED`: `{item_id, duration, tokens, admission_wait_seconds}`
 - `ITEM_FAILED`: `{item_id, error_type}`
 - `RATE_LIMIT_HIT`: `{item_id, worker_id}`

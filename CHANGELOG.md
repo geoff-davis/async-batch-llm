@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strategies wrapping the same model. Admission runs before
   `timeout_per_item`; cumulative wait is exposed on `WorkItemResult`, processor
   stats, `ITEM_ADMITTED` observer events, and `MetricsObserver` aggregates.
+- **Structured attempt and item timing ([#76])** — `WorkItemResult.timing`
+  exposes total wall time plus per-try admission, startup-ramp, execution,
+  built-in provider-call, cooldown, retry-backoff, success/error classification,
+  and timeout category. Processor stats retain bounded samples and expose
+  admission/execution p50, p95, and p99 summaries.
+- **Optional startup concurrency ramp ([#77])** — `StartupRampConfig` begins at
+  `initial_concurrency`, adds `concurrency_step` on each interval, supports an
+  optional maximum and jitter, composes with advertised/explicit provider
+  capacity, and runs outside `timeout_per_item` across batch/gateway/single-call
+  executor paths.
+- **OpenAI-compatible and DeepSeek high-throughput guide ([#75])** — documents
+  model-owned and custom httpx clients, capacity alignment, timeout/retry layers,
+  startup ramp versus cooldown, gateway load shedding, timing diagnostics, and
+  a troubleshooting matrix.
 
 ### Changed
 

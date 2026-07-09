@@ -304,6 +304,12 @@ processor and gateway automatically admit only that many execute attempts before
 available on each `WorkItemResult` and in processor/observer metrics. See the
 [production timeout and concurrency semantics](docs/production-checklist.md#4-timeout-and-concurrency-semantics).
 
+For burst-sensitive endpoints, `StartupRampConfig` can begin at a small
+concurrency and step up to the steady limit without charging ramp wait to the
+execution timeout. `WorkItemResult.timing` records per-try admission, ramp,
+execution, provider, cooldown, backoff, classification, and timeout details.
+See the [high-throughput guide](docs/openai-high-throughput.md).
+
 [`examples/example_deepseek.py`](examples/example_deepseek.py) has the full
 version: JSON mode with markdown-fence-tolerant parsing (`pydantic_json_parser`),
 `402 Insufficient Balance` handling, and cache-hit token accounting

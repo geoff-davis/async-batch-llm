@@ -100,7 +100,11 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
             events=self._events,
         )
         self._strategy_lifecycle: StrategyLifecycle[TOutput] = StrategyLifecycle()
-        self._capacity_limiter = CapacityLimiter(config.max_provider_concurrency)
+        self._capacity_limiter = CapacityLimiter(
+            config.max_provider_concurrency,
+            max_workers=config.max_workers,
+            startup_ramp=config.startup_ramp,
+        )
         self._stats = ProcessingStats()
         self._stats_lock = asyncio.Lock()
         self._token_extractor = TokenExtractor()

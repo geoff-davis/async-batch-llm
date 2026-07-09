@@ -134,6 +134,34 @@ class RateLimitConfig:
 
 
 @dataclass
+class StartupRampConfig:
+    """Optional concurrency ramp applied when an execution host starts."""
+
+    initial_concurrency: int = 1
+    concurrency_step: int = 1
+    ramp_interval_seconds: float = 1.0
+    max_concurrency: int | None = None
+    jitter_seconds: float = 0.0
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if self.initial_concurrency < 1:
+            raise ValueError("initial_concurrency must be >= 1")
+        if self.concurrency_step < 1:
+            raise ValueError("concurrency_step must be >= 1")
+        if self.ramp_interval_seconds <= 0:
+            raise ValueError("ramp_interval_seconds must be > 0")
+        if self.max_concurrency is not None and self.max_concurrency < 1:
+            raise ValueError("startup ramp max_concurrency must be >= 1 or None")
+        if self.max_concurrency is not None and self.initial_concurrency > self.max_concurrency:
+            raise ValueError("initial_concurrency must be <= max_concurrency")
+        if self.jitter_seconds < 0:
+            raise ValueError("jitter_seconds must be >= 0")
+
+
+@dataclass
 class ProcessorConfig:
     """Complete configuration for batch processor."""
 
@@ -187,6 +215,10 @@ class ProcessorConfig:
     # strategy advertises max_concurrency, the lower limit applies.
     max_provider_concurrency: int | None = None
 
+    # Optional cold-start ramp. Kept after all prior fields for positional
+    # compatibility; None preserves immediate full concurrency.
+    startup_ramp: StartupRampConfig | None = None
+
     def __post_init__(self) -> None:
         """Validate configuration on construction."""
         self.validate()
@@ -203,6 +235,8 @@ class ProcessorConfig:
                 "max_provider_concurrency must be >= 1 or None "
                 f"(got {self.max_provider_concurrency})."
             )
+        if self.startup_ramp is not None:
+            self.startup_ramp.validate()
         if self.timeout_per_item <= 0:
             raise ValueError(
                 f"timeout_per_item must be > 0 (got {self.timeout_per_item}). "

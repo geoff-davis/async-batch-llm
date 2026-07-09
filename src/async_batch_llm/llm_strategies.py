@@ -10,6 +10,7 @@ v0.6.0: Strategies now accept an LLMModel instead of raw client + model name.
 
 import inspect
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, cast, overload
@@ -406,7 +407,15 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
         gen_kwargs: dict[str, Any] = {"temperature": self.temperature}
         if self.generation_config is not None:
             gen_kwargs["config"] = self.generation_config
-        llm_response = await self.model.generate(prompt, **gen_kwargs)
+        provider_started = time.perf_counter()
+        try:
+            llm_response = await self.model.generate(prompt, **gen_kwargs)
+        finally:
+            if state is not None:
+                state.set(
+                    "_abl_last_provider_seconds",
+                    max(0.0, time.perf_counter() - provider_started),
+                )
 
         try:
             output = self.response_parser(llm_response)
@@ -566,7 +575,15 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
             object doesn't expose provider-side metadata uniformly, so
             ``metadata`` is currently always ``None`` here. (v0.10.0)
         """
-        result = await self.agent.run(prompt)
+        provider_started = time.perf_counter()
+        try:
+            result = await self.agent.run(prompt)
+        finally:
+            if state is not None:
+                state.set(
+                    "_abl_last_provider_seconds",
+                    max(0.0, time.perf_counter() - provider_started),
+                )
 
         # Extract token usage FIRST (before accessing result.output which may fail validation).
         # pydantic-ai 1.x renamed request_tokens/response_tokens -> input_tokens/output_tokens

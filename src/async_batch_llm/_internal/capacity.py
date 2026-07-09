@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 import warnings
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..core import StartupRampConfig
 
 _CAPACITY_DOCS_URL = (
     "https://geoff-davis.github.io/async-batch-llm/production-checklist/"
@@ -25,6 +29,7 @@ class Admission:
 
     wait_seconds: float
     capacity: int | None
+    startup_ramp_wait_seconds: float = 0.0
 
 
 def strategy_max_concurrency(strategy: Any) -> int | None:
@@ -38,20 +43,90 @@ def strategy_max_concurrency(strategy: Any) -> int | None:
     return int(capacity)
 
 
-class CapacityLimiter:
-    """Per-host provider-capacity semaphores keyed by strategy/model scope."""
+class _CapacityGate:
+    """Condition-based gate whose allowed concurrency can rise over time."""
 
-    def __init__(self, configured_capacity: int | None = None) -> None:
+    def __init__(self, capacity: int, ramp: StartupRampConfig | None) -> None:
+        self.capacity = capacity
+        self._ramp = ramp
+        self._active = 0
+        self._started = time.perf_counter()
+        self._condition = asyncio.Condition()
+
+    def _current_limit(self, now: float) -> tuple[int, float | None]:
+        if self._ramp is None:
+            return self.capacity, None
+        elapsed = max(0.0, now - self._started)
+        completed_intervals = int(elapsed / self._ramp.ramp_interval_seconds)
+        limit = min(
+            self.capacity,
+            self._ramp.initial_concurrency + completed_intervals * self._ramp.concurrency_step,
+        )
+        if limit >= self.capacity:
+            return limit, None
+        next_boundary = (completed_intervals + 1) * self._ramp.ramp_interval_seconds
+        return limit, max(0.0, next_boundary - elapsed)
+
+    async def acquire(self) -> tuple[float, float]:
+        started = time.perf_counter()
+        ramp_wait = 0.0
+        if self._ramp is not None and self._ramp.jitter_seconds > 0:
+            limit, _ = self._current_limit(started)
+            if limit < self.capacity:
+                jitter = random.uniform(0.0, self._ramp.jitter_seconds)
+                await asyncio.sleep(jitter)
+                ramp_wait += jitter
+
+        async with self._condition:
+            while True:
+                now = time.perf_counter()
+                limit, until_next_ramp = self._current_limit(now)
+                if self._active < limit:
+                    self._active += 1
+                    return max(0.0, now - started), ramp_wait
+
+                segment_started = time.perf_counter()
+                if until_next_ramp is None:
+                    await self._condition.wait()
+                else:
+                    try:
+                        await asyncio.wait_for(
+                            self._condition.wait(), timeout=max(until_next_ramp, 0.001)
+                        )
+                    except TimeoutError:
+                        pass
+                if limit < self.capacity:
+                    ramp_wait += max(0.0, time.perf_counter() - segment_started)
+
+    async def release(self) -> None:
+        async with self._condition:
+            self._active -= 1
+            self._condition.notify_all()
+
+
+class CapacityLimiter:
+    """Per-host capacity/ramp gates keyed by strategy/model scope."""
+
+    def __init__(
+        self,
+        configured_capacity: int | None = None,
+        *,
+        max_workers: int = 1,
+        startup_ramp: StartupRampConfig | None = None,
+    ) -> None:
         self._configured_capacity = configured_capacity
-        self._entries: dict[int, tuple[object, int, asyncio.Semaphore]] = {}
+        self._max_workers = max_workers
+        self._startup_ramp = startup_ramp
+        self._entries: dict[int, tuple[object, int, _CapacityGate]] = {}
 
     def effective_capacity(self, strategy: Any) -> int | None:
         advertised = strategy_max_concurrency(strategy)
-        if advertised is None:
-            return self._configured_capacity
-        if self._configured_capacity is None:
-            return advertised
-        return min(advertised, self._configured_capacity)
+        capacities = [
+            capacity for capacity in (advertised, self._configured_capacity) if capacity is not None
+        ]
+        if self._startup_ramp is not None:
+            capacities.append(self._startup_ramp.max_concurrency or self._max_workers)
+        return min(capacities) if capacities else None
 
     @staticmethod
     def _scope(strategy: Any) -> object:
@@ -73,10 +148,10 @@ class CapacityLimiter:
         scope_id = id(scope)
         entry = self._entries.get(scope_id)
         if entry is None or entry[0] is not scope:
-            semaphore = asyncio.Semaphore(capacity)
-            self._entries[scope_id] = (scope, capacity, semaphore)
+            gate = _CapacityGate(capacity, self._startup_ramp)
+            self._entries[scope_id] = (scope, capacity, gate)
         else:
-            _, registered_capacity, semaphore = entry
+            _, registered_capacity, gate = entry
             if registered_capacity != capacity:
                 logger.warning(
                     "Concurrency capacity changed from %s to %s for %s; using the original limit.",
@@ -86,9 +161,7 @@ class CapacityLimiter:
                 )
                 capacity = registered_capacity
 
-        started = time.perf_counter()
-        await semaphore.acquire()
-        wait_seconds = time.perf_counter() - started
+        wait_seconds, ramp_wait_seconds = await gate.acquire()
         if wait_seconds >= 0.001:
             logger.debug(
                 "[ADMISSION] %s waited %.3fs for provider capacity=%s",
@@ -97,9 +170,13 @@ class CapacityLimiter:
                 capacity,
             )
         try:
-            yield Admission(wait_seconds=wait_seconds, capacity=capacity)
+            yield Admission(
+                wait_seconds=wait_seconds,
+                capacity=capacity,
+                startup_ramp_wait_seconds=ramp_wait_seconds,
+            )
         finally:
-            semaphore.release()
+            await gate.release()
 
 
 def warn_if_worker_capacity_exceeded(

@@ -231,6 +231,58 @@ class LLMWorkItem(Generic[TInput, TOutput, TContext]):
 
 
 @dataclass
+class AttemptTiming:
+    """Timing and outcome details for one physical strategy execution try."""
+
+    attempt: int
+    try_number: int
+    total_seconds: float = 0.0
+    admission_wait_seconds: float = 0.0
+    startup_ramp_wait_seconds: float = 0.0
+    execution_seconds: float = 0.0
+    provider_seconds: float | None = None
+    cooldown_wait_seconds: float = 0.0
+    retry_backoff_seconds: float = 0.0
+    success: bool = False
+    error_type: str | None = None
+    error_category: str | None = None
+    timeout_category: str | None = None
+
+
+@dataclass
+class WorkItemTiming:
+    """End-to-end timing for one item, including every retry try."""
+
+    total_seconds: float = 0.0
+    attempts: list[AttemptTiming] = field(default_factory=list)
+    timeout_category: str | None = None
+
+    @property
+    def admission_wait_seconds(self) -> float:
+        return sum(attempt.admission_wait_seconds for attempt in self.attempts)
+
+    @property
+    def execution_seconds(self) -> float:
+        return sum(attempt.execution_seconds for attempt in self.attempts)
+
+    @property
+    def startup_ramp_wait_seconds(self) -> float:
+        return sum(attempt.startup_ramp_wait_seconds for attempt in self.attempts)
+
+    @property
+    def provider_seconds(self) -> float:
+        return sum(attempt.provider_seconds or 0.0 for attempt in self.attempts)
+
+    @property
+    def cooldown_wait_seconds(self) -> float:
+        return sum(attempt.cooldown_wait_seconds for attempt in self.attempts)
+
+    @property
+    def retry_backoff_seconds(self) -> float:
+        return sum(attempt.retry_backoff_seconds for attempt in self.attempts)
+
+
+@dataclass
 class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
     """
     Result of processing a single work item.
@@ -269,6 +321,7 @@ class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
         admission_wait_seconds: Total time this item spent waiting for provider
             capacity across all attempts. This wait occurs before the per-attempt
             execution timeout starts.
+        timing: Structured end-to-end and per-attempt timing details.
     """
 
     item_id: str
@@ -286,6 +339,7 @@ class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
     gemini_safety_ratings: dict[str, str] | None = field(default=None, repr=False, compare=False)
     exception: Exception | None = field(default=None, compare=False)
     admission_wait_seconds: float = 0.0
+    timing: WorkItemTiming = field(default_factory=WorkItemTiming)
 
     def __post_init__(self):
         """Backfill ``gemini_safety_ratings`` from ``metadata['safety_ratings']``
@@ -602,6 +656,8 @@ class ProcessingStats:
     cached_input_tokens: int = 0  # Tokens served from provider-side caches
     total_admission_wait_seconds: float = 0.0
     max_admission_wait_seconds: float = 0.0
+    _admission_wait_samples: list[float] = field(default_factory=list, repr=False)
+    _execution_samples: list[float] = field(default_factory=list, repr=False)
 
     def copy(self) -> dict[str, Any]:
         """Return a dictionary copy of the stats for backwards compatibility."""
@@ -619,11 +675,36 @@ class ProcessingStats:
             "cached_input_tokens": self.cached_input_tokens,
             "total_admission_wait_seconds": self.total_admission_wait_seconds,
             "max_admission_wait_seconds": self.max_admission_wait_seconds,
+            "admission_wait_p50_seconds": _percentile(self._admission_wait_samples, 50),
+            "admission_wait_p95_seconds": _percentile(self._admission_wait_samples, 95),
+            "admission_wait_p99_seconds": _percentile(self._admission_wait_samples, 99),
+            "execution_p50_seconds": _percentile(self._execution_samples, 50),
+            "execution_p95_seconds": _percentile(self._execution_samples, 95),
+            "execution_p99_seconds": _percentile(self._execution_samples, 99),
             # Alias kept for backward compatibility: the duplicate field was
             # never incremented, so it always read 0. Both keys now come from
             # the single counter that is actually updated.
             "total_cached_tokens": self.cached_input_tokens,
         }
+
+    def record_timing(self, timing: WorkItemTiming, *, sample_limit: int = 10_000) -> None:
+        """Record bounded attempt samples for percentile summaries."""
+        for attempt in timing.attempts:
+            self._admission_wait_samples.append(attempt.admission_wait_seconds)
+            self._execution_samples.append(attempt.execution_seconds)
+        if len(self._admission_wait_samples) > sample_limit:
+            del self._admission_wait_samples[:-sample_limit]
+        if len(self._execution_samples) > sample_limit:
+            del self._execution_samples[:-sample_limit]
+
+
+def _percentile(samples: list[float], percentile: int) -> float:
+    """Return a nearest-rank percentile for a bounded sample list."""
+    if not samples:
+        return 0.0
+    ordered = sorted(samples)
+    index = max(0, min(len(ordered) - 1, (len(ordered) * percentile + 99) // 100 - 1))
+    return ordered[index]
 
 
 class _EndOfStream:

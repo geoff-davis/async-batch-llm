@@ -62,6 +62,7 @@ nav:
   - Testing: testing.md
   - Benchmarks: benchmarks.md
   - Provider Integrations:
+    - OpenAI-Compatible High Throughput: openai-high-throughput.md
     - Gemini: GEMINI_INTEGRATION.md
     - OpenAI: OPENAI_INTEGRATION.md
     - OpenRouter: OPENROUTER_INTEGRATION.md

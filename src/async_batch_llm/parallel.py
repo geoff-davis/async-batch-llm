@@ -250,7 +250,11 @@ class ParallelBatchProcessor(
         # Back-compat aliases used by existing private methods and tests.
         self._prepared_strategies = self._strategy_lifecycle._prepared
         self._strategy_lock = self._strategy_lifecycle._lock
-        self._capacity_limiter = CapacityLimiter(config.max_provider_concurrency)
+        self._capacity_limiter = CapacityLimiter(
+            config.max_provider_concurrency,
+            max_workers=config.max_workers,
+            startup_ramp=config.startup_ramp,
+        )
 
         # Proactive rate limiting (prevents hitting rate limits)
         if config.max_requests_per_minute:
@@ -471,6 +475,12 @@ class ParallelBatchProcessor(
                     "total_admission_wait_seconds", 0.0
                 ),
                 "max_admission_wait_seconds": stats_snapshot.get("max_admission_wait_seconds", 0.0),
+                "admission_wait_p50_seconds": stats_snapshot.get("admission_wait_p50_seconds", 0.0),
+                "admission_wait_p95_seconds": stats_snapshot.get("admission_wait_p95_seconds", 0.0),
+                "admission_wait_p99_seconds": stats_snapshot.get("admission_wait_p99_seconds", 0.0),
+                "execution_p50_seconds": stats_snapshot.get("execution_p50_seconds", 0.0),
+                "execution_p95_seconds": stats_snapshot.get("execution_p95_seconds", 0.0),
+                "execution_p99_seconds": stats_snapshot.get("execution_p99_seconds", 0.0),
                 "duration": duration,
             },
         )
@@ -582,6 +592,7 @@ class ParallelBatchProcessor(
                     self._stats.max_admission_wait_seconds,
                     result.admission_wait_seconds,
                 )
+                self._stats.record_timing(result.timing)
 
                 # Both the progress callback and the periodic progress log fire
                 # on the same progress_interval boundary — decide both here.

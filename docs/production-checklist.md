@@ -136,6 +136,10 @@ budget and `timeout_per_item` for one provider attempt.
 Each `WorkItemResult.admission_wait_seconds` reports cumulative provider-capacity
 wait across attempts. `get_stats()` exposes total/max item wait, and
 `MetricsObserver` exposes attempt-level count, sum, max, and average wait.
+`WorkItemResult.timing` further separates execution, built-in provider-call,
+cooldown, retry-backoff, and startup-ramp time for every physical try.
+Processor stats retain the latest 10,000 attempt samples and report admission
+and execution p50, p95, and p99 values.
 
 ## 5. Rate-limit configuration
 
@@ -151,6 +155,14 @@ hammering a throttled endpoint. Tune via `RateLimitConfig`:
 
 Pair with proactive limiting (`ProcessorConfig(max_requests_per_minute=...)`) to
 stay under quota before you trip a 429 at all.
+
+For cold-start burst protection, configure `StartupRampConfig` separately. It
+limits initial concurrency and raises it by a fixed step on each interval; unlike
+the fields above, it applies before the first provider call and does not require
+a preceding rate limit. Ramp wait remains outside `timeout_per_item`.
+
+See the [OpenAI-compatible high-throughput guide](openai-high-throughput.md) for
+owned/custom client recipes and troubleshooting.
 
 ## 6. Constant-memory streaming for large inputs
 

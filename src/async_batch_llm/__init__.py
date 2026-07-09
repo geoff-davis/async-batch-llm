@@ -61,6 +61,7 @@ from typing import TypeVar
 
 # Core classes
 from .base import (
+    AttemptTiming,
     BatchProcessor,
     BatchResult,
     CachedTokenRates,
@@ -72,6 +73,7 @@ from .base import (
     RetryState,
     TokenUsage,
     WorkItemResult,
+    WorkItemTiming,
 )
 
 # Classifiers
@@ -82,7 +84,7 @@ from .classifiers import (
 )
 
 # Configuration
-from .core import ProcessorConfig, RateLimitConfig, RetryConfig
+from .core import ProcessorConfig, RateLimitConfig, RetryConfig, StartupRampConfig
 
 # Protocols
 from .core.protocols import LLMModel, ManagedLLMModel
@@ -184,6 +186,7 @@ Example:
 __all__ = [
     # Core
     "BatchProcessor",
+    "AttemptTiming",
     "BatchResult",
     "CachedTokenRates",
     "LLMWorkItem",
@@ -193,10 +196,12 @@ __all__ = [
     "RetryState",
     "TokenUsage",
     "WorkItemResult",
+    "WorkItemTiming",
     # Configuration
     "ProcessorConfig",
     "RateLimitConfig",
     "RetryConfig",
+    "StartupRampConfig",
     # High-level convenience API
     "process_prompts",
     "process_stream",

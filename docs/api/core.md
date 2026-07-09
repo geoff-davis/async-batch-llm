@@ -12,9 +12,21 @@
 
 ::: async_batch_llm.WorkItemResult
 
+## AttemptTiming
+
+::: async_batch_llm.AttemptTiming
+
+## WorkItemTiming
+
+::: async_batch_llm.WorkItemTiming
+
 ## ProcessorConfig
 
 ::: async_batch_llm.ProcessorConfig
+
+## StartupRampConfig
+
+::: async_batch_llm.StartupRampConfig
 
 ## BatchResult
 
