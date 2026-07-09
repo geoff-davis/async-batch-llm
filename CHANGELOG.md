@@ -59,6 +59,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Python 3.10 asyncio timeout handling** — capacity-ramp wakeups,
+  post-processor timeouts, observer timeouts, and worker shutdown now catch both
+  the pre-3.11 `asyncio.TimeoutError` class and built-in `TimeoutError`. The
+  previous bare catches could turn normal ramp wakeups into item retries and
+  misclassify callback timeouts on Python 3.10.
 - **Synchronous post-processors no longer block the event loop or bypass
   `post_processor_timeout`** — sync callbacks now run through
   `asyncio.to_thread()` and share the same wait budget as async callbacks.

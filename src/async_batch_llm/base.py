@@ -854,7 +854,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                     asyncio.gather(*self._workers, return_exceptions=True),
                     timeout=WORKER_CANCELLATION_TIMEOUT,
                 )
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 logger.warning("Some workers did not cancel within timeout")
 
         # Clear any remaining items in queue
@@ -1097,7 +1097,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 timeout=WORKER_SHUTDOWN_TIMEOUT,
             )
             logger.info(f"[OK]All {len(self._workers)} workers finished successfully")
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             logger.error(
                 f"[WARN]Workers did not finish within {WORKER_SHUTDOWN_TIMEOUT}s after queue.join(). "
                 "Cancelling workers and proceeding..."
@@ -1112,7 +1112,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                     asyncio.gather(*self._workers, return_exceptions=True),
                     timeout=WORKER_CANCELLATION_TIMEOUT * 2.5,  # Allow more time during shutdown
                 )
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 logger.error("[WARN]Some workers could not be cancelled")
 
         self._is_processing = False
@@ -1221,7 +1221,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 await asyncio.wait_for(invoke(), timeout=timeout)
             else:
                 await invoke()
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             logger.error(
                 f"[FAIL]Post-processor execution timed out after {timeout}s for {result.item_id}"
             )
