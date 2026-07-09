@@ -1,6 +1,6 @@
 # async-batch-llm API Reference
 
-Complete API documentation for async-batch-llm v0.16.0.
+Complete API documentation for async-batch-llm v0.17.0.
 
 ## Table of Contents
 

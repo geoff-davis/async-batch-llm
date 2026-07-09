@@ -12,7 +12,7 @@ here.
 **strategy pattern** — provider-agnostic at the framework level, with
 first-class support for several providers built in.
 
-**Current version:** v0.16.0 (see `CHANGELOG.md`; `pyproject.toml` is bumped
+**Current version:** v0.17.0 (see `CHANGELOG.md`; `pyproject.toml` is bumped
 by the release-prep flow, so it may briefly lag `main` between releases).
 
 **Key features:**
@@ -615,6 +615,14 @@ assert result.total_items == result.succeeded + result.failed
 
 Most recent first. See `CHANGELOG.md` for full per-release detail.
 
+- **v0.17.0** — provider-capacity admission outside execution timeouts
+  (#74/#79), structured per-attempt timing and percentile metrics (#76),
+  optional startup concurrency ramping (#77), conservative trailing-fence JSON
+  recovery (#82), and the high-throughput/bounded-work documentation set
+  (#75/#78/#80). Sync post-processors now run off the event loop and respect the
+  configured timeout. New public surfaces include `StartupRampConfig`,
+  `AttemptTiming`, `WorkItemTiming`, structured-output recovery views, and
+  admission/execution/recovery metrics.
 - **v0.16.0** — typed auxiliary-output views (#52 Phase 2,
   **experimental** — shapes/views may change in a minor release until
   they've seen real use). Four reserved `metadata` keys (`grounding`,
