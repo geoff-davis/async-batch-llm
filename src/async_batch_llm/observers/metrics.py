@@ -20,6 +20,9 @@ def _initial_metrics() -> dict[str, Any]:
         "admission_wait_count": 0,
         "admission_wait_seconds_sum": 0.0,
         "admission_wait_seconds_max": 0.0,
+        "structured_output_recoveries": 0,
+        "structured_output_retries_avoided": 0,
+        "structured_output_recovery_reasons": {},
     }
 
 
@@ -56,6 +59,19 @@ class MetricsObserver(BaseObserver):
                     self._processing_times.append(duration)
                     if len(self._processing_times) > self._max_processing_samples:
                         self._processing_times.pop(0)
+                if data.get("structured_output_recovered") is True:
+                    self.metrics["structured_output_recoveries"] += 1
+                    retries_avoided = data.get("structured_output_retries_avoided", 0)
+                    if (
+                        not isinstance(retries_avoided, bool)
+                        and isinstance(retries_avoided, int)
+                        and retries_avoided > 0
+                    ):
+                        self.metrics["structured_output_retries_avoided"] += retries_avoided
+                    reason = data.get("structured_output_recovery_reason")
+                    if isinstance(reason, str) and reason:
+                        reasons = self.metrics["structured_output_recovery_reasons"]
+                        reasons[reason] = reasons.get(reason, 0) + 1
 
             elif event == ProcessingEvent.ITEM_ADMITTED:
                 wait_seconds = float(data.get("wait_seconds", 0.0))
@@ -162,6 +178,11 @@ class MetricsObserver(BaseObserver):
             ("items_succeeded", "Total items succeeded"),
             ("items_failed", "Total items failed"),
             ("rate_limits_hit", "Total rate limits encountered"),
+            ("structured_output_recoveries", "Total structured outputs recovered"),
+            (
+                "structured_output_retries_avoided",
+                "Total validation retries avoided by structured-output recovery",
+            ),
         ]
 
         for metric_name, help_text in counters:
@@ -197,6 +218,21 @@ class MetricsObserver(BaseObserver):
                 # Sanitize error type for Prometheus label
                 safe_type = error_type.replace('"', '\\"')
                 lines.append(f'async_batch_llm_errors_total{{error_type="{safe_type}"}} {count}')
+            lines.append("")
+
+        recovery_reasons = metrics.get("structured_output_recovery_reasons", {})
+        if recovery_reasons:
+            lines.append(
+                "# HELP async_batch_llm_structured_output_recoveries_by_reason "
+                "Structured-output recoveries by reason"
+            )
+            lines.append("# TYPE async_batch_llm_structured_output_recoveries_by_reason counter")
+            for reason, count in recovery_reasons.items():
+                safe_reason = reason.replace('"', '\\"')
+                lines.append(
+                    "async_batch_llm_structured_output_recoveries_by_reason"
+                    f'{{reason="{safe_reason}"}} {count}'
+                )
             lines.append("")
 
         return "\n".join(lines)

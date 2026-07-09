@@ -7,20 +7,19 @@ channel itself is stable — pin exact shapes at your own risk, or read the
 dicts defensively.
 
 Provider-specific structured output — Gemini grounding, reasoning traces,
-tool calls, logprobs — travels through the framework as plain dicts under
-**reserved keys** of the ``metadata`` channel (``LLMResponse.metadata`` →
-``WorkItemResult.metadata``): ``'grounding'``, ``'reasoning'``,
-``'tool_calls'``, ``'logprobs'``. Those dict shapes are documented in
-``docs/API.md`` and stay JSON-serializable so results can be persisted
-as-is.
+tool calls, logprobs — and structured-output recovery signals travel through
+the framework as plain values under **reserved keys** of the ``metadata``
+channel (``LLMResponse.metadata`` → ``WorkItemResult.metadata``). Those shapes
+are documented in ``docs/API.md`` and stay JSON-serializable so results can be
+persisted as-is.
 
 This module provides the typed, provider-agnostic *read* surface over that
 contract: small frozen dataclasses plus :class:`ProviderOutputViews`, a
 mixin inherited by ``LLMResponse`` and ``WorkItemResult`` whose lazy
 read-only properties (``.grounding``, ``.reasoning``, ``.tool_calls``,
-``.logprobs``) parse the metadata dict on access. Nothing is stored twice:
-the dict remains the single source of truth, and the views re-read it on
-every access.
+``.logprobs``, and the ``.structured_output_*`` properties) parse the metadata
+dict on access. Nothing is stored twice: the dict remains the single source of
+truth, and the views re-read it on every access.
 
 Parsing is deliberately lenient: malformed or wrong-typed metadata yields
 ``None`` (or drops the bad entry) rather than raising, so a provider-shape
@@ -199,3 +198,29 @@ class ProviderOutputViews:
         if not md:
             return None
         return md.get("logprobs")
+
+    @property
+    def structured_output_recovered(self) -> bool:
+        """Whether conservative structured-output recovery was applied."""
+        md = self.metadata
+        return bool(md and md.get("structured_output_recovered") is True)
+
+    @property
+    def structured_output_recovery_reason(self) -> str | None:
+        """Machine-readable recovery reason, or None when not recovered."""
+        md = self.metadata
+        if not md:
+            return None
+        reason = md.get("structured_output_recovery_reason")
+        return reason if isinstance(reason, str) and reason else None
+
+    @property
+    def structured_output_retries_avoided(self) -> int:
+        """Estimated validation retries avoided by successful recovery."""
+        md = self.metadata
+        if not md:
+            return 0
+        value = md.get("structured_output_retries_avoided")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return 0
+        return value

@@ -14,6 +14,7 @@ Complete API documentation for async-batch-llm v0.16.0.
   - [PydanticAIStrategy](#pydanticaistrategy)
   - [GeminiStrategy](#geministrategy)
   - [GeminiCachedModel](#geminicachedmodel)
+  - [Structured JSON Parsing](#structured-json-parsing)
 - [Configuration](#configuration)
   - [ProcessorConfig](#processorconfig)
   - [RetryConfig](#retryconfig)
@@ -131,6 +132,12 @@ class WorkItemResult(Generic[TOutput, TContext]):
 - `timing` (WorkItemTiming): Total wall time and typed per-try timing for
   admission, startup ramp, execution, provider calls where available, cooldown,
   retry backoff, error classification, and timeout category.
+- `structured_output_recovered` (bool): Typed metadata view indicating that
+  conservative JSON recovery succeeded.
+- `structured_output_recovery_reason` (str | None): Recovery reason, currently
+  `trailing_markdown_fence`, or None.
+- `structured_output_retries_avoided` (int): Estimated validation retries
+  avoided by recovery; 0 when no recovery occurred.
 - `gemini_safety_ratings` (dict[str, str] | None): **Deprecated.** Reading
   it emits a `DeprecationWarning`; use `result.metadata["safety_ratings"]`
   instead
@@ -723,6 +730,34 @@ for i in range(100):
 
 ---
 
+### Structured JSON Parsing
+
+`pydantic_json_parser(Model)` strips a normal outer Markdown fence and performs
+strict Pydantic JSON/schema validation. Recovery is disabled by default.
+
+```python
+parser = pydantic_json_parser(
+    Classification,
+    recover_trailing_markdown=True,
+)
+strategy = OpenAIStrategy(model, parser)
+```
+
+With recovery enabled, strict parsing still runs first. On failure, the parser
+uses a real JSON decoder to read exactly one complete top-level object or array,
+accepts only the explicitly supported trailing closing-fence artifacts (three
+backticks, with or without the observed trailing underscore), and then runs
+normal Pydantic schema validation. It does not repair malformed JSON or accept
+scalars, multiple JSON values, arbitrary prose, or schema-invalid data. Those
+failures continue through the configured retry policy.
+
+A recovered `WorkItemResult` exposes typed recovery properties backed by
+metadata. Processor stats and `MetricsObserver` include
+`structured_output_recoveries`, `structured_output_retries_avoided`, and counts
+by `structured_output_recovery_reasons`.
+
+---
+
 ## Configuration
 
 ### ProcessorConfig
@@ -1101,12 +1136,16 @@ class ProcessorObserver(ABC):
 - `BATCH_COMPLETED`: `{processed, succeeded, failed, total, total_tokens,
   cached_input_tokens, total_admission_wait_seconds,
   max_admission_wait_seconds, admission_wait_p50/p95/p99_seconds,
-  execution_p50/p95/p99_seconds, duration}`
+  execution_p50/p95/p99_seconds, structured_output_recoveries,
+  structured_output_retries_avoided, structured_output_recovery_reasons,
+  duration}`
 - `WORKER_STARTED` / `WORKER_STOPPED`: `{worker_id}`
 - `ITEM_STARTED`: `{item_id, worker_id}`
 - `ITEM_ADMITTED`: `{item_id, worker_id, attempt, wait_seconds, capacity,
   startup_ramp_wait_seconds}`
-- `ITEM_COMPLETED`: `{item_id, duration, tokens, admission_wait_seconds}`
+- `ITEM_COMPLETED`: `{item_id, duration, tokens, admission_wait_seconds,
+  structured_output_recovered, structured_output_recovery_reason,
+  structured_output_retries_avoided}`
 - `ITEM_FAILED`: `{item_id, error_type}`
 - `RATE_LIMIT_HIT`: `{item_id, worker_id}`
 - `COOLDOWN_STARTED`: `{worker_id, duration, consecutive}`
@@ -1126,7 +1165,9 @@ Built-in observer for collecting metrics.
 
 In addition to item, error, cooldown, and processing-time metrics, it reports
 `admission_wait_count`, `admission_wait_seconds_sum`,
-`admission_wait_seconds_max`, and `avg_admission_wait_seconds`.
+`admission_wait_seconds_max`, `avg_admission_wait_seconds`,
+`structured_output_recoveries`, `structured_output_retries_avoided`, and
+`structured_output_recovery_reasons`.
 
 ```python
 class MetricsObserver(BaseObserver):
@@ -1271,6 +1312,11 @@ Provider metadata (Gemini safety ratings and finish reason, OpenRouter
 provider/routed model, etc.) flows into `WorkItemResult.metadata` — a plain
 `dict[str, Any] | None`. The parsed output stays in `WorkItemResult.output`;
 you no longer wrap it in a separate response object.
+
+Conservative structured-output recovery uses three reserved metadata keys:
+`structured_output_recovered`, `structured_output_recovery_reason`, and
+`structured_output_retries_avoided`. Read them through the corresponding typed
+properties on `LLMResponse` or `WorkItemResult`.
 
 > **Removed:** the old `GeminiResponse` wrapper and the `include_metadata`
 > opt-in were removed in v0.6.0. Read metadata off `result.metadata` instead.

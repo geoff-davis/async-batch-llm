@@ -12,8 +12,12 @@ Added in v0.10.0.
 
 from __future__ import annotations
 
+import json
+import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
+
+from pydantic import ValidationError
 
 from .base import LLMResponse
 
@@ -21,6 +25,22 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
 TModel = TypeVar("TModel", bound="BaseModel")
+logger = logging.getLogger(__name__)
+
+_TRAILING_MARKDOWN_FENCE_ARTIFACTS = frozenset({"```", "```_"})
+
+
+def _reject_nonstandard_constant(value: str) -> None:
+    raise ValueError(f"Non-standard JSON constant: {value}")
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"Duplicate JSON object key: {key}")
+        value[key] = item
+    return value
 
 
 def strip_code_fences(text: str) -> str:
@@ -54,7 +74,28 @@ def strip_code_fences(text: str) -> str:
     return body.strip()
 
 
-def pydantic_json_parser(model_cls: type[TModel]) -> Callable[[LLMResponse], TModel]:
+def _recover_trailing_markdown_json(text: str) -> tuple[Any, str] | None:
+    """Decode one complete object/array followed only by an allowed fence."""
+    candidate = text.lstrip()
+    try:
+        decoder = json.JSONDecoder(
+            parse_constant=_reject_nonstandard_constant,
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+        value, end = decoder.raw_decode(candidate)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(value, (dict, list)):
+        return None
+    remainder = candidate[end:].strip()
+    if remainder not in _TRAILING_MARKDOWN_FENCE_ARTIFACTS:
+        return None
+    return value, "trailing_markdown_fence"
+
+
+def pydantic_json_parser(
+    model_cls: type[TModel], *, recover_trailing_markdown: bool = False
+) -> Callable[[LLMResponse], TModel]:
     """Build a ``response_parser`` that fence-strips then validates with Pydantic.
 
     Returns a function suitable for the ``response_parser`` argument of any
@@ -62,7 +103,10 @@ def pydantic_json_parser(model_cls: type[TModel]) -> Callable[[LLMResponse], TMo
     ``DeepSeekStrategy``, ``GeminiStrategy``, etc.). It runs
     :func:`strip_code_fences` over ``LLMResponse.text`` before calling
     ``model_cls.model_validate_json``, so markdown-fenced JSON validates
-    cleanly instead of raising.
+    cleanly instead of raising. Set ``recover_trailing_markdown=True`` to opt
+    into a conservative fallback for one complete top-level JSON object/array
+    followed only by a recognized closing-fence artifact. It never repairs
+    malformed JSON or discards arbitrary prose/multiple values.
 
     Example:
         >>> from pydantic import BaseModel
@@ -74,7 +118,8 @@ def pydantic_json_parser(model_cls: type[TModel]) -> Callable[[LLMResponse], TMo
         ...     confidence: float
         >>>
         >>> model = DeepSeekModel.from_api_key("deepseek-chat", json_mode=True)
-        >>> strategy = DeepSeekStrategy(model, pydantic_json_parser(Classification))
+        >>> parser = pydantic_json_parser(Classification, recover_trailing_markdown=True)
+        >>> strategy = DeepSeekStrategy(model, parser)
 
     Validation failures raise ``pydantic.ValidationError``, which the built-in
     error classifiers treat as retryable (the model may produce valid output on
@@ -82,6 +127,28 @@ def pydantic_json_parser(model_cls: type[TModel]) -> Callable[[LLMResponse], TMo
     """
 
     def parser(response: LLMResponse) -> TModel:
-        return model_cls.model_validate_json(strip_code_fences(response.text))
+        candidate = strip_code_fences(response.text)
+        try:
+            return model_cls.model_validate_json(candidate)
+        except ValidationError:
+            if not recover_trailing_markdown:
+                raise
+            recovered = _recover_trailing_markdown_json(candidate)
+            if recovered is None:
+                raise
+
+        value, reason = recovered
+        output = model_cls.model_validate(value)
+        metadata = dict(response.metadata or {})
+        metadata.update(
+            {
+                "structured_output_recovered": True,
+                "structured_output_recovery_reason": reason,
+                "structured_output_retries_avoided": 1,
+            }
+        )
+        response.metadata = metadata
+        logger.debug("Recovered structured output from %s", reason)
+        return output
 
     return parser

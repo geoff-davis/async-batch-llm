@@ -851,6 +851,13 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         "duration": duration,
                         "tokens": token_usage.get("total_tokens", 0),
                         "admission_wait_seconds": work_result.admission_wait_seconds,
+                        "structured_output_recovered": (work_result.structured_output_recovered),
+                        "structured_output_recovery_reason": (
+                            work_result.structured_output_recovery_reason
+                        ),
+                        "structured_output_retries_avoided": (
+                            work_result.structured_output_retries_avoided
+                        ),
                     },
                 )
 

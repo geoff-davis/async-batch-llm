@@ -16,6 +16,12 @@ subclass for.
 
 ::: async_batch_llm.PydanticAIStrategy
 
+## Structured JSON Parsing
+
+::: async_batch_llm.pydantic_json_parser
+
+::: async_batch_llm.strip_code_fences
+
 ## GeminiStrategy
 
 ::: async_batch_llm.GeminiStrategy

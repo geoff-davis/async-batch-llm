@@ -481,6 +481,15 @@ class ParallelBatchProcessor(
                 "execution_p50_seconds": stats_snapshot.get("execution_p50_seconds", 0.0),
                 "execution_p95_seconds": stats_snapshot.get("execution_p95_seconds", 0.0),
                 "execution_p99_seconds": stats_snapshot.get("execution_p99_seconds", 0.0),
+                "structured_output_recoveries": stats_snapshot.get(
+                    "structured_output_recoveries", 0
+                ),
+                "structured_output_retries_avoided": stats_snapshot.get(
+                    "structured_output_retries_avoided", 0
+                ),
+                "structured_output_recovery_reasons": stats_snapshot.get(
+                    "structured_output_recovery_reasons", {}
+                ),
                 "duration": duration,
             },
         )
@@ -593,6 +602,16 @@ class ParallelBatchProcessor(
                     result.admission_wait_seconds,
                 )
                 self._stats.record_timing(result.timing)
+                if result.structured_output_recovered:
+                    self._stats.structured_output_recoveries += 1
+                    self._stats.structured_output_retries_avoided += (
+                        result.structured_output_retries_avoided
+                    )
+                    reason = result.structured_output_recovery_reason
+                    if reason is not None:
+                        self._stats.structured_output_recovery_reasons[reason] = (
+                            self._stats.structured_output_recovery_reasons.get(reason, 0) + 1
+                        )
 
                 # Both the progress callback and the periodic progress log fire
                 # on the same progress_interval boundary — decide both here.

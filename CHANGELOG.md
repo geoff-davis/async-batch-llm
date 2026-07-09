@@ -36,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model-owned and custom httpx clients, capacity alignment, timeout/retry layers,
   startup ramp versus cooldown, gateway load shedding, timing diagnostics, and
   a troubleshooting matrix.
+- **Opt-in conservative structured-output recovery ([#82])** —
+  `pydantic_json_parser(..., recover_trailing_markdown=True)` can recover one
+  complete top-level JSON object or array followed only by a recognized closing
+  Markdown fence artifact. Recovered results expose typed metadata views, keep
+  normal token/cost accounting, and increment processor and observer recovery
+  and avoided-retry metrics. Malformed JSON, arbitrary prose, multiple values,
+  scalar values, and schema-invalid data still follow normal retry behavior.
 
 ### Changed
 

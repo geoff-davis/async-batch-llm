@@ -90,13 +90,32 @@ model = OpenAIModel.from_api_key(
     json_mode=True,  # adds response_format={"type": "json_object"}
     system_instruction='Respond with JSON: {"sentiment": ..., "confidence": ...}',
 )
-strategy = OpenAIStrategy(model, pydantic_json_parser(Sentiment))
+strategy = OpenAIStrategy(
+    model,
+    pydantic_json_parser(Sentiment, recover_trailing_markdown=True),
+)
 ```
 
 `json_mode=True` is shorthand for
 `extra_body={"response_format": {"type": "json_object"}}`; an explicit
 `response_format` you pass in `extra_body` takes precedence. Most providers
 still require the word "JSON" somewhere in the prompt for JSON mode to engage.
+
+Parsing remains strict first. When `recover_trailing_markdown=True`, a failed
+strict parse gets one conservative fallback: decode exactly one complete
+top-level JSON object or array with Python's JSON decoder, accept the remainder
+only when it is the recognized closing fence (three backticks, with or without
+the observed trailing underscore), then run normal Pydantic schema validation.
+Malformed JSON, scalar values, multiple JSON values, arbitrary prose, and
+schema-invalid data are not accepted and proceed through the configured
+validation retry policy.
+
+Successful recovery preserves provider metadata and token/cost accounting. It
+sets `result.structured_output_recovered`,
+`result.structured_output_recovery_reason`, and
+`result.structured_output_retries_avoided`; processor stats and
+`MetricsObserver` aggregate the same signal. Leave the option off when trailing
+content should always be treated as a hard validation failure.
 
 For OpenAI specifically, `client.chat.completions.parse(response_format=...)`
 also works — wrap it in a custom strategy that calls `parse()` directly. Kept

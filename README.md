@@ -226,6 +226,13 @@ Switching providers is a one-line change (`DeepSeekModel` / `GeminiModel` /
 **caching**, and **observability**, see [Core Features](#core-features) below and
 the [`examples/`](examples/) directory.
 
+`pydantic_json_parser(Model)` is strict by default. For providers that
+occasionally append a stray closing Markdown fence after one otherwise valid
+JSON object or array, opt into conservative recovery with
+`pydantic_json_parser(Model, recover_trailing_markdown=True)`. Recovery never
+repairs malformed JSON or discards prose/multiple values, and is visible through
+`WorkItemResult.structured_output_recovered` and aggregate metrics.
+
 ---
 
 ## Core Features

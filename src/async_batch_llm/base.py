@@ -658,6 +658,9 @@ class ProcessingStats:
     max_admission_wait_seconds: float = 0.0
     _admission_wait_samples: list[float] = field(default_factory=list, repr=False)
     _execution_samples: list[float] = field(default_factory=list, repr=False)
+    structured_output_recoveries: int = 0
+    structured_output_retries_avoided: int = 0
+    structured_output_recovery_reasons: dict[str, int] = field(default_factory=dict)
 
     def copy(self) -> dict[str, Any]:
         """Return a dictionary copy of the stats for backwards compatibility."""
@@ -675,6 +678,9 @@ class ProcessingStats:
             "cached_input_tokens": self.cached_input_tokens,
             "total_admission_wait_seconds": self.total_admission_wait_seconds,
             "max_admission_wait_seconds": self.max_admission_wait_seconds,
+            "structured_output_recoveries": self.structured_output_recoveries,
+            "structured_output_retries_avoided": self.structured_output_retries_avoided,
+            "structured_output_recovery_reasons": self.structured_output_recovery_reasons.copy(),
             "admission_wait_p50_seconds": _percentile(self._admission_wait_samples, 50),
             "admission_wait_p95_seconds": _percentile(self._admission_wait_samples, 95),
             "admission_wait_p99_seconds": _percentile(self._admission_wait_samples, 99),
