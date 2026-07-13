@@ -306,6 +306,37 @@ PYPI_DESCRIPTION = REPO_ROOT / "README.md"
 _LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s")
 _CODE_SPAN_RE = re.compile(r"`[^`]*`")
 _EMPHASIS_SPLIT_RE = re.compile(r"\*\*|\*|__|_(?=\s)|(?<=\s)_")
+_MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)")
+
+
+def _relative_markdown_links(markdown: str) -> list[tuple[int, str]]:
+    """Return repository-relative links that cannot travel safely to PyPI."""
+    links: list[tuple[int, str]] = []
+    in_fence = False
+    for lineno, line in enumerate(markdown.splitlines(), start=1):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        for match in _MARKDOWN_LINK_RE.finditer(line):
+            target = match.group(1)
+            if not target.startswith(("https://", "#", "mailto:")):
+                links.append((lineno, target))
+    return links
+
+
+def test_readme_links_are_portable_to_pypi() -> None:
+    links = _relative_markdown_links(PYPI_DESCRIPTION.read_text(encoding="utf-8"))
+    assert not links, (
+        "README.md is also the PyPI long description. Non-anchor links must "
+        f"use absolute URLs so they do not resolve under pypi.org: {links}"
+    )
+
+
+def test_relative_markdown_link_checker_ignores_anchors_and_code() -> None:
+    markdown = "[guide](docs/guide.md) [section](#section)\n```python\n[x](local)\n```"
+    assert _relative_markdown_links(markdown) == [(1, "docs/guide.md")]
 
 
 def _mathjax_dollar_traps(markdown: str) -> list[tuple[int, str]]:
