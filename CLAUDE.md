@@ -12,7 +12,7 @@ here.
 **strategy pattern** — provider-agnostic at the framework level, with
 first-class support for several providers built in.
 
-**Current version:** v0.17.0 (see `CHANGELOG.md`; `pyproject.toml` is bumped
+**Current version:** v0.18.0 (see `CHANGELOG.md`; `pyproject.toml` is bumped
 by the release-prep flow, so it may briefly lag `main` between releases).
 
 **Key features:**
@@ -615,6 +615,13 @@ assert result.total_items == result.succeeded + result.failed
 
 Most recent first. See `CHANGELOG.md` for full per-release detail.
 
+- **v0.18.0** — stable opt-in input ordering, strict versioned result
+  serialization, replayable JSONL audit/checkpoint artifacts (#81), compatible
+  success or terminal-result replay, end-to-end item and batch deadlines, and
+  configurable category-based fail-fast behavior. Controlled stops preserve
+  accepted-work results and expose serializable termination metadata; artifact
+  persistence remains privacy-safe by default and checkpointed before result
+  publication.
 - **v0.17.0** — provider-capacity admission outside execution timeouts
   (#74/#79), structured per-attempt timing and percentile metrics (#76),
   optional startup concurrency ramping (#77), conservative trailing-fence JSON
