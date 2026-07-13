@@ -35,6 +35,13 @@ python example.py
 
 ## What's Included
 
+### `example_production_resume.py`
+
+A production-oriented OpenAI run with versioned JSONL checkpoints, compatible
+success replay, stable collected-result ordering, item and batch deadlines, and
+category-based fail-fast behavior. Run it twice with the same inputs to see
+successful results replayed without another provider call.
+
 ### `example.py`
 
 Comprehensive examples demonstrating:

@@ -191,6 +191,30 @@ class FrameworkTimeoutError(TimeoutError):
         self.timeout_limit = timeout_limit
 
 
+class ItemDeadlineExceeded(TimeoutError):
+    """The end-to-end monotonic deadline for one logical item expired."""
+
+    def __init__(self, message: str, *, item_id: str | None = None) -> None:
+        super().__init__(message)
+        self.item_id = item_id
+
+
+class BatchDeadlineExceeded(TimeoutError):
+    """The batch deadline stopped an accepted item before completion."""
+
+    def __init__(self, message: str, *, item_id: str | None = None) -> None:
+        super().__init__(message)
+        self.item_id = item_id
+
+
+class BatchAbortedError(RuntimeError):
+    """An accepted collateral item was stopped by configured fail-fast."""
+
+    def __init__(self, message: str, *, item_id: str | None = None) -> None:
+        super().__init__(message)
+        self.item_id = item_id
+
+
 class RateLimitRetriesExceeded(Exception):
     """A work item was retried after rate limits more than ``max_rate_limit_retries``.
 
@@ -278,6 +302,28 @@ class DefaultErrorClassifier(ErrorClassifier):
     def classify(self, exception: Exception) -> ErrorInfo:
         """Classify common errors with conservative defaults."""
         error_str = str(exception).lower()
+
+        if isinstance(exception, ItemDeadlineExceeded):
+            return ErrorInfo(
+                is_retryable=False,
+                is_rate_limit=False,
+                is_timeout=True,
+                error_category="framework_total_item_timeout",
+            )
+        if isinstance(exception, BatchDeadlineExceeded):
+            return ErrorInfo(
+                is_retryable=False,
+                is_rate_limit=False,
+                is_timeout=True,
+                error_category="batch_deadline_exceeded",
+            )
+        if isinstance(exception, BatchAbortedError):
+            return ErrorInfo(
+                is_retryable=False,
+                is_rate_limit=False,
+                is_timeout=False,
+                error_category="batch_aborted",
+            )
 
         # Detect rate limit errors from message patterns (works for simple Exception mocks)
         if self._matches_rate_limit(error_str):

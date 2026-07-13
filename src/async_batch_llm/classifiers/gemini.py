@@ -1,9 +1,12 @@
 """Google Gemini-specific error classification."""
 
 from ..strategies.errors import (
+    BatchAbortedError,
+    BatchDeadlineExceeded,
     ErrorClassifier,
     ErrorInfo,
     FrameworkTimeoutError,
+    ItemDeadlineExceeded,
     _retry_after_seconds,
     matches_any_pattern,
 )
@@ -44,6 +47,12 @@ class GeminiErrorClassifier(ErrorClassifier):
 
     def classify(self, exception: Exception) -> ErrorInfo:
         """Classify Gemini-specific errors."""
+        if isinstance(exception, ItemDeadlineExceeded):
+            return ErrorInfo(False, False, True, "framework_total_item_timeout")
+        if isinstance(exception, BatchDeadlineExceeded):
+            return ErrorInfo(False, False, True, "batch_deadline_exceeded")
+        if isinstance(exception, BatchAbortedError):
+            return ErrorInfo(False, False, False, "batch_aborted")
         # Check for framework timeout first (highest priority)
         if isinstance(exception, FrameworkTimeoutError):
             return ErrorInfo(
@@ -160,6 +169,12 @@ class GeminiErrorClassifier(ErrorClassifier):
                 error_category="rate_limit",
                 suggested_wait=_retry_after_seconds(exception),
             )
+
+        if code == 401:
+            return ErrorInfo(False, False, False, "authentication")
+
+        if code == 403:
+            return ErrorInfo(False, False, False, "permission_denied")
 
         if isinstance(code, int) and code in self._NON_RETRYABLE_STATUS:
             # Deterministic client errors (invalid API key, malformed request,

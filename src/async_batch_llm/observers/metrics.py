@@ -23,6 +23,9 @@ def _initial_metrics() -> dict[str, Any]:
         "structured_output_recoveries": 0,
         "structured_output_retries_avoided": 0,
         "structured_output_recovery_reasons": {},
+        "items_replayed": 0,
+        "items_aborted": 0,
+        "batches_aborted": 0,
     }
 
 
@@ -84,11 +87,24 @@ class MetricsObserver(BaseObserver):
             elif event == ProcessingEvent.ITEM_FAILED:
                 self.metrics["items_processed"] += 1
                 self.metrics["items_failed"] += 1
+                if data.get("error_category") in {"batch_aborted", "batch_deadline_exceeded"}:
+                    self.metrics["items_aborted"] += 1
                 if "error_type" in data:
                     error_type = data["error_type"]
                     self.metrics["error_counts"][error_type] = (
                         self.metrics["error_counts"].get(error_type, 0) + 1
                     )
+
+            elif event == ProcessingEvent.ITEM_REPLAYED:
+                self.metrics["items_processed"] += 1
+                self.metrics["items_replayed"] += 1
+                if data.get("success") is True:
+                    self.metrics["items_succeeded"] += 1
+                else:
+                    self.metrics["items_failed"] += 1
+
+            elif event == ProcessingEvent.BATCH_ABORTED:
+                self.metrics["batches_aborted"] += 1
 
             elif event == ProcessingEvent.RATE_LIMIT_HIT:
                 self.metrics["rate_limits_hit"] += 1
@@ -179,6 +195,9 @@ class MetricsObserver(BaseObserver):
             ("items_failed", "Total items failed"),
             ("rate_limits_hit", "Total rate limits encountered"),
             ("structured_output_recoveries", "Total structured outputs recovered"),
+            ("items_replayed", "Total terminal items replayed from artifacts"),
+            ("items_aborted", "Total collateral items aborted by guardrails"),
+            ("batches_aborted", "Total batches stopped by guardrails"),
             (
                 "structured_output_retries_avoided",
                 "Total validation retries avoided by structured-output recovery",

@@ -1,15 +1,12 @@
 # async-batch-llm
 
-**async-batch-llm is an asyncio toolkit for latency-sensitive LLM workloads made
-of independent calls: bulk prompt runs you want back during the current workflow,
-plus single-call and service request paths that need the same retry/rate-limit
-behavior. It provides provider-agnostic execution surfaces — a bounded worker pool
-for bulk runs, plus queue-less single-call and gateway helpers for request paths —
-with coordinated cooldowns for rate limits, error-type-aware retries, bounded
-streaming, and token/cost accounting, including failed attempts.**
+**async-batch-llm runs independent LLM calls concurrently with production-grade
+retries, coordinated rate-limit cooldowns, bounded input buffering, resumable
+checkpoints, deadlines, and token accounting—including failed attempts.**
 
-Use it when provider batch APIs are too slow for the job; use those batch APIs
-when a cheaper 24-hour turnaround is acceptable.
+Use it for results you need during the current workflow. For latency-tolerant
+jobs, provider batch APIs may offer lower prices in exchange for a longer
+turnaround.
 
 Provider-agnostic (OpenAI, Anthropic, Google, DeepSeek, OpenRouter, PydanticAI, or your own)
 through a simple strategy pattern; built on asyncio for I/O-bound throughput.
@@ -23,7 +20,159 @@ through a simple strategy pattern; built on asyncio for I/O-bound throughput.
 
 **📚 [Read the Documentation](https://geoff-davis.github.io/async-batch-llm/)**
 
+**Start here:** [Quick start](#quick-start) ·
+[Choose an execution surface](#choose-an-execution-surface) ·
+[Production-safe resumable run](#production-safe-resumable-run) ·
+[Why not just use `gather`?](#why-not-just-use-gather) ·
+[Documentation](#documentation)
+
 ---
+
+## Quick Start
+
+### Installation
+
+Install the provider extra you need. For OpenAI:
+
+```bash
+pip install 'async-batch-llm[openai]'
+```
+
+Other extras are `pydantic-ai`, `gemini`, `openrouter`, `deepseek`, and `all`.
+The core package alone is `pip install async-batch-llm`. The `uv sync` and
+`make` workflows in [Development Setup](#development-setup) are for contributors
+working from a clone, not for applications installing from PyPI.
+
+### Run a batch
+
+```python
+import asyncio
+
+from async_batch_llm import OpenAIModel, OpenAIStrategy, ProcessorConfig, process_prompts
+
+
+async def main() -> None:
+    strategy = OpenAIStrategy(
+        OpenAIModel.from_api_key("gpt-4o-mini")  # reads OPENAI_API_KEY
+    )
+    result = await process_prompts(
+        strategy,
+        ["Summarize document A", "Summarize document B"],
+        # Ten worker tasks; provider-capacity admission may allow fewer calls.
+        config=ProcessorConfig(max_workers=10),
+    )
+
+    print(f"{result.succeeded}/{result.total_items} succeeded")
+    for item in result.results:  # completion order by default
+        print(item.item_id, item.success, item.output or item.error)
+
+
+asyncio.run(main())
+```
+
+Pass `(item_id, prompt)` pairs to control IDs, or `(item_id, prompt, context)`
+triples to carry application data into each result. Collected results default
+to completion order. Pass `preserve_order=True`, or call
+`result.in_input_order()`, when stable submission order is required.
+
+For incremental handling, use `process_stream` with a bounded work queue:
+
+```python
+from async_batch_llm import ProcessorConfig, process_stream
+
+config = ProcessorConfig(max_workers=50, max_queue_size=200)
+
+async for item in process_stream(strategy, huge_prompt_source, config=config):
+    await save(item)  # results arrive in completion order
+```
+
+`max_queue_size` bounds pending input and applies producer backpressure. The
+result handoff queue is not bounded, so consumers should process results
+promptly rather than launching an unbounded number of background save tasks.
+`process_prompts` always retains every result by design.
+
+### Choose an execution surface
+
+| Need | API |
+| --- | --- |
+| Collect a finite run | `process_prompts()` |
+| Handle results incrementally | `process_stream()` |
+| Execute one resilient request | `call()` / `call_result()` |
+| Share limits across service requests | `LLMGateway` |
+| Customize queueing and lifecycle | `ParallelBatchProcessor` |
+
+The batch, stream, single-call, and gateway surfaces share the same execution,
+retry, timing, and token-accounting pipeline.
+
+### Production-safe resumable run
+
+With an application strategy and prompt source already defined:
+
+```python
+from pathlib import Path
+
+from async_batch_llm import (
+    AbortMode,
+    ArtifactIdentity,
+    GuardrailConfig,
+    JsonlArtifactStore,
+    ProcessorConfig,
+    ResumePolicy,
+    process_prompts,
+)
+
+store = JsonlArtifactStore(
+    "runs/invoice-extraction.jsonl",
+    identity=ArtifactIdentity(
+        provider="openai",
+        model="gpt-4o-mini",
+        prompt_version="invoice-v4",
+        parser_version="invoice-schema-v2",
+        application_version="billing-pipeline-v7",
+    ),
+)
+config = ProcessorConfig(
+    max_workers=20,
+    timeout_per_item=30,  # one provider attempt
+    guardrails=GuardrailConfig(
+        total_timeout_per_item=180,  # all waits and retries for one item
+        batch_timeout=3600,
+        abort_on_error_categories=frozenset(
+            {"authentication", "insufficient_balance"}
+        ),
+        abort_mode=AbortMode.DRAIN_ACTIVE,
+    ),
+)
+
+result = await process_prompts(
+    strategy,
+    prompts,
+    config=config,
+    artifact_store=store,
+    resume=ResumePolicy.REUSE_SUCCESSES,
+    preserve_order=True,
+)
+
+print(result.termination.kind, result.succeeded, result.failed)
+Path("summary.json").write_text(result.to_json(), encoding="utf-8")
+```
+
+Each newly executed terminal result is flushed before it is returned or
+streamed. Replay compatibility includes item ID, prompt, participating context,
+and the complete artifact identity—not merely `item_id`.
+`REUSE_SUCCESSES` reruns prior failures; `REUSE_ALL` also replays compatible
+terminal failures.
+
+Raw prompts and contexts are excluded from artifacts by default. Outputs and
+metadata are included by default because successful replay needs the output;
+they may contain sensitive application data. Replayed token usage remains on
+the result for audit, while live processor statistics exclude those historical
+tokens from spending in the current run.
+
+See [Results, Artifacts, and Resume](docs/results-and-artifacts.md) and
+[Deadlines and Fail-Fast Guardrails](docs/guardrails.md) for schema,
+privacy, durability, and timeout details. A complete version is available in
+[`examples/example_production_resume.py`](examples/example_production_resume.py).
 
 ## A sense of scale
 
@@ -54,7 +203,7 @@ model latency, account limits, pricing, and network all move the numbers.
 
 See the [benchmarks](docs/benchmarks.md) for methodology and the full tables.
 
-## vs. rolling your own
+## Why not just use `gather`?
 
 The 90% version is a semaphore and a `gather`. Here's what those few lines *don't* handle:
 
@@ -79,116 +228,29 @@ results = await asyncio.gather(*(call_one(p) for p in prompts))
 - **Transient errors** — one raised exception loses the whole batch; `return_exceptions=True` only
   trades that for `Exception` objects salted through your results to hand-filter.
 - **Cost** — no idea what you spent, and *zero* accounting for tokens burned on failed attempts.
-- **Memory** — `gather()` materializes every coroutine up front; you can't stream a million prompts
-  through constant memory.
+- **Input memory** — `gather()` materializes every coroutine up front; it does
+  not provide lazy input consumption or producer backpressure.
 
 async-batch-llm *is* that loop with the operational layer filled in — coordinated cooldowns,
-error-type-aware retries, token/cost accounting (including failures), bounded-memory streaming, and
-a one-line provider swap.
+error-type-aware retries, token/cost accounting (including failures), bounded input streaming, and a
+one-line provider swap.
 
 ## When NOT to use this
 
-- **You can wait hours.** If the job is latency-tolerant, the providers' own **batch APIs**
-  (OpenAI / Anthropic / Gemini Batch) run ~50% cheaper with results in up to 24 h. This library is
-  for *real-time* bulk — results now, at full price.
-- **It's a handful of calls.** For a one-off script over a few dozen prompts, a bare
-  `asyncio.gather` (optionally with a semaphore) is fine — don't take the dependency.
-  That said, if you want this library's *resilience* (error-aware retries, a coordinated
-  rate-limit cooldown, token accounting) for a single call or a web service's request
-  path *without* the batch machinery, reach for
-  [`call()` / `LLMGateway`](#single-calls-and-a-shared-gateway) instead.
+- **You can wait hours.** If the job is latency-tolerant, provider batch APIs
+  may offer a discount in exchange for delayed results. Check the current
+  pricing and turnaround guarantees for the provider and model you use.
+- **The operational layer is unnecessary.** For a small script where retries,
+  validation, token accounting, coordinated cooldowns, and bounded input do not
+  matter, `asyncio.gather` with a semaphore may be enough. If you want those
+  guarantees for one request or a service path without batch queueing, use
+  [`call()` / `LLMGateway`](#single-calls-and-a-shared-gateway).
 
 ---
 
-## Quick Start
+## Advanced processor control
 
-### Installation
-
-```bash
-# Basic installation
-pip install async-batch-llm
-
-# With PydanticAI support (recommended for structured output)
-pip install 'async-batch-llm[pydantic-ai]'
-
-# With Google Gemini support
-pip install 'async-batch-llm[gemini]'
-
-# With OpenAI support
-pip install 'async-batch-llm[openai]'
-
-# With OpenRouter support (multi-provider via one OpenAI-compatible API)
-pip install 'async-batch-llm[openrouter]'
-
-# With DeepSeek support (direct DeepSeek API, native cache-hit tracking)
-pip install 'async-batch-llm[deepseek]'
-
-# With everything
-pip install 'async-batch-llm[all]'
-
-# Alternatively, using the uv workflow from this repo's Makefile:
-uv venv && uv sync
-```
-
-Once dependencies are installed, run the pinned tooling via `make check-all` so your local Ruff/mypy
-versions match CI (all Makefile targets call `uv run` to use the synced environment).
-
-### Basic Example
-
-The fastest way in is `process_prompts` — hand it a strategy and an iterable of
-prompts, get a `BatchResult` back. Item ids are auto-generated for bare strings:
-
-```python
-import asyncio
-from async_batch_llm import OpenAIModel, OpenAIStrategy, ProcessorConfig, process_prompts
-
-documents = ["Document 1 text...", "Document 2 text..."]
-
-async def main():
-    strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))  # reads OPENAI_API_KEY
-
-    result = await process_prompts(
-        strategy,
-        [f"Summarize: {doc}" for doc in documents],
-        config=ProcessorConfig(max_workers=10),  # up to 10 calls in flight
-    )
-
-    print(f"Succeeded: {result.succeeded}/{result.total_items}")
-    for r in result.successes:
-        print(r.item_id, "->", r.output)
-
-asyncio.run(main())
-```
-
-Want results as they finish (e.g. to write each to disk)? Stream them. With a
-bounded `max_queue_size`, the producer applies **backpressure** — so you can
-stream a **million prompts (or an unbounded source) through constant memory**,
-since work isn't all buffered up front:
-
-```python
-from async_batch_llm import process_stream, ProcessorConfig
-
-config = ProcessorConfig(max_workers=50, max_queue_size=200)  # ~constant memory
-
-async for result in process_stream(strategy, huge_prompt_source, config=config):
-    if result.success:
-        await save(result.item_id, result.output)   # results arrive in completion order
-```
-
-`prompts` can be any sync **or** async iterable. Pass `(item_id, prompt)` pairs
-instead of bare strings to control ids — or `(item_id, prompt, context)` triples
-to carry per-item data through to the result — and forward any processor option
-(`post_processor`, `observers`, `error_classifier`, …) as a keyword argument.
-The error classifier is auto-selected from the strategy when you don't pass one.
-
-Need the low-level controls? `processor.start()` / `add_work()` / `finish()` /
-`results()` is the streaming mode `process_stream` is built on (workers run
-while you add work — a bounded queue is backpressure, not a deadlock).
-See [Bounded Work and Backpressure](docs/bounded-work.md) for incremental
-database ingestion, the distinction between queue and provider limits, and
-bounded gateway submission patterns.
-
-#### Full control (advanced)
+### Direct processor API
 
 For custom queueing, per-item context, or fine-grained lifecycle control, drive
 the `ParallelBatchProcessor` directly — `process_prompts` is a thin wrapper over it:
@@ -208,7 +270,7 @@ documents = ["Document 1 text...", "Document 2 text..."]
 async def main():
     model = OpenAIModel.from_api_key("gpt-4o-mini")   # reads OPENAI_API_KEY
     strategy = OpenAIStrategy(model)
-    config = ProcessorConfig(max_workers=10)          # up to 10 calls in flight at once
+    config = ProcessorConfig(max_workers=10)  # provider admission may impose a lower limit
 
     async with ParallelBatchProcessor(config=config) as processor:
         for i, doc in enumerate(documents):
@@ -290,11 +352,11 @@ LangChain, and more.
 
 #### DeepSeek quickstart
 
-DeepSeek allows **thousands of concurrent connections** — far more than most
-providers — so one asyncio batch can drive very high throughput. The footgun:
-the openai SDK defaults to httpx's ~100-connection pool, so raising `max_workers`
-past that gives no extra throughput (workers just block on the pool). Size
-`max_connections` to match `max_workers`:
+DeepSeek can support high concurrency, subject to your account and the current
+service limits. The footgun: the OpenAI SDK's httpx connection pool may be
+smaller than `max_workers`, so raising the worker count past the pool size gives
+no extra throughput (workers just block on the pool). Size `max_connections` to
+match `max_workers`:
 
 ```python
 from async_batch_llm import DeepSeekModel, DeepSeekStrategy
@@ -429,9 +491,8 @@ from google import genai
 
 client = genai.Client(api_key="your-api-key")
 
-# v0.6.0+: wrap a cached model in GeminiStrategy. Create ONE cached
-# model and share it across all work items — constructing a new model
-# per item would defeat caching and can cost 10x more.
+# Wrap a cached model in GeminiStrategy. Create ONE cached model and
+# share it across all work items; a model per item defeats cache reuse.
 cached_model = GeminiCachedModel(
     model="gemini-2.0-flash",
     client=client,
@@ -459,21 +520,21 @@ async with ParallelBatchProcessor(config=config) as processor:
     result = await processor.process_all()
 
 # Framework calls prepare() once per shared strategy (creates cache).
-# All items share the cache (cached tokens are billed at 10% of the normal rate).
+# All items share the cache. Cache pricing varies by provider and model.
 # Cleanup runs once when the processor context exits; the Gemini cache stays
 # alive until TTL expiry unless you call cached_model.delete_cache().
 ```
 
-**Cost Example:**
-
-- Without caching: 100 items × $0.10 = **$10.00**
-- With shared caching: 100 items × $0.03 = **$3.00** (assuming cached tokens are billed at 10% of the original rate)
+Caching can reduce repeated-input charges, but rates and minimum cache sizes
+vary by provider and model. Use the provider's current pricing with the token
+counts reported by this package; do not treat the examples here as a price
+table.
 
 ### Token & cost accounting
 
 Every `BatchResult` aggregates input / cached / output tokens — across retries,
-and recovered from failed attempts. Turn them into money with `estimated_cost`,
-which applies the per-provider cache discount:
+and recovered from failed attempts. Turn them into an estimate with
+`estimated_cost` by supplying the rates you intend to use:
 
 ```python
 from async_batch_llm import CachedTokenRates
@@ -485,6 +546,11 @@ cost = result.estimated_cost(
 )
 print(f"Estimated cost: ${cost:.4f}")
 ```
+
+`BatchResult.to_json()` and `to_jsonl()` provide strict, versioned,
+provider-neutral exports. Unsupported application values raise instead of
+falling back to `repr()`; use an encoder/decoder pair when typed reconstruction
+is required.
 
 ### Observability
 
@@ -505,7 +571,8 @@ saving results to a DB via a `post_processor` — live in
 
 `RetryState` persists across an item's attempts, which unlocks **error-type-aware**
 strategies — progressive temperature, **smart model escalation** (cheap model first, escalate to a
-smarter/thinking model only on bad *output* — typically 60–80% cheaper), and partial-field recovery.
+smarter/thinking model only on bad *output*), and partial-field recovery. Savings depend on the
+workload, validation rate, and current model prices.
 Because rate limits don't advance the attempt number, escalation tracks genuine quality failures, not
 throttling.
 
@@ -517,14 +584,17 @@ throttling.
 
 ## Configuration & tuning
 
-`ProcessorConfig` (with nested `RetryConfig` / `RateLimitConfig`) controls workers, per-attempt
-timeout, retry budgets (`max_attempts`, plus `max_rate_limit_retries` — rate limits don't burn your
-retry budget), rate-limit cooldown + slow-start, proactive limiting, progress reporting, and
-queueing. Full field reference: **[API reference → ProcessorConfig](docs/API.md)**.
+`ProcessorConfig` (with nested `RetryConfig`, `RateLimitConfig`, and
+`GuardrailConfig`) controls workers, the per-attempt `timeout_per_item`, the
+end-to-end `total_timeout_per_item`, the batch deadline, fail-fast categories,
+retry budgets (`max_attempts`, plus `max_rate_limit_retries` — rate limits don't
+burn your retry budget), rate-limit cooldown + slow-start, proactive limiting,
+progress reporting, and queueing. Full field reference:
+**[API reference → ProcessorConfig](docs/API.md)**.
 
 For the operational decisions — worker count per provider, sizing `max_connections` to `max_workers`,
 the `RLIMIT_NOFILE` footgun, timeout-vs-retry-budget interaction, rate-limit tuning, and the
-constant-memory streaming pattern — see the **[Production Checklist](docs/production-checklist.md)**.
+bounded-input streaming pattern — see the **[Production Checklist](docs/production-checklist.md)**.
 
 ## Testing
 
@@ -537,6 +607,8 @@ errors), and small-batch integration tests. See the **[Testing guide](docs/testi
 
 Check out the [`examples/`](examples/) directory for complete working examples:
 
+- [`example_production_resume.py`](examples/example_production_resume.py) - Checkpoints, replay,
+  deadlines, fail-fast, and ordered collection
 - [`example_llm_strategies.py`](examples/example_llm_strategies.py) - All built-in strategies
 - [`example_single_call.py`](examples/example_single_call.py) - One resilient call, no batch machinery
 - [`example_gateway.py`](examples/example_gateway.py) - Shared rate-limited gateway for a request path
@@ -556,9 +628,17 @@ Check out the [`examples/`](examples/) directory for complete working examples:
 
 ## Documentation
 
-- **[Full Documentation](https://geoff-davis.github.io/async-batch-llm/)** - Getting started, examples, and API reference
-- **[API Reference](https://geoff-davis.github.io/async-batch-llm/api/core/)** - Complete API documentation
-- **[Migration Guides](https://geoff-davis.github.io/async-batch-llm/migration/v0.4/)** - Version upgrade guides
+- **[Getting Started](docs/getting-started.md)** - Installation, strategies, and first batch
+- **[Production Checklist](docs/production-checklist.md)** - Concurrency, limits, timeouts, and operations
+- **[Results, Artifacts, and Resume](docs/results-and-artifacts.md)** - Serialization, privacy, checkpoints, and replay
+- **[Deadlines and Fail-Fast Guardrails](docs/guardrails.md)** - Item and batch deadlines, abort modes, and categories
+- **[Bounded Work and Backpressure](docs/bounded-work.md)** - Lazy sources, queue sizing, and streaming lifecycle
+- **[Testing](docs/testing.md)** - Deterministic tests without provider calls
+- **[Core API Reference](docs/api/core.md)** - Results, configuration, and processor APIs
+- **[Artifact API Reference](docs/api/artifacts.md)** - Stores, identity, resume policies, and errors
+
+Browse the rendered **[full documentation](https://geoff-davis.github.io/async-batch-llm/)**
+for search, provider integration guides, worked examples, and migration guides.
 
 ---
 

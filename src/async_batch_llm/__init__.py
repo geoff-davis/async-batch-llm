@@ -59,11 +59,23 @@ Type Aliases:
 
 from typing import TypeVar
 
+from .artifacts import (
+    ArtifactError,
+    ArtifactFormatError,
+    ArtifactIdentity,
+    ArtifactIOError,
+    ArtifactSerializationError,
+    ArtifactStore,
+    JsonlArtifactStore,
+    ResumePolicy,
+)
+
 # Core classes
 from .base import (
     AttemptTiming,
     BatchProcessor,
     BatchResult,
+    BatchTermination,
     CachedTokenRates,
     LLMResponse,
     LLMWorkItem,
@@ -84,7 +96,14 @@ from .classifiers import (
 )
 
 # Configuration
-from .core import ProcessorConfig, RateLimitConfig, RetryConfig, StartupRampConfig
+from .core import (
+    AbortMode,
+    GuardrailConfig,
+    ProcessorConfig,
+    RateLimitConfig,
+    RetryConfig,
+    StartupRampConfig,
+)
 
 # Protocols
 from .core.protocols import LLMModel, ManagedLLMModel
@@ -130,10 +149,13 @@ from .parsing import pydantic_json_parser, strip_code_fences
 
 # Provider auxiliary output (typed metadata views)
 from .provider_output import Grounding, GroundingSource, ToolCall
+from .serialization import ResultSerializationError
 from .single import LLMCallError, call, call_result
 
 # Error classification and rate limit strategies
 from .strategies import (
+    BatchAbortedError,
+    BatchDeadlineExceeded,
     DefaultErrorClassifier,
     EmptyResponseError,
     ErrorClassifier,
@@ -141,6 +163,7 @@ from .strategies import (
     ExponentialBackoffStrategy,
     FixedDelayStrategy,
     FrameworkTimeoutError,
+    ItemDeadlineExceeded,
     ProviderResponseError,
     RateLimitRetriesExceeded,
     RateLimitStrategy,
@@ -188,6 +211,7 @@ __all__ = [
     "BatchProcessor",
     "AttemptTiming",
     "BatchResult",
+    "BatchTermination",
     "CachedTokenRates",
     "LLMWorkItem",
     "PostProcessorFunc",
@@ -197,8 +221,20 @@ __all__ = [
     "TokenUsage",
     "WorkItemResult",
     "WorkItemTiming",
+    "ResultSerializationError",
+    # Audit/checkpoint artifacts
+    "ArtifactError",
+    "ArtifactFormatError",
+    "ArtifactIOError",
+    "ArtifactIdentity",
+    "ArtifactSerializationError",
+    "ArtifactStore",
+    "JsonlArtifactStore",
+    "ResumePolicy",
     # Configuration
     "ProcessorConfig",
+    "AbortMode",
+    "GuardrailConfig",
     "RateLimitConfig",
     "RetryConfig",
     "StartupRampConfig",
@@ -241,6 +277,9 @@ __all__ = [
     "DefaultErrorClassifier",
     "EmptyResponseError",
     "FrameworkTimeoutError",
+    "ItemDeadlineExceeded",
+    "BatchDeadlineExceeded",
+    "BatchAbortedError",
     "ProviderResponseError",
     "RateLimitRetriesExceeded",
     "TokenTrackingError",

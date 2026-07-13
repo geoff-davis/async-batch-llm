@@ -14,6 +14,9 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..core import StartupRampConfig
+    from .guardrails import AbortController
+
+from .guardrails import await_with_guardrails
 
 _CAPACITY_DOCS_URL = (
     "https://geoff-davis.github.io/async-batch-llm/production-checklist/"
@@ -67,14 +70,25 @@ class _CapacityGate:
         next_boundary = (completed_intervals + 1) * self._ramp.ramp_interval_seconds
         return limit, max(0.0, next_boundary - elapsed)
 
-    async def acquire(self) -> tuple[float, float]:
+    async def acquire(
+        self,
+        *,
+        deadline: float | None = None,
+        abort_controller: AbortController | None = None,
+        item_id: str | None = None,
+    ) -> tuple[float, float]:
         started = time.perf_counter()
         ramp_wait = 0.0
         if self._ramp is not None and self._ramp.jitter_seconds > 0:
             limit, _ = self._current_limit(started)
             if limit < self.capacity:
                 jitter = random.uniform(0.0, self._ramp.jitter_seconds)
-                await asyncio.sleep(jitter)
+                await await_with_guardrails(
+                    asyncio.sleep(jitter),
+                    item_deadline=deadline,
+                    item_id=item_id,
+                    abort_controller=abort_controller,
+                )
                 ramp_wait += jitter
 
         async with self._condition:
@@ -87,11 +101,20 @@ class _CapacityGate:
 
                 segment_started = time.perf_counter()
                 if until_next_ramp is None:
-                    await self._condition.wait()
+                    await await_with_guardrails(
+                        self._condition.wait(),
+                        item_deadline=deadline,
+                        item_id=item_id,
+                        abort_controller=abort_controller,
+                    )
                 else:
                     try:
-                        await asyncio.wait_for(
-                            self._condition.wait(), timeout=max(until_next_ramp, 0.001)
+                        await await_with_guardrails(
+                            self._condition.wait(),
+                            item_deadline=deadline,
+                            item_id=item_id,
+                            abort_controller=abort_controller,
+                            operation_timeout=max(until_next_ramp, 0.001),
                         )
                     except (TimeoutError, asyncio.TimeoutError):
                         pass
@@ -137,7 +160,14 @@ class CapacityLimiter:
         return scope if scope is not None else strategy
 
     @asynccontextmanager
-    async def admit(self, strategy: Any) -> AsyncIterator[Admission]:
+    async def admit(
+        self,
+        strategy: Any,
+        *,
+        deadline: float | None = None,
+        abort_controller: AbortController | None = None,
+        item_id: str | None = None,
+    ) -> AsyncIterator[Admission]:
         """Acquire capacity for one execute attempt and report queueing time."""
         capacity = self.effective_capacity(strategy)
         if capacity is None:
@@ -161,7 +191,11 @@ class CapacityLimiter:
                 )
                 capacity = registered_capacity
 
-        wait_seconds, ramp_wait_seconds = await gate.acquire()
+        wait_seconds, ramp_wait_seconds = await gate.acquire(
+            deadline=deadline,
+            abort_controller=abort_controller,
+            item_id=item_id,
+        )
         if wait_seconds >= 0.001:
             logger.debug(
                 "[ADMISSION] %s waited %.3fs for provider capacity=%s",

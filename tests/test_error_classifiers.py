@@ -656,14 +656,23 @@ class TestOpenAIErrorClassifier:
         assert info.error_category == "server_error"
         assert info.is_timeout is (status == 504)
 
-    @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
-    def test_non_retryable_4xx_codes(self, status):
+    @pytest.mark.parametrize(
+        ("status", "category"),
+        [
+            (400, "client_error"),
+            (401, "authentication"),
+            (403, "permission_denied"),
+            (404, "client_error"),
+            (422, "client_error"),
+        ],
+    )
+    def test_non_retryable_4xx_codes(self, status, category):
         from async_batch_llm.classifiers import OpenAIErrorClassifier
 
         classifier = OpenAIErrorClassifier()
         info = classifier.classify(_make_openai_status_error(status))
         assert info.is_retryable is False
-        assert info.error_category == "client_error"
+        assert info.error_category == category
 
     def test_pydantic_validation_error_retryable(self):
         from async_batch_llm.classifiers import OpenAIErrorClassifier
@@ -824,21 +833,21 @@ class TestGeminiSDKErrorClassification:
         assert info.suggested_wait == 7.0
 
     @pytest.mark.parametrize(
-        ("code", "message"),
+        ("code", "message", "category"),
         [
-            (400, "Invalid request"),
-            (401, "API key not valid"),
-            (403, "Permission denied"),
-            (404, "Model not found"),
+            (400, "Invalid request", "client_error"),
+            (401, "API key not valid", "authentication"),
+            (403, "Permission denied", "permission_denied"),
+            (404, "Model not found", "client_error"),
         ],
     )
-    def test_deterministic_client_errors_fail_fast(self, code, message):
+    def test_deterministic_client_errors_fail_fast(self, code, message, category):
         """4xx errors are deterministic; retrying an invalid API key on every
         item in the batch just multiplies latency."""
         classifier = GeminiErrorClassifier()
         info = classifier.classify(self._client_error(code, message))
         assert info.is_retryable is False
-        assert info.error_category == "client_error"
+        assert info.error_category == category
 
     @pytest.mark.parametrize(
         ("code", "message"),

@@ -1,7 +1,9 @@
 """Configuration management for batch processor."""
 
 import logging
+import math
 from dataclasses import dataclass, field
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +163,40 @@ class StartupRampConfig:
             raise ValueError("jitter_seconds must be >= 0")
 
 
+class AbortMode(str, Enum):
+    """How a controlled batch abort treats provider calls already running."""
+
+    DRAIN_ACTIVE = "drain_active"
+    CANCEL_ACTIVE = "cancel_active"
+
+
+@dataclass
+class GuardrailConfig:
+    """Optional end-to-end deadlines and terminal-category fail-fast policy."""
+
+    total_timeout_per_item: float | None = None
+    batch_timeout: float | None = None
+    abort_on_error_categories: frozenset[str] = field(default_factory=frozenset)
+    abort_mode: AbortMode = AbortMode.DRAIN_ACTIVE
+
+    def __post_init__(self) -> None:
+        self.abort_mode = AbortMode(self.abort_mode)
+        self.validate()
+
+    def validate(self) -> None:
+        for name, value in (
+            ("total_timeout_per_item", self.total_timeout_per_item),
+            ("batch_timeout", self.batch_timeout),
+        ):
+            if value is not None and (not math.isfinite(value) or value <= 0):
+                raise ValueError(f"{name} must be finite and > 0 or None (got {value!r})")
+        if any(
+            not isinstance(category, str) or not category
+            for category in self.abort_on_error_categories
+        ):
+            raise ValueError("abort_on_error_categories must contain only non-empty strings")
+
+
 @dataclass
 class ProcessorConfig:
     """Complete configuration for batch processor."""
@@ -219,6 +255,10 @@ class ProcessorConfig:
     # compatibility; None preserves immediate full concurrency.
     startup_ramp: StartupRampConfig | None = None
 
+    # End-to-end item/batch deadlines and opt-in fail-fast behavior. Appended
+    # for positional compatibility; defaults preserve pre-guardrail semantics.
+    guardrails: GuardrailConfig = field(default_factory=GuardrailConfig)
+
     def __post_init__(self) -> None:
         """Validate configuration on construction."""
         self.validate()
@@ -237,6 +277,7 @@ class ProcessorConfig:
             )
         if self.startup_ramp is not None:
             self.startup_ramp.validate()
+        self.guardrails.validate()
         if self.timeout_per_item <= 0:
             raise ValueError(
                 f"timeout_per_item must be > 0 (got {self.timeout_per_item}). "

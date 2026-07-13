@@ -48,16 +48,24 @@ and at most 32 attempts enter the provider call. When the queue fills,
 `process_stream` pauses `prompts_from_database()` until a worker frees space.
 The database iterator therefore does not run ahead indefinitely.
 
+When the feed finishes, fails, is cancelled, or stops under a batch guardrail,
+the high-level streaming API calls `aclose()` on async input iterators that
+provide it. This releases database cursors and generator `finally` blocks
+promptly. Treat a supplied async iterator as owned by that one stream; do not
+expect to resume or share it afterward.
+
 Results arrive in completion order. Persist or aggregate them incrementally if
 the result set itself is large.
 
 ## APIs That Collect Work or Results
 
-- `process_stream(...)` is the constant-memory choice when its input is lazy,
-  `max_queue_size` is positive, and the consumer does not retain every result.
+- `process_stream(...)` bounds pending input when its input is lazy and
+  `max_queue_size` is positive. Consume results promptly and do not retain them
+  all when the result set itself is large: the result handoff queue is
+  intentionally unbounded and does not apply consumer backpressure.
 - `process_prompts(...)` uses streaming execution internally but returns one
   `BatchResult`, so it retains every completed result. It is convenient for
-  bounded jobs, not constant-memory output handling.
+  bounded jobs, not bounded-memory output handling.
 - `ParallelBatchProcessor.process_all()` starts workers only after work has been
   added. Adding an entire input first materializes that input. A bounded queue
   cannot apply backpressure in this mode because no worker is draining it;

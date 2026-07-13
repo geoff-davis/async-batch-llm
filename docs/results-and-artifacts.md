@@ -1,0 +1,236 @@
+# Results, Audit Artifacts, and Resume
+
+Production runs often need two different outputs: a convenient batch summary and
+an append-only checkpoint that survives interruption. `BatchResult` serialization
+serves the first use case; `JsonlArtifactStore` serves the second.
+
+## Completion order and input order
+
+Batch processing and `process_stream()` publish results in **completion order** by
+default. This keeps fast items visible while a slow or retrying item is still in
+flight and preserves existing behavior.
+
+Use `preserve_order=True` when collecting a batch in input order:
+
+```python
+result = await process_prompts(
+    strategy,
+    [("duplicate", "slow prompt"), ("duplicate", "fast prompt")],
+    preserve_order=True,
+)
+```
+
+The processor assigns an internal `submission_index` when each item is accepted.
+It does not derive order from `item_id`, so duplicate IDs are safe. To reorder an
+existing batch without mutating it, call `ordered = result.in_input_order()`.
+This raises `ValueError` if any result predates submission indexes; it never
+guesses.
+
+Each `LLMWorkItem` object is a single submission. Duplicate IDs on distinct
+objects are supported, but submitting the identical mutable object twice raises
+`ValueError`; create a new work item for each queue entry.
+
+`process_stream()` intentionally remains completion ordered. Ordered streaming
+would block all later results behind one slow early item and require a reorder
+buffer that can grow without a safe bound.
+
+## JSON result serialization
+
+Result mappings use the named `async-batch-llm-result` schema and an integer
+schema version. They include terminal status, submission index, error category,
+replay state, token usage, complete attempt/item timing, and batch termination
+metadata.
+
+```python
+from pathlib import Path
+from async_batch_llm import BatchResult
+
+value = result.to_json()
+Path("summary.json").write_text(value, encoding="utf-8")
+
+restored = BatchResult.from_json(
+    Path("summary.json").read_text(encoding="utf-8")
+)
+
+result.to_jsonl("summary.jsonl")
+restored_lines = BatchResult.from_jsonl("summary.jsonl")
+```
+
+JSONL result files contain one complete versioned `WorkItemResult` record per
+line. A zero-result batch uses one versioned batch-metadata record so termination
+state still round-trips. These are summary exports, not resumable checkpoints;
+use an artifact store for checkpoint/resume.
+
+The safe encoder accepts normal JSON primitives plus dataclasses, Pydantic
+models, enums, `datetime`/`date`/`time`, UUIDs, filesystem paths, tuples, and
+sets. Tuples and sets normalize to JSON lists; dataclasses and Pydantic models
+normalize to mappings; dates, UUIDs, and paths normalize to strings. Sets are
+ordered deterministically. Without explicit decoders, those normalized values
+remain JSON-native mappings, lists, and strings after deserialization.
+
+Application-specific values need an explicit encoder:
+
+```python
+payload = result.to_json(
+    encoder=lambda value: {"widget_id": value.id}
+)
+```
+
+`WorkItemResult.from_dict()` and the `BatchResult.from_*()` methods accept
+`output_decoder` and `context_decoder` hooks for trusted type reconstruction.
+Deserialization never imports a class named by untrusted data. Exceptions are
+stored only as module name, class name, and redacted message; the restored
+runtime `exception` is `None`. Tracebacks and raw exception objects are never
+persisted. Framework-controlled error text and values under structured
+authorization/API-key/token keys are redacted. Other user-controlled strings
+round-trip without text rewriting, so applications must keep credentials out
+of prompts, outputs, context, and metadata.
+
+Unsupported values, malformed input, and future schema versions raise
+`ResultSerializationError`; values are never silently replaced with `repr()`.
+
+## Resumable JSONL artifacts
+
+An artifact begins with a version-1 manifest followed by versioned item records.
+The manifest records UTC creation time, package version, canonical identity,
+its SHA-256 fingerprint, and optional user metadata. Each terminal item record
+contains input fingerprints, current submission index, strategy class,
+identity/provenance, safe result data, timing, token use, error category, replay
+eligibility, and optional caller-calculated cost.
+
+```python
+from async_batch_llm import (
+    ArtifactIdentity,
+    JsonlArtifactStore,
+    ResumePolicy,
+    process_prompts,
+)
+
+store = JsonlArtifactStore(
+    "runs/customer-tagging.jsonl",
+    identity=ArtifactIdentity(
+        provider="openai",
+        model="example-model",
+        prompt_version="v3",
+        parser_version="v2",
+        application_version="2026.07",
+    ),
+)
+
+result = await process_prompts(
+    strategy,
+    prompts,
+    artifact_store=store,
+    resume=ResumePolicy.REUSE_SUCCESSES,
+)
+```
+
+A terminal record is flushed before its result is returned or yielded. Set
+`fsync=True` for an operating-system durability barrier after every record;
+flush-only is the default. A crash-truncated final line is ignored on reopening,
+while malformed complete or middle records fail clearly.
+
+### Compatibility matching
+
+Replay requires all of the following to match:
+
+- item ID;
+- SHA-256 prompt fingerprint;
+- context fingerprint when `context_in_identity=True` (the default);
+- combined input fingerprint; and
+- complete `ArtifactIdentity` fingerprint and supported artifact schema.
+
+Matching only an item ID is never sufficient. Changing provider, model,
+prompt/parser/application version, identity `extra`, prompt, or participating
+context invalidates the old record. When several records match, the newest
+complete record wins.
+
+Context is canonically JSON-encoded before a provider call. Supply `encoder=`
+or `context_fingerprinter=` when an application context is not supported; the
+store raises `ArtifactSerializationError` rather than silently excluding that
+identity component.
+
+Sensitive structured values are redacted from persisted identity, context,
+output, and metadata mappings. Their original values still feed the one-way
+context/identity fingerprint, so a credential change invalidates replay without
+writing the credential itself to the artifact.
+
+### Resume policies
+
+- `ResumePolicy.NONE` never reuses old results but still checkpoints new ones.
+- `ResumePolicy.REUSE_SUCCESSES` reuses the newest compatible success and reruns
+  failures, missing items, and stale items.
+- `ResumePolicy.REUSE_ALL` also reuses the newest compatible terminal failure.
+
+Replayed items do not call the provider and are not appended a second time.
+They retain historical output, timing, error, and token use, receive the current
+run's `submission_index`, and set `replayed_from_artifact=True`. Historical
+tokens remain visible on the item for audit but are excluded from newly consumed
+provider-token statistics returned by `processor.get_stats()`. In contrast,
+`BatchResult` aggregate token fields are computed from all returned results and
+therefore include replayed historical usage. This makes live processor stats a
+"spent this run" view and the collected batch an auditable result-history view.
+
+Setting `include_output=False` makes a success record audit-only and therefore
+ineligible for replay. A failure remains reusable under `REUSE_ALL` because it
+does not need a successful output.
+
+### Privacy controls
+
+Prompt and context hashes are always stored for matching, but raw prompts and
+raw context are excluded by default. Raw provider responses are never stored.
+The independent options are:
+
+- `include_output=True` (default);
+- `include_metadata=True` (default);
+- `include_prompt=False` (default); and
+- `include_context=False` (default).
+
+Outputs and metadata can themselves contain sensitive application data. Review
+their shape before enabling artifacts, or disable either field. Raw prompt and
+context persistence must be explicitly enabled.
+
+### Generate, review, apply
+
+Artifacts support a provider-free review/apply phase:
+
+```python
+from async_batch_llm import JsonlArtifactStore
+
+review = JsonlArtifactStore.read_results(
+    "runs/customer-tagging.jsonl",
+    successes_only=True,
+)
+for item in review.results:
+    await apply_approved_output(item.item_id, item.output)
+```
+
+For asynchronous inspection through an open store, use
+`async for item in store.iter_results(successes_only=True)`.
+
+Costs are optional and caller-supplied because this package does not maintain a
+provider price database:
+
+```python
+store = JsonlArtifactStore(
+    "run.jsonl",
+    identity=identity,
+    cost_calculator=lambda item: calculate_cost_from_current_prices(item),
+)
+```
+
+The artifact stores `null` when there is no calculator.
+
+## Process-safety boundary
+
+`JsonlArtifactStore` serializes writes with an `asyncio.Lock`, which guarantees
+complete, non-interleaved JSON records for concurrent workers sharing one store
+instance in one process. It does **not** implement filesystem locking across
+processes or independent store instances. Use one writer, or implement an
+`ArtifactStore` backed by real file locks or a transactional database.
+
+On open, the JSONL store retains all complete item records (including serialized
+outputs) in memory for read-only iteration and builds a constant-time replay
+index. This avoids quadratic resume lookup, but very large audit histories may
+be better served by a transactional `ArtifactStore` implementation with indexed
+on-disk storage.
