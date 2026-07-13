@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -103,7 +103,7 @@ def _rich_result() -> WorkItemResult[Any, Any]:
         success=True,
         output=_Output(label="ok"),
         context=_Context(
-            created=datetime(2026, 7, 13, 12, 30, tzinfo=UTC),
+            created=datetime(2026, 7, 13, 12, 30, tzinfo=timezone.utc),
             request_id=UUID("12345678-1234-5678-1234-567812345678"),
             path=Path("inputs/a.json"),
         ),
