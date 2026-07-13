@@ -59,11 +59,13 @@ the result set itself is large.
 
 ## APIs That Collect Work or Results
 
-- `process_stream(...)` is the constant-memory choice when its input is lazy,
-  `max_queue_size` is positive, and the consumer does not retain every result.
+- `process_stream(...)` bounds pending input when its input is lazy and
+  `max_queue_size` is positive. Consume results promptly and do not retain them
+  all when the result set itself is large: the result handoff queue is
+  intentionally unbounded and does not apply consumer backpressure.
 - `process_prompts(...)` uses streaming execution internally but returns one
   `BatchResult`, so it retains every completed result. It is convenient for
-  bounded jobs, not constant-memory output handling.
+  bounded jobs, not bounded-memory output handling.
 - `ParallelBatchProcessor.process_all()` starts workers only after work has been
   added. Adding an entire input first materializes that input. A bounded queue
   cannot apply backpressure in this mode because no worker is draining it;

@@ -7,9 +7,10 @@ iterable of prompts — bare strings get auto-generated item ids (``item_0``,
 triples (the context flows to ``WorkItemResult.context`` and your post_processor).
 
 Because the processor runs workers while work is still being fed, a bounded
-``ProcessorConfig.max_queue_size`` becomes backpressure: you can stream an
-arbitrarily large (even unbounded) input through **constant memory**, since the
-producer blocks on a full queue instead of buffering everything up front.
+``ProcessorConfig.max_queue_size`` becomes input backpressure: the producer
+blocks on a full work queue instead of buffering the complete source up front.
+The result handoff queue is unbounded, so callers should consume results
+promptly when streaming a large or unbounded source.
 """
 
 from __future__ import annotations
@@ -207,8 +208,9 @@ async def process_prompts(
 
     The one-liner entry point — drains :func:`process_stream` into a
     :class:`BatchResult` (whose ``results`` are in completion order). For
-    constant-memory processing of very large inputs, use :func:`process_stream`
-    directly with a bounded ``config.max_queue_size``.
+    lazy, bounded-input processing of very large inputs, use
+    :func:`process_stream` directly with a positive
+    ``config.max_queue_size`` and consume results promptly.
     """
     termination: list[BatchTermination] = []
     results = [

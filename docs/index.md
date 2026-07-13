@@ -1,15 +1,13 @@
 # async-batch-llm
 
-**An asyncio toolkit for latency-sensitive LLM workloads made of independent calls:
-bulk prompt runs you want back during the current workflow, plus single-call and
-service request paths that need the same retry/rate-limit behavior.**
+**Run independent LLM calls concurrently with production-grade retries,
+coordinated rate-limit cooldowns, bounded input buffering, resumable
+checkpoints, deadlines, and token accounting—including failed attempts.**
 
-It provides provider-agnostic execution surfaces — a bounded worker pool for bulk
-runs, plus queue-less single-call and gateway helpers for request paths — with
-coordinated cooldowns for rate limits, error-type-aware retries, bounded streaming,
-and token/cost accounting (including failed attempts). Use it when provider batch
-APIs are too slow for the job; use those batch APIs when a cheaper 24-hour
-turnaround is acceptable.
+Use it for results you need during the current workflow. For latency-tolerant
+jobs, provider batch APIs may offer lower prices in exchange for a longer
+turnaround. The package provides a worker pool for bulk runs plus queue-less
+single-call and gateway helpers for request paths.
 
 Works with any LLM provider (OpenAI, Anthropic, Google, DeepSeek, OpenRouter,
 PydanticAI, or custom) through a simple strategy pattern. Built on asyncio for
@@ -27,7 +25,9 @@ efficient I/O-bound processing.
 - ✅ **Reliable** - Built-in retry logic, timeout handling, and coordinated rate limiting
 - ✅ **Fast** - Parallel async processing with configurable concurrency
 - ✅ **Observable** - Token tracking, metrics collection, and event hooks
-- ✅ **Cost-Effective** - Shared caching strategies can dramatically reduce repeated prompt costs
+- ✅ **Resumable** - Versioned checkpoints can replay compatible prior results
+- ✅ **Guarded** - End-to-end item deadlines, batch deadlines, and configurable fail-fast behavior
+- ✅ **Cost-Aware** - Shared caching and complete token accounting expose repeated-input costs
 - ✅ **Type-Safe** - Full generic type support with Pydantic validation
 
 ---

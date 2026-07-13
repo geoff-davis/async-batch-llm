@@ -164,17 +164,17 @@ a preceding rate limit. Ramp wait remains outside `timeout_per_item`.
 See the [OpenAI-compatible high-throughput guide](openai-high-throughput.md) for
 owned/custom client recipes and troubleshooting.
 
-## 6. Constant-memory streaming for large inputs
+## 6. Bounded-input streaming for large inputs
 
 For a very large (or unbounded) input, don't buffer all the work up front. Use
 **streaming mode** with a **bounded** `max_queue_size`: workers run while you
 feed, so a full queue applies **backpressure** instead of deadlocking, holding
-memory roughly constant regardless of input size.
+pending-input memory roughly constant regardless of input size.
 
 ```python
 from async_batch_llm import process_stream, ProcessorConfig
 
-config = ProcessorConfig(max_workers=50, max_queue_size=200)  # ~constant memory
+config = ProcessorConfig(max_workers=50, max_queue_size=200)  # bounded pending input
 
 async for result in process_stream(strategy, huge_prompt_source, config=config):
     if result.success:
@@ -187,7 +187,9 @@ a file lazily). The low-level equivalent is
 
 `process_prompts()` retains every result in its returned `BatchResult`, and
 `process_all()` requires work to be added before workers start. Neither is a
-constant-memory result path for an unbounded workload. See
+bounded-memory result path for an unbounded workload. `process_stream()` avoids
+retaining results itself, but its result handoff queue is unbounded; consume
+results promptly so a slow consumer does not accumulate completed items. See
 [Bounded Work and Backpressure](bounded-work.md) for incremental database input,
 low-level streaming, and separate queue/provider/gateway limits.
 
