@@ -314,6 +314,11 @@ class JsonlArtifactStore:
                 if self.include_context
                 else None
             )
+            raw_prompt = (
+                to_json_value(work_item.prompt, path="$.raw_prompt")
+                if self.include_prompt
+                else None
+            )
             cost = self.cost_calculator(result) if self.cost_calculator is not None else None
             if cost is not None:
                 cost = float(cost)
@@ -354,7 +359,7 @@ class JsonlArtifactStore:
             "timing": serialized_result["timing"],
             "calculated_cost": cost,
             "replay_eligible": (not result.success) or self.include_output,
-            "raw_prompt": work_item.prompt if self.include_prompt else None,
+            "raw_prompt": raw_prompt,
             "raw_context": raw_context,
             "result": serialized_result,
         }

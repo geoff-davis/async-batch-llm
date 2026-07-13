@@ -8,7 +8,7 @@ import inspect
 import time
 from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from ..base import BatchTermination, LLMWorkItem, WorkItemResult
 from ..core import AbortMode
@@ -23,7 +23,7 @@ class BatchAdmissionStopped(RuntimeError):
 
 @dataclass(frozen=True)
 class AbortCause:
-    kind: str
+    kind: Literal["batch_timeout", "fail_fast"]
     reason: str
     error_category: str | None = None
     triggering_item_id: str | None = None

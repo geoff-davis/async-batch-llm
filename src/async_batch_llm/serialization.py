@@ -377,8 +377,11 @@ def _termination_from_dict(value: Any) -> BatchTermination:
     kind = data.get("kind", "completed")
     if not isinstance(kind, str):
         raise ResultSerializationError("Batch termination kind must be a string")
+    allowed = {"completed", "batch_timeout", "fail_fast", "artifact_error"}
+    if kind not in allowed:
+        raise ResultSerializationError(f"Unsupported batch termination kind: {kind!r}")
     return BatchTermination(
-        kind=kind,
+        kind=cast(Any, kind),
         reason=_optional_str(data.get("reason")),
         error_category=_optional_str(data.get("error_category")),
         triggering_item_id=_optional_str(data.get("triggering_item_id")),

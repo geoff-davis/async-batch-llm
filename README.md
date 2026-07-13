@@ -175,6 +175,12 @@ async for result in process_stream(strategy, huge_prompt_source, config=config):
         await save(result.item_id, result.output)   # results arrive in completion order
 ```
 
+Collected results also default to completion order. Pass
+`preserve_order=True` to `process_prompts` for stable input order (including
+duplicate item IDs), or call `result.in_input_order()` on an indexed batch.
+Streaming intentionally stays completion ordered so a slow early item cannot
+block later results or force an unbounded reorder buffer.
+
 `prompts` can be any sync **or** async iterable. Pass `(item_id, prompt)` pairs
 instead of bare strings to control ids — or `(item_id, prompt, context)` triples
 to carry per-item data through to the result — and forward any processor option
@@ -187,6 +193,13 @@ while you add work — a bounded queue is backpressure, not a deadlock).
 See [Bounded Work and Backpressure](docs/bounded-work.md) for incremental
 database ingestion, the distinction between queue and provider limits, and
 bounded gateway submission patterns.
+
+For interruptible production runs, `JsonlArtifactStore` checkpoints each result
+before it becomes visible and can replay compatible prior successes without a
+provider call. `GuardrailConfig` adds opt-in total item deadlines, batch
+deadlines, and terminal-category fail-fast behavior. See
+[Results, Artifacts, and Resume](docs/results-and-artifacts.md) and
+[Deadlines and Fail-Fast Guardrails](docs/guardrails.md).
 
 #### Full control (advanced)
 
@@ -486,6 +499,11 @@ cost = result.estimated_cost(
 print(f"Estimated cost: ${cost:.4f}")
 ```
 
+`BatchResult.to_json()` and `to_jsonl()` provide strict, versioned,
+provider-neutral exports. Unsupported application values raise instead of
+falling back to `repr()`; use an encoder/decoder pair when typed reconstruction
+is required.
+
 ### Observability
 
 Metrics observers, lifecycle events (`ITEM_*`, `RATE_LIMIT_HIT`, `COOLDOWN_*`, …)
@@ -517,7 +535,8 @@ throttling.
 
 ## Configuration & tuning
 
-`ProcessorConfig` (with nested `RetryConfig` / `RateLimitConfig`) controls workers, per-attempt
+`ProcessorConfig` (with nested `RetryConfig`, `RateLimitConfig`, and
+`GuardrailConfig`) controls workers, per-attempt
 timeout, retry budgets (`max_attempts`, plus `max_rate_limit_retries` — rate limits don't burn your
 retry budget), rate-limit cooldown + slow-start, proactive limiting, progress reporting, and
 queueing. Full field reference: **[API reference → ProcessorConfig](docs/API.md)**.

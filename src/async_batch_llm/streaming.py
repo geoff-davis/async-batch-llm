@@ -88,7 +88,7 @@ async def _process_stream_impl(
     config: ProcessorConfig | None = None,
     artifact_store: ArtifactStore | None = None,
     resume: ResumePolicy = ResumePolicy.NONE,
-    termination_out: list[Any] | None = None,
+    termination_out: list[BatchTermination] | None = None,
     **processor_kwargs: Any,
 ) -> AsyncIterator[WorkItemResult[TOutput, Any]]:
     """Yield each :class:`WorkItemResult` as it completes, in completion order.
@@ -210,7 +210,7 @@ async def process_prompts(
     constant-memory processing of very large inputs, use :func:`process_stream`
     directly with a bounded ``config.max_queue_size``.
     """
-    termination: list[Any] = []
+    termination: list[BatchTermination] = []
     results = [
         result
         async for result in _process_stream_impl(

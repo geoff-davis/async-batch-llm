@@ -24,6 +24,14 @@
 
 ::: async_batch_llm.ProcessorConfig
 
+## GuardrailConfig
+
+::: async_batch_llm.GuardrailConfig
+
+## AbortMode
+
+::: async_batch_llm.AbortMode
+
 ## StartupRampConfig
 
 ::: async_batch_llm.StartupRampConfig
@@ -31,6 +39,10 @@
 ## BatchResult
 
 ::: async_batch_llm.BatchResult
+
+## BatchTermination
+
+::: async_batch_llm.BatchTermination
 
 ## Grounding
 

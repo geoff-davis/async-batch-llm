@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Stable opt-in input ordering** — every accepted item receives a submission
+  index independent of `item_id`; `BatchResult.in_input_order()` returns a new
+  ordered batch, and `process_prompts(..., preserve_order=True)` opts into input
+  order. Completion order remains the default and `process_stream()` remains
+  completion ordered to avoid blocking and unbounded reorder buffers.
+- **Strict versioned result serialization** — `WorkItemResult` supports safe
+  mapping round trips, while `BatchResult` supports mapping, JSON, and one-record
+  per-line JSONL round trips. Timing, token use, error category, replay state,
+  submission index, and batch termination are preserved. Dataclasses, Pydantic
+  models, enums, temporal values, UUIDs, paths, tuples, and sets normalize to
+  JSON primitives; hooks handle application types. Unsupported values and
+  future schemas raise `ResultSerializationError`; exceptions restore only as
+  safe descriptors without tracebacks or runtime class loading.
+- **Version-1 replayable JSONL artifacts ([#81])** — `ArtifactIdentity`,
+  `ArtifactStore`, `JsonlArtifactStore`, and `ResumePolicy` provide append-only
+  checkpoints with canonical SHA-256 compatibility matching, privacy-safe raw
+  prompt/context defaults, checkpoint-before-publication durability, flush per
+  item with optional `fsync`, truncated-tail recovery, read-only review, and
+  `REUSE_SUCCESSES`/`REUSE_ALL` replay without duplicate provider work or
+  checkpoint records. Optional costs are caller-calculated; no provider price
+  table is bundled.
+- **Opt-in execution guardrails** — `GuardrailConfig` adds a logical
+  end-to-end item deadline spanning admission, cooldown, provider attempts, and
+  retry backoff; a run-scoped batch deadline; configurable terminal-category
+  fail-fast; and `drain_active`/`cancel_active` abort modes. Controlled batch
+  stops preserve terminal results for accepted work and expose serializable
+  `BatchTermination` metadata. New framework exceptions distinguish total item
+  expiry, batch expiry, and collateral batch aborts.
+- **Replay/deadline/abort observability** — observer events and metrics expose
+  replayed items, item-deadline expiry, controlled batch abort, and replayed or
+  aborted counts without counting historical replay tokens as newly consumed.
+
+### Changed
+
+- Built-in OpenAI and Gemini classifiers now distinguish reliable HTTP 401
+  (`authentication`) and 403 (`permission_denied`) statuses from ordinary
+  item-specific `client_error`; account/balance exhaustion remains
+  `insufficient_balance` where the provider supplies that signal.
+
+### Fixed
+
+- Worker, producer, streaming, and artifact-failure cleanup now use one
+  exactly-once queue-accounting path and surface unexpected worker or artifact
+  failures instead of allowing `queue.join()` or a result stream to hang.
+- Persisted framework-controlled errors redact labeled authorization, API-key,
+  token, and secret values; exception objects and tracebacks are never written.
+
 ## [0.17.0] - 2026-07-09
 
 ### Added

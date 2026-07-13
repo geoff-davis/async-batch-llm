@@ -8,9 +8,9 @@ import sys
 import time
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Generic, TypedDict, cast  # noqa: F401
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypedDict, cast  # noqa: F401
 
 from typing_extensions import TypeVar  # PEP 696 defaults on Python < 3.13
 
@@ -18,7 +18,10 @@ from .provider_output import ProviderOutputViews
 
 # Conditional imports for type checking
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from .llm_strategies import LLMCallStrategy
+    from .serialization import ValueDecoder, ValueEncoder
 
 # Type variables for generic typing. PEP 696 defaults let common usage drop
 # trailing parameters: ``ParallelBatchProcessor[str, MyOutput]`` (context
@@ -363,7 +366,7 @@ class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
             if isinstance(ratings, dict):
                 self.__dict__["gemini_safety_ratings"] = ratings
 
-    def to_dict(self, *, encoder: Any = None) -> dict[str, Any]:
+    def to_dict(self, *, encoder: "ValueEncoder | None" = None) -> dict[str, Any]:
         """Return a versioned, JSON-safe representation of this result.
 
         ``encoder`` may convert application-specific output/context values to
@@ -377,10 +380,10 @@ class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
     @classmethod
     def from_dict(
         cls,
-        data: Any,
+        data: Mapping[str, Any],
         *,
-        output_decoder: Any = None,
-        context_decoder: Any = None,
+        output_decoder: "ValueDecoder | None" = None,
+        context_decoder: "ValueDecoder | None" = None,
     ) -> "WorkItemResult[Any, Any]":
         """Restore a result from :meth:`to_dict` output.
 
@@ -470,7 +473,7 @@ class CachedTokenRates:
 class BatchTermination:
     """Serializable reason a batch stopped accepting or executing work."""
 
-    kind: str = "completed"
+    kind: Literal["completed", "batch_timeout", "fail_fast", "artifact_error"] = "completed"
     reason: str | None = None
     error_category: str | None = None
     triggering_item_id: str | None = None
@@ -637,7 +640,7 @@ class BatchResult(Generic[TOutput, TContext]):
             BatchResult(results=ordered, termination=self.termination),
         )
 
-    def to_dict(self, *, encoder: Any = None) -> dict[str, Any]:
+    def to_dict(self, *, encoder: "ValueEncoder | None" = None) -> dict[str, Any]:
         """Return a versioned, JSON-safe representation of the batch."""
         from .serialization import batch_result_to_dict
 
@@ -646,10 +649,10 @@ class BatchResult(Generic[TOutput, TContext]):
     @classmethod
     def from_dict(
         cls,
-        data: Any,
+        data: Mapping[str, Any],
         *,
-        output_decoder: Any = None,
-        context_decoder: Any = None,
+        output_decoder: "ValueDecoder | None" = None,
+        context_decoder: "ValueDecoder | None" = None,
     ) -> "BatchResult[Any, Any]":
         """Restore a batch from :meth:`to_dict` output."""
         from .serialization import batch_result_from_dict
@@ -660,7 +663,7 @@ class BatchResult(Generic[TOutput, TContext]):
             context_decoder=context_decoder,
         )
 
-    def to_json(self, *, encoder: Any = None, indent: int | None = 2) -> str:
+    def to_json(self, *, encoder: "ValueEncoder | None" = None, indent: int | None = 2) -> str:
         """Serialize this batch to a JSON string."""
         from .serialization import batch_result_to_json
 
@@ -671,8 +674,8 @@ class BatchResult(Generic[TOutput, TContext]):
         cls,
         value: str | bytes,
         *,
-        output_decoder: Any = None,
-        context_decoder: Any = None,
+        output_decoder: "ValueDecoder | None" = None,
+        context_decoder: "ValueDecoder | None" = None,
     ) -> "BatchResult[Any, Any]":
         """Restore a batch from a JSON string or UTF-8 bytes."""
         from .serialization import batch_result_from_json
@@ -683,7 +686,7 @@ class BatchResult(Generic[TOutput, TContext]):
             context_decoder=context_decoder,
         )
 
-    def to_jsonl(self, path: Any, *, encoder: Any = None) -> None:
+    def to_jsonl(self, path: "str | Path", *, encoder: "ValueEncoder | None" = None) -> None:
         """Write one versioned result record per UTF-8 JSONL line."""
         from .serialization import batch_result_to_jsonl
 
@@ -692,10 +695,10 @@ class BatchResult(Generic[TOutput, TContext]):
     @classmethod
     def from_jsonl(
         cls,
-        path: Any,
+        path: "str | Path",
         *,
-        output_decoder: Any = None,
-        context_decoder: Any = None,
+        output_decoder: "ValueDecoder | None" = None,
+        context_decoder: "ValueDecoder | None" = None,
     ) -> "BatchResult[Any, Any]":
         """Restore a batch from :meth:`to_jsonl` output."""
         from .serialization import batch_result_from_jsonl

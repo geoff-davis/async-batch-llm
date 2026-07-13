@@ -110,6 +110,10 @@ asyncio.run(main())
 ## Next Steps
 
 - [Getting Started Guide](getting-started.md) - Learn the basics
+- [Results, Artifacts, and Resume](results-and-artifacts.md) - Ordering, safe
+  serialization, checkpoints, privacy, and replay
+- [Deadlines and Fail-Fast Guardrails](guardrails.md) - Total item and batch
+  deadlines plus controlled abort behavior
 - [Examples](examples/basic.md) - See more examples
 - [API Reference](api/core.md) - Full API documentation
 - [Contributing](contributing.md) - Help improve async-batch-llm

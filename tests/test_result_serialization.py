@@ -186,6 +186,25 @@ def test_serialization_redacts_labeled_credentials_and_sensitive_keys() -> None:
     assert payload["output"] == {"api_key": "[REDACTED]", "safe": "visible"}
 
 
+def test_serialization_preserves_user_controlled_string_fidelity() -> None:
+    output = "The secret: ingredient is salt; Authorization: Bearer explains the scheme."
+    context = "Document api_key=example is educational prose."
+    metadata = {"explanation": "access_token: values appear in this specification"}
+    result = WorkItemResult(
+        item_id="fidelity",
+        success=True,
+        output=output,
+        context=context,
+        metadata=metadata,
+    )
+
+    restored = WorkItemResult.from_dict(result.to_dict())
+
+    assert restored.output == output
+    assert restored.context == context
+    assert restored.metadata == metadata
+
+
 def test_custom_encoder_decoder_and_unsupported_values() -> None:
     class Custom:
         def __init__(self, value: str) -> None:
@@ -207,6 +226,11 @@ def test_malformed_and_future_json_are_rejected() -> None:
     data = BatchResult(results=[]).to_dict()
     data["schema_version"] = 999
     with pytest.raises(ResultSerializationError, match="future"):
+        BatchResult.from_dict(data)
+
+    data = BatchResult(results=[]).to_dict()
+    data["termination"]["kind"] = "execute_imported_code"
+    with pytest.raises(ResultSerializationError, match="termination kind"):
         BatchResult.from_dict(data)
 
 
