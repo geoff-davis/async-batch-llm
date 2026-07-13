@@ -218,6 +218,18 @@ def test_custom_encoder_decoder_and_unsupported_values() -> None:
     restored = WorkItemResult.from_dict(data, output_decoder=lambda value: Custom(value["custom"]))
     assert restored.output.value == "x"
 
+    with pytest.raises(ResultSerializationError, match="recursive conversions"):
+        result.to_dict(encoder=lambda value: Custom("still unsupported"))
+
+
+@pytest.mark.parametrize("invalid", [1.5, True, "3", None])
+def test_token_usage_decode_rejects_non_integer_values(invalid: Any) -> None:
+    data = WorkItemResult(item_id="tokens", success=True).to_dict()
+    data["token_usage"]["total_tokens"] = invalid
+
+    with pytest.raises(ResultSerializationError, match="must be an integer"):
+        WorkItemResult.from_dict(data)
+
 
 def test_malformed_and_future_json_are_rejected() -> None:
     with pytest.raises(ResultSerializationError, match="Malformed"):

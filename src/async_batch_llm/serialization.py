@@ -34,6 +34,7 @@ RESULT_SCHEMA_VERSION = 1
 JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 ValueEncoder: TypeAlias = Callable[[Any], Any]
 ValueDecoder: TypeAlias = Callable[[JSONValue], Any]
+_MAX_CUSTOM_ENCODER_DEPTH = 32
 
 
 class ResultSerializationError(ValueError):
@@ -69,6 +70,16 @@ def to_json_value(value: Any, *, encoder: ValueEncoder | None = None, path: str 
     normalize to mappings. Date/time, UUID, enum, and filesystem path values
     normalize to strings or their JSON-safe enum values.
     """
+    return _to_json_value(value, encoder=encoder, path=path, encoder_depth=0)
+
+
+def _to_json_value(
+    value: Any,
+    *,
+    encoder: ValueEncoder | None,
+    path: str,
+    encoder_depth: int,
+) -> JSONValue:
     if value is None or isinstance(value, (bool, str, int)):
         return value
     if isinstance(value, float):
@@ -76,7 +87,12 @@ def to_json_value(value: Any, *, encoder: ValueEncoder | None = None, path: str 
             raise ResultSerializationError(f"Unsupported non-finite float at {path}: {value!r}")
         return value
     if isinstance(value, Enum):
-        return to_json_value(value.value, encoder=encoder, path=path)
+        return _to_json_value(
+            value.value,
+            encoder=encoder,
+            path=path,
+            encoder_depth=encoder_depth,
+        )
     if isinstance(value, (datetime, date, time)):
         return value.isoformat()
     if isinstance(value, UUID):
@@ -97,15 +113,23 @@ def to_json_value(value: Any, *, encoder: ValueEncoder | None = None, path: str 
             raise ResultSerializationError(
                 f"Could not serialize Pydantic value at {path}: {exc}"
             ) from exc
-        return to_json_value(dumped, encoder=encoder, path=path)
+        return _to_json_value(
+            dumped,
+            encoder=encoder,
+            path=path,
+            encoder_depth=encoder_depth,
+        )
 
     if is_dataclass(value) and not isinstance(value, type):
         return {
             item.name: (
                 "[REDACTED]"
                 if _SENSITIVE_KEY.match(item.name)
-                else to_json_value(
-                    getattr(value, item.name), encoder=encoder, path=f"{path}.{item.name}"
+                else _to_json_value(
+                    getattr(value, item.name),
+                    encoder=encoder,
+                    path=f"{path}.{item.name}",
+                    encoder_depth=encoder_depth,
                 )
             )
             for item in fields(value)
@@ -120,16 +144,34 @@ def to_json_value(value: Any, *, encoder: ValueEncoder | None = None, path: str 
             result[key] = (
                 "[REDACTED]"
                 if _SENSITIVE_KEY.match(key)
-                else to_json_value(item, encoder=encoder, path=f"{path}.{key}")
+                else _to_json_value(
+                    item,
+                    encoder=encoder,
+                    path=f"{path}.{key}",
+                    encoder_depth=encoder_depth,
+                )
             )
         return result
     if isinstance(value, (list, tuple)):
         return [
-            to_json_value(item, encoder=encoder, path=f"{path}[{index}]")
+            _to_json_value(
+                item,
+                encoder=encoder,
+                path=f"{path}[{index}]",
+                encoder_depth=encoder_depth,
+            )
             for index, item in enumerate(value)
         ]
     if isinstance(value, (set, frozenset)):
-        encoded = [to_json_value(item, encoder=encoder, path=f"{path}[]") for item in value]
+        encoded = [
+            _to_json_value(
+                item,
+                encoder=encoder,
+                path=f"{path}[]",
+                encoder_depth=encoder_depth,
+            )
+            for item in value
+        ]
         try:
             return sorted(encoded, key=_canonical_json)
         except TypeError as exc:  # pragma: no cover - _canonical_json accepts JSONValue
@@ -138,6 +180,11 @@ def to_json_value(value: Any, *, encoder: ValueEncoder | None = None, path: str 
             ) from exc
 
     if encoder is not None:
+        if encoder_depth >= _MAX_CUSTOM_ENCODER_DEPTH:
+            raise ResultSerializationError(
+                f"Custom encoder exceeded {_MAX_CUSTOM_ENCODER_DEPTH} recursive conversions "
+                f"at {path}; ensure it eventually returns supported JSON-safe data."
+            )
         try:
             converted = encoder(value)
         except Exception as exc:
@@ -148,7 +195,12 @@ def to_json_value(value: Any, *, encoder: ValueEncoder | None = None, path: str 
             raise ResultSerializationError(
                 f"Custom encoder returned the original unsupported value at {path}"
             )
-        return to_json_value(converted, encoder=encoder, path=path)
+        return _to_json_value(
+            converted,
+            encoder=encoder,
+            path=path,
+            encoder_depth=encoder_depth + 1,
+        )
 
     raise ResultSerializationError(
         f"Unsupported value of type {type(value).__module__}.{type(value).__qualname__} "
@@ -330,10 +382,14 @@ def work_item_result_from_dict(
         output = cast(JSONValue, data.get("output"))
         context = cast(JSONValue, data.get("context"))
         raw_tokens = _require_mapping(data.get("token_usage", {}), path="$.token_usage")
-        tokens = cast(
-            TokenUsage,
-            {str(key): int(item) for key, item in raw_tokens.items() if isinstance(item, int)},
-        )
+        token_values: dict[str, int] = {}
+        for key, item in raw_tokens.items():
+            if not isinstance(key, str):
+                raise TypeError("token_usage keys must be strings")
+            if isinstance(item, bool) or not isinstance(item, int):
+                raise TypeError(f"token_usage[{key!r}] must be an integer")
+            token_values[key] = item
+        tokens = cast(TokenUsage, token_values)
         metadata = data.get("metadata")
         if metadata is not None and not isinstance(metadata, dict):
             raise TypeError("metadata must be an object or null")
