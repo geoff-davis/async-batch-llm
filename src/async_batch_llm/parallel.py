@@ -555,6 +555,10 @@ class ParallelBatchProcessor(
                 # store the result and call task_done().
                 result = await self._executor.build_failure_result(work_item, e, worker_id)
 
+            # The index belongs to the current accepted submission, regardless
+            # of middleware replacement or how the terminal result was built.
+            result.submission_index = work_item.submission_index
+
             # Store the result. In streaming mode publish it to the result
             # stream (constant memory — we don't accumulate _results); in batch
             # mode accumulate for process_all()'s BatchResult.

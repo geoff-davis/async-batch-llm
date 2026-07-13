@@ -10,7 +10,7 @@ import warnings
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Generic, TypedDict  # noqa: F401
+from typing import TYPE_CHECKING, Any, Generic, TypedDict, cast  # noqa: F401
 
 from typing_extensions import TypeVar  # PEP 696 defaults on Python < 3.13
 
@@ -204,6 +204,9 @@ class LLMWorkItem(Generic[TInput, TOutput, TContext]):
     strategy: "LLMCallStrategy[TOutput]"
     prompt: str = ""
     context: TContext | None = None
+    # Assigned by BatchProcessor.add_work() when the item is accepted. Kept on
+    # the work item so duplicate item IDs remain independently orderable.
+    submission_index: int | None = field(default=None, compare=False)
 
     def __post_init__(self):
         """Validate work item fields."""
@@ -340,6 +343,9 @@ class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
     exception: Exception | None = field(default=None, compare=False)
     admission_wait_seconds: float = 0.0
     timing: WorkItemTiming = field(default_factory=WorkItemTiming)
+    submission_index: int | None = field(default=None, compare=False)
+    error_category: str | None = None
+    replayed_from_artifact: bool = False
 
     def __post_init__(self):
         """Backfill ``gemini_safety_ratings`` from ``metadata['safety_ratings']``
@@ -355,6 +361,38 @@ class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
             ratings = self.metadata["safety_ratings"]
             if isinstance(ratings, dict):
                 self.__dict__["gemini_safety_ratings"] = ratings
+
+    def to_dict(self, *, encoder: Any = None) -> dict[str, Any]:
+        """Return a versioned, JSON-safe representation of this result.
+
+        ``encoder`` may convert application-specific output/context values to
+        supported JSON-safe values. Unsupported values raise
+        :class:`~async_batch_llm.ResultSerializationError`.
+        """
+        from .serialization import work_item_result_to_dict
+
+        return work_item_result_to_dict(self, encoder=encoder)
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: Any,
+        *,
+        output_decoder: Any = None,
+        context_decoder: Any = None,
+    ) -> "WorkItemResult[Any, Any]":
+        """Restore a result from :meth:`to_dict` output.
+
+        Without decoders, custom values (including Pydantic models and
+        dataclasses) are restored as JSON-native mappings/lists.
+        """
+        from .serialization import work_item_result_from_dict
+
+        return work_item_result_from_dict(
+            data,
+            output_decoder=output_decoder,
+            context_decoder=context_decoder,
+        )
 
 
 def _get_gemini_safety_ratings(self: "WorkItemResult") -> dict[str, str] | None:
@@ -427,6 +465,16 @@ class CachedTokenRates:
     that took effect April 2026; earlier the discount was ~10%)."""
 
 
+@dataclass(frozen=True)
+class BatchTermination:
+    """Serializable reason a batch stopped accepting or executing work."""
+
+    kind: str = "completed"
+    reason: str | None = None
+    error_category: str | None = None
+    triggering_item_id: str | None = None
+
+
 @dataclass
 class BatchResult(Generic[TOutput, TContext]):
     """
@@ -455,6 +503,7 @@ class BatchResult(Generic[TOutput, TContext]):
     total_input_tokens: int = field(init=False, default=0)
     total_output_tokens: int = field(init=False, default=0)
     total_cached_tokens: int = field(init=False, default=0)  # v0.2.0
+    termination: BatchTermination = field(default_factory=BatchTermination)
 
     def __post_init__(self):
         """Calculate summary statistics from results."""
@@ -566,6 +615,95 @@ class BatchResult(Generic[TOutput, TContext]):
         ``item_id``, the later-completed one wins.
         """
         return {r.item_id: r for r in self.results}
+
+    def in_input_order(self) -> "BatchResult[TOutput, TContext]":
+        """Return a new batch whose results are sorted by submission order.
+
+        The current batch and its result list are not mutated. Ordering is
+        never inferred from ``item_id`` because IDs may be duplicated.
+        """
+        missing = [result.item_id for result in self.results if result.submission_index is None]
+        if missing:
+            preview = ", ".join(repr(item_id) for item_id in missing[:3])
+            suffix = "..." if len(missing) > 3 else ""
+            raise ValueError(
+                "Cannot order results by input: "
+                f"{len(missing)} result(s) lack submission_index ({preview}{suffix})."
+            )
+        ordered = sorted(self.results, key=lambda result: result.submission_index)  # type: ignore[arg-type,return-value]
+        return cast(
+            "BatchResult[TOutput, TContext]",
+            BatchResult(results=ordered, termination=self.termination),
+        )
+
+    def to_dict(self, *, encoder: Any = None) -> dict[str, Any]:
+        """Return a versioned, JSON-safe representation of the batch."""
+        from .serialization import batch_result_to_dict
+
+        return batch_result_to_dict(self, encoder=encoder)
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: Any,
+        *,
+        output_decoder: Any = None,
+        context_decoder: Any = None,
+    ) -> "BatchResult[Any, Any]":
+        """Restore a batch from :meth:`to_dict` output."""
+        from .serialization import batch_result_from_dict
+
+        return batch_result_from_dict(
+            data,
+            output_decoder=output_decoder,
+            context_decoder=context_decoder,
+        )
+
+    def to_json(self, *, encoder: Any = None, indent: int | None = 2) -> str:
+        """Serialize this batch to a JSON string."""
+        from .serialization import batch_result_to_json
+
+        return batch_result_to_json(self, encoder=encoder, indent=indent)
+
+    @classmethod
+    def from_json(
+        cls,
+        value: str | bytes,
+        *,
+        output_decoder: Any = None,
+        context_decoder: Any = None,
+    ) -> "BatchResult[Any, Any]":
+        """Restore a batch from a JSON string or UTF-8 bytes."""
+        from .serialization import batch_result_from_json
+
+        return batch_result_from_json(
+            value,
+            output_decoder=output_decoder,
+            context_decoder=context_decoder,
+        )
+
+    def to_jsonl(self, path: Any, *, encoder: Any = None) -> None:
+        """Write one versioned result record per UTF-8 JSONL line."""
+        from .serialization import batch_result_to_jsonl
+
+        batch_result_to_jsonl(self, path, encoder=encoder)
+
+    @classmethod
+    def from_jsonl(
+        cls,
+        path: Any,
+        *,
+        output_decoder: Any = None,
+        context_decoder: Any = None,
+    ) -> "BatchResult[Any, Any]":
+        """Restore a batch from :meth:`to_jsonl` output."""
+        from .serialization import batch_result_from_jsonl
+
+        return batch_result_from_jsonl(
+            path,
+            output_decoder=output_decoder,
+            context_decoder=context_decoder,
+        )
 
     def estimated_cost(
         self,
@@ -800,6 +938,8 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         # Thread-safety locks (shared by both modes; subclasses use these).
         self._stats_lock = asyncio.Lock()
         self._results_lock = asyncio.Lock()
+        self._submission_lock = asyncio.Lock()
+        self._next_submission_index = 0
 
         # Background post-processor tasks (only used when
         # ProcessorConfig.concurrent_post_processing is True). The semaphore is
@@ -917,38 +1057,51 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 so the queue can't drain while you add, and blocking would
                 deadlock. Use streaming mode for bounded queues.
         """
-        if self._streaming:
-            if self._finished:
+        # Serialize acceptance so the index reflects stable admission order,
+        # including when multiple producers call add_work concurrently.
+        async with self._submission_lock:
+            work_item.submission_index = self._next_submission_index
+            if self._streaming:
+                if self._finished:
+                    work_item.submission_index = None
+                    raise RuntimeError(
+                        "Cannot add work after finish() — the streaming batch is closed. "
+                        "Create a new processor for additional work."
+                    )
+                # Workers are running and draining the queue, so a bounded queue
+                # safely applies backpressure here instead of deadlocking.
+                try:
+                    await self._queue.put(work_item)
+                except BaseException:
+                    work_item.submission_index = None
+                    raise
+                self._next_submission_index += 1
+                async with self._stats_lock:
+                    self._stats.total += 1
+                return
+
+            if self._processing_started:
+                work_item.submission_index = None
                 raise RuntimeError(
-                    "Cannot add work after finish() — the streaming batch is closed. "
-                    "Create a new processor for additional work."
+                    "Cannot add work after process_all() has started. "
+                    "Create a new processor instance for additional batches."
                 )
-            # Workers are running and draining the queue, so a bounded queue
-            # safely applies backpressure here instead of deadlocking.
-            await self._queue.put(work_item)
-            async with self._stats_lock:
-                self._stats.total += 1
-            return
 
-        if self._processing_started:
-            raise RuntimeError(
-                "Cannot add work after process_all() has started. "
-                "Create a new processor instance for additional batches."
-            )
-
-        # Batch mode: workers don't exist yet, so a full bounded queue can't
-        # drain — blocking would hang forever. Point users at streaming mode.
-        try:
-            self._queue.put_nowait(work_item)
-        except asyncio.QueueFull:
-            raise ValueError(
-                f"Work queue is full (max_queue_size={self.max_queue_size}) in batch mode. "
-                "Bounded queues require streaming mode: start()/add_work()/finish() (or the "
-                "high-level process_stream/process_prompts), where running workers drain the "
-                "queue so it becomes backpressure. For batch mode (process_all), set "
-                "max_queue_size=0 (unlimited) or size it to fit the whole batch."
-            ) from None
-        self._stats.total += 1
+            # Batch mode: workers don't exist yet, so a full bounded queue can't
+            # drain — blocking would hang forever. Point users at streaming mode.
+            try:
+                self._queue.put_nowait(work_item)
+            except asyncio.QueueFull:
+                work_item.submission_index = None
+                raise ValueError(
+                    f"Work queue is full (max_queue_size={self.max_queue_size}) in batch mode. "
+                    "Bounded queues require streaming mode: start()/add_work()/finish() (or the "
+                    "high-level process_stream/process_prompts), where running workers drain the "
+                    "queue so it becomes backpressure. For batch mode (process_all), set "
+                    "max_queue_size=0 (unlimited) or size it to fit the whole batch."
+                ) from None
+            self._next_submission_index += 1
+            self._stats.total += 1
 
     # ── Streaming mode ───────────────────────────────────────────────────
 

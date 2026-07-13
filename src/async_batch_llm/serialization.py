@@ -1,0 +1,497 @@
+"""Strict, provider-neutral result serialization.
+
+The codec deliberately converts application values to JSON primitives instead
+of attempting to recreate arbitrary Python objects. Callers that need typed
+rehydration can provide explicit output/context decoders.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+from collections.abc import Callable, Mapping
+from dataclasses import fields, is_dataclass
+from datetime import date, datetime, time
+from enum import Enum
+from pathlib import Path
+from typing import Any, TypeAlias, cast
+from uuid import UUID
+
+from .base import (
+    AttemptTiming,
+    BatchResult,
+    BatchTermination,
+    TokenUsage,
+    WorkItemResult,
+    WorkItemTiming,
+)
+
+RESULT_SCHEMA_NAME = "async-batch-llm-result"
+RESULT_SCHEMA_VERSION = 1
+
+JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
+ValueEncoder: TypeAlias = Callable[[Any], Any]
+ValueDecoder: TypeAlias = Callable[[JSONValue], Any]
+
+
+class ResultSerializationError(ValueError):
+    """A result value or serialized payload is not safely supported."""
+
+
+def to_json_value(value: Any, *, encoder: ValueEncoder | None = None, path: str = "$") -> JSONValue:
+    """Convert a supported Python value into deterministic JSON primitives.
+
+    Tuples and sets normalize to lists. Dataclasses and Pydantic models
+    normalize to mappings. Date/time, UUID, enum, and filesystem path values
+    normalize to strings or their JSON-safe enum values.
+    """
+    if value is None or isinstance(value, (bool, str, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ResultSerializationError(f"Unsupported non-finite float at {path}: {value!r}")
+        return value
+    if isinstance(value, Enum):
+        return to_json_value(value.value, encoder=encoder, path=path)
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, os.PathLike):
+        path_value = os.fspath(value)
+        if not isinstance(path_value, str):
+            raise ResultSerializationError(f"Filesystem path must resolve to text at {path}")
+        return path_value
+
+    # Pydantic is already a required dependency, but keep the core codec
+    # duck-typed so Pydantic-specific public types do not leak into the API.
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            dumped = model_dump(mode="json")
+        except Exception as exc:
+            raise ResultSerializationError(
+                f"Could not serialize Pydantic value at {path}: {exc}"
+            ) from exc
+        return to_json_value(dumped, encoder=encoder, path=path)
+
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            item.name: to_json_value(
+                getattr(value, item.name), encoder=encoder, path=f"{path}.{item.name}"
+            )
+            for item in fields(value)
+        }
+    if isinstance(value, Mapping):
+        result: dict[str, JSONValue] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ResultSerializationError(
+                    f"JSON object keys must be strings at {path}; got {type(key).__name__}"
+                )
+            result[key] = to_json_value(item, encoder=encoder, path=f"{path}.{key}")
+        return result
+    if isinstance(value, (list, tuple)):
+        return [
+            to_json_value(item, encoder=encoder, path=f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, (set, frozenset)):
+        encoded = [to_json_value(item, encoder=encoder, path=f"{path}[]") for item in value]
+        try:
+            return sorted(encoded, key=_canonical_json)
+        except TypeError as exc:  # pragma: no cover - _canonical_json accepts JSONValue
+            raise ResultSerializationError(
+                f"Could not deterministically order set at {path}"
+            ) from exc
+
+    if encoder is not None:
+        try:
+            converted = encoder(value)
+        except Exception as exc:
+            raise ResultSerializationError(
+                f"Custom encoder failed for {type(value).__name__} at {path}: {exc}"
+            ) from exc
+        if converted is value:
+            raise ResultSerializationError(
+                f"Custom encoder returned the original unsupported value at {path}"
+            )
+        return to_json_value(converted, encoder=encoder, path=path)
+
+    raise ResultSerializationError(
+        f"Unsupported value of type {type(value).__module__}.{type(value).__qualname__} "
+        f"at {path}; pass an encoder that returns JSON-safe data."
+    )
+
+
+def _canonical_json(value: JSONValue) -> str:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+
+
+def _require_mapping(value: Any, *, path: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ResultSerializationError(f"Expected an object at {path}; got {type(value).__name__}")
+    return cast(Mapping[str, Any], value)
+
+
+def _check_schema(data: Mapping[str, Any], *, record_type: str) -> None:
+    if data.get("schema") != RESULT_SCHEMA_NAME:
+        raise ResultSerializationError(
+            f"Unsupported or missing result schema: {data.get('schema')!r}"
+        )
+    version = data.get("schema_version")
+    if version != RESULT_SCHEMA_VERSION:
+        if isinstance(version, int) and version > RESULT_SCHEMA_VERSION:
+            raise ResultSerializationError(
+                f"Unsupported future result schema version {version}; "
+                f"this library supports version {RESULT_SCHEMA_VERSION}."
+            )
+        raise ResultSerializationError(f"Unsupported result schema version: {version!r}")
+    if data.get("record_type") != record_type:
+        raise ResultSerializationError(
+            f"Expected record_type={record_type!r}; got {data.get('record_type')!r}"
+        )
+
+
+def _attempt_to_dict(value: AttemptTiming) -> dict[str, JSONValue]:
+    return {
+        "attempt": value.attempt,
+        "try_number": value.try_number,
+        "total_seconds": value.total_seconds,
+        "admission_wait_seconds": value.admission_wait_seconds,
+        "startup_ramp_wait_seconds": value.startup_ramp_wait_seconds,
+        "execution_seconds": value.execution_seconds,
+        "provider_seconds": value.provider_seconds,
+        "cooldown_wait_seconds": value.cooldown_wait_seconds,
+        "retry_backoff_seconds": value.retry_backoff_seconds,
+        "success": value.success,
+        "error_type": value.error_type,
+        "error_category": value.error_category,
+        "timeout_category": value.timeout_category,
+    }
+
+
+def _attempt_from_dict(value: Any, *, path: str) -> AttemptTiming:
+    data = _require_mapping(value, path=path)
+    try:
+        return AttemptTiming(
+            attempt=int(data["attempt"]),
+            try_number=int(data["try_number"]),
+            total_seconds=float(data.get("total_seconds", 0.0)),
+            admission_wait_seconds=float(data.get("admission_wait_seconds", 0.0)),
+            startup_ramp_wait_seconds=float(data.get("startup_ramp_wait_seconds", 0.0)),
+            execution_seconds=float(data.get("execution_seconds", 0.0)),
+            provider_seconds=(
+                None if data.get("provider_seconds") is None else float(data["provider_seconds"])
+            ),
+            cooldown_wait_seconds=float(data.get("cooldown_wait_seconds", 0.0)),
+            retry_backoff_seconds=float(data.get("retry_backoff_seconds", 0.0)),
+            success=bool(data.get("success", False)),
+            error_type=_optional_str(data.get("error_type")),
+            error_category=_optional_str(data.get("error_category")),
+            timeout_category=_optional_str(data.get("timeout_category")),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ResultSerializationError(f"Malformed attempt timing at {path}: {exc}") from exc
+
+
+def _timing_to_dict(value: WorkItemTiming) -> dict[str, JSONValue]:
+    return {
+        "total_seconds": value.total_seconds,
+        "attempts": [_attempt_to_dict(attempt) for attempt in value.attempts],
+        "timeout_category": value.timeout_category,
+    }
+
+
+def _timing_from_dict(value: Any) -> WorkItemTiming:
+    data = _require_mapping(value, path="$.timing")
+    attempts = data.get("attempts", [])
+    if not isinstance(attempts, list):
+        raise ResultSerializationError("Expected a list at $.timing.attempts")
+    try:
+        return WorkItemTiming(
+            total_seconds=float(data.get("total_seconds", 0.0)),
+            attempts=[
+                _attempt_from_dict(attempt, path=f"$.timing.attempts[{index}]")
+                for index, attempt in enumerate(attempts)
+            ],
+            timeout_category=_optional_str(data.get("timeout_category")),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ResultSerializationError(f"Malformed work-item timing: {exc}") from exc
+
+
+def _optional_str(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _exception_descriptor(exception: Exception | None) -> dict[str, JSONValue] | None:
+    if exception is None:
+        return None
+    return {
+        "module": type(exception).__module__,
+        "class_name": type(exception).__qualname__,
+        "message": str(exception),
+    }
+
+
+def work_item_result_to_dict(
+    result: WorkItemResult[Any, Any],
+    *,
+    encoder: ValueEncoder | None = None,
+    include_output: bool = True,
+    include_context: bool = True,
+    include_metadata: bool = True,
+) -> dict[str, Any]:
+    """Encode one result using result schema version 1."""
+    return {
+        "schema": RESULT_SCHEMA_NAME,
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "record_type": "work_item_result",
+        "item_id": result.item_id,
+        "success": result.success,
+        "output": (
+            to_json_value(result.output, encoder=encoder, path="$.output")
+            if include_output
+            else None
+        ),
+        "output_included": include_output,
+        "error": result.error,
+        "error_category": result.error_category,
+        "context": (
+            to_json_value(result.context, encoder=encoder, path="$.context")
+            if include_context
+            else None
+        ),
+        "context_included": include_context,
+        "token_usage": to_json_value(dict(result.token_usage), path="$.token_usage"),
+        "metadata": (
+            to_json_value(result.metadata, encoder=encoder, path="$.metadata")
+            if include_metadata
+            else None
+        ),
+        "metadata_included": include_metadata,
+        "exception": _exception_descriptor(result.exception),
+        "admission_wait_seconds": result.admission_wait_seconds,
+        "timing": _timing_to_dict(result.timing),
+        "submission_index": result.submission_index,
+        "replayed_from_artifact": result.replayed_from_artifact,
+    }
+
+
+def work_item_result_from_dict(
+    value: Any,
+    *,
+    output_decoder: ValueDecoder | None = None,
+    context_decoder: ValueDecoder | None = None,
+) -> WorkItemResult[Any, Any]:
+    """Decode one trusted schema mapping without importing arbitrary classes."""
+    data = _require_mapping(value, path="$")
+    _check_schema(data, record_type="work_item_result")
+    try:
+        item_id = data["item_id"]
+        success = data["success"]
+        if not isinstance(item_id, str) or not isinstance(success, bool):
+            raise TypeError("item_id must be str and success must be bool")
+        output = cast(JSONValue, data.get("output"))
+        context = cast(JSONValue, data.get("context"))
+        raw_tokens = _require_mapping(data.get("token_usage", {}), path="$.token_usage")
+        tokens = cast(
+            TokenUsage,
+            {str(key): int(item) for key, item in raw_tokens.items() if isinstance(item, int)},
+        )
+        metadata = data.get("metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise TypeError("metadata must be an object or null")
+        submission_index = data.get("submission_index")
+        if submission_index is not None and (
+            isinstance(submission_index, bool) or not isinstance(submission_index, int)
+        ):
+            raise TypeError("submission_index must be an integer or null")
+        return WorkItemResult(
+            item_id=item_id,
+            success=success,
+            output=output_decoder(output) if output_decoder is not None else output,
+            error=_optional_str(data.get("error")),
+            context=context_decoder(context) if context_decoder is not None else context,
+            token_usage=tokens,
+            metadata=cast(dict[str, Any] | None, metadata),
+            exception=None,  # Never instantiate a class named by untrusted JSON.
+            admission_wait_seconds=float(data.get("admission_wait_seconds", 0.0)),
+            timing=_timing_from_dict(data.get("timing", {})),
+            submission_index=submission_index,
+            error_category=_optional_str(data.get("error_category")),
+            replayed_from_artifact=bool(data.get("replayed_from_artifact", False)),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        if isinstance(exc, ResultSerializationError):
+            raise
+        raise ResultSerializationError(f"Malformed work-item result: {exc}") from exc
+
+
+def _termination_to_dict(value: BatchTermination) -> dict[str, JSONValue]:
+    return {
+        "kind": value.kind,
+        "reason": value.reason,
+        "error_category": value.error_category,
+        "triggering_item_id": value.triggering_item_id,
+    }
+
+
+def _termination_from_dict(value: Any) -> BatchTermination:
+    data = _require_mapping(value, path="$.termination")
+    kind = data.get("kind", "completed")
+    if not isinstance(kind, str):
+        raise ResultSerializationError("Batch termination kind must be a string")
+    return BatchTermination(
+        kind=kind,
+        reason=_optional_str(data.get("reason")),
+        error_category=_optional_str(data.get("error_category")),
+        triggering_item_id=_optional_str(data.get("triggering_item_id")),
+    )
+
+
+def batch_result_to_dict(
+    batch: BatchResult[Any, Any], *, encoder: ValueEncoder | None = None
+) -> dict[str, Any]:
+    """Encode a batch; aggregate counters are recomputed on decode."""
+    return {
+        "schema": RESULT_SCHEMA_NAME,
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "record_type": "batch_result",
+        "termination": _termination_to_dict(batch.termination),
+        "results": [work_item_result_to_dict(result, encoder=encoder) for result in batch.results],
+    }
+
+
+def batch_result_from_dict(
+    value: Any,
+    *,
+    output_decoder: ValueDecoder | None = None,
+    context_decoder: ValueDecoder | None = None,
+) -> BatchResult[Any, Any]:
+    data = _require_mapping(value, path="$")
+    _check_schema(data, record_type="batch_result")
+    results = data.get("results")
+    if not isinstance(results, list):
+        raise ResultSerializationError("Expected a list at $.results")
+    return BatchResult(
+        results=[
+            work_item_result_from_dict(
+                result,
+                output_decoder=output_decoder,
+                context_decoder=context_decoder,
+            )
+            for result in results
+        ],
+        termination=_termination_from_dict(data.get("termination", {"kind": "completed"})),
+    )
+
+
+def batch_result_to_json(
+    batch: BatchResult[Any, Any],
+    *,
+    encoder: ValueEncoder | None = None,
+    indent: int | None = 2,
+) -> str:
+    try:
+        return json.dumps(
+            batch_result_to_dict(batch, encoder=encoder),
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=indent,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        if isinstance(exc, ResultSerializationError):
+            raise
+        raise ResultSerializationError(f"Could not encode batch JSON: {exc}") from exc
+
+
+def batch_result_from_json(
+    value: str | bytes,
+    *,
+    output_decoder: ValueDecoder | None = None,
+    context_decoder: ValueDecoder | None = None,
+) -> BatchResult[Any, Any]:
+    try:
+        data = json.loads(value)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
+        raise ResultSerializationError(f"Malformed result JSON: {exc}") from exc
+    return batch_result_from_dict(
+        data,
+        output_decoder=output_decoder,
+        context_decoder=context_decoder,
+    )
+
+
+def batch_result_to_jsonl(
+    batch: BatchResult[Any, Any], path: str | Path, *, encoder: ValueEncoder | None = None
+) -> None:
+    termination = _termination_to_dict(batch.termination)
+    lines = []
+    for result in batch.results:
+        record = work_item_result_to_dict(result, encoder=encoder)
+        record["batch_termination"] = termination
+        lines.append(
+            json.dumps(
+                record, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+            )
+        )
+    try:
+        Path(path).write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+    except OSError as exc:
+        raise ResultSerializationError(f"Could not write result JSONL {path!s}: {exc}") from exc
+
+
+def batch_result_from_jsonl(
+    path: str | Path,
+    *,
+    output_decoder: ValueDecoder | None = None,
+    context_decoder: ValueDecoder | None = None,
+) -> BatchResult[Any, Any]:
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ResultSerializationError(f"Could not read result JSONL {path!s}: {exc}") from exc
+    results: list[WorkItemResult[Any, Any]] = []
+    termination: BatchTermination | None = None
+    for line_number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ResultSerializationError(
+                f"Malformed result JSONL at line {line_number}: {exc}"
+            ) from exc
+        data = _require_mapping(record, path=f"line {line_number}")
+        current = _termination_from_dict(data.get("batch_termination", {"kind": "completed"}))
+        if termination is None:
+            termination = current
+        elif current != termination:
+            raise ResultSerializationError(
+                f"Inconsistent batch termination metadata at JSONL line {line_number}"
+            )
+        results.append(
+            work_item_result_from_dict(
+                data,
+                output_decoder=output_decoder,
+                context_decoder=context_decoder,
+            )
+        )
+    return BatchResult(results=results, termination=termination or BatchTermination())
+
+
+__all__ = [
+    "JSONValue",
+    "RESULT_SCHEMA_NAME",
+    "RESULT_SCHEMA_VERSION",
+    "ResultSerializationError",
+    "ValueDecoder",
+    "ValueEncoder",
+    "to_json_value",
+]

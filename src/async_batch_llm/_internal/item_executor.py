@@ -320,6 +320,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         timing = getattr(e, "__dict__", {}).get(_TIMING_EXCEPTION_KEY)
         if not isinstance(timing, WorkItemTiming):
             timing = WorkItemTiming()
+        error_info = self.error_classifier.classify(e)
 
         token_msg = ""
         if failed_tokens.get("total_tokens", 0) > 0:
@@ -348,9 +349,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 exception=_detach_traceback(e),
                 admission_wait_seconds=admission_wait_seconds,
                 timing=timing,
+                error_category=error_info.error_category,
             )
         result.admission_wait_seconds = admission_wait_seconds
         result.timing = timing
+        if not result.success and result.error_category is None:
+            result.error_category = error_info.error_category
 
         # Emit ITEM_FAILED here too. Items that exhaust retries reach
         # this fallback (the exception propagates out of
@@ -577,6 +581,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 if not result.success and result.error:
                     final_error_type = result.error.split(":", 1)[0]
                 category_value = retry_state.get(_LAST_ERROR_CATEGORY_KEY)
+                if (
+                    not result.success
+                    and result.error_category is None
+                    and isinstance(category_value, str)
+                ):
+                    result.error_category = category_value
                 attempt_timings.append(
                     _attempt_timing(
                         retry_state,
@@ -1004,4 +1014,5 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             context=work_item.context,
             token_usage=cast(TokenUsage, failed_token_usage),
             exception=_detach_traceback(exception),
+            error_category=error_info.error_category,
         )

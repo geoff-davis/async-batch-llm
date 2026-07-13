@@ -64,6 +64,7 @@ from .base import (
     AttemptTiming,
     BatchProcessor,
     BatchResult,
+    BatchTermination,
     CachedTokenRates,
     LLMResponse,
     LLMWorkItem,
@@ -130,6 +131,7 @@ from .parsing import pydantic_json_parser, strip_code_fences
 
 # Provider auxiliary output (typed metadata views)
 from .provider_output import Grounding, GroundingSource, ToolCall
+from .serialization import ResultSerializationError
 from .single import LLMCallError, call, call_result
 
 # Error classification and rate limit strategies
@@ -188,6 +190,7 @@ __all__ = [
     "BatchProcessor",
     "AttemptTiming",
     "BatchResult",
+    "BatchTermination",
     "CachedTokenRates",
     "LLMWorkItem",
     "PostProcessorFunc",
@@ -197,6 +200,7 @@ __all__ = [
     "TokenUsage",
     "WorkItemResult",
     "WorkItemTiming",
+    "ResultSerializationError",
     # Configuration
     "ProcessorConfig",
     "RateLimitConfig",

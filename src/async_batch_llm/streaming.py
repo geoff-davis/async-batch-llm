@@ -139,6 +139,7 @@ async def process_prompts(
     prompts: PromptSource,
     *,
     config: ProcessorConfig | None = None,
+    preserve_order: bool = False,
     **processor_kwargs: Any,
 ) -> BatchResult[TOutput, Any]:
     """Run ``strategy`` over ``prompts`` and collect every result.
@@ -152,4 +153,5 @@ async def process_prompts(
         result
         async for result in process_stream(strategy, prompts, config=config, **processor_kwargs)
     ]
-    return BatchResult(results=results)
+    batch = BatchResult(results=results)
+    return batch.in_input_order() if preserve_order else batch
