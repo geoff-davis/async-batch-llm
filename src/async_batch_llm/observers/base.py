@@ -12,6 +12,7 @@ class ProcessingEvent(Enum):
     ITEM_ADMITTED = "item_admitted"
     ITEM_COMPLETED = "item_completed"
     ITEM_FAILED = "item_failed"
+    ITEM_REPLAYED = "item_replayed"
     RATE_LIMIT_HIT = "rate_limit_hit"
     COOLDOWN_STARTED = "cooldown_started"
     COOLDOWN_ENDED = "cooldown_ended"

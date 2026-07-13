@@ -1,0 +1,561 @@
+"""Versioned JSONL audit artifacts and compatible result replay.
+
+The JSONL implementation is concurrency-safe within one store instance and
+process. It does not claim cross-process append safety; applications needing
+multiple writers must provide an :class:`ArtifactStore` with real file locking
+or a transactional backend.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+from typing import Any, Protocol, TextIO, TypeAlias
+
+from .base import BatchResult, BatchTermination, LLMWorkItem, WorkItemResult
+from .serialization import (
+    JSONValue,
+    ResultSerializationError,
+    ValueDecoder,
+    ValueEncoder,
+    to_json_value,
+    work_item_result_from_dict,
+    work_item_result_to_dict,
+)
+
+ARTIFACT_SCHEMA_VERSION = 1
+CostCalculator: TypeAlias = Callable[[WorkItemResult[Any, Any]], float | None]
+ContextFingerprinter: TypeAlias = Callable[[Any], str]
+
+
+class ArtifactError(RuntimeError):
+    """Base class for artifact preparation, format, and persistence failures."""
+
+
+class ArtifactSerializationError(ArtifactError):
+    """An artifact identity/input/result could not be canonically serialized."""
+
+
+class ArtifactIOError(ArtifactError):
+    """An artifact could not be read, written, flushed, or closed."""
+
+
+class ArtifactFormatError(ArtifactError):
+    """An artifact is malformed or uses an unsupported schema version."""
+
+
+@dataclass(frozen=True)
+class ArtifactIdentity:
+    """Caller-supplied provenance used to decide whether replay is compatible."""
+
+    provider: str | None = None
+    model: str | None = None
+    prompt_version: str | None = None
+    parser_version: str | None = None
+    application_version: str | None = None
+    extra: Mapping[str, JSONValue] = field(default_factory=dict)
+
+
+class ResumePolicy(str, Enum):
+    """Which compatible terminal artifact records may bypass provider work."""
+
+    NONE = "none"
+    REUSE_SUCCESSES = "reuse_successes"
+    REUSE_ALL = "reuse_all"
+
+
+@dataclass(frozen=True)
+class _ItemFingerprint:
+    prompt: str
+    context: str | None
+    combined: str
+
+
+class ArtifactStore(Protocol):
+    """Provider-neutral asynchronous checkpoint/replay store."""
+
+    async def prepare_item(self, work_item: LLMWorkItem[Any, Any, Any]) -> Any:
+        """Prepare the run and validate/fingerprint an item before execution."""
+
+    async def lookup(
+        self,
+        work_item: LLMWorkItem[Any, Any, Any],
+        prepared_item: Any,
+        policy: ResumePolicy,
+    ) -> WorkItemResult[Any, Any] | None:
+        """Return the newest compatible reusable result, if any."""
+
+    async def append(
+        self,
+        work_item: LLMWorkItem[Any, Any, Any],
+        prepared_item: Any,
+        result: WorkItemResult[Any, Any],
+    ) -> None:
+        """Durably append one newly executed terminal result."""
+
+    def iter_results(self, *, successes_only: bool = False) -> AsyncIterator[WorkItemResult]:
+        """Iterate stored results without starting a processor."""
+
+    async def close(self) -> None:
+        """Flush and close the store; repeated calls are safe."""
+
+
+def _package_version() -> str:
+    try:
+        return version("async-batch-llm")
+    except PackageNotFoundError:
+        return "0.0.0+dev"
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _canonical_json(value: JSONValue) -> str:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+
+
+def _sha256(value: JSONValue) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _identity_mapping(identity: ArtifactIdentity) -> dict[str, JSONValue]:
+    try:
+        extra = to_json_value(identity.extra, path="$.identity.extra")
+    except ResultSerializationError as exc:
+        raise ArtifactSerializationError(str(exc)) from exc
+    if not isinstance(extra, dict):  # Mapping above always normalizes to dict.
+        raise ArtifactSerializationError("ArtifactIdentity.extra must serialize to an object")
+    return {
+        "provider": identity.provider,
+        "model": identity.model,
+        "prompt_version": identity.prompt_version,
+        "parser_version": identity.parser_version,
+        "application_version": identity.application_version,
+        "extra": extra,
+    }
+
+
+class JsonlArtifactStore:
+    """Append-only version-1 JSONL artifact store.
+
+    Prompt and context text are excluded by default; their SHA-256 hashes are
+    always recorded for compatibility. Output and metadata are included by
+    default because successful replay requires output. Set ``include_output``
+    false for audit-only artifacts; those successful records are not replayable.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        identity: ArtifactIdentity,
+        user_metadata: Mapping[str, JSONValue] | None = None,
+        include_output: bool = True,
+        include_metadata: bool = True,
+        include_prompt: bool = False,
+        include_context: bool = False,
+        context_in_identity: bool = True,
+        encoder: ValueEncoder | None = None,
+        output_decoder: ValueDecoder | None = None,
+        context_decoder: ValueDecoder | None = None,
+        context_fingerprinter: ContextFingerprinter | None = None,
+        cost_calculator: CostCalculator | None = None,
+        fsync: bool = False,
+    ) -> None:
+        self.path = Path(path)
+        self.identity = identity
+        self.user_metadata = user_metadata or {}
+        self.include_output = include_output
+        self.include_metadata = include_metadata
+        self.include_prompt = include_prompt
+        self.include_context = include_context
+        self.context_in_identity = context_in_identity
+        self.encoder = encoder
+        self.output_decoder = output_decoder
+        self.context_decoder = context_decoder
+        self.context_fingerprinter = context_fingerprinter
+        self.cost_calculator = cost_calculator
+        self.fsync = fsync
+
+        self._identity_value = _identity_mapping(identity)
+        self.identity_fingerprint = _sha256(self._identity_value)
+        try:
+            metadata_value = to_json_value(self.user_metadata, path="$.user_metadata")
+        except ResultSerializationError as exc:
+            raise ArtifactSerializationError(str(exc)) from exc
+        if not isinstance(metadata_value, dict):
+            raise ArtifactSerializationError("user_metadata must serialize to an object")
+        self._user_metadata_value = metadata_value
+
+        self._lock = asyncio.Lock()
+        self._prepared = False
+        self._closed = False
+        self._handle: TextIO | None = None
+        self._records: list[dict[str, Any]] = []
+        self._next_sequence = 0
+
+    async def prepare_item(self, work_item: LLMWorkItem[Any, Any, Any]) -> _ItemFingerprint:
+        """Create/validate the artifact and fingerprint input before provider work."""
+        await self._prepare()
+        return self._fingerprint_item(work_item)
+
+    def _fingerprint_item(self, work_item: LLMWorkItem[Any, Any, Any]) -> _ItemFingerprint:
+        prompt_hash = hashlib.sha256(work_item.prompt.encode("utf-8")).hexdigest()
+        context_hash: str | None = None
+        if self.context_in_identity:
+            if self.context_fingerprinter is not None:
+                try:
+                    context_hash = self.context_fingerprinter(work_item.context)
+                except Exception as exc:
+                    raise ArtifactSerializationError(
+                        f"Context fingerprinter failed for item {work_item.item_id!r}: {exc}"
+                    ) from exc
+                if not isinstance(context_hash, str) or not context_hash:
+                    raise ArtifactSerializationError(
+                        "context_fingerprinter must return a non-empty string"
+                    )
+            else:
+                try:
+                    context_value = to_json_value(
+                        work_item.context,
+                        encoder=self.encoder,
+                        path=f"$.items[{work_item.item_id!r}].context",
+                    )
+                except ResultSerializationError as exc:
+                    raise ArtifactSerializationError(str(exc)) from exc
+                context_hash = _sha256(context_value)
+        combined_hash = _sha256(
+            {
+                "item_id": work_item.item_id,
+                "prompt_fingerprint": prompt_hash,
+                "context_fingerprint": context_hash,
+            }
+        )
+        return _ItemFingerprint(prompt=prompt_hash, context=context_hash, combined=combined_hash)
+
+    async def lookup(
+        self,
+        work_item: LLMWorkItem[Any, Any, Any],
+        prepared_item: Any,
+        policy: ResumePolicy,
+    ) -> WorkItemResult[Any, Any] | None:
+        if policy is ResumePolicy.NONE:
+            return None
+        fingerprint = self._coerce_fingerprint(prepared_item)
+        await self._prepare()
+        for record in reversed(self._records):
+            if not self._compatible(record, work_item, fingerprint):
+                continue
+            if policy is ResumePolicy.REUSE_SUCCESSES and not record.get("success"):
+                continue
+            if not record.get("replay_eligible", False):
+                continue
+            try:
+                result = work_item_result_from_dict(
+                    record["result"],
+                    output_decoder=self.output_decoder,
+                    context_decoder=self.context_decoder,
+                )
+            except (KeyError, ResultSerializationError) as exc:
+                raise ArtifactFormatError(
+                    f"Malformed stored result for item {work_item.item_id!r}: {exc}"
+                ) from exc
+            result.context = work_item.context
+            result.submission_index = work_item.submission_index
+            result.replayed_from_artifact = True
+            result.exception = None
+            return result
+        return None
+
+    def _compatible(
+        self,
+        record: Mapping[str, Any],
+        work_item: LLMWorkItem[Any, Any, Any],
+        fingerprint: _ItemFingerprint,
+    ) -> bool:
+        return (
+            record.get("artifact_schema_version") == ARTIFACT_SCHEMA_VERSION
+            and record.get("item_id") == work_item.item_id
+            and record.get("prompt_fingerprint") == fingerprint.prompt
+            and record.get("context_fingerprint") == fingerprint.context
+            and record.get("input_fingerprint") == fingerprint.combined
+            and record.get("identity_fingerprint") == self.identity_fingerprint
+        )
+
+    async def append(
+        self,
+        work_item: LLMWorkItem[Any, Any, Any],
+        prepared_item: Any,
+        result: WorkItemResult[Any, Any],
+    ) -> None:
+        fingerprint = self._coerce_fingerprint(prepared_item)
+        await self._prepare()
+        try:
+            serialized_result = work_item_result_to_dict(
+                result,
+                encoder=self.encoder,
+                include_output=self.include_output,
+                include_context=False,
+                include_metadata=self.include_metadata,
+            )
+            raw_context = (
+                to_json_value(work_item.context, encoder=self.encoder, path="$.raw_context")
+                if self.include_context
+                else None
+            )
+            cost = self.cost_calculator(result) if self.cost_calculator is not None else None
+            if cost is not None:
+                cost = float(cost)
+                to_json_value(cost, path="$.calculated_cost")
+        except (ResultSerializationError, TypeError, ValueError) as exc:
+            raise ArtifactSerializationError(
+                f"Could not serialize artifact result for item {work_item.item_id!r}: {exc}"
+            ) from exc
+        except Exception as exc:
+            raise ArtifactSerializationError(
+                f"Cost calculator failed for item {work_item.item_id!r}: {exc}"
+            ) from exc
+
+        strategy_type = type(work_item.strategy)
+        record: dict[str, Any] = {
+            "record_type": "item",
+            "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
+            "recorded_at": _utc_now(),
+            # Assigned under the append lock so concurrent workers cannot
+            # observe and reuse the same sequence value.
+            "record_sequence": None,
+            "item_id": work_item.item_id,
+            "submission_index": result.submission_index,
+            "prompt_fingerprint": fingerprint.prompt,
+            "context_fingerprint": fingerprint.context,
+            "input_fingerprint": fingerprint.combined,
+            "identity_fingerprint": self.identity_fingerprint,
+            "strategy_class": f"{strategy_type.__module__}.{strategy_type.__qualname__}",
+            "provider": self.identity.provider,
+            "model": self.identity.model,
+            "prompt_version": self.identity.prompt_version,
+            "parser_version": self.identity.parser_version,
+            "application_version": self.identity.application_version,
+            "identity": self._identity_value,
+            "success": result.success,
+            "error_category": result.error_category,
+            "token_usage": serialized_result["token_usage"],
+            "timing": serialized_result["timing"],
+            "calculated_cost": cost,
+            "replay_eligible": (not result.success) or self.include_output,
+            "raw_prompt": work_item.prompt if self.include_prompt else None,
+            "raw_context": raw_context,
+            "result": serialized_result,
+        }
+        await self._append_record(record)
+
+    @staticmethod
+    def _coerce_fingerprint(value: Any) -> _ItemFingerprint:
+        if not isinstance(value, _ItemFingerprint):
+            raise ArtifactSerializationError("Artifact item was not prepared by this store")
+        return value
+
+    async def _prepare(self) -> None:
+        async with self._lock:
+            if self._prepared:
+                if self._closed:
+                    raise ArtifactIOError(f"Artifact store is closed: {self.path}")
+                return
+            if self._closed:
+                raise ArtifactIOError(f"Artifact store is closed: {self.path}")
+            try:
+                records, needs_manifest = await asyncio.to_thread(self._read_existing)
+                self._records = records
+                self._next_sequence = (
+                    max((int(record.get("record_sequence", -1)) for record in records), default=-1)
+                    + 1
+                )
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self._handle = self.path.open("a", encoding="utf-8", newline="\n")
+                if needs_manifest:
+                    manifest = {
+                        "record_type": "manifest",
+                        "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
+                        "created_at": _utc_now(),
+                        "package_version": _package_version(),
+                        "identity": self._identity_value,
+                        "identity_fingerprint": self.identity_fingerprint,
+                        "user_metadata": self._user_metadata_value,
+                    }
+                    await asyncio.to_thread(self._write_record_sync, manifest)
+                self._prepared = True
+            except ArtifactError:
+                raise
+            except OSError as exc:
+                raise ArtifactIOError(f"Could not prepare artifact {self.path}: {exc}") from exc
+
+    def _read_existing(self) -> tuple[list[dict[str, Any]], bool]:
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return [], True
+        try:
+            raw = self.path.read_bytes()
+        except OSError as exc:
+            raise ArtifactIOError(f"Could not read artifact {self.path}: {exc}") from exc
+        segments = raw.split(b"\n")
+        has_trailing_newline = raw.endswith(b"\n")
+        records: list[dict[str, Any]] = []
+        manifest_seen = False
+        for index, segment in enumerate(segments):
+            if not segment:
+                continue
+            line_number = index + 1
+            try:
+                value = json.loads(segment)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                is_truncated_final = index == len(segments) - 1 and not has_trailing_newline
+                if is_truncated_final:
+                    break
+                raise ArtifactFormatError(
+                    f"Malformed artifact JSON at non-final line {line_number}: {exc}"
+                ) from exc
+            if not isinstance(value, dict):
+                raise ArtifactFormatError(f"Artifact line {line_number} must be a JSON object")
+            schema = value.get("artifact_schema_version")
+            if schema != ARTIFACT_SCHEMA_VERSION:
+                if isinstance(schema, int) and schema > ARTIFACT_SCHEMA_VERSION:
+                    raise ArtifactFormatError(
+                        f"Unsupported future artifact schema version {schema} at line {line_number}"
+                    )
+                raise ArtifactFormatError(
+                    f"Unsupported artifact schema version {schema!r} at line {line_number}"
+                )
+            record_type = value.get("record_type")
+            if not manifest_seen:
+                if record_type != "manifest":
+                    raise ArtifactFormatError(
+                        "The first complete artifact record must be a manifest"
+                    )
+                manifest_seen = True
+                continue
+            if record_type != "item":
+                raise ArtifactFormatError(
+                    f"Unsupported artifact record_type {record_type!r} at line {line_number}"
+                )
+            records.append(value)
+        if not manifest_seen:
+            raise ArtifactFormatError("Artifact has no complete manifest record")
+        return records, False
+
+    async def _append_record(self, record: dict[str, Any]) -> None:
+        async with self._lock:
+            if self._closed or self._handle is None:
+                raise ArtifactIOError(f"Artifact store is not writable: {self.path}")
+            record["record_sequence"] = self._next_sequence
+            try:
+                await asyncio.to_thread(self._write_record_sync, record)
+            except OSError as exc:
+                raise ArtifactIOError(
+                    f"Could not append artifact record for item {record.get('item_id')!r}: {exc}"
+                ) from exc
+            self._records.append(record)
+            self._next_sequence += 1
+
+    def _write_record_sync(self, record: Mapping[str, Any]) -> None:
+        if self._handle is None:
+            raise OSError("artifact file is not open")
+        line = json.dumps(
+            record,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        self._handle.write(line + "\n")
+        self._handle.flush()
+        if self.fsync:
+            os.fsync(self._handle.fileno())
+
+    async def iter_results(
+        self, *, successes_only: bool = False
+    ) -> AsyncIterator[WorkItemResult[Any, Any]]:
+        if not self._prepared:
+            await self._prepare()
+        for record in list(self._records):
+            if successes_only and not record.get("success"):
+                continue
+            try:
+                yield work_item_result_from_dict(
+                    record["result"],
+                    output_decoder=self.output_decoder,
+                    context_decoder=self.context_decoder,
+                )
+            except (KeyError, ResultSerializationError) as exc:
+                raise ArtifactFormatError(f"Malformed stored result: {exc}") from exc
+
+    async def close(self) -> None:
+        async with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            handle = self._handle
+            self._handle = None
+            if handle is None:
+                return
+            try:
+                await asyncio.to_thread(self._close_sync, handle)
+            except OSError as exc:
+                raise ArtifactIOError(f"Could not close artifact {self.path}: {exc}") from exc
+
+    def _close_sync(self, handle: TextIO) -> None:
+        handle.flush()
+        if self.fsync:
+            os.fsync(handle.fileno())
+        handle.close()
+
+    @classmethod
+    def read_results(
+        cls,
+        path: str | Path,
+        *,
+        successes_only: bool = False,
+        output_decoder: ValueDecoder | None = None,
+        context_decoder: ValueDecoder | None = None,
+    ) -> BatchResult[Any, Any]:
+        """Read stored results without opening a writer or calling a provider."""
+        reader = object.__new__(cls)
+        reader.path = Path(path)
+        records, _ = reader._read_existing()
+        results: list[WorkItemResult[Any, Any]] = []
+        for record in records:
+            if successes_only and not record.get("success"):
+                continue
+            try:
+                results.append(
+                    work_item_result_from_dict(
+                        record["result"],
+                        output_decoder=output_decoder,
+                        context_decoder=context_decoder,
+                    )
+                )
+            except (KeyError, ResultSerializationError) as exc:
+                raise ArtifactFormatError(f"Malformed stored result: {exc}") from exc
+        return BatchResult(results=results, termination=BatchTermination())
+
+
+__all__ = [
+    "ARTIFACT_SCHEMA_VERSION",
+    "ArtifactError",
+    "ArtifactFormatError",
+    "ArtifactIOError",
+    "ArtifactIdentity",
+    "ArtifactSerializationError",
+    "ArtifactStore",
+    "JsonlArtifactStore",
+    "ResumePolicy",
+]

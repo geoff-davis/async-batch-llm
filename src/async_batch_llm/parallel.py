@@ -13,6 +13,7 @@ from ._internal.event_dispatcher import EventDispatcher
 from ._internal.item_executor import ItemExecutor
 from ._internal.rate_limit_coordinator import RateLimitCoordinator
 from ._internal.strategy_lifecycle import StrategyLifecycle
+from .artifacts import ArtifactError, ArtifactStore, ResumePolicy
 from .base import (
     BatchProcessor,
     LLMWorkItem,
@@ -117,6 +118,8 @@ class ParallelBatchProcessor(
         middlewares: list[Middleware[TInput, TOutput, TContext]] | None = None,
         observers: list[ProcessorObserver] | None = None,
         progress_callback: "ProgressCallbackFunc | None" = None,
+        artifact_store: ArtifactStore | None = None,
+        resume: ResumePolicy = ResumePolicy.NONE,
     ):
         """
         Initialize the parallel batch processor.
@@ -197,6 +200,8 @@ class ParallelBatchProcessor(
             progress_callback_timeout=config.progress_callback_timeout,
         )
         self.config = config
+        self.artifact_store = artifact_store
+        self.resume = ResumePolicy(resume)
 
         # Diagnostic: high max_workers can outrun the OS open-file limit.
         _warn_if_fd_limit_low(config.max_workers)
@@ -343,10 +348,12 @@ class ParallelBatchProcessor(
         Returns:
             False to indicate exceptions should not be suppressed
         """
-        await self._cleanup_strategies()
-
-        # Call parent cleanup to handle workers and queue
+        # Stop workers before closing strategies or their artifact sink: a
+        # cancelled/early stream may still have an in-flight terminal write.
         await self.cleanup()
+        await self._cleanup_strategies()
+        if self.artifact_store is not None:
+            await self.artifact_store.close()
         return False  # Don't suppress exceptions
 
     async def get_stats(self) -> dict:
@@ -373,6 +380,9 @@ class ParallelBatchProcessor(
         error classifier at batch start when the caller didn't pass one. A
         no-op recommendation (custom strategies returning ``None``) is ignored.
         """
+        if self.artifact_store is not None:
+            work_item._artifact_key = await self.artifact_store.prepare_item(work_item)
+
         strategy_id = id(work_item.strategy)
         if strategy_id not in self._capacity_checked_strategy_ids:
             warn_if_worker_capacity_exceeded(
@@ -493,6 +503,8 @@ class ParallelBatchProcessor(
                 "duration": duration,
             },
         )
+        if self.artifact_store is not None:
+            await self.artifact_store.close()
 
     async def _emit_event(self, event: ProcessingEvent, data: dict | None = None) -> None:
         """Delegate to EventDispatcher (see _internal/event_dispatcher.py)."""
@@ -539,13 +551,32 @@ class ParallelBatchProcessor(
 
             logger.debug("[Worker %s] Picked up %s from queue", worker_id, work_item.item_id)
 
-            # Wait if we're in rate limit cooldown, then apply slow-start ramp.
-            await self._executor.wait_for_capacity()
-
-            # Process the item
             try:
-                result = await self._process_item_with_retries(work_item, worker_id)
+                result = None
+                if self.artifact_store is not None:
+                    result = await self.artifact_store.lookup(
+                        work_item,
+                        work_item._artifact_key,
+                        self.resume,
+                    )
+                if result is None:
+                    # Wait if we're in rate limit cooldown, then apply slow-start ramp.
+                    await self._executor.wait_for_capacity()
+                    # Process the item.
+                    result = await self._process_item_with_retries(work_item, worker_id)
+                elif self._events.observers:
+                    await self._emit_event(
+                        ProcessingEvent.ITEM_REPLAYED,
+                        {
+                            "item_id": work_item.item_id,
+                            "submission_index": work_item.submission_index,
+                        },
+                    )
             except asyncio.CancelledError:
+                self._queue.task_done()
+                raise
+            except ArtifactError:
+                self._queue.task_done()
                 raise
             except Exception as e:
                 # All retries exhausted or unhandled exception: build the failed
@@ -553,11 +584,28 @@ class ParallelBatchProcessor(
                 # emit) via the shared executor so the batch worker and the
                 # queue-less surfaces produce identical failures. Falls through to
                 # store the result and call task_done().
-                result = await self._executor.build_failure_result(work_item, e, worker_id)
+                try:
+                    result = await self._executor.build_failure_result(work_item, e, worker_id)
+                except BaseException:
+                    self._queue.task_done()
+                    raise
 
             # The index belongs to the current accepted submission, regardless
             # of middleware replacement or how the terminal result was built.
             result.submission_index = work_item.submission_index
+
+            # A newly executed result is checkpointed before it can be stored
+            # or published. Replayed records are not appended again.
+            if self.artifact_store is not None and not result.replayed_from_artifact:
+                try:
+                    await self.artifact_store.append(
+                        work_item,
+                        work_item._artifact_key,
+                        result,
+                    )
+                except BaseException:
+                    self._queue.task_done()
+                    raise
 
             # Store the result. In streaming mode publish it to the result
             # stream (constant memory — we don't accumulate _results); in batch
@@ -593,7 +641,7 @@ class ParallelBatchProcessor(
                         )
 
                 # Track token usage in real-time
-                if result.token_usage:
+                if result.token_usage and not result.replayed_from_artifact:
                     self._stats.total_input_tokens += result.token_usage.get("input_tokens", 0)
                     self._stats.total_output_tokens += result.token_usage.get("output_tokens", 0)
                     self._stats.total_tokens += result.token_usage.get("total_tokens", 0)

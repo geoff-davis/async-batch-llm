@@ -207,6 +207,7 @@ class LLMWorkItem(Generic[TInput, TOutput, TContext]):
     # Assigned by BatchProcessor.add_work() when the item is accepted. Kept on
     # the work item so duplicate item IDs remain independently orderable.
     submission_index: int | None = field(default=None, compare=False)
+    _artifact_key: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         """Validate work item fields."""
@@ -1233,11 +1234,53 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             asyncio.create_task(self._worker(worker_id)) for worker_id in range(self.max_workers)
         ]
 
-        # Wait for all work to complete
+        async def wait_for_worker_failure() -> None:
+            done, _ = await asyncio.wait(self._workers, return_when=asyncio.FIRST_EXCEPTION)
+            for worker in done:
+                if worker.cancelled():
+                    raise asyncio.CancelledError
+                exception = worker.exception()
+                if exception is not None:
+                    raise exception
+                # Workers cannot return normally before queue sentinels are
+                # installed below; treat that as a framework failure.
+                raise RuntimeError("Batch worker stopped before the queue drained")
+
+        # Race queue completion against an unexpected worker exit. Without
+        # this, one dead worker (especially max_workers=1) can strand
+        # queue.join() forever with accepted items still queued.
+        queue_join = asyncio.create_task(self._queue.join())
+        worker_failure = asyncio.create_task(wait_for_worker_failure())
         try:
-            await self._queue.join()
-        finally:
-            # Unblock workers even if queue.join() is cancelled or fails
+            done, _ = await asyncio.wait(
+                {queue_join, worker_failure}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if worker_failure in done:
+                await worker_failure
+            await queue_join
+        except BaseException:
+            queue_join.cancel()
+            worker_failure.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await queue_join
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await worker_failure
+            for worker in self._workers:
+                if not worker.done():
+                    worker.cancel()
+            while not self._queue.empty():
+                try:
+                    self._queue.get_nowait()
+                    self._queue.task_done()
+                except asyncio.QueueEmpty:
+                    break
+            await asyncio.gather(*self._workers, return_exceptions=True)
+            raise
+        else:
+            worker_failure.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker_failure
+            # Unblock workers only after every accepted item called task_done().
             for _ in range(self.max_workers):
                 await self._queue.put(None)
 

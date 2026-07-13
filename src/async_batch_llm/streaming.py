@@ -19,6 +19,7 @@ import contextlib
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
+from .artifacts import ArtifactStore, ResumePolicy
 from .base import BatchResult, LLMWorkItem, WorkItemResult
 from .core import ProcessorConfig
 from .parallel import ParallelBatchProcessor
@@ -79,6 +80,8 @@ async def process_stream(
     prompts: PromptSource,
     *,
     config: ProcessorConfig | None = None,
+    artifact_store: ArtifactStore | None = None,
+    resume: ResumePolicy = ResumePolicy.NONE,
     **processor_kwargs: Any,
 ) -> AsyncIterator[WorkItemResult[TOutput, Any]]:
     """Yield each :class:`WorkItemResult` as it completes, in completion order.
@@ -99,7 +102,12 @@ async def process_stream(
         propagates to the consumer after already-queued results drain; breaking
         out of the loop early cancels the producer and tears down the workers.
     """
-    processor = ParallelBatchProcessor(config=config or ProcessorConfig(), **processor_kwargs)
+    processor = ParallelBatchProcessor(
+        config=config or ProcessorConfig(),
+        artifact_store=artifact_store,
+        resume=resume,
+        **processor_kwargs,
+    )
     feed_error: list[BaseException] = []
 
     async def _feed() -> None:
@@ -140,6 +148,8 @@ async def process_prompts(
     *,
     config: ProcessorConfig | None = None,
     preserve_order: bool = False,
+    artifact_store: ArtifactStore | None = None,
+    resume: ResumePolicy = ResumePolicy.NONE,
     **processor_kwargs: Any,
 ) -> BatchResult[TOutput, Any]:
     """Run ``strategy`` over ``prompts`` and collect every result.
@@ -151,7 +161,14 @@ async def process_prompts(
     """
     results = [
         result
-        async for result in process_stream(strategy, prompts, config=config, **processor_kwargs)
+        async for result in process_stream(
+            strategy,
+            prompts,
+            config=config,
+            artifact_store=artifact_store,
+            resume=resume,
+            **processor_kwargs,
+        )
     ]
     batch = BatchResult(results=results)
     return batch.in_input_order() if preserve_order else batch

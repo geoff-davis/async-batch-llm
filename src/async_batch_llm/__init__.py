@@ -59,6 +59,17 @@ Type Aliases:
 
 from typing import TypeVar
 
+from .artifacts import (
+    ArtifactError,
+    ArtifactFormatError,
+    ArtifactIdentity,
+    ArtifactIOError,
+    ArtifactSerializationError,
+    ArtifactStore,
+    JsonlArtifactStore,
+    ResumePolicy,
+)
+
 # Core classes
 from .base import (
     AttemptTiming,
@@ -201,6 +212,15 @@ __all__ = [
     "WorkItemResult",
     "WorkItemTiming",
     "ResultSerializationError",
+    # Audit/checkpoint artifacts
+    "ArtifactError",
+    "ArtifactFormatError",
+    "ArtifactIOError",
+    "ArtifactIdentity",
+    "ArtifactSerializationError",
+    "ArtifactStore",
+    "JsonlArtifactStore",
+    "ResumePolicy",
     # Configuration
     "ProcessorConfig",
     "RateLimitConfig",
