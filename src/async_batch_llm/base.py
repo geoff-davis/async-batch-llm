@@ -800,6 +800,8 @@ class ProcessingStats:
     structured_output_recoveries: int = 0
     structured_output_retries_avoided: int = 0
     structured_output_recovery_reasons: dict[str, int] = field(default_factory=dict)
+    replayed: int = 0
+    aborted: int = 0
 
     def copy(self) -> dict[str, Any]:
         """Return a dictionary copy of the stats for backwards compatibility."""
@@ -820,6 +822,8 @@ class ProcessingStats:
             "structured_output_recoveries": self.structured_output_recoveries,
             "structured_output_retries_avoided": self.structured_output_retries_avoided,
             "structured_output_recovery_reasons": self.structured_output_recovery_reasons.copy(),
+            "replayed": self.replayed,
+            "aborted": self.aborted,
             "admission_wait_p50_seconds": _percentile(self._admission_wait_samples, 50),
             "admission_wait_p95_seconds": _percentile(self._admission_wait_samples, 95),
             "admission_wait_p99_seconds": _percentile(self._admission_wait_samples, 99),
@@ -958,6 +962,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             asyncio.Queue[WorkItemResult[TOutput, TContext] | _EndOfStream | _WorkerCrashed] | None
         ) = None
         self._finalize_task: asyncio.Task[None] | None = None
+        self.termination = BatchTermination()
 
     async def __aenter__(self):
         """Context manager entry - returns self for use in async with."""
@@ -1122,10 +1127,12 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._processing_started = True
         self._is_processing = True
         self._finished = False
+        self.termination = BatchTermination()
         self._result_stream = asyncio.Queue()
         # Count any work added before start(); add_work() increments thereafter.
         self._results = []
         self._stats = ProcessingStats(total=self._queue.qsize())
+        self.termination = BatchTermination()
         self._stats.start_time = time.time()
         self._post_processor_tasks = set()
         self._post_processor_semaphore = asyncio.Semaphore(self.max_workers)
@@ -1159,6 +1166,14 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             if self._post_processor_tasks:
                 await asyncio.gather(*self._post_processor_tasks, return_exceptions=True)
             await self._on_batch_completed()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            # Hook/finalization failures (including artifact close errors) must
+            # reach the stream consumer rather than becoming an unobserved task
+            # exception followed by an apparently normal end-of-stream.
+            if self._result_stream is not None:
+                await self._result_stream.put(_WorkerCrashed(exc))
         finally:
             # Always close the stream so results() terminates, even on error.
             self._is_processing = False
@@ -1324,7 +1339,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
 
         # Snapshot results before returning so callers receive an independent list.
         results_snapshot = list(self._results)
-        return BatchResult(results=results_snapshot)
+        return BatchResult(results=results_snapshot, termination=self.termination)
 
     @abstractmethod
     async def _worker(self, worker_id: int):

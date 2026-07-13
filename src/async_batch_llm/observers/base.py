@@ -13,6 +13,7 @@ class ProcessingEvent(Enum):
     ITEM_COMPLETED = "item_completed"
     ITEM_FAILED = "item_failed"
     ITEM_REPLAYED = "item_replayed"
+    ITEM_DEADLINE_EXCEEDED = "item_deadline_exceeded"
     RATE_LIMIT_HIT = "rate_limit_hit"
     COOLDOWN_STARTED = "cooldown_started"
     COOLDOWN_ENDED = "cooldown_ended"
@@ -20,6 +21,7 @@ class ProcessingEvent(Enum):
     WORKER_STOPPED = "worker_stopped"
     BATCH_STARTED = "batch_started"
     BATCH_COMPLETED = "batch_completed"
+    BATCH_ABORTED = "batch_aborted"
 
 
 class ProcessorObserver(ABC):

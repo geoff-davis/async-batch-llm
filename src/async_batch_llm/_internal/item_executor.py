@@ -33,9 +33,16 @@ from ..base import (
     _unpack_strategy_result,
 )
 from ..observers import ProcessingEvent
-from ..strategies import FrameworkTimeoutError, RateLimitRetriesExceeded
+from ..strategies import (
+    BatchAbortedError,
+    BatchDeadlineExceeded,
+    FrameworkTimeoutError,
+    ItemDeadlineExceeded,
+    RateLimitRetriesExceeded,
+)
 from .capacity import CapacityLimiter
 from .error_logging import log_retryable_error, log_validation_error
+from .guardrails import AbortController, await_with_guardrails, remaining_seconds
 
 if TYPE_CHECKING:
     from aiolimiter import AsyncLimiter
@@ -64,6 +71,7 @@ _LAST_PROVIDER_KEY = "_abl_last_provider_seconds"
 _LAST_COOLDOWN_KEY = "_abl_last_cooldown_wait_seconds"
 _LAST_TIMEOUT_KEY = "_abl_last_timeout_category"
 _LAST_ERROR_CATEGORY_KEY = "_abl_last_error_category"
+_TOTAL_DEADLINE_KEY = "_abl_total_item_deadline"
 
 _E = TypeVar("_E", bound=BaseException)
 
@@ -162,6 +170,7 @@ class ExecutorHostProtocol(Protocol[TInput, TOutput, TContext]):
     _stats_lock: asyncio.Lock
     _strategy_lifecycle: StrategyLifecycle[TOutput]
     _capacity_limiter: CapacityLimiter
+    _abort_controller: AbortController | None
 
     def _extract_token_usage(self, exception: Exception) -> dict[str, int]: ...
 
@@ -180,6 +189,13 @@ class ExecutorHostProtocol(Protocol[TInput, TOutput, TContext]):
         work_item: LLMWorkItem[TInput, TOutput, TContext],
         worker_id: int,
         attempt_number: int,
+    ) -> WorkItemResult[TOutput, TContext]: ...
+
+    async def _process_item_with_retries(
+        self,
+        work_item: LLMWorkItem[TInput, TOutput, TContext],
+        worker_id: int,
+        deadline: float | None = None,
     ) -> WorkItemResult[TOutput, TContext]: ...
 
 
@@ -233,6 +249,10 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
     def _capacity_limiter(self) -> CapacityLimiter:
         return self._host._capacity_limiter
 
+    @property
+    def _abort_controller(self) -> AbortController | None:
+        return self._host._abort_controller
+
     # ── Thin delegators (so moved bodies stay verbatim) ──────────
     async def _emit_event(self, event: ProcessingEvent, data: dict | None = None) -> None:
         await self._events.emit(event, data)
@@ -271,12 +291,45 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         log_validation_error(exception, work_item.item_id, attempt_number, token_msg)
 
     # ── Queue-less entry points (used by gateway + single) ───────
-    async def wait_for_capacity(self) -> None:
+    async def wait_for_capacity(
+        self,
+        *,
+        deadline: float | None = None,
+        retry_state: RetryState | None = None,
+        item_id: str | None = None,
+    ) -> None:
         """Respect the shared cooldown + slow-start ramp before an item."""
-        await self._rate_limit_coord.wait_if_paused()
-        delay = await self._rate_limit_coord.apply_slow_start()
+        cooldown_started = time.perf_counter()
+        await await_with_guardrails(
+            self._rate_limit_coord.wait_if_paused(),
+            item_deadline=deadline,
+            item_id=item_id,
+            abort_controller=self._abort_controller,
+        )
+        if retry_state is not None:
+            retry_state.set(
+                _LAST_COOLDOWN_KEY,
+                max(0.0, time.perf_counter() - cooldown_started),
+            )
+        delay = await await_with_guardrails(
+            self._rate_limit_coord.apply_slow_start(),
+            item_deadline=deadline,
+            item_id=item_id,
+            abort_controller=self._abort_controller,
+        )
         if delay > 0:
-            await asyncio.sleep(delay)
+            ramp_started = time.perf_counter()
+            await await_with_guardrails(
+                asyncio.sleep(delay),
+                item_deadline=deadline,
+                item_id=item_id,
+                abort_controller=self._abort_controller,
+            )
+            if retry_state is not None:
+                retry_state.set(
+                    _LAST_STARTUP_RAMP_KEY,
+                    max(0.0, time.perf_counter() - ramp_started),
+                )
 
     async def execute(
         self, work_item: LLMWorkItem[TInput, TOutput, TContext], worker_id: int = 0
@@ -287,13 +340,16 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         exhausted/unhandled failure into a failed result (never raises for
         business errors; CancelledError still propagates).
         """
-        await self.wait_for_capacity()
+        timeout = self.config.guardrails.total_timeout_per_item
+        deadline = time.perf_counter() + timeout if timeout is not None else None
         try:
-            return await self._process_item_with_retries(work_item, worker_id)
+            result = await self._host._process_item_with_retries(work_item, worker_id, deadline)
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            return await self.build_failure_result(work_item, e, worker_id)
+            result = await self.build_failure_result(work_item, e, worker_id)
+        result.submission_index = work_item.submission_index
+        return result
 
     async def build_failure_result(
         self,
@@ -364,13 +420,20 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         if not result.success:
             await self._emit_event(
                 ProcessingEvent.ITEM_FAILED,
-                {"item_id": work_item.item_id, "error_type": type(e).__name__},
+                {
+                    "item_id": work_item.item_id,
+                    "error_type": type(e).__name__,
+                    "error_category": result.error_category,
+                },
             )
 
         return result
 
     async def _process_item_with_retries(
-        self, work_item: LLMWorkItem[TInput, TOutput, TContext], worker_id: int
+        self,
+        work_item: LLMWorkItem[TInput, TOutput, TContext],
+        worker_id: int,
+        deadline: float | None = None,
     ) -> WorkItemResult[TOutput, TContext]:
         """Wrapper that applies retry logic and strategy lifecycle."""
         item_started = time.perf_counter()
@@ -390,11 +453,41 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         # Create retry state for this work item (v0.3.0)
         # This state persists across all retry attempts for multi-stage strategies
         retry_state = RetryState()
+        if deadline is None and self.config.guardrails.total_timeout_per_item is not None:
+            deadline = time.perf_counter() + self.config.guardrails.total_timeout_per_item
+        retry_state.set(_TOTAL_DEADLINE_KEY, deadline)
+
+        try:
+            await self.wait_for_capacity(
+                deadline=deadline,
+                retry_state=retry_state,
+                item_id=work_item.item_id,
+            )
+        except (ItemDeadlineExceeded, BatchDeadlineExceeded, BatchAbortedError) as exc:
+            error_info = self.error_classifier.classify(exc)
+            attempt_timings.append(
+                _attempt_timing(
+                    retry_state,
+                    attempt=1,
+                    try_number=1,
+                    total_seconds=max(0.0, time.perf_counter() - item_started),
+                    success=False,
+                    error_type=type(exc).__name__,
+                    error_category=error_info.error_category,
+                )
+            )
+            exc.__dict__[_TIMING_EXCEPTION_KEY] = _work_item_timing(item_started, attempt_timings)
+            raise
 
         # Ensure strategy is prepared (framework ensures this is called only once per unique strategy instance)
         # (v0.4.0: cleanup now happens in __aexit__, not per-item)
         try:
-            await self._ensure_strategy_prepared(strategy)
+            await await_with_guardrails(
+                self._ensure_strategy_prepared(strategy),
+                item_deadline=deadline,
+                item_id=work_item.item_id,
+                abort_controller=self._abort_controller,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -412,6 +505,16 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         max_rate_limit_retries = self.config.retry.max_rate_limit_retries
 
         while True:
+            try:
+                remaining_seconds(deadline, item_id=work_item.item_id)
+                if self._abort_controller is not None:
+                    self._abort_controller.raise_if_aborted(work_item.item_id)
+            except (ItemDeadlineExceeded, BatchDeadlineExceeded, BatchAbortedError) as exc:
+                self._attach_failed_tokens(exc, cumulative_failed_tokens)
+                exc.__dict__[_TIMING_EXCEPTION_KEY] = _work_item_timing(
+                    item_started, attempt_timings
+                )
+                raise
             try_number += 1
             try_started = time.perf_counter()
             for key in (
@@ -563,10 +666,24 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 attempt += 1
                 if wait_time > 0:
                     backoff_started = time.perf_counter()
-                    await asyncio.sleep(wait_time)
-                    attempt_timing.retry_backoff_seconds = max(
-                        0.0, time.perf_counter() - backoff_started
-                    )
+                    try:
+                        await await_with_guardrails(
+                            asyncio.sleep(wait_time),
+                            item_deadline=deadline,
+                            item_id=work_item.item_id,
+                            abort_controller=self._abort_controller,
+                        )
+                    except (ItemDeadlineExceeded, BatchDeadlineExceeded, BatchAbortedError) as exc:
+                        attempt_timing.retry_backoff_seconds = max(
+                            0.0, time.perf_counter() - backoff_started
+                        )
+                        self._attach_failed_tokens(exc, cumulative_failed_tokens)
+                        attach_timing(exc)
+                        raise
+                    else:
+                        attempt_timing.retry_backoff_seconds = max(
+                            0.0, time.perf_counter() - backoff_started
+                        )
             else:
                 # _process_item returned without raising (success, or a result
                 # produced by middleware / non-retryable handling). Fold in the
@@ -653,6 +770,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
     ) -> WorkItemResult[TOutput, TContext]:
         """Process a single work item using the provided strategy."""
         start_time = time.time()
+        deadline_value = retry_state.get(_TOTAL_DEADLINE_KEY) if retry_state is not None else None
+        deadline = float(deadline_value) if isinstance(deadline_value, (int, float)) else None
 
         # Store original item_id before middleware might return None
         original_item_id = work_item.item_id
@@ -704,7 +823,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     work_item.item_id,
                     attempt_number,
                 )
-                await self._proactive_rate_limiter.acquire()
+                await await_with_guardrails(
+                    self._proactive_rate_limiter.acquire(),
+                    item_deadline=deadline,
+                    item_id=work_item.item_id,
+                    abort_controller=self._abort_controller,
+                )
                 logger.debug(
                     "[RATE-LIMIT] Token acquired for %s (attempt %s)",
                     work_item.item_id,
@@ -717,7 +841,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 llm_start_time = time.time()
                 execution_started = time.perf_counter()
                 try:
-                    output, token_usage = await strategy.dry_run(work_item.prompt)
+                    output, token_usage = await await_with_guardrails(
+                        strategy.dry_run(work_item.prompt),
+                        item_deadline=deadline,
+                        item_id=work_item.item_id,
+                        abort_controller=self._abort_controller,
+                    )
                 finally:
                     if retry_state is not None:
                         retry_state.set(
@@ -726,7 +855,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         )
                 response_metadata = None
             else:
-                async with self._capacity_limiter.admit(strategy) as admission:
+                async with self._capacity_limiter.admit(
+                    strategy,
+                    deadline=deadline,
+                    abort_controller=self._abort_controller,
+                    item_id=work_item.item_id,
+                ) as admission:
                     previous_wait = (
                         float(retry_state.get(_ADMISSION_WAIT_STATE_KEY, 0.0))
                         if retry_state is not None
@@ -762,15 +896,29 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     # current 3-tuple (output, tokens, metadata) shape (v0.10.0).
                     try:
                         try:
-                            raw_result = await asyncio.wait_for(
+                            remaining = remaining_seconds(deadline, item_id=work_item.item_id)
+                            effective_timeout = self.config.timeout_per_item
+                            if remaining is not None:
+                                effective_timeout = min(effective_timeout, remaining)
+                            raw_result = await await_with_guardrails(
                                 strategy.execute(
                                     work_item.prompt,
                                     attempt_number,
-                                    self.config.timeout_per_item,
+                                    effective_timeout,
                                     retry_state,
                                 ),
-                                timeout=self.config.timeout_per_item,
+                                item_deadline=deadline,
+                                item_id=work_item.item_id,
+                                abort_controller=self._abort_controller,
+                                operation_timeout=self.config.timeout_per_item,
+                                active_provider=True,
                             )
+                        except ItemDeadlineExceeded:
+                            if retry_state is not None:
+                                retry_state.set(_LAST_TIMEOUT_KEY, "framework_total_item_timeout")
+                            raise
+                        except (BatchDeadlineExceeded, BatchAbortedError):
+                            raise
                         except (TimeoutError, asyncio.TimeoutError) as timeout_exc:
                             elapsed = time.time() - llm_start_time
                             if retry_state is not None:
@@ -906,9 +1054,17 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 retry_state.set(_LAST_TIMEOUT_KEY, "provider_or_transport_timeout")
             cooldown_started = time.perf_counter()
             try:
-                return await self._host._handle_execution_error(
-                    e, work_item, worker_id, attempt_number
+                return await await_with_guardrails(
+                    self._host._handle_execution_error(e, work_item, worker_id, attempt_number),
+                    item_deadline=deadline,
+                    item_id=work_item.item_id,
+                    abort_controller=self._abort_controller,
                 )
+            except (ItemDeadlineExceeded, BatchDeadlineExceeded, BatchAbortedError) as guard_exc:
+                failed_tokens = self._host._extract_token_usage(e)
+                if failed_tokens:
+                    guard_exc.__dict__["_failed_token_usage"] = failed_tokens
+                raise
             finally:
                 if retry_state is not None and error_info.is_rate_limit:
                     retry_state.set(
@@ -973,14 +1129,14 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
             # Re-raise the original exception to trigger retry logic
             # The retry loop will increment attempt and try again after cooldown
-            raise
+            raise exception
 
         # If error is retryable, re-raise to trigger retry in _process_item_with_retries
         # Note: Cache invalidation is automatic because retries use different temperatures,
         # which creates different cache keys and bypasses any cached bad responses
         if error_info.is_retryable:
             self._log_retryable_error(exception, work_item, attempt_number, failed_token_usage)
-            raise
+            raise exception
 
         # Try middleware error handlers
         middleware_result = await self._run_middlewares_on_error(work_item, exception)
@@ -1004,7 +1160,11 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
         await self._emit_event(
             ProcessingEvent.ITEM_FAILED,
-            {"item_id": work_item.item_id, "error_type": error_name},
+            {
+                "item_id": work_item.item_id,
+                "error_type": error_name,
+                "error_category": error_info.error_category,
+            },
         )
 
         return WorkItemResult(

@@ -166,6 +166,26 @@ def test_failure_exception_is_a_safe_descriptor_without_traceback() -> None:
     assert restored.error == result.error
 
 
+def test_serialization_redacts_labeled_credentials_and_sensitive_keys() -> None:
+    result = WorkItemResult(
+        item_id="failed",
+        success=False,
+        output={"api_key": "sk-output-secret", "safe": "visible"},
+        error="request failed Authorization: Bearer sk-error-secret",
+        exception=RuntimeError("api_key=sk-exception-secret"),
+        metadata={"access_token": "metadata-secret"},
+    )
+
+    payload = result.to_dict()
+    serialized = str(payload)
+
+    assert "sk-output-secret" not in serialized
+    assert "sk-error-secret" not in serialized
+    assert "sk-exception-secret" not in serialized
+    assert "metadata-secret" not in serialized
+    assert payload["output"] == {"api_key": "[REDACTED]", "safe": "visible"}
+
+
 def test_custom_encoder_decoder_and_unsupported_values() -> None:
     class Custom:
         def __init__(self, value: str) -> None:

@@ -96,7 +96,14 @@ from .classifiers import (
 )
 
 # Configuration
-from .core import ProcessorConfig, RateLimitConfig, RetryConfig, StartupRampConfig
+from .core import (
+    AbortMode,
+    GuardrailConfig,
+    ProcessorConfig,
+    RateLimitConfig,
+    RetryConfig,
+    StartupRampConfig,
+)
 
 # Protocols
 from .core.protocols import LLMModel, ManagedLLMModel
@@ -147,6 +154,8 @@ from .single import LLMCallError, call, call_result
 
 # Error classification and rate limit strategies
 from .strategies import (
+    BatchAbortedError,
+    BatchDeadlineExceeded,
     DefaultErrorClassifier,
     EmptyResponseError,
     ErrorClassifier,
@@ -154,6 +163,7 @@ from .strategies import (
     ExponentialBackoffStrategy,
     FixedDelayStrategy,
     FrameworkTimeoutError,
+    ItemDeadlineExceeded,
     ProviderResponseError,
     RateLimitRetriesExceeded,
     RateLimitStrategy,
@@ -223,6 +233,8 @@ __all__ = [
     "ResumePolicy",
     # Configuration
     "ProcessorConfig",
+    "AbortMode",
+    "GuardrailConfig",
     "RateLimitConfig",
     "RetryConfig",
     "StartupRampConfig",
@@ -265,6 +277,9 @@ __all__ = [
     "DefaultErrorClassifier",
     "EmptyResponseError",
     "FrameworkTimeoutError",
+    "ItemDeadlineExceeded",
+    "BatchDeadlineExceeded",
+    "BatchAbortedError",
     "ProviderResponseError",
     "RateLimitRetriesExceeded",
     "TokenTrackingError",

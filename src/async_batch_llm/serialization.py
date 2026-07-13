@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import fields, is_dataclass
 from datetime import date, datetime, time
@@ -37,6 +38,28 @@ ValueDecoder: TypeAlias = Callable[[JSONValue], Any]
 
 class ResultSerializationError(ValueError):
     """A result value or serialized payload is not safely supported."""
+
+
+_SENSITIVE_KEY = re.compile(
+    r"^(?:authorization|proxy-authorization|api[_-]?key|access[_-]?token|secret)$",
+    re.IGNORECASE,
+)
+_SENSITIVE_TEXT = (
+    re.compile(
+        r"(?i)(\bauthorization\s*[:=]\s*(?:bearer\s+)?)[^\s,;]+",
+    ),
+    re.compile(
+        r"(?i)(\b(?:api[_-]?key|access[_-]?token|secret)\s*[:=]\s*)"
+        r"(?:['\"]?)[^'\"\s,;]+(?:['\"]?)",
+    ),
+)
+
+
+def _redact_sensitive_text(value: str) -> str:
+    """Remove labeled credentials from framework-controlled persisted text."""
+    for pattern in _SENSITIVE_TEXT:
+        value = pattern.sub(r"\1[REDACTED]", value)
+    return value
 
 
 def to_json_value(value: Any, *, encoder: ValueEncoder | None = None, path: str = "$") -> JSONValue:
@@ -78,8 +101,12 @@ def to_json_value(value: Any, *, encoder: ValueEncoder | None = None, path: str 
 
     if is_dataclass(value) and not isinstance(value, type):
         return {
-            item.name: to_json_value(
-                getattr(value, item.name), encoder=encoder, path=f"{path}.{item.name}"
+            item.name: (
+                "[REDACTED]"
+                if _SENSITIVE_KEY.match(item.name)
+                else to_json_value(
+                    getattr(value, item.name), encoder=encoder, path=f"{path}.{item.name}"
+                )
             )
             for item in fields(value)
         }
@@ -90,7 +117,11 @@ def to_json_value(value: Any, *, encoder: ValueEncoder | None = None, path: str 
                 raise ResultSerializationError(
                     f"JSON object keys must be strings at {path}; got {type(key).__name__}"
                 )
-            result[key] = to_json_value(item, encoder=encoder, path=f"{path}.{key}")
+            result[key] = (
+                "[REDACTED]"
+                if _SENSITIVE_KEY.match(key)
+                else to_json_value(item, encoder=encoder, path=f"{path}.{key}")
+            )
         return result
     if isinstance(value, (list, tuple)):
         return [
@@ -234,7 +265,7 @@ def _exception_descriptor(exception: Exception | None) -> dict[str, JSONValue] |
     return {
         "module": type(exception).__module__,
         "class_name": type(exception).__qualname__,
-        "message": str(exception),
+        "message": _redact_sensitive_text(str(exception)),
     }
 
 
@@ -259,7 +290,7 @@ def work_item_result_to_dict(
             else None
         ),
         "output_included": include_output,
-        "error": result.error,
+        "error": _redact_sensitive_text(result.error) if result.error is not None else None,
         "error_category": result.error_category,
         "context": (
             to_json_value(result.context, encoder=encoder, path="$.context")

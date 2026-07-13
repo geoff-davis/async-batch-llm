@@ -11,9 +11,12 @@ Added in v0.9.0.
 from __future__ import annotations
 
 from ..strategies.errors import (
+    BatchAbortedError,
+    BatchDeadlineExceeded,
     ErrorClassifier,
     ErrorInfo,
     FrameworkTimeoutError,
+    ItemDeadlineExceeded,
     _retry_after_seconds,
     matches_any_pattern,
 )
@@ -61,6 +64,12 @@ class OpenAIErrorClassifier(ErrorClassifier):
         return matches_any_pattern(error_str, patterns)
 
     def classify(self, exception: Exception) -> ErrorInfo:
+        if isinstance(exception, ItemDeadlineExceeded):
+            return ErrorInfo(False, False, True, "framework_total_item_timeout")
+        if isinstance(exception, BatchDeadlineExceeded):
+            return ErrorInfo(False, False, True, "batch_deadline_exceeded")
+        if isinstance(exception, BatchAbortedError):
+            return ErrorInfo(False, False, False, "batch_aborted")
         # Framework timeout takes priority over everything else.
         if isinstance(exception, FrameworkTimeoutError):
             return ErrorInfo(
@@ -225,6 +234,22 @@ class OpenAIErrorClassifier(ErrorClassifier):
                 is_timeout=False,
                 error_category="insufficient_balance",
                 hint=_INSUFFICIENT_BALANCE_HINT,
+            )
+
+        if status_code == 401:
+            return ErrorInfo(
+                is_retryable=False,
+                is_rate_limit=False,
+                is_timeout=False,
+                error_category="authentication",
+            )
+
+        if status_code == 403:
+            return ErrorInfo(
+                is_retryable=False,
+                is_rate_limit=False,
+                is_timeout=False,
+                error_category="permission_denied",
             )
 
         if isinstance(status_code, int) and status_code in self._RETRYABLE_STATUS:

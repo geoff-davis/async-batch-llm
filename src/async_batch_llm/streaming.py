@@ -19,8 +19,9 @@ import contextlib
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
+from ._internal.guardrails import BatchAdmissionStopped
 from .artifacts import ArtifactStore, ResumePolicy
-from .base import BatchResult, LLMWorkItem, WorkItemResult
+from .base import BatchResult, BatchTermination, LLMWorkItem, WorkItemResult
 from .core import ProcessorConfig
 from .parallel import ParallelBatchProcessor
 
@@ -45,8 +46,13 @@ async def _aiter(source: PromptSource) -> AsyncIterator[Any]:
     which validates the shape.
     """
     if isinstance(source, AsyncIterable):
-        async for entry in source:
-            yield entry
+        try:
+            async for entry in source:
+                yield entry
+        finally:
+            close = getattr(source, "aclose", None)
+            if close is not None:
+                await close()
     else:
         for entry in source:
             yield entry
@@ -75,13 +81,14 @@ def _to_work_item(
     return LLMWorkItem(item_id=f"item_{index}", strategy=strategy, prompt=str(entry))
 
 
-async def process_stream(
+async def _process_stream_impl(
     strategy: LLMCallStrategy[TOutput],
     prompts: PromptSource,
     *,
     config: ProcessorConfig | None = None,
     artifact_store: ArtifactStore | None = None,
     resume: ResumePolicy = ResumePolicy.NONE,
+    termination_out: list[Any] | None = None,
     **processor_kwargs: Any,
 ) -> AsyncIterator[WorkItemResult[TOutput, Any]]:
     """Yield each :class:`WorkItemResult` as it completes, in completion order.
@@ -117,29 +124,73 @@ async def process_stream(
                 await processor.add_work(_to_work_item(entry, index, strategy))  # backpressure here
                 index += 1
         except asyncio.CancelledError:
-            raise  # consumer broke out early; cleanup handles teardown
+            if not processor.aborted:
+                raise  # consumer broke out early; cleanup handles teardown
+        except BatchAdmissionStopped:
+            pass  # controlled batch timeout/fail-fast stopped source admission
         except BaseException as exc:  # noqa: BLE001 - surfaced to the consumer below
             feed_error.append(exc)
-        # Normal completion or a (captured) producer error: close the stream so
-        # results() terminates after the already-queued items drain.
-        await processor.finish()
+        finally:
+            # Normal completion, controlled abort, or producer error: close the
+            # accepted stream so every queued item receives a terminal result.
+            if not processor._finished:
+                await processor.finish()
 
     async with processor:  # __aexit__ -> cleanup() cancels workers/finalize
         processor.start()
         producer = asyncio.create_task(_feed())
+
+        async def _stop_producer_on_abort() -> None:
+            await processor.wait_for_abort()
+            if not producer.done():
+                producer.cancel()
+
+        abort_watcher = asyncio.create_task(_stop_producer_on_abort())
         try:
             async for result in processor.results():
                 yield result
         finally:
+            abort_watcher.cancel()
             if not producer.done():
                 producer.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await producer
+            await asyncio.gather(abort_watcher, return_exceptions=True)
+
+    if termination_out is not None:
+        termination_out.append(processor.termination)
 
     # Reached only when results() ended normally (end-of-stream). If the
     # producer failed, surface its exception now (after draining results).
     if feed_error:
         raise feed_error[0]
+
+
+async def process_stream(
+    strategy: LLMCallStrategy[TOutput],
+    prompts: PromptSource,
+    *,
+    config: ProcessorConfig | None = None,
+    artifact_store: ArtifactStore | None = None,
+    resume: ResumePolicy = ResumePolicy.NONE,
+    **processor_kwargs: Any,
+) -> AsyncIterator[WorkItemResult[TOutput, Any]]:
+    """Yield terminal results in completion order.
+
+    Ordered streaming is intentionally not offered: a slow early item would
+    block later completed results and require a potentially unbounded reorder
+    buffer. Use ``process_prompts(..., preserve_order=True)`` when collection is
+    acceptable.
+    """
+    async for result in _process_stream_impl(
+        strategy,
+        prompts,
+        config=config,
+        artifact_store=artifact_store,
+        resume=resume,
+        **processor_kwargs,
+    ):
+        yield result
 
 
 async def process_prompts(
@@ -159,16 +210,21 @@ async def process_prompts(
     constant-memory processing of very large inputs, use :func:`process_stream`
     directly with a bounded ``config.max_queue_size``.
     """
+    termination: list[Any] = []
     results = [
         result
-        async for result in process_stream(
+        async for result in _process_stream_impl(
             strategy,
             prompts,
             config=config,
             artifact_store=artifact_store,
             resume=resume,
+            termination_out=termination,
             **processor_kwargs,
         )
     ]
-    batch = BatchResult(results=results)
+    batch = BatchResult(
+        results=results,
+        termination=termination[0] if termination else BatchTermination(),
+    )
     return batch.in_input_order() if preserve_order else batch

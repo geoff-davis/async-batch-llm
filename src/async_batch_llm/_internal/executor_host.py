@@ -37,6 +37,7 @@ from ..strategies import (
 from ..token_extractor import TokenExtractor
 from .capacity import CapacityLimiter
 from .event_dispatcher import EventDispatcher
+from .guardrails import AbortController
 from .item_executor import ItemExecutor
 from .rate_limit_coordinator import RateLimitCoordinator
 from .strategy_lifecycle import StrategyLifecycle
@@ -108,6 +109,9 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         self._stats = ProcessingStats()
         self._stats_lock = asyncio.Lock()
         self._token_extractor = TokenExtractor()
+        # Queue-less call/gateway surfaces have item deadlines but no shared
+        # batch abort controller.
+        self._abort_controller: AbortController | None = None
 
         if config.max_requests_per_minute:
             from aiolimiter import AsyncLimiter
@@ -138,6 +142,14 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         return await self.executor._process_item(
             work_item, worker_id, attempt_number, strategy, retry_state
         )
+
+    async def _process_item_with_retries(
+        self,
+        work_item: LLMWorkItem[TInput, TOutput, TContext],
+        worker_id: int,
+        deadline: float | None = None,
+    ) -> WorkItemResult[TOutput, TContext]:
+        return await self.executor._process_item_with_retries(work_item, worker_id, deadline)
 
     async def _handle_execution_error(
         self,
