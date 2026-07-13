@@ -90,7 +90,7 @@ jobs:
     # restore-keys fallbacks means every run saves a fresh cache and the
     # next run restores the closest ancestor.
     - name: Restore mypy cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: .mypy_cache
         key: mypy-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
