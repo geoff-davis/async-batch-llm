@@ -284,6 +284,42 @@ async def test_newest_compatible_record_wins(tmp_path: Path) -> None:
     assert result.results[0].output == "X"
 
 
+@pytest.mark.asyncio
+async def test_resume_lookup_uses_prebuilt_compatibility_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "indexed.jsonl"
+    prompts = [(str(index), f"p{index}") for index in range(100)]
+    await process_prompts(
+        _CountingStrategy(),
+        prompts,
+        config=ProcessorConfig(max_workers=10),
+        artifact_store=JsonlArtifactStore(path, identity=_identity()),
+    )
+
+    store = JsonlArtifactStore(path, identity=_identity())
+    compatibility_checks = 0
+    original = store._compatible
+
+    def counted(*args: Any, **kwargs: Any) -> bool:
+        nonlocal compatibility_checks
+        compatibility_checks += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_compatible", counted)
+    replay = _CountingStrategy()
+    result = await process_prompts(
+        replay,
+        [("0", "p0")],
+        artifact_store=store,
+        resume=ResumePolicy.REUSE_SUCCESSES,
+    )
+
+    assert result.results[0].replayed_from_artifact
+    assert replay.calls == []
+    assert compatibility_checks == 1
+
+
 def test_truncated_final_line_is_ignored_but_malformed_middle_fails(tmp_path: Path) -> None:
     path = tmp_path / "truncated.jsonl"
     manifest = {
@@ -306,6 +342,17 @@ def test_truncated_final_line_is_ignored_but_malformed_middle_fails(tmp_path: Pa
     path.write_text(json.dumps(future) + "\n", encoding="utf-8")
     with pytest.raises(ArtifactFormatError, match="future"):
         JsonlArtifactStore.read_results(path)
+
+
+def test_read_results_rejects_missing_and_empty_artifacts(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.jsonl"
+    with pytest.raises(ArtifactIOError, match="does not exist"):
+        JsonlArtifactStore.read_results(missing)
+
+    empty = tmp_path / "empty.jsonl"
+    empty.touch()
+    with pytest.raises(ArtifactFormatError, match="empty"):
+        JsonlArtifactStore.read_results(empty)
 
 
 @pytest.mark.asyncio

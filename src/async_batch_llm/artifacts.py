@@ -34,6 +34,7 @@ from .serialization import (
 ARTIFACT_SCHEMA_VERSION = 1
 CostCalculator: TypeAlias = Callable[[WorkItemResult[Any, Any]], float | None]
 ContextFingerprinter: TypeAlias = Callable[[Any], str]
+_ReplayKey: TypeAlias = tuple[str, str, str | None, str, str]
 
 
 class ArtifactError(RuntimeError):
@@ -146,6 +147,69 @@ def _identity_mapping(identity: ArtifactIdentity) -> dict[str, JSONValue]:
     }
 
 
+def _read_artifact_records(path: Path, *, allow_create: bool) -> tuple[list[dict[str, Any]], bool]:
+    """Read and validate an artifact, optionally treating missing/empty as new."""
+    try:
+        exists = path.exists()
+        size = path.stat().st_size if exists else 0
+    except OSError as exc:
+        raise ArtifactIOError(f"Could not inspect artifact {path}: {exc}") from exc
+    if not exists:
+        if allow_create:
+            return [], True
+        raise ArtifactIOError(f"Artifact does not exist: {path}")
+    if size == 0:
+        if allow_create:
+            return [], True
+        raise ArtifactFormatError(f"Artifact is empty: {path}")
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ArtifactIOError(f"Could not read artifact {path}: {exc}") from exc
+    segments = raw.split(b"\n")
+    has_trailing_newline = raw.endswith(b"\n")
+    records: list[dict[str, Any]] = []
+    manifest_seen = False
+    for index, segment in enumerate(segments):
+        if not segment:
+            continue
+        line_number = index + 1
+        try:
+            value = json.loads(segment)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            is_truncated_final = index == len(segments) - 1 and not has_trailing_newline
+            if is_truncated_final:
+                break
+            raise ArtifactFormatError(
+                f"Malformed artifact JSON at non-final line {line_number}: {exc}"
+            ) from exc
+        if not isinstance(value, dict):
+            raise ArtifactFormatError(f"Artifact line {line_number} must be a JSON object")
+        schema = value.get("artifact_schema_version")
+        if schema != ARTIFACT_SCHEMA_VERSION:
+            if isinstance(schema, int) and schema > ARTIFACT_SCHEMA_VERSION:
+                raise ArtifactFormatError(
+                    f"Unsupported future artifact schema version {schema} at line {line_number}"
+                )
+            raise ArtifactFormatError(
+                f"Unsupported artifact schema version {schema!r} at line {line_number}"
+            )
+        record_type = value.get("record_type")
+        if not manifest_seen:
+            if record_type != "manifest":
+                raise ArtifactFormatError("The first complete artifact record must be a manifest")
+            manifest_seen = True
+            continue
+        if record_type != "item":
+            raise ArtifactFormatError(
+                f"Unsupported artifact record_type {record_type!r} at line {line_number}"
+            )
+        records.append(value)
+    if not manifest_seen:
+        raise ArtifactFormatError("Artifact has no complete manifest record")
+    return records, False
+
+
 class JsonlArtifactStore:
     """Append-only version-1 JSONL artifact store.
 
@@ -203,6 +267,8 @@ class JsonlArtifactStore:
         self._closed = False
         self._handle: TextIO | None = None
         self._records: list[dict[str, Any]] = []
+        self._latest_replayable: dict[_ReplayKey, dict[str, Any]] = {}
+        self._latest_success: dict[_ReplayKey, dict[str, Any]] = {}
         self._next_sequence = 0
 
     async def prepare_item(self, work_item: LLMWorkItem[Any, Any, Any]) -> _ItemFingerprint:
@@ -254,29 +320,76 @@ class JsonlArtifactStore:
             return None
         fingerprint = self._coerce_fingerprint(prepared_item)
         await self._prepare()
-        for record in reversed(self._records):
-            if not self._compatible(record, work_item, fingerprint):
-                continue
-            if policy is ResumePolicy.REUSE_SUCCESSES and not record.get("success"):
-                continue
-            if not record.get("replay_eligible", False):
-                continue
-            try:
-                result = work_item_result_from_dict(
-                    record["result"],
-                    output_decoder=self.output_decoder,
-                    context_decoder=self.context_decoder,
-                )
-            except (KeyError, ResultSerializationError) as exc:
-                raise ArtifactFormatError(
-                    f"Malformed stored result for item {work_item.item_id!r}: {exc}"
-                ) from exc
-            result.context = work_item.context
-            result.submission_index = work_item.submission_index
-            result.replayed_from_artifact = True
-            result.exception = None
-            return result
-        return None
+        key = self._replay_key(work_item, fingerprint)
+        records = (
+            self._latest_success
+            if policy is ResumePolicy.REUSE_SUCCESSES
+            else self._latest_replayable
+        )
+        record = records.get(key)
+        if record is None or not self._compatible(record, work_item, fingerprint):
+            return None
+        try:
+            result = work_item_result_from_dict(
+                record["result"],
+                output_decoder=self.output_decoder,
+                context_decoder=self.context_decoder,
+            )
+        except (KeyError, ResultSerializationError) as exc:
+            raise ArtifactFormatError(
+                f"Malformed stored result for item {work_item.item_id!r}: {exc}"
+            ) from exc
+        result.context = work_item.context
+        result.submission_index = work_item.submission_index
+        result.replayed_from_artifact = True
+        result.exception = None
+        return result
+
+    def _replay_key(
+        self,
+        work_item: LLMWorkItem[Any, Any, Any],
+        fingerprint: _ItemFingerprint,
+    ) -> _ReplayKey:
+        return (
+            work_item.item_id,
+            fingerprint.prompt,
+            fingerprint.context,
+            fingerprint.combined,
+            self.identity_fingerprint,
+        )
+
+    @staticmethod
+    def _record_replay_key(record: Mapping[str, Any]) -> _ReplayKey | None:
+        item_id = record.get("item_id")
+        prompt = record.get("prompt_fingerprint")
+        context = record.get("context_fingerprint")
+        combined = record.get("input_fingerprint")
+        identity = record.get("identity_fingerprint")
+        if (
+            not isinstance(item_id, str)
+            or not isinstance(prompt, str)
+            or (context is not None and not isinstance(context, str))
+            or not isinstance(combined, str)
+            or not isinstance(identity, str)
+        ):
+            return None
+        return item_id, prompt, context, combined, identity
+
+    def _index_record(self, record: dict[str, Any]) -> None:
+        if not record.get("replay_eligible", False):
+            return
+        key = self._record_replay_key(record)
+        if key is None:
+            return
+        self._latest_replayable[key] = record
+        if record.get("success") is True:
+            self._latest_success[key] = record
+
+    def _rebuild_replay_index(self) -> None:
+        self._latest_replayable.clear()
+        self._latest_success.clear()
+        for record in self._records:
+            self._index_record(record)
 
     def _compatible(
         self,
@@ -380,8 +493,13 @@ class JsonlArtifactStore:
             if self._closed:
                 raise ArtifactIOError(f"Artifact store is closed: {self.path}")
             try:
-                records, needs_manifest = await asyncio.to_thread(self._read_existing)
+                records, needs_manifest = await asyncio.to_thread(
+                    _read_artifact_records,
+                    self.path,
+                    allow_create=True,
+                )
                 self._records = records
+                self._rebuild_replay_index()
                 self._next_sequence = (
                     max((int(record.get("record_sequence", -1)) for record in records), default=-1)
                     + 1
@@ -405,58 +523,6 @@ class JsonlArtifactStore:
             except OSError as exc:
                 raise ArtifactIOError(f"Could not prepare artifact {self.path}: {exc}") from exc
 
-    def _read_existing(self) -> tuple[list[dict[str, Any]], bool]:
-        if not self.path.exists() or self.path.stat().st_size == 0:
-            return [], True
-        try:
-            raw = self.path.read_bytes()
-        except OSError as exc:
-            raise ArtifactIOError(f"Could not read artifact {self.path}: {exc}") from exc
-        segments = raw.split(b"\n")
-        has_trailing_newline = raw.endswith(b"\n")
-        records: list[dict[str, Any]] = []
-        manifest_seen = False
-        for index, segment in enumerate(segments):
-            if not segment:
-                continue
-            line_number = index + 1
-            try:
-                value = json.loads(segment)
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                is_truncated_final = index == len(segments) - 1 and not has_trailing_newline
-                if is_truncated_final:
-                    break
-                raise ArtifactFormatError(
-                    f"Malformed artifact JSON at non-final line {line_number}: {exc}"
-                ) from exc
-            if not isinstance(value, dict):
-                raise ArtifactFormatError(f"Artifact line {line_number} must be a JSON object")
-            schema = value.get("artifact_schema_version")
-            if schema != ARTIFACT_SCHEMA_VERSION:
-                if isinstance(schema, int) and schema > ARTIFACT_SCHEMA_VERSION:
-                    raise ArtifactFormatError(
-                        f"Unsupported future artifact schema version {schema} at line {line_number}"
-                    )
-                raise ArtifactFormatError(
-                    f"Unsupported artifact schema version {schema!r} at line {line_number}"
-                )
-            record_type = value.get("record_type")
-            if not manifest_seen:
-                if record_type != "manifest":
-                    raise ArtifactFormatError(
-                        "The first complete artifact record must be a manifest"
-                    )
-                manifest_seen = True
-                continue
-            if record_type != "item":
-                raise ArtifactFormatError(
-                    f"Unsupported artifact record_type {record_type!r} at line {line_number}"
-                )
-            records.append(value)
-        if not manifest_seen:
-            raise ArtifactFormatError("Artifact has no complete manifest record")
-        return records, False
-
     async def _append_record(self, record: dict[str, Any]) -> None:
         async with self._lock:
             if self._closed or self._handle is None:
@@ -469,6 +535,7 @@ class JsonlArtifactStore:
                     f"Could not append artifact record for item {record.get('item_id')!r}: {exc}"
                 ) from exc
             self._records.append(record)
+            self._index_record(record)
             self._next_sequence += 1
 
     def _write_record_sync(self, record: Mapping[str, Any]) -> None:
@@ -533,9 +600,7 @@ class JsonlArtifactStore:
         context_decoder: ValueDecoder | None = None,
     ) -> BatchResult[Any, Any]:
         """Read stored results without opening a writer or calling a provider."""
-        reader = object.__new__(cls)
-        reader.path = Path(path)
-        records, _ = reader._read_existing()
+        records, _ = _read_artifact_records(Path(path), allow_create=False)
         results: list[WorkItemResult[Any, Any]] = []
         for record in records:
             if successes_only and not record.get("success"):

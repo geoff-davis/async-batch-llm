@@ -156,7 +156,10 @@ Replayed items do not call the provider and are not appended a second time.
 They retain historical output, timing, error, and token use, receive the current
 run's `submission_index`, and set `replayed_from_artifact=True`. Historical
 tokens remain visible on the item for audit but are excluded from newly consumed
-provider-token statistics.
+provider-token statistics returned by `processor.get_stats()`. In contrast,
+`BatchResult` aggregate token fields are computed from all returned results and
+therefore include replayed historical usage. This makes live processor stats a
+"spent this run" view and the collected batch an auditable result-history view.
 
 Setting `include_output=False` makes a success record audit-only and therefore
 ineligible for replay. A failure remains reusable under `REUSE_ALL` because it
@@ -215,3 +218,9 @@ complete, non-interleaved JSON records for concurrent workers sharing one store
 instance in one process. It does **not** implement filesystem locking across
 processes or independent store instances. Use one writer, or implement an
 `ArtifactStore` backed by real file locks or a transactional database.
+
+On open, the JSONL store retains all complete item records (including serialized
+outputs) in memory for read-only iteration and builds a constant-time replay
+index. This avoids quadratic resume lookup, but very large audit histories may
+be better served by a transactional `ArtifactStore` implementation with indexed
+on-disk storage.

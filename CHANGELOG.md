@@ -55,6 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failures instead of allowing `queue.join()` or a result stream to hang.
 - Persisted framework-controlled errors redact labeled authorization, API-key,
   token, and secret values; exception objects and tracebacks are never written.
+- Artifact resume builds a compatibility index instead of scanning the complete
+  history for every item, and the read-only loader now rejects missing or empty
+  paths instead of returning a misleading empty batch.
 
 ## [0.17.0] - 2026-07-09
 
