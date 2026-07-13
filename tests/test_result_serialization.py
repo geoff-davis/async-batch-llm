@@ -268,3 +268,22 @@ def test_jsonl_round_trip_with_multiple_results(tmp_path: Path) -> None:
     assert len(path.read_text(encoding="utf-8").splitlines()) == 2
     assert [result.item_id for result in restored.results] == ["item-1", "failed"]
     assert restored.results[1].error_category == "validation_error"
+
+
+def test_jsonl_round_trip_preserves_empty_batch_termination(tmp_path: Path) -> None:
+    batch = BatchResult(
+        results=[],
+        termination=BatchTermination(
+            kind="batch_timeout",
+            reason="no work accepted before timeout",
+            error_category="batch_deadline_exceeded",
+        ),
+    )
+    path = tmp_path / "empty-results.jsonl"
+
+    batch.to_jsonl(path)
+    restored = BatchResult.from_jsonl(path)
+
+    assert restored.results == []
+    assert restored.termination == batch.termination
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 1

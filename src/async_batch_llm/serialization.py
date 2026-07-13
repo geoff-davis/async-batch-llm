@@ -70,7 +70,32 @@ def to_json_value(value: Any, *, encoder: ValueEncoder | None = None, path: str 
     normalize to mappings. Date/time, UUID, enum, and filesystem path values
     normalize to strings or their JSON-safe enum values.
     """
-    return _to_json_value(value, encoder=encoder, path=path, encoder_depth=0)
+    return _to_json_value(
+        value,
+        encoder=encoder,
+        path=path,
+        encoder_depth=0,
+        redact_sensitive_keys=True,
+    )
+
+
+def _to_fingerprint_value(
+    value: Any, *, encoder: ValueEncoder | None = None, path: str = "$"
+) -> JSONValue:
+    """Canonicalize private hash input without dropping sensitive identity data.
+
+    The returned value must only be used as input to a one-way fingerprint. It
+    deliberately preserves sensitive mapping values so credential changes
+    invalidate replay, while :func:`to_json_value` continues to redact every
+    persisted mapping.
+    """
+    return _to_json_value(
+        value,
+        encoder=encoder,
+        path=path,
+        encoder_depth=0,
+        redact_sensitive_keys=False,
+    )
 
 
 def _to_json_value(
@@ -79,6 +104,7 @@ def _to_json_value(
     encoder: ValueEncoder | None,
     path: str,
     encoder_depth: int,
+    redact_sensitive_keys: bool,
 ) -> JSONValue:
     if value is None or isinstance(value, (bool, str, int)):
         return value
@@ -92,6 +118,7 @@ def _to_json_value(
             encoder=encoder,
             path=path,
             encoder_depth=encoder_depth,
+            redact_sensitive_keys=redact_sensitive_keys,
         )
     if isinstance(value, (datetime, date, time)):
         return value.isoformat()
@@ -118,18 +145,20 @@ def _to_json_value(
             encoder=encoder,
             path=path,
             encoder_depth=encoder_depth,
+            redact_sensitive_keys=redact_sensitive_keys,
         )
 
     if is_dataclass(value) and not isinstance(value, type):
         return {
             item.name: (
                 "[REDACTED]"
-                if _SENSITIVE_KEY.match(item.name)
+                if redact_sensitive_keys and _SENSITIVE_KEY.match(item.name)
                 else _to_json_value(
                     getattr(value, item.name),
                     encoder=encoder,
                     path=f"{path}.{item.name}",
                     encoder_depth=encoder_depth,
+                    redact_sensitive_keys=redact_sensitive_keys,
                 )
             )
             for item in fields(value)
@@ -143,12 +172,13 @@ def _to_json_value(
                 )
             result[key] = (
                 "[REDACTED]"
-                if _SENSITIVE_KEY.match(key)
+                if redact_sensitive_keys and _SENSITIVE_KEY.match(key)
                 else _to_json_value(
                     item,
                     encoder=encoder,
                     path=f"{path}.{key}",
                     encoder_depth=encoder_depth,
+                    redact_sensitive_keys=redact_sensitive_keys,
                 )
             )
         return result
@@ -159,6 +189,7 @@ def _to_json_value(
                 encoder=encoder,
                 path=f"{path}[{index}]",
                 encoder_depth=encoder_depth,
+                redact_sensitive_keys=redact_sensitive_keys,
             )
             for index, item in enumerate(value)
         ]
@@ -169,6 +200,7 @@ def _to_json_value(
                 encoder=encoder,
                 path=f"{path}[]",
                 encoder_depth=encoder_depth,
+                redact_sensitive_keys=redact_sensitive_keys,
             )
             for item in value
         ]
@@ -200,6 +232,7 @@ def _to_json_value(
             encoder=encoder,
             path=path,
             encoder_depth=encoder_depth + 1,
+            redact_sensitive_keys=redact_sensitive_keys,
         )
 
     raise ResultSerializationError(
@@ -523,6 +556,21 @@ def batch_result_to_jsonl(
 ) -> None:
     termination = _termination_to_dict(batch.termination)
     lines = []
+    if not batch.results:
+        lines.append(
+            json.dumps(
+                {
+                    "schema": RESULT_SCHEMA_NAME,
+                    "schema_version": RESULT_SCHEMA_VERSION,
+                    "record_type": "batch_metadata",
+                    "batch_termination": termination,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
     for result in batch.results:
         record = work_item_result_to_dict(result, encoder=encoder)
         record["batch_termination"] = termination
@@ -559,6 +607,16 @@ def batch_result_from_jsonl(
                 f"Malformed result JSONL at line {line_number}: {exc}"
             ) from exc
         data = _require_mapping(record, path=f"line {line_number}")
+        if data.get("record_type") == "batch_metadata":
+            _check_schema(data, record_type="batch_metadata")
+            if results or termination is not None:
+                raise ResultSerializationError(
+                    f"Unexpected batch metadata record at JSONL line {line_number}"
+                )
+            termination = _termination_from_dict(
+                data.get("batch_termination", {"kind": "completed"})
+            )
+            continue
         current = _termination_from_dict(data.get("batch_termination", {"kind": "completed"}))
         if termination is None:
             termination = current

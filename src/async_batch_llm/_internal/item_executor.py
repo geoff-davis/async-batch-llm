@@ -387,8 +387,13 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             f"{type(e).__name__}: {str(e)[:ERROR_MESSAGE_MAX_LENGTH]}{token_msg}"
         )
 
-        # Try middleware error handlers
-        middleware_result = await self._run_middlewares_on_error(work_item, e)
+        # Controlled guardrail termination is already the final framework
+        # outcome. Do not let a recovery hook delay or rewrite it.
+        middleware_result = (
+            None
+            if isinstance(e, (ItemDeadlineExceeded, BatchDeadlineExceeded, BatchAbortedError))
+            else await self._run_middlewares_on_error(work_item, e)
+        )
         result: WorkItemResult[TOutput, TContext]
         if middleware_result is not None:
             result = middleware_result
@@ -791,7 +796,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
         try:
             # Run before middlewares
-            processed_item = await self._run_middlewares_before(work_item)
+            processed_item = await await_with_guardrails(
+                self._run_middlewares_before(work_item),
+                item_deadline=deadline,
+                item_id=work_item.item_id,
+                abort_controller=self._abort_controller,
+            )
             if processed_item is None:
                 logger.debug("Skipping %s (filtered by middleware)", original_item_id)
                 return WorkItemResult(
@@ -1038,8 +1048,22 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             # This allows strategy to adjust behavior for next retry (v0.3.0: now includes retry_state)
             if strategy is not None:  # Type guard for mypy
                 try:
-                    await strategy.on_error(e, attempt_number, retry_state)
+                    await await_with_guardrails(
+                        strategy.on_error(e, attempt_number, retry_state),
+                        item_deadline=deadline,
+                        item_id=work_item.item_id,
+                        abort_controller=self._abort_controller,
+                    )
                 except asyncio.CancelledError:
+                    raise
+                except (
+                    ItemDeadlineExceeded,
+                    BatchDeadlineExceeded,
+                    BatchAbortedError,
+                ) as guard_exc:
+                    failed_tokens = self._host._extract_token_usage(e)
+                    if failed_tokens:
+                        guard_exc.__dict__["_failed_token_usage"] = failed_tokens
                     raise
                 except Exception as callback_error:
                     # Log but don't fail if on_error callback has bugs

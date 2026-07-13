@@ -34,6 +34,7 @@ receive another attempt timeout.
 It starts when execution of an accepted item begins and includes:
 
 - coordinated cooldown and startup-ramp waits;
+- pre-execution middleware and strategy error callbacks;
 - proactive rate-limiter waits;
 - provider-capacity admission;
 - every provider attempt;

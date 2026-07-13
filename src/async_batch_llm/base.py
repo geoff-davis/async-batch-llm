@@ -1090,8 +1090,10 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                     work_item.submission_index = None
                     raise
                 self._next_submission_index += 1
-                async with self._stats_lock:
-                    self._stats.total += 1
+                # Do not introduce a cancellation point after queue.put()
+                # commits ownership. Otherwise an abort can report rejection
+                # even though a worker already owns the accepted item.
+                self._stats.total += 1
                 return
 
             if self._processing_started:

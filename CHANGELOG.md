@@ -61,6 +61,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Artifact resume builds a compatibility index instead of scanning the complete
   history for every item, and the read-only loader now rejects missing or empty
   paths instead of returning a misleading empty batch.
+- Cancelled artifact operations retain exclusive ownership of their file handle
+  until threaded writes finish, preventing a concurrent append or close from
+  interleaving with an in-flight checkpoint.
+- Total-item and batch deadlines now bound pre-execution middleware and strategy
+  error hooks, and controlled guardrail failures bypass application recovery
+  hooks so accepted work cannot strand batch or stream completion.
+- Sensitive context and identity values remain redacted from persisted records
+  but still participate in compatibility fingerprints, so changing a credential
+  cannot accidentally reuse a stale result.
+- Streaming admission has no cancellation point after queue ownership commits,
+  keeping accepted-item accounting consistent during an abort race. Empty
+  result JSONL exports now retain batch termination metadata.
 
 ## [0.17.0] - 2026-07-09
 

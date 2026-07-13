@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from async_batch_llm import (
     ArtifactIdentity,
     ArtifactIOError,
     JsonlArtifactStore,
+    LLMWorkItem,
     ProcessorConfig,
     ResumePolicy,
     WorkItemResult,
@@ -131,6 +133,138 @@ async def test_concurrent_workers_write_complete_non_interleaved_records(tmp_pat
     assert len(records) == 41
     assert all(record["record_type"] == "item" for record in records[1:])
     assert sorted(record["record_sequence"] for record in records[1:]) == list(range(40))
+
+
+@pytest.mark.asyncio
+async def test_cancelled_append_retains_write_lock_until_thread_finishes(tmp_path: Path) -> None:
+    path = tmp_path / "cancelled-write.jsonl"
+    store = JsonlArtifactStore(path, identity=_identity())
+    strategy = _CountingStrategy()
+    first_item = LLMWorkItem(item_id="first", strategy=strategy, prompt="one")
+    second_item = LLMWorkItem(item_id="second", strategy=strategy, prompt="two")
+    first_key = await store.prepare_item(first_item)
+    second_key = await store.prepare_item(second_item)
+
+    original_write = store._write_record_sync
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    item_writes = 0
+
+    def blocking_write(record: dict[str, Any]) -> None:
+        nonlocal item_writes
+        if record.get("record_type") == "item":
+            item_writes += 1
+            if item_writes == 1:
+                first_entered.set()
+                assert release_first.wait(timeout=1)
+        original_write(record)
+
+    store._write_record_sync = blocking_write  # type: ignore[method-assign]
+    first_append = asyncio.create_task(
+        store.append(
+            first_item,
+            first_key,
+            WorkItemResult(item_id="first", success=True, output="ONE"),
+        )
+    )
+    assert await asyncio.to_thread(first_entered.wait, 0.5)
+    first_append.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_append
+
+    second_append = asyncio.create_task(
+        store.append(
+            second_item,
+            second_key,
+            WorkItemResult(item_id="second", success=True, output="TWO"),
+        )
+    )
+    await asyncio.sleep(0.02)
+    assert item_writes == 1
+
+    release_first.set()
+    await asyncio.wait_for(second_append, timeout=0.5)
+    await store.close()
+
+    records = _records(path)
+    assert [record.get("item_id") for record in records[1:]] == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_append_io_failure_surfaces_on_close(tmp_path: Path) -> None:
+    path = tmp_path / "cancelled-write-error.jsonl"
+    store = JsonlArtifactStore(path, identity=_identity())
+    item = LLMWorkItem(item_id="item", strategy=_CountingStrategy(), prompt="prompt")
+    key = await store.prepare_item(item)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def failing_write(record: dict[str, Any]) -> None:
+        entered.set()
+        assert release.wait(timeout=1)
+        raise OSError("detached disk failure")
+
+    store._write_record_sync = failing_write  # type: ignore[method-assign]
+    append = asyncio.create_task(
+        store.append(
+            item,
+            key,
+            WorkItemResult(item_id="item", success=True, output="result"),
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 0.5)
+    append.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await append
+    release.set()
+
+    with pytest.raises(ArtifactIOError, match="detached disk failure"):
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_sensitive_identity_values_affect_hash_without_being_persisted(
+    tmp_path: Path,
+) -> None:
+    context_path = tmp_path / "context-secret.jsonl"
+    await process_prompts(
+        _CountingStrategy(),
+        [("item", "prompt", {"api_key": "context-old"})],
+        artifact_store=JsonlArtifactStore(context_path, identity=_identity()),
+    )
+    context_replay = _CountingStrategy()
+    context_result = await process_prompts(
+        context_replay,
+        [("item", "prompt", {"api_key": "context-new"})],
+        artifact_store=JsonlArtifactStore(context_path, identity=_identity()),
+        resume=ResumePolicy.REUSE_SUCCESSES,
+    )
+    assert context_replay.calls == ["prompt"]
+    assert not context_result.results[0].replayed_from_artifact
+
+    identity_path = tmp_path / "identity-secret.jsonl"
+    old_identity = ArtifactIdentity(provider="test", model="model", extra={"api_key": "old"})
+    new_identity = ArtifactIdentity(provider="test", model="model", extra={"api_key": "new"})
+    await process_prompts(
+        _CountingStrategy(),
+        [("item", "prompt")],
+        artifact_store=JsonlArtifactStore(identity_path, identity=old_identity),
+    )
+    identity_replay = _CountingStrategy()
+    identity_result = await process_prompts(
+        identity_replay,
+        [("item", "prompt")],
+        artifact_store=JsonlArtifactStore(identity_path, identity=new_identity),
+        resume=ResumePolicy.REUSE_SUCCESSES,
+    )
+    assert identity_replay.calls == ["prompt"]
+    assert not identity_result.results[0].replayed_from_artifact
+
+    persisted = context_path.read_text(encoding="utf-8") + identity_path.read_text(encoding="utf-8")
+    assert "context-old" not in persisted
+    assert "context-new" not in persisted
+    assert '"api_key":"old"' not in persisted
+    assert '"api_key":"new"' not in persisted
 
 
 @pytest.mark.asyncio

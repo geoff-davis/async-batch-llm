@@ -20,6 +20,7 @@ from async_batch_llm import (
     ItemDeadlineExceeded,
     LLMCallStrategy,
     OpenAIErrorClassifier,
+    ParallelBatchProcessor,
     ProcessorConfig,
     RateLimitConfig,
     RetryConfig,
@@ -27,8 +28,10 @@ from async_batch_llm import (
     process_prompts,
     process_stream,
 )
-from async_batch_llm.base import RetryState, TokenUsage, WorkItemResult
+from async_batch_llm._internal.guardrails import AbortCause
+from async_batch_llm.base import LLMWorkItem, RetryState, TokenUsage, WorkItemResult
 from async_batch_llm.gateway import LLMGateway
+from async_batch_llm.middleware import BaseMiddleware
 from async_batch_llm.observers import BaseObserver, ProcessingEvent
 
 _TOKENS: TokenUsage = {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3}
@@ -70,6 +73,119 @@ async def test_total_item_deadline_spans_retry_backoff_and_preserves_usage() -> 
     assert result.token_usage["total_tokens"] == 3
     assert result.timing.attempts[0].retry_backoff_seconds >= 0.02
     assert result.timing.total_seconds >= 0.03
+
+
+@pytest.mark.asyncio
+async def test_total_item_deadline_cancels_hanging_strategy_error_hook() -> None:
+    hook_cancelled = asyncio.Event()
+
+    class HangingErrorHook(LLMCallStrategy[str]):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def execute(
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+        ) -> tuple[str, TokenUsage, None]:
+            self.calls += 1
+            raise _TransientWithTokens("provider failed")
+
+        async def on_error(
+            self, error: Exception, attempt: int, state: RetryState | None = None
+        ) -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                hook_cancelled.set()
+
+    strategy = HangingErrorHook()
+    result = await asyncio.wait_for(
+        call_result(
+            strategy,
+            "x",
+            config=ProcessorConfig(
+                retry=RetryConfig(max_attempts=3),
+                guardrails=GuardrailConfig(total_timeout_per_item=0.03),
+            ),
+        ),
+        timeout=0.5,
+    )
+
+    assert strategy.calls == 1
+    assert hook_cancelled.is_set()
+    assert result.error_category == "framework_total_item_timeout"
+    assert result.token_usage["total_tokens"] == 3
+
+
+@pytest.mark.asyncio
+async def test_batch_deadline_cancels_pre_middleware_and_skips_error_recovery() -> None:
+    before_cancelled = asyncio.Event()
+    error_hook_called = False
+
+    class HangingMiddleware(BaseMiddleware):
+        async def before_process(self, work_item: Any) -> Any:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                before_cancelled.set()
+
+        async def on_error(self, work_item: Any, error: Exception) -> WorkItemResult | None:
+            nonlocal error_hook_called
+            error_hook_called = True
+            await asyncio.Event().wait()
+            return None
+
+    strategy = _SlowStrategy(0)
+    result = await asyncio.wait_for(
+        process_prompts(
+            strategy,
+            ["one"],
+            config=ProcessorConfig(
+                guardrails=GuardrailConfig(
+                    batch_timeout=0.03,
+                    abort_mode=AbortMode.CANCEL_ACTIVE,
+                )
+            ),
+            middlewares=[HangingMiddleware()],
+        ),
+        timeout=0.5,
+    )
+
+    assert before_cancelled.is_set()
+    assert not error_hook_called
+    assert strategy.calls == []
+    assert result.results[0].error_category == "batch_deadline_exceeded"
+    assert result.termination.kind == "batch_timeout"
+
+
+@pytest.mark.asyncio
+async def test_streaming_admission_has_no_post_commit_cancellation_point() -> None:
+    processor = ParallelBatchProcessor(config=ProcessorConfig(max_workers=1))
+    processor._streaming = True
+    processor._guardrails_started = True
+    await processor._stats_lock.acquire()
+    try:
+        item = LLMWorkItem(item_id="accepted", strategy=_SlowStrategy(0), prompt="accepted")
+        admission = asyncio.create_task(processor.add_work(item))
+        for _ in range(20):
+            if processor._queue.qsize() == 1:
+                break
+            await asyncio.sleep(0)
+        assert processor._queue.qsize() == 1
+        await processor._trip_abort(
+            AbortCause(
+                kind="batch_timeout",
+                reason="test timeout",
+                error_category="batch_deadline_exceeded",
+            )
+        )
+        await asyncio.wait_for(admission, timeout=0.2)
+        assert processor._stats.total == 1
+        assert item.submission_index == 0
+    finally:
+        processor._stats_lock.release()
+        if not processor._queue.empty():
+            processor._queue.get_nowait()
+            processor._queue.task_done()
 
 
 class _RateLimitThenSuccess(LLMCallStrategy[str]):

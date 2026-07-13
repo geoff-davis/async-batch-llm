@@ -26,6 +26,7 @@ from .serialization import (
     ResultSerializationError,
     ValueDecoder,
     ValueEncoder,
+    _to_fingerprint_value,
     to_json_value,
     work_item_result_from_dict,
     work_item_result_to_dict,
@@ -130,9 +131,12 @@ def _sha256(value: JSONValue) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
-def _identity_mapping(identity: ArtifactIdentity) -> dict[str, JSONValue]:
+def _identity_mapping(
+    identity: ArtifactIdentity, *, for_fingerprint: bool = False
+) -> dict[str, JSONValue]:
     try:
-        extra = to_json_value(identity.extra, path="$.identity.extra")
+        converter = _to_fingerprint_value if for_fingerprint else to_json_value
+        extra = converter(identity.extra, path="$.identity.extra")
     except ResultSerializationError as exc:
         raise ArtifactSerializationError(str(exc)) from exc
     if not isinstance(extra, dict):  # Mapping above always normalizes to dict.
@@ -253,7 +257,7 @@ class JsonlArtifactStore:
         self.fsync = fsync
 
         self._identity_value = _identity_mapping(identity)
-        self.identity_fingerprint = _sha256(self._identity_value)
+        self.identity_fingerprint = _sha256(_identity_mapping(identity, for_fingerprint=True))
         try:
             metadata_value = to_json_value(self.user_metadata, path="$.user_metadata")
         except ResultSerializationError as exc:
@@ -270,6 +274,8 @@ class JsonlArtifactStore:
         self._latest_replayable: dict[_ReplayKey, dict[str, Any]] = {}
         self._latest_success: dict[_ReplayKey, dict[str, Any]] = {}
         self._next_sequence = 0
+        self._detached_io_tasks: set[asyncio.Task[Any]] = set()
+        self._detached_io_errors: list[Exception] = []
 
     async def prepare_item(self, work_item: LLMWorkItem[Any, Any, Any]) -> _ItemFingerprint:
         """Create/validate the artifact and fingerprint input before provider work."""
@@ -293,7 +299,7 @@ class JsonlArtifactStore:
                     )
             else:
                 try:
-                    context_value = to_json_value(
+                    context_value = _to_fingerprint_value(
                         work_item.context,
                         encoder=self.encoder,
                         path=f"$.items[{work_item.item_id!r}].context",
@@ -484,8 +490,44 @@ class JsonlArtifactStore:
             raise ArtifactSerializationError("Artifact item was not prepared by this store")
         return value
 
+    def _finish_detached_io(self, task: asyncio.Task[Any]) -> None:
+        """Retain a cancelled caller's I/O failure for the next store operation."""
+        if task not in self._detached_io_tasks:
+            return
+        self._detached_io_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            self._detached_io_errors.append(exc)
+
+    def _raise_detached_io_error(self) -> None:
+        for task in list(self._detached_io_tasks):
+            if task.done():
+                self._finish_detached_io(task)
+        if self._detached_io_errors:
+            raise self._detached_io_errors.pop(0)
+
+    async def _run_lock_owner(self, awaitable: Any) -> Any:
+        """Keep the store lock owned until threaded I/O ends after cancellation."""
+        task = asyncio.create_task(awaitable)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # asyncio.to_thread() cannot stop an already-running thread. The
+            # child task must therefore retain the lock after caller
+            # cancellation so another append/close cannot overlap the handle.
+            self._detached_io_tasks.add(task)
+            task.add_done_callback(self._finish_detached_io)
+            raise
+
     async def _prepare(self) -> None:
+        await self._run_lock_owner(self._prepare_locked())
+
+    async def _prepare_locked(self) -> None:
         async with self._lock:
+            self._raise_detached_io_error()
             if self._prepared:
                 if self._closed:
                     raise ArtifactIOError(f"Artifact store is closed: {self.path}")
@@ -524,7 +566,11 @@ class JsonlArtifactStore:
                 raise ArtifactIOError(f"Could not prepare artifact {self.path}: {exc}") from exc
 
     async def _append_record(self, record: dict[str, Any]) -> None:
+        await self._run_lock_owner(self._append_record_locked(record))
+
+    async def _append_record_locked(self, record: dict[str, Any]) -> None:
         async with self._lock:
+            self._raise_detached_io_error()
             if self._closed or self._handle is None:
                 raise ArtifactIOError(f"Artifact store is not writable: {self.path}")
             record["record_sequence"] = self._next_sequence
@@ -571,18 +617,24 @@ class JsonlArtifactStore:
                 raise ArtifactFormatError(f"Malformed stored result: {exc}") from exc
 
     async def close(self) -> None:
+        await self._run_lock_owner(self._close_locked())
+
+    async def _close_locked(self) -> None:
         async with self._lock:
             if self._closed:
+                self._raise_detached_io_error()
                 return
             self._closed = True
             handle = self._handle
             self._handle = None
             if handle is None:
+                self._raise_detached_io_error()
                 return
             try:
                 await asyncio.to_thread(self._close_sync, handle)
             except OSError as exc:
                 raise ArtifactIOError(f"Could not close artifact {self.path}: {exc}") from exc
+            self._raise_detached_io_error()
 
     def _close_sync(self, handle: TextIO) -> None:
         handle.flush()

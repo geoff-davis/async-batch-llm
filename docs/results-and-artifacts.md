@@ -57,8 +57,9 @@ restored_lines = BatchResult.from_jsonl("summary.jsonl")
 ```
 
 JSONL result files contain one complete versioned `WorkItemResult` record per
-line. They are summary exports, not resumable checkpoints; use an artifact store
-for checkpoint/resume.
+line. A zero-result batch uses one versioned batch-metadata record so termination
+state still round-trips. These are summary exports, not resumable checkpoints;
+use an artifact store for checkpoint/resume.
 
 The safe encoder accepts normal JSON primitives plus dataclasses, Pydantic
 models, enums, `datetime`/`date`/`time`, UUIDs, filesystem paths, tuples, and
@@ -148,6 +149,11 @@ Context is canonically JSON-encoded before a provider call. Supply `encoder=`
 or `context_fingerprinter=` when an application context is not supported; the
 store raises `ArtifactSerializationError` rather than silently excluding that
 identity component.
+
+Sensitive structured values are redacted from persisted identity, context,
+output, and metadata mappings. Their original values still feed the one-way
+context/identity fingerprint, so a credential change invalidates replay without
+writing the credential itself to the artifact.
 
 ### Resume policies
 
