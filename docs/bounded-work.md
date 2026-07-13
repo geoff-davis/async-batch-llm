@@ -48,6 +48,12 @@ and at most 32 attempts enter the provider call. When the queue fills,
 `process_stream` pauses `prompts_from_database()` until a worker frees space.
 The database iterator therefore does not run ahead indefinitely.
 
+When the feed finishes, fails, is cancelled, or stops under a batch guardrail,
+the high-level streaming API calls `aclose()` on async input iterators that
+provide it. This releases database cursors and generator `finally` blocks
+promptly. Treat a supplied async iterator as owned by that one stream; do not
+expect to resume or share it afterward.
+
 Results arrive in completion order. Persist or aggregate them incrementally if
 the result set itself is large.
 

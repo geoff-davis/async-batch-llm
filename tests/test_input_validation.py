@@ -9,6 +9,7 @@ import pytest
 
 from async_batch_llm import (
     LLMWorkItem,
+    ParallelBatchProcessor,
     ProcessorConfig,
     RateLimitConfig,
     RetryConfig,
@@ -51,6 +52,20 @@ class TestLLMWorkItemValidation:
             LLMWorkItem(item_id="", strategy=_DummyStrategy())
         with pytest.raises(ValueError, match="item_id"):
             LLMWorkItem(item_id="   ", strategy=_DummyStrategy())
+
+    @pytest.mark.asyncio
+    async def test_same_work_item_instance_cannot_be_submitted_twice(self):
+        processor = ParallelBatchProcessor[str, str, None](config=ProcessorConfig(max_workers=1))
+        item = LLMWorkItem(item_id="same", strategy=_DummyStrategy(), prompt="hello")
+
+        await processor.add_work(item)
+        with pytest.raises(ValueError, match="same LLMWorkItem instance"):
+            await processor.add_work(item)
+
+        result = await processor.process_all()
+        await processor.cleanup()
+        assert result.total_items == 1
+        assert result.results[0].submission_index == 0
 
 
 # ─── ProcessorConfig validation ────────────────────────────────────────

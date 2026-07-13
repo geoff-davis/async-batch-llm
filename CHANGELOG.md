@@ -47,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`authentication`) and 403 (`permission_denied`) statuses from ordinary
   item-specific `client_error`; account/balance exhaustion remains
   `insufficient_balance` where the provider supplies that signal.
+- High-level streaming now closes async inputs exposing `aclose()` on normal,
+  error, cancellation, and controlled-abort exits so source resources are not
+  leaked. Supplied async iterators are therefore owned by one stream run.
 
 ### Fixed
 

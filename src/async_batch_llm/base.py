@@ -1069,6 +1069,11 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         # Serialize acceptance so the index reflects stable admission order,
         # including when multiple producers call add_work concurrently.
         async with self._submission_lock:
+            if work_item.submission_index is not None:
+                raise ValueError(
+                    "The same LLMWorkItem instance cannot be submitted more than once. "
+                    "Create a new LLMWorkItem for each accepted submission."
+                )
             work_item.submission_index = self._next_submission_index
             if self._streaming:
                 if self._finished:
@@ -1135,7 +1140,6 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         # Count any work added before start(); add_work() increments thereafter.
         self._results = []
         self._stats = ProcessingStats(total=self._queue.qsize())
-        self.termination = BatchTermination()
         self._stats.start_time = time.time()
         self._post_processor_tasks = set()
         self._post_processor_semaphore = asyncio.Semaphore(self.max_workers)

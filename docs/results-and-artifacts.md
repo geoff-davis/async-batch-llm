@@ -26,6 +26,10 @@ existing batch without mutating it, call `ordered = result.in_input_order()`.
 This raises `ValueError` if any result predates submission indexes; it never
 guesses.
 
+Each `LLMWorkItem` object is a single submission. Duplicate IDs on distinct
+objects are supported, but submitting the identical mutable object twice raises
+`ValueError`; create a new work item for each queue entry.
+
 `process_stream()` intentionally remains completion ordered. Ordered streaming
 would block all later results behind one slow early item and require a reorder
 buffer that can grow without a safe bound.

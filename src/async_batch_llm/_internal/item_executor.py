@@ -479,6 +479,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             exc.__dict__[_TIMING_EXCEPTION_KEY] = _work_item_timing(item_started, attempt_timings)
             raise
 
+        initial_cooldown_wait = _state_float(retry_state, _LAST_COOLDOWN_KEY)
+        initial_startup_ramp_wait = _state_float(retry_state, _LAST_STARTUP_RAMP_KEY)
+
         # Ensure strategy is prepared (framework ensures this is called only once per unique strategy instance)
         # (v0.4.0: cleanup now happens in __aexit__, not per-item)
         try:
@@ -527,6 +530,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 _LAST_ERROR_CATEGORY_KEY,
             ):
                 retry_state.delete(key)
+            if try_number == 1:
+                retry_state.set(_LAST_COOLDOWN_KEY, initial_cooldown_wait)
+                retry_state.set(_LAST_STARTUP_RAMP_KEY, initial_startup_ramp_wait)
             try:
                 # Through the host so a processor subclass override takes effect.
                 result = await self._host._process_item(
@@ -872,7 +878,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         retry_state.set(_LAST_ADMISSION_KEY, admission.wait_seconds)
                         retry_state.set(
                             _LAST_STARTUP_RAMP_KEY,
-                            admission.startup_ramp_wait_seconds,
+                            _state_float(retry_state, _LAST_STARTUP_RAMP_KEY)
+                            + admission.startup_ramp_wait_seconds,
                         )
                     if self._events.observers:
                         await self._emit_event(
@@ -1069,7 +1076,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 if retry_state is not None and error_info.is_rate_limit:
                     retry_state.set(
                         _LAST_COOLDOWN_KEY,
-                        max(0.0, time.perf_counter() - cooldown_started),
+                        _state_float(retry_state, _LAST_COOLDOWN_KEY)
+                        + max(0.0, time.perf_counter() - cooldown_started),
                     )
 
     async def _handle_execution_error(

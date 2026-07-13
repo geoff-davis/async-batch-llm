@@ -19,6 +19,7 @@ from async_batch_llm import (
     TokenUsage,
     call_result,
 )
+from async_batch_llm._internal.executor_host import ExecutorHost
 
 
 class _TimingStrategy(LLMCallStrategy[str]):
@@ -148,6 +149,37 @@ async def test_rate_limit_timing_separates_cooldown() -> None:
     assert first.error_category == "rate_limit"
     assert first.cooldown_wait_seconds >= 0.008
     assert first.retry_backoff_seconds == 0
+
+
+@pytest.mark.asyncio
+async def test_initial_capacity_waits_are_attributed_to_first_successful_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy = _TimingStrategy(delay=0)
+    host: ExecutorHost[str, str, None] = ExecutorHost(
+        ProcessorConfig(max_workers=1),
+        strategy=strategy,
+    )
+
+    async def wait_if_paused() -> None:
+        await asyncio.sleep(0.01)
+
+    async def apply_slow_start() -> float:
+        return 0.01
+
+    monkeypatch.setattr(host._rate_limit_coord, "wait_if_paused", wait_if_paused)
+    monkeypatch.setattr(host._rate_limit_coord, "apply_slow_start", apply_slow_start)
+    try:
+        result = await host.executor.execute(
+            LLMWorkItem(item_id="timed", strategy=strategy, prompt="x")
+        )
+    finally:
+        await host.aclose()
+
+    attempt = result.timing.attempts[0]
+    assert result.success
+    assert attempt.cooldown_wait_seconds >= 0.008
+    assert attempt.startup_ramp_wait_seconds >= 0.008
 
 
 @pytest.mark.asyncio
