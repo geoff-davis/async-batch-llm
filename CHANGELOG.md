@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-13
+
 ### Added
 
 - **Stable opt-in input ordering** — every accepted item receives a submission
@@ -73,6 +75,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Streaming admission has no cancellation point after queue ownership commits,
   keeping accepted-item accounting consistent during an abort race. Empty
   result JSONL exports now retain batch termination metadata.
+
+### Documentation
+
+- Reworked the README into a shorter production-oriented guide, corrected
+  falsy-output rendering, documented artifact durability and process-safety
+  boundaries, and replaced repository-relative links with portable URLs for
+  the PyPI description. PyPI and MkDocs discovery metadata now highlight
+  bounded streaming, resumable checkpoints, and deadlines.
 
 ## [0.17.0] - 2026-07-09
 
@@ -639,6 +649,7 @@ Details for each live under **Changed**/**Removed** below.
 [#8]: https://github.com/geoff-davis/async-batch-llm/issues/8
 [#51]: https://github.com/geoff-davis/async-batch-llm/pull/51
 [#52]: https://github.com/geoff-davis/async-batch-llm/issues/52
+[#81]: https://github.com/geoff-davis/async-batch-llm/issues/81
 
 ## [0.8.0] - 2026-04-24
 
