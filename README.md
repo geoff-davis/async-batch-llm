@@ -40,9 +40,9 @@
 | src/async\_batch\_llm/strategies/\_\_init\_\_.py             |        3 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/strategies/errors.py                   |      113 |       12 |       26 |        1 |     90.65% |62-73, 130-\>exit, 375-376 |
 | src/async\_batch\_llm/strategies/rate\_limit.py              |       31 |        0 |        2 |        0 |    100.00% |           |
-| src/async\_batch\_llm/streaming.py                           |      154 |        1 |       64 |        3 |     98.17% |62-\>exit, 205-\>208, 261, 267-\>exit |
+| src/async\_batch\_llm/streaming.py                           |      145 |        1 |       62 |        3 |     98.07% |61-\>exit, 191-\>194, 247, 253-\>exit |
 | src/async\_batch\_llm/token\_extractor.py                    |       63 |        3 |       30 |        5 |     91.40% |51-\>61, 68-\>72, 76-\>89, 114, 132-\>135, 151-152 |
-| **TOTAL**                                                    | **4556** |  **379** | **1450** |  **199** | **89.74%** |           |
+| **TOTAL**                                                    | **4547** |  **379** | **1448** |  **199** | **89.72%** |           |
 
 
 ## Setup coverage badge
