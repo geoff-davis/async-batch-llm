@@ -820,11 +820,13 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     attempt_number,
                     work_item.item_id,
                 )
+            # Resolved to a float in ProcessorConfig.__post_init__.
+            attempt_timeout = cast(float, self.config.attempt_timeout)
             logger.debug(
                 "[STRATEGY] Starting strategy.execute() for %s (attempt %s, timeout=%ss)",
                 work_item.item_id,
                 attempt_number,
-                self.config.timeout_per_item,
+                attempt_timeout,
             )
             # Ensure strategy is not None (it shouldn't be since we always pass it)
             if strategy is None:
@@ -914,7 +916,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     try:
                         try:
                             remaining = remaining_seconds(deadline, item_id=work_item.item_id)
-                            effective_timeout = self.config.timeout_per_item
+                            effective_timeout = attempt_timeout
                             if remaining is not None:
                                 effective_timeout = min(effective_timeout, remaining)
                             raw_result = await await_with_guardrails(
@@ -927,7 +929,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                 item_deadline=deadline,
                                 item_id=work_item.item_id,
                                 abort_controller=self._abort_controller,
-                                operation_timeout=self.config.timeout_per_item,
+                                operation_timeout=attempt_timeout,
                                 active_provider=True,
                             )
                         except ItemDeadlineExceeded:
@@ -942,15 +944,15 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                 retry_state.set(_LAST_TIMEOUT_KEY, "framework_execution_timeout")
                             logger.error(
                                 f"⏱ FRAMEWORK TIMEOUT for {work_item.item_id} after {elapsed:.1f}s "
-                                f"(limit: {self.config.timeout_per_item}s, attempt {attempt_number}). "
-                                f"Consider increasing config.timeout_per_item if this error persists."
+                                f"(limit: {attempt_timeout}s, attempt {attempt_number}). "
+                                f"Consider increasing config.attempt_timeout if this error persists."
                             )
                             framework_timeout = FrameworkTimeoutError(
                                 f"Framework timeout after {elapsed:.1f}s "
-                                f"(limit: {self.config.timeout_per_item}s)",
+                                f"(limit: {attempt_timeout}s)",
                                 item_id=work_item.item_id,
                                 elapsed=elapsed,
-                                timeout_limit=self.config.timeout_per_item,
+                                timeout_limit=attempt_timeout,
                             )
                             if (
                                 hasattr(timeout_exc, "__dict__")

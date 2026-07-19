@@ -102,7 +102,7 @@ async def test_cache_expiration_only_one_new_cache_created():
 
     config = ProcessorConfig(
         max_workers=5,  # Multiple workers
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
     )
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
@@ -228,7 +228,7 @@ async def test_cache_expiration_during_processing():
 
     config = ProcessorConfig(
         max_workers=3,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
     )
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
@@ -324,7 +324,7 @@ async def test_cache_check_is_thread_safe():
 
     config = ProcessorConfig(
         max_workers=10,  # Many workers to stress test
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
     )
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:

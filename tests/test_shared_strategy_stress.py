@@ -62,7 +62,7 @@ async def test_shared_strategy_prepare_once_at_high_concurrency():
     fire exactly once — the double-checked lock inside StrategyLifecycle
     is the only thing preventing 20 parallel prepare() calls here."""
     strategy = _CountingSharedStrategy()
-    config = ProcessorConfig(max_workers=20, timeout_per_item=15.0)
+    config = ProcessorConfig(max_workers=20, attempt_timeout=15.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         for i in range(100):
@@ -180,7 +180,7 @@ async def test_workers_never_observe_half_prepared_model():
     before any execute() call is scheduled on any worker."""
     slow_model = _SlowCachedModel()
     strategy = _StrategyUsingSlowCache(slow_model)
-    config = ProcessorConfig(max_workers=10, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=10, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         for i in range(40):

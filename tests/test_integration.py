@@ -49,7 +49,7 @@ async def test_gemini_strategy_real_api():
     )
 
     # Create processor
-    config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         # Add a few simple test items
@@ -128,7 +128,7 @@ async def test_gemini_cached_model_real_api():
         response_parser=parse_response,
     )
 
-    config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         # Add items that will benefit from caching
@@ -203,7 +203,7 @@ async def test_gemini_response_metadata_real_api():
         response_parser=parse_response,
     )
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=30.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         await processor.add_work(
@@ -274,7 +274,7 @@ async def test_retry_on_real_validation_error():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=30.0,
+        attempt_timeout=30.0,
         retry=RetryConfig(max_attempts=3),
     )
 

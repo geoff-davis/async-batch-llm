@@ -8,7 +8,7 @@ from async_batch_llm import AbortMode, GuardrailConfig, ProcessorConfig
 
 config = ProcessorConfig(
     max_workers=20,
-    timeout_per_item=30,
+    attempt_timeout=30,
     guardrails=GuardrailConfig(
         total_timeout_per_item=180,
         batch_timeout=3600,
@@ -26,7 +26,7 @@ monotonic clock.
 
 ## Per-attempt timeout versus total item deadline
 
-`ProcessorConfig.timeout_per_item` retains its existing meaning: it limits one
+`ProcessorConfig.attempt_timeout` retains its existing meaning: it limits one
 `strategy.execute()` attempt after provider-capacity admission. Retries can each
 receive another attempt timeout.
 
@@ -41,7 +41,7 @@ It starts when execution of an accepted item begins and includes:
 - retry cooldowns and backoff.
 
 Every wait is bounded by the remaining budget. A provider call receives the
-lower of `timeout_per_item` and the remaining total budget, and no retry or new
+lower of `attempt_timeout` and the remaining total budget, and no retry or new
 provider attempt starts after expiry. Completed-attempt timing and token usage
 remain on the terminal result.
 
@@ -137,7 +137,7 @@ store = JsonlArtifactStore(
 
 config = ProcessorConfig(
     max_workers=20,
-    timeout_per_item=30,
+    attempt_timeout=30,
     guardrails=GuardrailConfig(
         total_timeout_per_item=180,
         batch_timeout=3600,

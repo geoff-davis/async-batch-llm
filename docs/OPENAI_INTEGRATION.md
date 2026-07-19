@@ -31,7 +31,7 @@ from async_batch_llm import (
 async def main() -> None:
     model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-...")
     strategy = OpenAIStrategy(model)
-    config = ProcessorConfig(max_workers=5, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=5, attempt_timeout=30.0)
 
     async with ParallelBatchProcessor[None, str, None](
         config=config,
@@ -233,7 +233,7 @@ Pass `max_connections` to size the pool to your worker count:
 ```python
 # Match the pool to max_workers (a little headroom doesn't hurt).
 model = OpenAIModel.from_api_key("gpt-4o-mini", max_connections=150)
-config = ProcessorConfig(max_workers=150, timeout_per_item=60.0)
+config = ProcessorConfig(max_workers=150, attempt_timeout=60.0)
 ```
 
 `max_connections` sets both `max_connections` and `max_keepalive_connections`
@@ -244,7 +244,7 @@ and pass that instead (the two are mutually exclusive).
 ABL records `max_connections` as `model.max_concurrency`; `ModelStrategy`
 forwards it, and processors/gateways warn when `max_workers` exceeds the known
 capacity. The shared executor automatically gates attempts at that capacity
-before `timeout_per_item` starts. For a user-supplied client, declare the limit
+before `attempt_timeout` starts. For a user-supplied client, declare the limit
 on `ProcessorConfig` because ABL cannot inspect the transport reliably:
 
 ```python
@@ -260,13 +260,13 @@ model = OpenAIModel("gpt-4o-mini", client)  # caller owns and closes client
 config = ProcessorConfig(
     max_workers=100,
     max_provider_concurrency=64,
-    timeout_per_item=60,
+    attempt_timeout=60,
 )
 ```
 
 The explicit limit keeps attempts from waiting for httpx connections inside
 `strategy.execute()`, where such a wait would count against
-`timeout_per_item`. See the
+`attempt_timeout`. See the
 [timeout and concurrency semantics](production-checklist.md#4-timeout-and-concurrency-semantics)
 for the full boundary.
 

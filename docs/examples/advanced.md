@@ -200,7 +200,7 @@ and building the *next* processor with a different config:
 async def adaptive_processing(items, max_workers=10):
     config = ProcessorConfig(
         max_workers=max_workers,  # Start optimistic
-        timeout_per_item=30.0
+        attempt_timeout=30.0
     )
 
     async with ParallelBatchProcessor(config=config) as processor:

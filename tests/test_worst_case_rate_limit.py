@@ -66,7 +66,7 @@ async def test_all_workers_hit_rate_limit_simultaneously():
 
     config = ProcessorConfig(
         max_workers=num_workers,
-        timeout_per_item=30.0,  # Longer timeout to allow cooldown
+        attempt_timeout=30.0,  # Longer timeout to allow cooldown
     )
 
     async with ParallelBatchProcessor[str, str, None](
@@ -153,7 +153,7 @@ async def test_cascading_rate_limits_under_high_load():
 
     config = ProcessorConfig(
         max_workers=5,
-        timeout_per_item=60.0,  # Long timeout for multiple cooldowns
+        attempt_timeout=60.0,  # Long timeout for multiple cooldowns
     )
 
     async with ParallelBatchProcessor[str, str, None](
@@ -220,7 +220,7 @@ async def test_rate_limit_with_mixed_success_and_failures():
 
     config = ProcessorConfig(
         max_workers=5,
-        timeout_per_item=30.0,
+        attempt_timeout=30.0,
     )
 
     async with ParallelBatchProcessor[str, str, None](

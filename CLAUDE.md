@@ -59,7 +59,7 @@ from async_batch_llm import (
 
 model = OpenAIModel.from_api_key("gpt-4o-mini")  # reads OPENAI_API_KEY
 strategy = OpenAIStrategy(model)
-config = ProcessorConfig(max_workers=5, timeout_per_item=60.0)
+config = ProcessorConfig(max_workers=5, attempt_timeout=60.0)
 
 async with ParallelBatchProcessor[None, str, None](config=config) as processor:
     for i, prompt in enumerate(prompts):

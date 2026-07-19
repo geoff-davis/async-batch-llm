@@ -80,13 +80,13 @@ class TestProcessorConfigValidation:
         with pytest.raises(ValueError, match="max_workers"):
             ProcessorConfig(max_workers=-1)
 
-    def test_timeout_per_item_zero_rejected(self):
-        with pytest.raises(ValueError, match="timeout_per_item"):
-            ProcessorConfig(timeout_per_item=0)
+    def test_attempt_timeout_zero_rejected(self):
+        with pytest.raises(ValueError, match="attempt_timeout"):
+            ProcessorConfig(attempt_timeout=0)
 
-    def test_timeout_per_item_negative_rejected(self):
-        with pytest.raises(ValueError, match="timeout_per_item"):
-            ProcessorConfig(timeout_per_item=-5.0)
+    def test_attempt_timeout_negative_rejected(self):
+        with pytest.raises(ValueError, match="attempt_timeout"):
+            ProcessorConfig(attempt_timeout=-5.0)
 
     def test_post_processor_timeout_zero_rejected(self):
         with pytest.raises(ValueError, match="post_processor_timeout"):
@@ -104,7 +104,7 @@ class TestProcessorConfigValidation:
     def test_valid_custom_values_construct_cleanly(self):
         config = ProcessorConfig(
             max_workers=10,
-            timeout_per_item=60.0,
+            attempt_timeout=60.0,
             post_processor_timeout=30.0,
         )
         assert config.max_workers == 10

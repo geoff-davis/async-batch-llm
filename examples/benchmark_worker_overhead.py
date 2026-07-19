@@ -69,7 +69,7 @@ async def run_scenario(
 ) -> float:
     config_kwargs = dict(
         max_workers=workers,
-        timeout_per_item=30.0,
+        attempt_timeout=30.0,
         # Raise the interval so the periodic INFO progress line doesn't fire
         # hundreds of times and skew the measurement.
         progress_interval=NUM_ITEMS + 1,

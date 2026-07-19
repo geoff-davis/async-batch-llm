@@ -100,7 +100,7 @@ async def test_model_strategy_records_provider_duration() -> None:
 async def test_framework_timeout_has_execution_timeout_category() -> None:
     strategy = _TimingStrategy(delay=0.05)
     config = ProcessorConfig(
-        timeout_per_item=0.01,
+        attempt_timeout=0.01,
         retry=RetryConfig(max_attempts=1),
     )
     result = await call_result(strategy, "timeout", config=config)

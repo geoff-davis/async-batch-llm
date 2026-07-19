@@ -47,7 +47,7 @@ Before a 1,000-item run, validate the real pipeline on a handful of items:
 ```python
 test_items = full_dataset[:5]
 
-config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
+config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
 result = await process_prompts(strategy, test_items, config=config)
 
 assert result.succeeded == len(test_items)

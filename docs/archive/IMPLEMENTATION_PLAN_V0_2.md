@@ -143,7 +143,7 @@ async def test_shared_strategy_prepare_called_once():
             return f"Response: {prompt}", {"input_tokens": 10}
 
     strategy = CountingStrategy()
-    config = ProcessorConfig(max_workers=5, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=5, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         # Add 20 work items sharing the same strategy
@@ -177,7 +177,7 @@ async def test_different_strategies_prepare_called_separately():
     strategy1 = CountingStrategy()
     strategy2 = CountingStrategy()
 
-    config = ProcessorConfig(max_workers=5, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=5, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         await processor.add_work(

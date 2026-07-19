@@ -159,7 +159,7 @@ class FrameworkTimeoutError(TimeoutError):
     Timeout enforced by the batch-llm framework (asyncio.wait_for).
 
     This distinguishes framework-level timeouts from API-level timeouts.
-    Framework timeouts indicate the configured timeout_per_item was exceeded,
+    Framework timeouts indicate the configured attempt_timeout was exceeded,
     whereas API timeouts indicate the LLM provider returned a timeout error.
 
     Attributes:

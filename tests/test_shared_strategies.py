@@ -36,7 +36,7 @@ class CountingStrategy(LLMCallStrategy[str]):
 async def test_shared_strategy_prepare_called_once():
     """Test that prepare() is called only once for shared strategy instance."""
     strategy = CountingStrategy()
-    config = ProcessorConfig(max_workers=5, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=5, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         # Add 20 work items all sharing the same strategy instance
@@ -72,7 +72,7 @@ async def test_different_strategies_prepare_called_separately():
     strategy2 = CountingStrategy()
     strategy3 = CountingStrategy()
 
-    config = ProcessorConfig(max_workers=5, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=5, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         # Add work items with different strategy instances
@@ -104,7 +104,7 @@ async def test_different_strategies_prepare_called_separately():
 async def test_shared_strategy_concurrent_workers():
     """Test shared strategy with high concurrency (simulates production load)."""
     strategy = CountingStrategy()
-    config = ProcessorConfig(max_workers=10, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=10, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         # Add 100 work items to stress-test concurrent prepare() protection
@@ -145,7 +145,7 @@ async def test_prepare_failure_propagates():
             return "Should not reach here", {"input_tokens": 0}
 
     strategy = FailingPrepareStrategy()
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
@@ -179,7 +179,7 @@ async def test_mixed_shared_and_unique_strategies():
     shared_strategy_a = Strategy("SharedA")
     shared_strategy_b = Strategy("SharedB")
 
-    config = ProcessorConfig(max_workers=5, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=5, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         # Add items with shared strategies
@@ -241,7 +241,7 @@ async def test_strategy_prepare_idempotency():
             return "Response", {"input_tokens": 10}
 
     strategy = Strategy()
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
 
     processor = ParallelBatchProcessor[str, str, None](config=config)
 

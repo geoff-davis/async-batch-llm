@@ -292,7 +292,7 @@ async def main():
     agent = Agent("gemini-2.5-flash", result_type=Output)
 
     # Configure processor
-    config = ProcessorConfig(max_workers=5, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=5, attempt_timeout=30.0)
 
     # Process items
     async with ParallelBatchProcessor[str, Output, None](config=config) as processor:
@@ -339,7 +339,7 @@ async def main():
     strategy = PydanticAIStrategy(agent=agent)
 
     # Configure processor
-    config = ProcessorConfig(max_workers=5, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=5, attempt_timeout=30.0)
 
     # Process items
     async with ParallelBatchProcessor[str, Output, None](config=config) as processor:

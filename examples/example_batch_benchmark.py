@@ -616,7 +616,7 @@ def _bench_config(workers: int) -> Any:
 
     return ProcessorConfig(
         max_workers=workers,
-        timeout_per_item=120.0,
+        attempt_timeout=120.0,
         retry=RetryConfig(
             max_attempts=3,
             initial_wait=1.0,
@@ -789,7 +789,7 @@ async def grade_ambiguous(
 
     model = OpenAIModel.from_api_key(JUDGE_MODEL, max_connections=JUDGE_WORKERS)
     strategy = OpenAIStrategy(model, response_parser=lambda resp: "YES" in resp.text.upper())
-    config = ProcessorConfig(max_workers=JUDGE_WORKERS, timeout_per_item=120.0)
+    config = ProcessorConfig(max_workers=JUDGE_WORKERS, attempt_timeout=120.0)
 
     # No per-item context needed here, so plain (item_id, prompt) pairs. The
     # error classifier is auto-selected from OpenAIStrategy.

@@ -82,7 +82,7 @@ async def main():
         generation_config={"tools": [types.Tool(google_search=types.GoogleSearch())]},
     )
 
-    config = ProcessorConfig(max_workers=3, timeout_per_item=60.0)
+    config = ProcessorConfig(max_workers=3, attempt_timeout=60.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         for i, question in enumerate(questions):

@@ -208,7 +208,7 @@ async def example_basic_escalation():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=60.0,
+        attempt_timeout=60.0,
         retry=RetryConfig(max_attempts=3, initial_wait=1.0),
     )
 
@@ -279,7 +279,7 @@ async def example_cost_comparison():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=60.0,
+        attempt_timeout=60.0,
         retry=RetryConfig(max_attempts=3, initial_wait=1.0),
     )
 
@@ -365,7 +365,7 @@ async def example_model_and_temp():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=60.0,
+        attempt_timeout=60.0,
         retry=RetryConfig(max_attempts=3, initial_wait=1.0),
     )
 

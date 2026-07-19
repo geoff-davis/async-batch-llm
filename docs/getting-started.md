@@ -138,7 +138,7 @@ from async_batch_llm import ParallelBatchProcessor, ProcessorConfig
 
 config = ProcessorConfig(
     max_workers=5,
-    timeout_per_item=30.0,
+    attempt_timeout=30.0,
 )
 
 async with ParallelBatchProcessor(config=config) as processor:

@@ -34,7 +34,7 @@ async def test_pydantic_ai_strategy():
 
     mock_agent = MockAgent(response_factory=mock_response, latency=0.01)
 
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     # Test with PydanticAIStrategy
@@ -82,7 +82,7 @@ async def test_custom_strategy_with_progressive_temperature():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
@@ -132,7 +132,7 @@ async def test_custom_strategy_with_simulated_api_call():
                 {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
             )
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     # Test with custom strategy
@@ -184,7 +184,7 @@ async def test_custom_strategy_with_retries():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
@@ -225,7 +225,7 @@ async def test_custom_strategy_timeout_handling():
     # Use very short timeout and no retries to make test fast
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=0.05,  # Very short timeout (50ms)
+        attempt_timeout=0.05,  # Very short timeout (50ms)
         retry=RetryConfig(max_attempts=1),  # No retries
     )
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
@@ -256,7 +256,7 @@ async def test_context_preserved_across_strategies():
     # Test PydanticAIStrategy
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, dict](config=config)
 
     work_item = LLMWorkItem(
@@ -297,7 +297,7 @@ async def test_strategy_lifecycle_prepare_and_cleanup():
         async def cleanup(self):
             lifecycle_log.append("cleanup")
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, TestOutput, None](config=config) as processor:
         work_item = LLMWorkItem(

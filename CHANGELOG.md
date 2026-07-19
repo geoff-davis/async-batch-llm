@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+
+- **`ProcessorConfig.timeout_per_item` → `attempt_timeout` ([#98])** — the
+  per-attempt execution timeout is now named `attempt_timeout`, ending the
+  naming trap against `GuardrailConfig.total_timeout_per_item` (which bounds
+  the whole logical item). `timeout_per_item` remains accepted — as a keyword,
+  positionally, and as a config attribute — with a `DeprecationWarning`;
+  passing both names raises `ValueError`. Removal targeted for the next major
+  release. All docs and examples now use `attempt_timeout`.
+
 ### Added
 
 - **Readable run reports ([#96])** — `BatchResult.summary()` returns a
@@ -676,6 +686,7 @@ Details for each live under **Changed**/**Removed** below.
 [#81]: https://github.com/geoff-davis/async-batch-llm/issues/81
 [#95]: https://github.com/geoff-davis/async-batch-llm/issues/95
 [#96]: https://github.com/geoff-davis/async-batch-llm/issues/96
+[#98]: https://github.com/geoff-davis/async-batch-llm/issues/98
 
 ## [0.8.0] - 2026-04-24
 

@@ -45,7 +45,7 @@ async def test_middleware_before_process():
 
     mock_agent = MockAgent(response_factory=track_prompt, latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         middlewares=[ModifyingMiddleware()],
@@ -83,7 +83,7 @@ async def test_middleware_after_process():
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         middlewares=[ResultModifyingMiddleware()],
@@ -119,7 +119,7 @@ async def test_middleware_can_skip_items():
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         middlewares=[SkippingMiddleware()],
@@ -162,7 +162,7 @@ async def test_middleware_on_error():
 
     mock_agent = MockAgent(response_factory=always_fail, latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         middlewares=[ErrorHandlingMiddleware()],
@@ -209,7 +209,7 @@ async def test_multiple_middlewares_execute_in_order():
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         middlewares=[FirstMiddleware(), SecondMiddleware()],
@@ -247,7 +247,7 @@ async def test_observer_receives_all_events():
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         observers=[TrackingObserver()],
@@ -300,7 +300,7 @@ async def test_observer_receives_failure_events():
 
     mock_agent = MockAgent(response_factory=always_fail, latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         observers=[TrackingObserver()],
@@ -334,7 +334,7 @@ async def test_observer_receives_batch_start_and_end_events():
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     async with ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         observers=[TrackingObserver()],
@@ -373,7 +373,7 @@ async def test_multiple_observers_all_receive_events():
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         observers=[Observer1(), Observer2()],
@@ -413,7 +413,7 @@ async def test_observer_timeout_doesnt_break_processing(monkeypatch):
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         observers=[SlowObserver()],
@@ -455,7 +455,7 @@ async def test_middleware_and_observers_work_together():
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         middlewares=[TestMiddleware()],
@@ -498,7 +498,7 @@ async def test_middleware_returns_none_original_item_id_preserved():
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         middlewares=[FilterMiddleware()],
@@ -687,7 +687,7 @@ async def test_raising_middleware_is_isolated(caplog):
             return result
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="ok"), latency=0.0)
-    config = ProcessorConfig(max_workers=1, timeout_per_item=5.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=5.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         middlewares=[RaisingMiddleware(), TrackingMiddleware()],
@@ -730,7 +730,7 @@ async def test_raising_on_error_middleware_falls_back_to_default_handling(caplog
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=5.0,
+        attempt_timeout=5.0,
         retry=RetryConfig(max_attempts=2, initial_wait=0.01, max_wait=0.01, jitter=False),
     )
     processor = ParallelBatchProcessor[str, TestOutput, None](
@@ -765,7 +765,7 @@ async def test_observers_receive_independent_event_data():
                 seen.append(dict(data))
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="ok"), latency=0.0)
-    config = ProcessorConfig(max_workers=1, timeout_per_item=5.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=5.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         observers=[MutatingObserver(), RecordingObserver()],

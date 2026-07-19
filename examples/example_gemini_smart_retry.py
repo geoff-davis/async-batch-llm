@@ -254,7 +254,7 @@ async def example_progressive_temp():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=30.0,
+        attempt_timeout=30.0,
         retry=RetryConfig(max_attempts=3, initial_wait=1.0),
     )
 
@@ -300,7 +300,7 @@ async def example_smart_retry():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=30.0,
+        attempt_timeout=30.0,
         retry=RetryConfig(max_attempts=3, initial_wait=1.0),
     )
 
@@ -357,7 +357,7 @@ async def example_comparison():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=30.0,
+        attempt_timeout=30.0,
         retry=RetryConfig(max_attempts=3, initial_wait=0.5),
     )
 

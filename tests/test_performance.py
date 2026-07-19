@@ -34,7 +34,7 @@ async def test_throughput_single_worker():
         latency=latency,
     )
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     strategy = PydanticAIStrategy(agent=mock_agent)
 
     start_time = time.time()
@@ -83,7 +83,7 @@ async def test_throughput_scaling_workers():
             latency=latency,
         )
 
-        config = ProcessorConfig(max_workers=workers, timeout_per_item=10.0)
+        config = ProcessorConfig(max_workers=workers, attempt_timeout=10.0)
         strategy = PydanticAIStrategy(agent=mock_agent)
 
         start_time = time.time()
@@ -140,7 +140,7 @@ async def test_memory_usage_many_items():
         latency=latency,
     )
 
-    config = ProcessorConfig(max_workers=10, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=10, attempt_timeout=10.0)
     strategy = PydanticAIStrategy(agent=mock_agent)
 
     start_time = time.time()
@@ -183,7 +183,7 @@ async def test_overhead_empty_processing():
         latency=latency,
     )
 
-    config = ProcessorConfig(max_workers=10, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=10, attempt_timeout=10.0)
     strategy = PydanticAIStrategy(agent=mock_agent)
 
     start_time = time.time()
@@ -229,7 +229,7 @@ async def test_concurrent_stats_performance():
         latency=latency,
     )
 
-    config = ProcessorConfig(max_workers=20, timeout_per_item=10.0)  # High concurrency
+    config = ProcessorConfig(max_workers=20, attempt_timeout=10.0)  # High concurrency
     strategy = PydanticAIStrategy(agent=mock_agent)
 
     start_time = time.time()
@@ -276,7 +276,7 @@ async def test_shared_strategy_vs_unique_strategies():
         latency=latency,
     )
     shared_strategy = PydanticAIStrategy(agent=mock_agent_shared)
-    config = ProcessorConfig(max_workers=5, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=5, attempt_timeout=10.0)
 
     start_shared = time.time()
     async with ParallelBatchProcessor[str, BenchmarkOutput, None](config=config) as processor:
@@ -342,7 +342,7 @@ async def test_retry_performance_impact():
 
     config_with_retries = ProcessorConfig(
         max_workers=5,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=3, initial_wait=0.1),
     )
 

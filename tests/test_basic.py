@@ -43,7 +43,7 @@ async def test_basic_processing():
 
     mock_agent = MockAgent(response_factory=mock_response, latency=0.01)
 
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, BookSummary, None](config=config)
 
     # Add work items
@@ -82,7 +82,7 @@ async def test_with_context():
         )
 
     mock_agent = MockAgent(response_factory=mock_response, latency=0.01)
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, BookSummary, BookContext](config=config)
 
     # Add work with context
@@ -116,7 +116,7 @@ async def test_post_processor():
         return BookSummary(title="Mock", summary="Mock", genre="Fiction")
 
     mock_agent = MockAgent(response_factory=mock_response, latency=0.01)
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, BookSummary, None](
         config=config, post_processor=post_process
     )
@@ -150,7 +150,7 @@ async def test_metrics_observer():
     mock_agent = MockAgent(response_factory=mock_response, latency=0.01)
     metrics = MetricsObserver()
 
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, BookSummary, None](config=config, observers=[metrics])
 
     # Add 5 items
@@ -184,7 +184,7 @@ async def test_timeout_handling():
     mock_agent = MockAgent(response_factory=mock_response, latency=1.0)
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=0.1,
+        attempt_timeout=0.1,
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
     processor = ParallelBatchProcessor[str, BookSummary, None](config=config)
@@ -220,7 +220,7 @@ async def test_type_aliases():
         )
 
     mock_agent = MockAgent(response_factory=mock_response, latency=0.01)
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
 
     # Test using type aliases instead of full ParallelBatchProcessor[str, BookSummary, None]
     processor = SimpleBatchProcessor[BookSummary](config=config)
@@ -253,7 +253,7 @@ async def test_type_aliases_equivalent_to_full_types():
         return BookSummary(title="Test", summary="Test", genre="Test")
 
     mock_agent = MockAgent(response_factory=mock_response, latency=0.01)
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
 
     # Process with full type
     full_processor = ParallelBatchProcessor[str, BookSummary, None](config=config)
@@ -306,7 +306,7 @@ async def test_processor_subclass_override_points_are_honored():
             self.extract_token_calls += 1
             return super()._extract_token_usage(exception)
 
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
 
     # One always-failing item exercises _extract_token_usage; the rest succeed
     # and exercise _process_item.
