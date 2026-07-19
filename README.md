@@ -49,10 +49,9 @@ async def main() -> None:
         config=ProcessorConfig(max_workers=10),
     )
 
-    print(f"{batch.succeeded}/{batch.total_items} succeeded")
-    for item in batch.results:  # completion order by default
-        value = item.output if item.success else item.error
-        print(item.item_id, value)
+    print(batch.summary())  # counts, tokens, timing percentiles, failures
+    for item_id, output in batch.outputs(with_ids=True):  # successes only
+        print(item_id, output)
 
 
 asyncio.run(main())

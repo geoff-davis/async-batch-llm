@@ -173,6 +173,8 @@ class BatchResult(Generic[TOutput, TContext]):
     total_input_tokens: int
     total_output_tokens: int
     total_cached_tokens: int
+    termination: BatchTermination
+    wall_time_seconds: float | None
 ```
 
 **Fields:**
@@ -184,24 +186,56 @@ class BatchResult(Generic[TOutput, TContext]):
 - `total_input_tokens` (int): Sum of input tokens across all items
 - `total_output_tokens` (int): Sum of output tokens across all items
 - `total_cached_tokens` (int): Sum of cached input tokens from Gemini context caching
+- `termination` (BatchTermination): Why the batch stopped (`completed`,
+  `batch_timeout`, `fail_fast`, `artifact_error`)
+- `wall_time_seconds` (float | None): Wall-clock duration of the run, stamped
+  by `process_all()` / `process_prompts()`. `None` for hand-assembled batches
+  and records serialized before v0.19. (v0.19.0)
 
-**Note:** Only `results` is a constructor argument. The summary fields are
-`init=False` and calculated automatically in `__post_init__` — construct
-with `BatchResult(results=[...])`.
+**Note:** Only `results`, `termination`, and `wall_time_seconds` are
+constructor arguments. The summary fields are `init=False` and calculated
+automatically in `__post_init__` — construct with `BatchResult(results=[...])`.
+
+**Accessors:**
+
+- `outputs(with_ids=False)` — iterator over successful outputs, or
+  `(item_id, output)` pairs with `with_ids=True` (v0.19.0)
+- `successes` / `failures` (properties) — lists of successful / failed results
+- `summary()` — printable plain-text post-run report (v0.19.0)
+- `by_id()`, `in_input_order()`, `cache_hit_rate()`,
+  `effective_input_tokens()`, `estimated_cost()` — see below
+- `to_dict()`/`from_dict()`, `to_json()`/`from_json()`,
+  `to_jsonl()`/`from_jsonl()` — versioned round-trips; `summary()` works
+  identically on restored batches
 
 **Example:**
 
 ```python
-result = await processor.process_all()
+batch = await processor.process_all()
 
-print(f"Processed {result.total_items} items")
-print(f"Success: {result.succeeded}, Failed: {result.failed}")
-print(f"Total tokens: {result.total_input_tokens + result.total_output_tokens}")
+print(batch.summary())
+for item_id, output in batch.outputs(with_ids=True):
+    save(item_id, output)
+for failure in batch.failures:
+    log_failure(failure.item_id, failure.error, failure.error_category)
+```
 
-# Access individual results
-for item_result in result.results:
-    if item_result.success:
-        process_output(item_result.output)
+`print(batch.summary())` produces a complete post-run report:
+
+```text
+Batch summary
+=============
+Items:     1000 total — 993 succeeded, 7 failed (250 replayed from artifact)
+Stopped:   completed
+Retries:   12 extra attempt(s) across 9 item(s)
+Tokens:    in 812,440 (cached 96,510) · out 145,220
+Replayed:  in 268,000 (cached 0) · out 47,800 (prior run; excluded above)
+Wall time: 184s
+  admission wait  p50 0.02s  p95 0.41s  p99 1.20s
+  execution       p50 1.10s  p95 3.60s  p99 7.90s
+Failures by category:
+  rate_limit      4 — item_112, item_363, item_364...
+  validation      3 — item_87, item_450, item_612
 ```
 
 ---
