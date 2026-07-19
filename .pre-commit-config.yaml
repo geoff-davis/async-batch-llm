@@ -1,8 +1,9 @@
-# Pre-commit hooks for async-batch-llm
-# Install: pip install pre-commit && pre-commit install
+# Git hooks for async-batch-llm, run via prek (Rust reimplementation of
+# pre-commit; same config format).
+# Install: uv run prek install
 # (installs both the pre-commit and pre-push hook types; see
 # default_install_hook_types below)
-# Run manually: pre-commit run --all-files
+# Run manually: uv run prek run --all-files
 
 default_install_hook_types: [pre-commit, pre-push]
 
@@ -29,7 +30,7 @@ repos:
     rev: v0.14.5
     hooks:
       # Run the linter
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
         exclude: ^examples/
       # Run the formatter

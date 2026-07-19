@@ -68,16 +68,15 @@ ci:  ## Run local CI checks (lint + mypy + ty + coverage tests + markdown)
 	@$(MAKE) markdown-lint
 	@echo "\n==> CI checks passed! ✓"
 
-pre-commit-install:  ## Install pre-commit hooks
-	pip install pre-commit
-	pre-commit install
-	@echo "\n==> Pre-commit hooks installed! They will run automatically on 'git commit'"
+pre-commit-install:  ## Install git hooks via prek
+	uv run prek install
+	@echo "\n==> Git hooks installed! They will run automatically on 'git commit'"
 
-pre-commit-run:  ## Run pre-commit hooks on all files
-	pre-commit run --all-files
+pre-commit-run:  ## Run hooks on all files via prek
+	uv run prek run --all-files
 
-pre-commit-update:  ## Update pre-commit hooks to latest versions
-	pre-commit autoupdate
+pre-commit-update:  ## Update hooks to latest versions via prek
+	uv run prek autoupdate
 
 clean:  ## Clean up cache files
 	find . -type d -name "__pycache__" -exec rm -rf {} +
