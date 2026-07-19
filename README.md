@@ -4,7 +4,7 @@
 
 | Name                                                         |    Stmts |     Miss |   Branch |   BrPart |      Cover |   Missing |
 |------------------------------------------------------------- | -------: | -------: | -------: | -------: | ---------: | --------: |
-| src/async\_batch\_llm/\_\_init\_\_.py                        |       31 |        2 |        0 |        0 |     93.55% |   317-319 |
+| src/async\_batch\_llm/\_\_init\_\_.py                        |       32 |        2 |        0 |        0 |     93.75% |   322-324 |
 | src/async\_batch\_llm/\_internal/\_\_init\_\_.py             |        0 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/\_internal/capacity.py                 |      118 |       11 |       28 |        2 |     89.73% |42-43, 83-92, 158-159, 186-192 |
 | src/async\_batch\_llm/\_internal/error\_logging.py           |       76 |       18 |       28 |        9 |     72.12% |36-\>39, 87, 101-\>111, 109-110, 112, 115-126, 143-\>164, 145, 147-150, 159-162 |
@@ -23,6 +23,7 @@
 | src/async\_batch\_llm/core/\_\_init\_\_.py                   |        3 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/core/config.py                         |      139 |        2 |       66 |        3 |     97.56% |197, 319, 334-\>exit |
 | src/async\_batch\_llm/core/protocols.py                      |        2 |        0 |        0 |        0 |    100.00% |           |
+| src/async\_batch\_llm/factory.py                             |       45 |        0 |       22 |        2 |     97.01% |63-\>exit, 74-\>exit |
 | src/async\_batch\_llm/gateway.py                             |       69 |        0 |       14 |        0 |    100.00% |           |
 | src/async\_batch\_llm/llm\_strategies.py                     |      140 |        8 |       32 |        5 |     92.44% |31-32, 66-\>64, 68, 83-85, 308-\>exit, 318-\>exit, 630-632 |
 | src/async\_batch\_llm/middleware/\_\_init\_\_.py             |        2 |        0 |        0 |        0 |    100.00% |           |
@@ -41,7 +42,7 @@
 | src/async\_batch\_llm/strategies/rate\_limit.py              |       31 |        0 |        2 |        0 |    100.00% |           |
 | src/async\_batch\_llm/streaming.py                           |       79 |        1 |       32 |        2 |     97.30% |55-\>exit, 131, 137-\>exit |
 | src/async\_batch\_llm/token\_extractor.py                    |       63 |        3 |       30 |        5 |     91.40% |51-\>61, 68-\>72, 76-\>89, 114, 132-\>135, 151-152 |
-| **TOTAL**                                                    | **4242** |  **379** | **1304** |  **186** | **89.09%** |           |
+| **TOTAL**                                                    | **4288** |  **379** | **1326** |  **188** | **89.19%** |           |
 
 
 ## Setup coverage badge
