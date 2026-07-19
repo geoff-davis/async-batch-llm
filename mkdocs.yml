@@ -75,6 +75,7 @@ nav:
     - Advanced Patterns: examples/advanced.md
     - Benchmark Walkthrough: examples/benchmark-walkthrough.md
   - Migration Guides:
+    - v0.19 Migration: MIGRATION_V0_19.md
     - v0.10 Migration: MIGRATION_V0_10.md
     - v0.4 Migration: migration/v0.4.md
     - v0.1 Migration: migration/v0.1.md
