@@ -101,8 +101,16 @@ class _ProgressReporter:
         self._bar: Any = None
         self._tqdm_failed = False
         self._last_logged = 0
+        self._max_completed = 0
+        self._max_total = 0
 
     def __call__(self, completed: int, total: int, current_item_id: str) -> None:
+        # Callbacks are dispatched per item but run as detached tasks, so
+        # updates can arrive out of order — keep the display monotonic.
+        self._max_completed = max(self._max_completed, completed)
+        self._max_total = max(self._max_total, total)
+        completed = self._max_completed
+        total = self._max_total
         if not self._tqdm_failed:
             if self._bar is None:
                 try:

@@ -98,7 +98,9 @@ class TestCustomCallable:
         batch = await process_prompts(EchoStrategy(), ["a", "b"], progress=reporter)
         assert batch.succeeded == 2
         assert len(calls) == 2
-        assert calls[-1][0] == 2
+        # Callbacks run as detached tasks and may arrive out of order; every
+        # completion count is delivered exactly once.
+        assert sorted(c[0] for c in calls) == [1, 2]
 
     async def test_conflict_with_progress_callback_raises(self):
         def cb(completed, total, item_id):
