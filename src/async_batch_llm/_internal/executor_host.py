@@ -15,7 +15,7 @@ respect one coordinated cooldown.
 from __future__ import annotations
 
 import asyncio
-from typing import Generic
+from typing import Generic, cast
 
 from ..base import (
     LLMWorkItem,
@@ -103,7 +103,7 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         self._strategy_lifecycle: StrategyLifecycle[TOutput] = StrategyLifecycle()
         self._capacity_limiter = CapacityLimiter(
             config.max_provider_concurrency,
-            max_workers=config.max_workers,
+            max_workers=cast(int, config.max_workers),
             startup_ramp=config.startup_ramp,
         )
         self._stats = ProcessingStats()

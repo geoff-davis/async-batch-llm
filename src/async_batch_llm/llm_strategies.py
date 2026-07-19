@@ -373,6 +373,20 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
         """Strategies wrapping the same model share one admission limit."""
         return self.model
 
+    async def request_concurrency(self, concurrency: int) -> bool:
+        """Forward a concurrency request to the model, when supported.
+
+        Execution surfaces call this when ``ProcessorConfig.concurrency`` is
+        set (v0.19.0) so built-in models can right-size their connection
+        pools. Models without the hook (custom ``LLMModel`` implementations,
+        Gemini) simply return False and are left untouched.
+        """
+        hook = getattr(self.model, "request_concurrency", None)
+        if hook is None:
+            return False
+        result = await hook(concurrency)
+        return bool(result)
+
     async def prepare(self) -> None:
         """Delegate to model.prepare() if the model has a managed lifecycle."""
         if isinstance(self.model, ManagedLLMModel):

@@ -204,7 +204,10 @@ class GuardrailConfig:
 class ProcessorConfig:
     """Complete configuration for batch processor."""
 
-    max_workers: int = 5
+    # Worker-pool size. None means "not passed": resolved in __post_init__ to
+    # `concurrency` when that knob is set, else the historical default of 5 —
+    # always an int afterwards. An explicit value overrides the derived one.
+    max_workers: int | None = None
     # Deprecated alias for attempt_timeout (v0.19.0) — kept in this position
     # so positional construction keeps working. The property attached below
     # the class routes reads to attempt_timeout (with a DeprecationWarning)
@@ -275,6 +278,20 @@ class ProcessorConfig:
     # prior fields for positional compatibility.
     attempt_timeout: float | None = None
 
+    # Single concurrency knob (v0.19.0, issue #97). When set, coherently sizes
+    # every alignment-sensitive limit that is not explicitly configured:
+    #
+    # - max_workers (worker-pool size)
+    # - max_provider_concurrency (provider-capacity admission)
+    # - the httpx connection pool on built-in OpenAI-compatible models created
+    #   via the llm() factory / from_api_key without an explicit
+    #   max_connections (resized by the execution surface at batch start)
+    #
+    # Explicit values for any individual knob override the derived ones; the
+    # capacity warning fires only on a real contradiction (an explicit client
+    # capacity smaller than the requested concurrency), not on an override.
+    concurrency: int | None = None
+
     def __post_init__(self) -> None:
         """Resolve the deprecated timeout alias, then validate."""
         # Raw constructor value — the alias property's setter stores writes in
@@ -300,11 +317,25 @@ class ProcessorConfig:
         # Normalize the alias slot so dataclasses.replace() re-passes None and
         # the resolved value travels via attempt_timeout alone.
         self.__dict__["timeout_per_item"] = None
+        # Derive unset knobs from the single concurrency knob (explicit values
+        # win; see the concurrency field comment).
+        if self.concurrency is not None:
+            if self.max_workers is None:
+                self.max_workers = self.concurrency
+            if self.max_provider_concurrency is None:
+                self.max_provider_concurrency = self.concurrency
+        if self.max_workers is None:
+            self.max_workers = 5
         self.validate()
 
     def validate(self) -> None:
         """Validate complete configuration."""
-        if self.max_workers < 1:
+        if self.concurrency is not None and self.concurrency < 1:
+            raise ValueError(
+                f"concurrency must be >= 1 or None (got {self.concurrency}). "
+                f"Set config.concurrency to a positive integer (typical: 5-50)."
+            )
+        if self.max_workers is None or self.max_workers < 1:
             raise ValueError(
                 f"max_workers must be >= 1 (got {self.max_workers}). "
                 f"Set config.max_workers to a positive integer (typical: 5-20)."

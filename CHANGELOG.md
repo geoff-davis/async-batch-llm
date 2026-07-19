@@ -19,6 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Unified `concurrency=` knob ([#97])** — `ProcessorConfig(concurrency=N)`
+  (or the `process_prompts(..., concurrency=N)` /
+  `process_stream(..., concurrency=N)` shorthand) coherently sizes every
+  alignment-sensitive limit that is not explicitly configured: `max_workers`,
+  `max_provider_concurrency`, and the httpx connection pool on built-in
+  OpenAI-compatible models created via `llm()`/`from_api_key` without an
+  explicit `max_connections` (the processor asks the model to right-size its
+  pool before the first request via the new
+  `request_concurrency()` hook on `OpenAICompatibleModel`/`ModelStrategy`).
+  Explicit values for any individual knob override the derived ones; the
+  capacity warning fires only on a real contradiction (an explicit client
+  capacity smaller than the requested concurrency), never on an override.
+
 - **Readable run reports ([#96])** — `BatchResult.summary()` returns a
   printable post-run report: item counts, termination (including guardrail
   metadata), retry totals, token totals with replayed work reported separately,
@@ -686,6 +699,7 @@ Details for each live under **Changed**/**Removed** below.
 [#81]: https://github.com/geoff-davis/async-batch-llm/issues/81
 [#95]: https://github.com/geoff-davis/async-batch-llm/issues/95
 [#96]: https://github.com/geoff-davis/async-batch-llm/issues/96
+[#97]: https://github.com/geoff-davis/async-batch-llm/issues/97
 [#98]: https://github.com/geoff-davis/async-batch-llm/issues/98
 
 ## [0.8.0] - 2026-04-24

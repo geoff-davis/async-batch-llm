@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import time
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -83,11 +84,40 @@ def _to_work_item(
     return LLMWorkItem(item_id=f"item_{index}", strategy=strategy, prompt=str(entry))
 
 
+def _apply_concurrency_shorthand(
+    config: ProcessorConfig | None, concurrency: int | None
+) -> ProcessorConfig | None:
+    """Fold a ``concurrency=N`` shorthand into the effective config.
+
+    With no config, builds ``ProcessorConfig(concurrency=N)``. With a config
+    whose ``concurrency`` is unset, returns a derived copy (a default-valued
+    ``max_workers`` is treated as unset so the knob can size it). A config
+    that already sets a different ``concurrency`` raises.
+    """
+    if concurrency is None:
+        return config
+    if config is None:
+        return ProcessorConfig(concurrency=concurrency)
+    if config.concurrency is not None:
+        if config.concurrency == concurrency:
+            return config
+        raise ValueError(
+            f"Conflicting concurrency: config.concurrency={config.concurrency} "
+            f"but concurrency={concurrency} was also passed. Set it in one place."
+        )
+    overrides: dict[str, Any] = {"concurrency": concurrency}
+    if config.max_workers == 5:
+        # The historical default — treat as unset so derivation applies.
+        overrides["max_workers"] = None
+    return dataclasses.replace(config, **overrides)
+
+
 async def _process_stream_impl(
     strategy: LLMCallStrategy[TOutput],
     prompts: PromptSource,
     *,
     config: ProcessorConfig | None = None,
+    concurrency: int | None = None,
     artifact_store: ArtifactStore | None = None,
     resume: ResumePolicy = ResumePolicy.NONE,
     termination_out: list[BatchTermination] | None = None,
@@ -111,6 +141,7 @@ async def _process_stream_impl(
         propagates to the consumer after already-queued results drain; breaking
         out of the loop early cancels the producer and tears down the workers.
     """
+    config = _apply_concurrency_shorthand(config, concurrency)
     processor = ParallelBatchProcessor(
         config=config or ProcessorConfig(),
         artifact_store=artifact_store,
@@ -173,6 +204,7 @@ async def process_stream(
     prompts: PromptSource,
     *,
     config: ProcessorConfig | None = None,
+    concurrency: int | None = None,
     artifact_store: ArtifactStore | None = None,
     resume: ResumePolicy = ResumePolicy.NONE,
     **processor_kwargs: Any,
@@ -183,11 +215,16 @@ async def process_stream(
     block later completed results and require a potentially unbounded reorder
     buffer. Use ``process_prompts(..., preserve_order=True)`` when collection is
     acceptable.
+
+    ``concurrency=N`` is shorthand for ``ProcessorConfig(concurrency=N)`` —
+    the single knob that coherently sizes workers, provider admission, and
+    built-in model connection pools (v0.19.0).
     """
     async for result in _process_stream_impl(
         strategy,
         prompts,
         config=config,
+        concurrency=concurrency,
         artifact_store=artifact_store,
         resume=resume,
         **processor_kwargs,
@@ -200,6 +237,7 @@ async def process_prompts(
     prompts: PromptSource,
     *,
     config: ProcessorConfig | None = None,
+    concurrency: int | None = None,
     preserve_order: bool = False,
     artifact_store: ArtifactStore | None = None,
     resume: ResumePolicy = ResumePolicy.NONE,
@@ -212,6 +250,10 @@ async def process_prompts(
     lazy, bounded-input processing of very large inputs, use
     :func:`process_stream` directly with a positive
     ``config.max_queue_size`` and consume results promptly.
+
+    ``concurrency=N`` is shorthand for ``ProcessorConfig(concurrency=N)`` —
+    the single knob that coherently sizes workers, provider admission, and
+    built-in model connection pools (v0.19.0).
     """
     termination: list[BatchTermination] = []
     started = time.monotonic()
@@ -221,6 +263,7 @@ async def process_prompts(
             strategy,
             prompts,
             config=config,
+            concurrency=concurrency,
             artifact_store=artifact_store,
             resume=resume,
             termination_out=termination,

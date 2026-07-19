@@ -38,7 +38,7 @@ Install only the core package with `pip install async-batch-llm`.
 ```python
 import asyncio
 
-from async_batch_llm import ProcessorConfig, llm, process_prompts
+from async_batch_llm import llm, process_prompts
 
 
 async def main() -> None:
@@ -46,7 +46,7 @@ async def main() -> None:
     batch = await process_prompts(
         strategy,
         ["Summarize document A", "Summarize document B"],
-        config=ProcessorConfig(max_workers=10),
+        concurrency=10,  # sizes workers, admission, and the connection pool
     )
 
     print(batch.summary())  # counts, tokens, timing percentiles, failures

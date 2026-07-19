@@ -866,14 +866,27 @@ class ProcessorConfig:
     dry_run: bool = False
     max_provider_concurrency: int | None = None
     startup_ramp: StartupRampConfig | None = None
+    concurrency: int | None = None
 ```
 
 **Fields:**
 
+- `concurrency` (int | None): **The single concurrency knob** (v0.19.0). When
+  set, coherently sizes every alignment-sensitive limit that is not
+  explicitly configured: `max_workers`, `max_provider_concurrency`, and the
+  httpx connection pool on built-in OpenAI-compatible models built via
+  `llm()` / `from_api_key` without an explicit `max_connections` (resized by
+  the processor before the first request). Explicit values for any individual
+  knob override the derived ones; the capacity warning fires only on a real
+  contradiction (an explicit client capacity smaller than the requested
+  concurrency), never on an override. Also available as shorthand:
+  `process_prompts(..., concurrency=N)` / `process_stream(..., concurrency=N)`.
 - `max_workers` (int): Maximum number of concurrent workers. Default: 5
+  (or `concurrency` when that is set and `max_workers` is not).
 - `max_provider_concurrency` (int | None): Optional provider/client concurrency
   limit applied before `strategy.execute()` and outside `attempt_timeout`.
   When the strategy also advertises `max_concurrency`, the lower limit applies.
+  Defaults to `concurrency` when that is set.
 - `startup_ramp` (StartupRampConfig | None): Optional initial concurrency ramp.
   Ramp wait is admission time outside `attempt_timeout`. Default: None.
 - `attempt_timeout` (float): Timeout applied to each `execute()` attempt in seconds (per-attempt, not a
