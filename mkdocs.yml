@@ -58,6 +58,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Choosing Your Limits: choosing-your-limits.md
   - Production Checklist: production-checklist.md
   - Results, Artifacts, and Resume: results-and-artifacts.md
   - Deadlines and Fail-Fast Guardrails: guardrails.md

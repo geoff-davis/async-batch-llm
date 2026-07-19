@@ -311,6 +311,9 @@ and httpx limits via `HttpOptions` for the Gemini client.
 
 ## Next Steps
 
+- [Choosing Your Limits](choosing-your-limits.md) - One decision tree for
+  `concurrency=`, connection pools, admission, timeouts, deadlines, ramp, and
+  cooldown, with a worked 10k-item sizing example
 - [Production Checklist](production-checklist.md) - Worker count, connection
   pools, fd limits, timeout/retry budgets, rate-limit tuning, constant-memory streaming
 - [Basic Examples](examples/basic.md) - See more usage examples

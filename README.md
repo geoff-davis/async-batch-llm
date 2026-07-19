@@ -246,6 +246,11 @@ and [OpenAI-compatible high-throughput guide](https://geoff-davis.github.io/asyn
 
 ## Timing, retry, and ordering semantics
 
+The [Choosing Your Limits guide](https://geoff-davis.github.io/async-batch-llm/choosing-your-limits/)
+walks every limit below in decision order — from `concurrency=` through
+connection pools, admission, timeouts, deadlines, ramp, and cooldown — with a
+worked 10k-item sizing example.
+
 - `attempt_timeout` limits one provider execution attempt (renamed from
   `timeout_per_item` in v0.19; the old name is a deprecated alias).
 - `GuardrailConfig.total_timeout_per_item` limits the complete logical item,
