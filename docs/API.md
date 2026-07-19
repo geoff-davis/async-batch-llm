@@ -10,6 +10,7 @@ Complete API documentation for async-batch-llm v0.17.0.
   - [BatchResult](#batchresult)
   - [ParallelBatchProcessor](#parallelbatchprocessor)
 - [LLM Strategies](#llm-strategies)
+  - [llm() factory](#llm-factory)
   - [LLMCallStrategy (Abstract)](#llmcallstrategy)
   - [PydanticAIStrategy](#pydanticaistrategy)
   - [GeminiStrategy](#geministrategy)
@@ -327,6 +328,56 @@ async with ParallelBatchProcessor(config=config) as processor:
 ---
 
 ## LLM Strategies
+
+### llm() factory
+
+Build a ready-to-use built-in strategy from a `"provider:model"` string.
+Added in v0.19.0.
+
+```python
+def llm(
+    spec: str,
+    *,
+    response_parser: Callable[[LLMResponse], TOutput] | None = None,
+    temperature: float | None = 0.0,
+    generation_config: dict[str, Any] | None = None,
+    **model_kwargs: Any,
+) -> ModelStrategy[TOutput]: ...
+```
+
+**Parameters:**
+
+- `spec` (str): `"provider:model"` with one of the prefixes `gemini:`,
+  `openai:`, `openrouter:`, `deepseek:`. Everything after the first colon is
+  the provider's model id (which may itself contain colons).
+- `response_parser`, `temperature`, `generation_config`: Forwarded to the
+  strategy (see [GeminiStrategy](#geministrategy) for their semantics).
+- `**model_kwargs`: Forwarded to the model constructor — `api_key`,
+  `system_instruction`, `max_connections` / `json_mode` / `extra_headers` /
+  `extra_body` (OpenAI-compatible providers), `thinking` (DeepSeek),
+  `safety_settings` (Gemini).
+
+**Returns** the same objects the two-object form builds (`GeminiStrategy`,
+`OpenAIStrategy`, `OpenRouterStrategy`, or `DeepSeekStrategy` wrapping the
+matching model), so error-classifier auto-selection and lifecycle management
+work unchanged. Unknown prefixes raise `ValueError` listing valid prefixes;
+a missing optional dependency raises `ImportError` naming the install extra.
+
+**Example:**
+
+```python
+from async_batch_llm import llm
+
+strategy = llm("openai:gpt-4o-mini")            # reads OPENAI_API_KEY
+strategy = llm("gemini:gemini-2.5-flash")       # reads GOOGLE_API_KEY
+strategy = llm("deepseek:deepseek-v4-flash", thinking=False, max_connections=150)
+```
+
+Use the explicit two-object form (e.g.
+`OpenAIStrategy(OpenAIModel.from_api_key(...))`) for custom clients, Gemini
+cached models, or custom strategies.
+
+---
 
 ### LLMCallStrategy
 
