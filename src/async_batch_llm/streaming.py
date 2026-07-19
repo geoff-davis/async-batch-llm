@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import threading
 import time
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -100,45 +101,58 @@ class _ProgressReporter:
     def __init__(self) -> None:
         self._bar: Any = None
         self._tqdm_failed = False
+        self._closed = False
         self._last_logged = 0
         self._max_completed = 0
         self._max_total = 0
+        # Sync progress callbacks are dispatched via asyncio.to_thread, so
+        # concurrent items invoke __call__ from DIFFERENT threads — the whole
+        # update must be atomic or two callbacks can race the lazy bar
+        # creation and each build one (seen as a flaky double bar in CI).
+        self._mutex = threading.Lock()
 
     def __call__(self, completed: int, total: int, current_item_id: str) -> None:
-        # Callbacks are dispatched per item but run as detached tasks, so
-        # updates can arrive out of order — keep the display monotonic.
-        self._max_completed = max(self._max_completed, completed)
-        self._max_total = max(self._max_total, total)
-        completed = self._max_completed
-        total = self._max_total
-        if not self._tqdm_failed:
-            if self._bar is None:
-                try:
-                    from tqdm.auto import tqdm  # type: ignore[import-not-found]
-
-                    self._bar = tqdm(total=total, unit="item", desc="batch")
-                except ImportError:
-                    self._tqdm_failed = True
-                    logger.info(
-                        "progress=True: tqdm is not installed "
-                        "(pip install 'async-batch-llm[progress]'); "
-                        "falling back to interval logging."
-                    )
-            if self._bar is not None:
-                if self._bar.total != total:
-                    self._bar.total = total
-                self._bar.n = completed
-                self._bar.refresh()
+        with self._mutex:
+            if self._closed:
+                # A cancelled asyncio.to_thread callback doesn't stop its
+                # thread — a straggler can land after close(). Creating a
+                # fresh bar then would leak a second bar; drop the update.
                 return
-        # Logging fallback: every 10 items and on completion.
-        if completed - self._last_logged >= 10 or completed >= total:
-            self._last_logged = completed
-            logger.info("progress: %d/%d items completed", completed, total)
+            # Updates can also arrive out of order — keep the display monotonic.
+            self._max_completed = max(self._max_completed, completed)
+            self._max_total = max(self._max_total, total)
+            completed = self._max_completed
+            total = self._max_total
+            if not self._tqdm_failed:
+                if self._bar is None:
+                    try:
+                        from tqdm.auto import tqdm  # type: ignore[import-not-found]
+
+                        self._bar = tqdm(total=total, unit="item", desc="batch")
+                    except ImportError:
+                        self._tqdm_failed = True
+                        logger.info(
+                            "progress=True: tqdm is not installed "
+                            "(pip install 'async-batch-llm[progress]'); "
+                            "falling back to interval logging."
+                        )
+                if self._bar is not None:
+                    if self._bar.total != total:
+                        self._bar.total = total
+                    self._bar.n = completed
+                    self._bar.refresh()
+                    return
+            # Logging fallback: every 10 items and on completion.
+            if completed - self._last_logged >= 10 or completed >= total:
+                self._last_logged = completed
+                logger.info("progress: %d/%d items completed", completed, total)
 
     def close(self) -> None:
-        if self._bar is not None:
-            self._bar.close()
-            self._bar = None
+        with self._mutex:
+            self._closed = True
+            if self._bar is not None:
+                self._bar.close()
+                self._bar = None
 
 
 def _resolve_progress(
@@ -253,28 +267,33 @@ async def _process_stream_impl(
             if not processor._finished:
                 await processor.finish()
 
-    async with processor:  # __aexit__ -> cleanup() cancels workers/finalize
-        processor.start()
-        producer = asyncio.create_task(_feed())
+    try:
+        async with processor:  # __aexit__ -> cleanup() cancels workers/finalize
+            processor.start()
+            producer = asyncio.create_task(_feed())
 
-        async def _stop_producer_on_abort() -> None:
-            await processor.wait_for_abort()
-            if not producer.done():
-                producer.cancel()
+            async def _stop_producer_on_abort() -> None:
+                await processor.wait_for_abort()
+                if not producer.done():
+                    producer.cancel()
 
-        abort_watcher = asyncio.create_task(_stop_producer_on_abort())
-        try:
-            async for result in processor.results():
-                yield result
-        finally:
-            abort_watcher.cancel()
-            if not producer.done():
-                producer.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await producer
-            await asyncio.gather(abort_watcher, return_exceptions=True)
-            if reporter is not None:
-                reporter.close()
+            abort_watcher = asyncio.create_task(_stop_producer_on_abort())
+            try:
+                async for result in processor.results():
+                    yield result
+            finally:
+                abort_watcher.cancel()
+                if not producer.done():
+                    producer.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await producer
+                await asyncio.gather(abort_watcher, return_exceptions=True)
+    finally:
+        # After the async-with: cleanup() has drained in-flight progress
+        # callbacks, so closing here can't race a late update re-creating
+        # the bar (the reporter also drops post-close updates as a backstop).
+        if reporter is not None:
+            reporter.close()
 
     if termination_out is not None:
         termination_out.append(processor.termination)

@@ -23,7 +23,7 @@ class FakeBar:
         self.n = 0
         self.refreshes = 0
         self.closed = False
-        FakeBar.instances.append(self)
+        type(self).instances.append(self)
 
     def refresh(self):
         self.refreshes += 1
@@ -34,18 +34,24 @@ class FakeBar:
 
 @pytest.fixture
 def fake_tqdm(monkeypatch):
-    """Install a fake tqdm.auto module so the bar path runs deterministically."""
+    """Install a fake tqdm.auto module so the bar path runs deterministically.
+
+    A fresh Bar class per test keeps `instances` isolated, so a straggler
+    callback thread from a previous test can't pollute this test's count.
+    """
     import sys
     import types
 
-    FakeBar.instances = []
+    class Bar(FakeBar):
+        instances: list[FakeBar] = []
+
     auto = types.ModuleType("tqdm.auto")
-    auto.tqdm = FakeBar
+    auto.tqdm = Bar
     tqdm_pkg = types.ModuleType("tqdm")
     tqdm_pkg.auto = auto
     monkeypatch.setitem(sys.modules, "tqdm", tqdm_pkg)
     monkeypatch.setitem(sys.modules, "tqdm.auto", auto)
-    return FakeBar
+    return Bar
 
 
 class TestProgressTrue:
@@ -133,3 +139,31 @@ class TestReporterUnit:
         assert bar.n == 2
         reporter.close()
         assert bar.closed
+
+    def test_concurrent_threads_create_exactly_one_bar(self, fake_tqdm):
+        # Sync callbacks run via asyncio.to_thread, so the reporter is hit
+        # from many threads at once; the lazy bar creation must not race.
+        from concurrent.futures import ThreadPoolExecutor
+
+        reporter = _ProgressReporter()
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda i: reporter(i, 100, f"item_{i}"), range(1, 101)))
+        assert len(fake_tqdm.instances) == 1
+        assert fake_tqdm.instances[0].n == 100
+
+    def test_out_of_order_updates_stay_monotonic(self, fake_tqdm):
+        reporter = _ProgressReporter()
+        reporter(3, 3, "c")
+        reporter(2, 3, "b")  # late arrival must not move the bar backwards
+        assert fake_tqdm.instances[0].n == 3
+
+    def test_late_callback_after_close_creates_no_new_bar(self, fake_tqdm):
+        # A cancelled asyncio.to_thread callback doesn't stop its thread, so
+        # an update can land after close(); it must be dropped, not re-open
+        # a fresh bar.
+        reporter = _ProgressReporter()
+        reporter(1, 2, "a")
+        reporter.close()
+        reporter(2, 2, "b")
+        assert len(fake_tqdm.instances) == 1
+        assert fake_tqdm.instances[0].closed
