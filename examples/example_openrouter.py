@@ -51,7 +51,7 @@ async def example_cross_provider_batch() -> None:
     """Run one batch where each item uses a different upstream provider."""
     print("\n=== Example 1: Cross-provider batch ===\n")
 
-    config = ProcessorConfig(max_workers=2, timeout_per_item=60.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=60.0)
 
     api_key = os.environ["OPENROUTER_API_KEY"]
     anthropic_model = OpenRouterModel.from_api_key(
@@ -146,7 +146,7 @@ async def example_anthropic_prompt_caching() -> None:
         api_key=os.environ["OPENROUTER_API_KEY"],
     )
     strategy = CachedAnthropicStrategy(model, system_text=long_system)
-    config = ProcessorConfig(max_workers=1, timeout_per_item=60.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=60.0)
 
     # Run two questions back-to-back: the second should hit the cache.
     for round_idx, q in enumerate(["What's 2 + 2?", "What's the capital of Japan?"]):

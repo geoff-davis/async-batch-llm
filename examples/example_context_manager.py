@@ -28,7 +28,7 @@ async def main():
 
     strategy = PydanticAIStrategy(agent=mock_agent)
 
-    config = ProcessorConfig(max_workers=3, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=3, attempt_timeout=10.0)
 
     # Using async context manager ensures cleanup even if errors occur
     async with ParallelBatchProcessor[str, SummaryOutput, None](config=config) as processor:

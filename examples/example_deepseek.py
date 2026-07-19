@@ -59,7 +59,7 @@ async def main() -> None:
         max_connections=3,  # match max_workers below (scale both together)
     )
     strategy = DeepSeekStrategy(model)
-    config = ProcessorConfig(max_workers=3, timeout_per_item=60.0)
+    config = ProcessorConfig(max_workers=3, attempt_timeout=60.0)
 
     questions = [
         "What is the capital of France?",

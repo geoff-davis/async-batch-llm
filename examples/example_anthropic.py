@@ -107,7 +107,7 @@ async def example_anthropic_text():
     )
 
     # Configure the processor
-    config = ProcessorConfig(max_workers=3, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=3, attempt_timeout=30.0)
 
     # Process items
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:
@@ -158,7 +158,7 @@ async def example_anthropic_system_prompt():
     )
 
     # Configure the processor
-    config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
 
     # Process items
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:
@@ -214,7 +214,7 @@ async def example_anthropic_mixed_models():
     )
 
     # Configure the processor
-    config = ProcessorConfig(max_workers=4, timeout_per_item=60.0)
+    config = ProcessorConfig(max_workers=4, attempt_timeout=60.0)
 
     # Process different task types
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:
@@ -321,7 +321,7 @@ async def example_anthropic_progressive_temperature():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=30.0,
+        attempt_timeout=30.0,
         retry=RetryConfig(max_attempts=3, initial_wait=1.0),
     )
 

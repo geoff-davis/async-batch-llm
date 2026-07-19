@@ -108,7 +108,7 @@ async def example_simple():
     # Create processor with new configuration system
     config = ProcessorConfig(
         max_workers=3,
-        timeout_per_item=30.0,
+        attempt_timeout=30.0,
     )
 
     async with ParallelBatchProcessor[str, BookSummary, None](
@@ -173,7 +173,7 @@ async def example_with_context_and_postprocessor():
     # Create configuration with custom retry settings
     config = ProcessorConfig(
         max_workers=2,
-        timeout_per_item=30.0,
+        attempt_timeout=30.0,
         retry=RetryConfig(
             max_attempts=3,
             initial_wait=1.0,
@@ -266,7 +266,7 @@ async def example_error_handling():
     # Create processor with custom rate limit configuration
     config = ProcessorConfig(
         max_workers=2,
-        timeout_per_item=0.1,  # Very short timeout will cause failures
+        attempt_timeout=0.1,  # Very short timeout will cause failures
         rate_limit=RateLimitConfig(
             cooldown_seconds=60.0,
             slow_start_items=10,
@@ -347,7 +347,7 @@ async def example_testing_with_mocks():
     # Create processor with fast configuration for testing
     config = ProcessorConfig(
         max_workers=2,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         rate_limit=RateLimitConfig(
             cooldown_seconds=1.0,  # Short cooldown for testing
             slow_start_items=2,

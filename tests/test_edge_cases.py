@@ -27,7 +27,7 @@ class TestOutput(BaseModel):
 async def test_empty_queue():
     """Test processing with no work items."""
 
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     # Process without adding any work
@@ -45,7 +45,7 @@ async def test_single_item():
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
-    config = ProcessorConfig(max_workers=5, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=5, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     work_item = LLMWorkItem(
@@ -72,7 +72,7 @@ async def test_more_items_than_workers():
         latency=0.001,  # Reduced from 0.01s
     )
 
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     # Add 10 items with only 2 workers
@@ -103,7 +103,7 @@ async def test_all_items_fail():
 
     config = ProcessorConfig(
         max_workers=2,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=1),  # No retries
     )
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
@@ -135,7 +135,7 @@ async def test_mixed_success_and_failure():
 
     mock_agent = MockAgent(response_factory=conditional_fail, latency=0.001)  # Reduced from 0.01s
 
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     prompts = ["succeed", "FAIL", "succeed", "fail", "succeed"]
@@ -166,7 +166,7 @@ async def test_very_short_timeout():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=0.01,  # 10ms timeout - will timeout
+        attempt_timeout=0.01,  # 10ms timeout - will timeout
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
@@ -193,7 +193,7 @@ async def test_very_long_timeout():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=300.0,  # 5 minute timeout
+        attempt_timeout=300.0,  # 5 minute timeout
     )
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
@@ -220,7 +220,7 @@ async def test_post_processor_exception_doesnt_fail_item():
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         post_processor=failing_post_processor,
@@ -251,7 +251,7 @@ async def test_large_batch():
         latency=0.001,  # Very fast
     )
 
-    config = ProcessorConfig(max_workers=10, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=10, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     # Add 100 items
@@ -282,7 +282,7 @@ async def test_special_characters_in_item_id():
         latency=0.001,  # Reduced from 0.01s
     )
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     special_ids = [
@@ -326,7 +326,7 @@ async def test_unicode_in_prompts():
 
     mock_agent = MockAgent(response_factory=track_prompt, latency=0.001)  # Reduced from 0.01s
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     unicode_prompts = [
@@ -361,7 +361,7 @@ async def test_none_context():
         latency=0.001,  # Reduced from 0.01s
     )
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     work_item = LLMWorkItem(
@@ -397,7 +397,7 @@ async def test_complex_context_types():
         {"nested": {"deep": {"context": "value"}}},
     ]
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, Any](config=config)
 
     for i, ctx in enumerate(contexts):
@@ -424,7 +424,7 @@ async def test_zero_workers():
 
     # ProcessorConfig auto-validates on construction, so this raises immediately
     with pytest.raises(ValueError, match="max_workers must be >= 1"):
-        ProcessorConfig(max_workers=0, timeout_per_item=10.0)
+        ProcessorConfig(max_workers=0, attempt_timeout=10.0)
 
 
 @pytest.mark.asyncio
@@ -432,8 +432,8 @@ async def test_negative_timeout():
     """Test that negative timeout is rejected."""
 
     # ProcessorConfig auto-validates on construction, so this raises immediately
-    with pytest.raises(ValueError, match="timeout_per_item must be > 0"):
-        ProcessorConfig(max_workers=1, timeout_per_item=-1.0)
+    with pytest.raises(ValueError, match="attempt_timeout must be > 0"):
+        ProcessorConfig(max_workers=1, attempt_timeout=-1.0)
 
 
 @pytest.mark.asyncio
@@ -446,7 +446,7 @@ async def test_adding_work_after_processing_started():
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.05)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     # Add first item
@@ -483,16 +483,16 @@ async def test_max_queue_size_config_validation():
 
     # ProcessorConfig auto-validates on construction, so this raises immediately
     with pytest.raises(ValueError, match="max_queue_size must be >= 0"):
-        ProcessorConfig(max_workers=1, timeout_per_item=10.0, max_queue_size=-1)
+        ProcessorConfig(max_workers=1, attempt_timeout=10.0, max_queue_size=-1)
 
     # Test that 0 and positive values are accepted (should not raise)
     ProcessorConfig(
         max_workers=1,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         max_queue_size=0,  # Unlimited
     )
 
-    config_limited = ProcessorConfig(max_workers=1, timeout_per_item=10.0, max_queue_size=100)
+    config_limited = ProcessorConfig(max_workers=1, attempt_timeout=10.0, max_queue_size=100)
     config_limited.validate()  # Should not raise
 
 
@@ -509,7 +509,7 @@ async def test_max_queue_size_zero_is_unlimited():
     # Default max_queue_size=0 means unlimited
     config = ProcessorConfig(
         max_workers=2,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         max_queue_size=0,  # Unlimited
     )
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
@@ -538,7 +538,7 @@ async def test_processor_reuse_not_allowed():
 
     mock_agent = MockAgent(response_factory=lambda p: TestOutput(value="test"), latency=0.01)
 
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     # First run: add 3 items
@@ -636,15 +636,15 @@ async def test_config_auto_validation():
 
     # Test ProcessorConfig auto-validation
     with pytest.raises(ValueError, match="max_requests_per_minute must be > 0 or None"):
-        ProcessorConfig(max_workers=1, timeout_per_item=10.0, max_requests_per_minute=-1.0)
+        ProcessorConfig(max_workers=1, attempt_timeout=10.0, max_requests_per_minute=-1.0)
 
     with pytest.raises(ValueError, match="progress_interval must be >= 1"):
-        ProcessorConfig(max_workers=1, timeout_per_item=10.0, progress_interval=0)
+        ProcessorConfig(max_workers=1, attempt_timeout=10.0, progress_interval=0)
 
     with pytest.raises(ValueError, match="progress_callback_timeout must be > 0"):
-        ProcessorConfig(max_workers=1, timeout_per_item=10.0, progress_callback_timeout=-1.0)
+        ProcessorConfig(max_workers=1, attempt_timeout=10.0, progress_callback_timeout=-1.0)
 
     # Test that valid configs can still be created
-    valid_config = ProcessorConfig(max_workers=5, timeout_per_item=60.0)
+    valid_config = ProcessorConfig(max_workers=5, attempt_timeout=60.0)
     assert valid_config.max_workers == 5
-    assert valid_config.timeout_per_item == 60.0
+    assert valid_config.attempt_timeout == 60.0

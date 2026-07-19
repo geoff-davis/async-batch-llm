@@ -8,7 +8,7 @@ connection pools, startup bursts, and timeout tails matter.
 
 `from_api_key(max_connections=N)` lets ABL size and own the httpx client. The
 model advertises `N`, so execution attempts are admitted before
-`timeout_per_item` starts and never queue invisibly inside the transport.
+`attempt_timeout` starts and never queue invisibly inside the transport.
 
 ```python
 from async_batch_llm import (
@@ -31,7 +31,7 @@ model = DeepSeekModel.from_api_key(
 strategy = DeepSeekStrategy(model)
 config = ProcessorConfig(
     max_workers=64,
-    timeout_per_item=60.0,
+    attempt_timeout=60.0,
     retry=RetryConfig(max_attempts=3, max_rate_limit_retries=20),
     rate_limit=RateLimitConfig(cooldown_seconds=30.0),
     startup_ramp=StartupRampConfig(
@@ -77,7 +77,7 @@ strategy = OpenAIStrategy(model)
 config = ProcessorConfig(
     max_workers=100,
     max_provider_concurrency=32,
-    timeout_per_item=60,
+    attempt_timeout=60,
 )
 
 # The caller owns a directly supplied client.
@@ -90,14 +90,14 @@ await client.close()
 | --- | --- |
 | httpx connect/read/write/pool timeout | One transport operation |
 | OpenAI SDK timeout | One SDK request |
-| `timeout_per_item` | One `strategy.execute()` attempt, after ABL admission |
-| Retry backoff and coordinated cooldown | Outside `timeout_per_item` |
+| `attempt_timeout` | One `strategy.execute()` attempt, after ABL admission |
+| Retry backoff and coordinated cooldown | Outside `attempt_timeout` |
 | Gateway `submit_timeout` | Full caller wall time, including all waits/retries |
 
 Avoid multiplying hidden SDK retries by ABL retries. Setting SDK
 `max_retries=0` gives ABL complete attempt timing, classification, and failed-token
 accounting. If SDK retries remain enabled, treat one `strategy.execute()` as the
-outer attempt and size `timeout_per_item` for all SDK work inside it.
+outer attempt and size `attempt_timeout` for all SDK work inside it.
 
 ## Startup Ramp vs Cooldown
 
@@ -110,7 +110,7 @@ outer attempt and size `timeout_per_item` for all SDK work inside it.
 - Use `RateLimitConfig` for reactive behavior after a 429/quota response: one
   coordinated cooldown, followed by the existing post-cooldown slow-start.
 
-Startup-ramp and provider-capacity wait occur before `timeout_per_item`.
+Startup-ramp and provider-capacity wait occur before `attempt_timeout`.
 `WorkItemResult.timing` separates them from execution, cooldown, and backoff.
 
 ## Gateway Services

@@ -42,7 +42,7 @@ async def main() -> None:
     )
     config = ProcessorConfig(
         max_workers=20,
-        timeout_per_item=30,
+        attempt_timeout=30,
         guardrails=GuardrailConfig(
             total_timeout_per_item=180,
             batch_timeout=3600,

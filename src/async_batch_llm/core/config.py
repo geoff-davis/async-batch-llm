@@ -2,8 +2,11 @@
 
 import logging
 import math
+import sys
+import warnings
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import cast
 
 logger = logging.getLogger(__name__)
 
@@ -202,13 +205,13 @@ class ProcessorConfig:
     """Complete configuration for batch processor."""
 
     max_workers: int = 5
-    # Timeout applied to EACH execute() attempt (seconds), enforced via
-    # asyncio.wait_for() around the strategy call. This is per-attempt, NOT a
-    # total budget across retries: with retry.max_attempts=3 a single item can
-    # legitimately spend up to ~3 × timeout_per_item in execute() time (plus any
-    # backoff waits between attempts). Size it for one slow call, not the whole
-    # retry chain.
-    timeout_per_item: float = 120.0
+    # Deprecated alias for attempt_timeout (v0.19.0) — kept in this position
+    # so positional construction keeps working. The property attached below
+    # the class routes reads to attempt_timeout (with a DeprecationWarning)
+    # and normalizes the stored slot to None after __post_init__ resolution,
+    # so dataclasses.replace() round-trips without re-triggering the alias
+    # path. repr/compare are off: attempt_timeout is the canonical field.
+    timeout_per_item: float | None = field(default=None, repr=False, compare=False)
     # Timeout for user-supplied post-processor functions (seconds).
     # Post-processors may do database/IO work; leave generous but bounded.
     # This is the single source of truth — it is threaded into
@@ -259,8 +262,44 @@ class ProcessorConfig:
     # for positional compatibility; defaults preserve pre-guardrail semantics.
     guardrails: GuardrailConfig = field(default_factory=GuardrailConfig)
 
+    # Timeout applied to EACH execute() attempt (seconds), enforced via
+    # asyncio.wait_for() around the strategy call. This is per-attempt, NOT a
+    # total budget across retries: with retry.max_attempts=3 a single item can
+    # legitimately spend up to ~3 × attempt_timeout in execute() time (plus any
+    # backoff waits between attempts). Size it for one slow call, not the whole
+    # retry chain; for a whole-item budget use
+    # GuardrailConfig.total_timeout_per_item. Renamed from timeout_per_item in
+    # v0.19.0 (the old name remains a deprecated constructor alias and
+    # attribute); None means "not passed" and resolves to the 120.0 default in
+    # __post_init__, so it is always a float afterwards. Appended after all
+    # prior fields for positional compatibility.
+    attempt_timeout: float | None = None
+
     def __post_init__(self) -> None:
-        """Validate configuration on construction."""
+        """Resolve the deprecated timeout alias, then validate."""
+        # Raw constructor value — the alias property's setter stores writes in
+        # __dict__ directly, and its getter is bypassed here on purpose.
+        alias_value = self.__dict__.get("timeout_per_item")
+        if alias_value is not None:
+            if self.attempt_timeout is not None:
+                raise ValueError(
+                    "Pass attempt_timeout only — timeout_per_item is a deprecated "
+                    f"alias for it (got attempt_timeout={self.attempt_timeout}, "
+                    f"timeout_per_item={alias_value})."
+                )
+            warnings.warn(
+                "ProcessorConfig(timeout_per_item=...) is deprecated; use "
+                "attempt_timeout=... (same per-attempt semantics). "
+                "timeout_per_item will be removed in the next major release.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            self.attempt_timeout = alias_value
+        if self.attempt_timeout is None:
+            self.attempt_timeout = 120.0
+        # Normalize the alias slot so dataclasses.replace() re-passes None and
+        # the resolved value travels via attempt_timeout alone.
+        self.__dict__["timeout_per_item"] = None
         self.validate()
 
     def validate(self) -> None:
@@ -278,10 +317,10 @@ class ProcessorConfig:
         if self.startup_ramp is not None:
             self.startup_ramp.validate()
         self.guardrails.validate()
-        if self.timeout_per_item <= 0:
+        if self.attempt_timeout is not None and self.attempt_timeout <= 0:
             raise ValueError(
-                f"timeout_per_item must be > 0 (got {self.timeout_per_item}). "
-                f"Set config.timeout_per_item to a positive number in seconds (typical: 60-300)."
+                f"attempt_timeout must be > 0 (got {self.attempt_timeout}). "
+                f"Set config.attempt_timeout to a positive number in seconds (typical: 60-300)."
             )
         if self.post_processor_timeout <= 0:
             raise ValueError(
@@ -322,11 +361,12 @@ class ProcessorConfig:
                 f"Consider setting max_queue_size >= max_workers or 0 for unlimited."
             )
 
-        # Note: timeout_per_item is a PER-ATTEMPT limit enforced around each
+        # Note: attempt_timeout is a PER-ATTEMPT limit enforced around each
         # strategy.execute() call; between-attempt retry waits happen outside
         # it, so no cross-validation between the two is meaningful. (Earlier
-        # versions warned when timeout_per_item was smaller than cumulative
-        # retry waits — that comparison was conceptually wrong and confusing.)
+        # versions warned when the per-attempt timeout was smaller than
+        # cumulative retry waits — that comparison was conceptually wrong and
+        # confusing.)
 
         # Validate proactive rate limit vs workers
         if self.max_requests_per_minute is not None:
@@ -340,3 +380,44 @@ class ProcessorConfig:
                     f"Consider reducing max_workers to {int(requests_per_second)} or increasing "
                     f"max_requests_per_minute."
                 )
+
+
+def _get_timeout_per_item(self: ProcessorConfig) -> float | None:
+    # dataclasses.replace() reads every init field via getattr; give it the
+    # normalized raw slot (None after __post_init__) so replacing a config
+    # doesn't re-trigger the alias path or the warning. Same frame check as
+    # WorkItemResult.gemini_safety_ratings in base.py.
+    if sys._getframe(1).f_globals.get("__name__") == "dataclasses":
+        return self.__dict__.get("timeout_per_item")
+    warnings.warn(
+        "ProcessorConfig.timeout_per_item is deprecated; read config.attempt_timeout instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    # Always a float after __post_init__ resolution.
+    return cast(float, self.attempt_timeout)
+
+
+def _set_timeout_per_item(self: ProcessorConfig, value: float | None) -> None:
+    if "attempt_timeout" not in self.__dict__:
+        # Mid-__init__: the generated constructor assigns fields in order and
+        # attempt_timeout comes last, so stash the raw alias value for
+        # __post_init__ to resolve (a redirect here would be clobbered by the
+        # later attempt_timeout default assignment).
+        self.__dict__["timeout_per_item"] = value
+        return
+    warnings.warn(
+        "ProcessorConfig.timeout_per_item is deprecated; set config.attempt_timeout instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    self.attempt_timeout = value
+
+
+# Replace the plain dataclass attribute with a property AFTER the decorator
+# has generated __init__, preserving attribute access for existing user code
+# with a deprecation nudge toward attempt_timeout. (Same pattern as
+# WorkItemResult.gemini_safety_ratings in base.py.)
+ProcessorConfig.timeout_per_item = property(  # type: ignore[assignment,method-assign]  # ty:ignore[invalid-assignment]
+    _get_timeout_per_item, _set_timeout_per_item
+)

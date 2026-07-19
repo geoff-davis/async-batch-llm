@@ -228,7 +228,7 @@ def warn_if_worker_capacity_exceeded(
     warnings.warn(
         f"{surface} max_workers={max_workers} exceeds "
         f"{type(strategy).__name__}.max_concurrency={capacity}. Excess attempts will wait "
-        "in ABL admission before timeout_per_item starts. Set max_workers <= "
+        "in ABL admission before attempt_timeout starts. Set max_workers <= "
         f"{capacity}, or rebuild the model with max_connections >= {max_workers}. "
         f"See {_CAPACITY_DOCS_URL}",
         UserWarning,

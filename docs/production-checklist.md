@@ -35,7 +35,7 @@ model = DeepSeekModel.from_api_key(
 Models built with `from_api_key(max_connections=N)` advertise that capacity to
 their strategy. `ParallelBatchProcessor` and `LLMGateway` emit a `UserWarning`
 when `max_workers > N`; the shared executor holds excess attempts in ABL
-admission before `strategy.execute()` and before `timeout_per_item` starts.
+admission before `strategy.execute()` and before `attempt_timeout` starts.
 Matching values avoids unnecessary admission wait:
 
 ```python
@@ -52,7 +52,7 @@ custom-client limit:
 ```python
 config = ProcessorConfig(
     max_workers=100,
-    max_provider_concurrency=32,  # outside timeout_per_item
+    max_provider_concurrency=32,  # outside attempt_timeout
 )
 ```
 
@@ -75,14 +75,14 @@ process) or lowering `max_workers`. Full guidance:
 
 ## 4. Timeout and concurrency semantics
 
-`timeout_per_item` is **per attempt**, enforced via `asyncio.wait_for` around
+`attempt_timeout` is **per attempt**, enforced via `asyncio.wait_for` around
 each `execute()` — it is **not** a total budget across retries. With
-`retry.max_attempts=3`, a single item can spend up to ~`3 × timeout_per_item`
+`retry.max_attempts=3`, a single item can spend up to ~`3 × attempt_timeout`
 in calls, plus backoff waits.
 
 The timeout boundary is deliberately narrow:
 
-| Phase | Counts against `timeout_per_item`? |
+| Phase | Counts against `attempt_timeout`? |
 | --- | --- |
 | Batch queue wait / streaming backpressure | No |
 | Worker or gateway semaphore admission | No |
@@ -101,7 +101,7 @@ capacity prevents that hidden wait by gating attempts first:
 # Safe: 100 workers may do middleware/post-processing, but only 32 attempts
 # enter strategy.execute() at once.
 model = DeepSeekModel.from_api_key("deepseek-v4-flash", max_connections=32)
-config = ProcessorConfig(max_workers=100, timeout_per_item=30)
+config = ProcessorConfig(max_workers=100, attempt_timeout=30)
 ```
 
 Aligning the worker count avoids admission queues when the extra workers provide
@@ -109,18 +109,18 @@ no other benefit:
 
 ```python
 model = DeepSeekModel.from_api_key("deepseek-v4-flash", max_connections=32)
-config = ProcessorConfig(max_workers=32, timeout_per_item=30)
+config = ProcessorConfig(max_workers=32, attempt_timeout=30)
 ```
 
 Rate limits are **exempt** from `max_attempts` (a 429 is "wait and retry", not a
 failed attempt — see below), so a throttled item can sit through many cooldowns
 without consuming its attempt budget. Bound that separately with
-`retry.max_rate_limit_retries` (default `20`). Net: size `timeout_per_item` for
+`retry.max_rate_limit_retries` (default `20`). Net: size `attempt_timeout` for
 one slow call, and use the two retry budgets to bound total effort.
 
 ```python
 ProcessorConfig(
-    timeout_per_item=60.0,          # per attempt
+    attempt_timeout=60.0,          # per attempt
     retry=RetryConfig(
         max_attempts=3,              # content/transport failures
         max_rate_limit_retries=20,   # throttling retries (separate budget)
@@ -128,10 +128,10 @@ ProcessorConfig(
 )
 ```
 
-For `LLMGateway`, semaphore wait is outside `timeout_per_item`, while
+For `LLMGateway`, semaphore wait is outside `attempt_timeout`, while
 `submit_timeout` wraps the full caller path: both admission waits, cooldown, all
 attempts, and backoff. Use `submit_timeout` for an end-to-end request latency
-budget and `timeout_per_item` for one provider attempt.
+budget and `attempt_timeout` for one provider attempt.
 
 Each `WorkItemResult.admission_wait_seconds` reports cumulative provider-capacity
 wait across attempts. `get_stats()` exposes total/max item wait, and
@@ -159,7 +159,7 @@ stay under quota before you trip a 429 at all.
 For cold-start burst protection, configure `StartupRampConfig` separately. It
 limits initial concurrency and raises it by a fixed step on each interval; unlike
 the fields above, it applies before the first provider call and does not require
-a preceding rate limit. Ramp wait remains outside `timeout_per_item`.
+a preceding rate limit. Ramp wait remains outside `attempt_timeout`.
 
 See the [OpenAI-compatible high-throughput guide](openai-high-throughput.md) for
 owned/custom client recipes and troubleshooting.

@@ -59,7 +59,7 @@ async def example_simple_text() -> None:
         api_key=os.environ["OPENAI_API_KEY"],
     )
     strategy = OpenAIStrategy(model)
-    config = ProcessorConfig(max_workers=3, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=3, attempt_timeout=30.0)
 
     async with ParallelBatchProcessor[None, str, None](
         config=config,
@@ -113,7 +113,7 @@ async def example_structured_output() -> None:
         model,
         response_parser=lambda r: SentimentOutput.model_validate_json(r.text),
     )
-    config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
 
     reviews = [
         "This product is amazing! Highly recommend.",

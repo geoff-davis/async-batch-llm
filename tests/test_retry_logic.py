@@ -42,7 +42,7 @@ async def test_retry_on_timeout():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=0.1,  # Short timeout so attempt 1 fails fast
+        attempt_timeout=0.1,  # Short timeout so attempt 1 fails fast
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 
@@ -86,7 +86,7 @@ async def test_retry_with_exponential_backoff():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(
             max_attempts=3,
             initial_wait=0.1,
@@ -131,7 +131,7 @@ async def test_max_attempts_respected():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(
             max_attempts=3,
             initial_wait=0.01,  # Fast retries for testing
@@ -237,7 +237,7 @@ async def test_validation_error_retries():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=3),
     )
 
@@ -285,7 +285,7 @@ async def test_non_retryable_error_fails_immediately():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=3),
     )
 
@@ -332,7 +332,7 @@ async def test_logic_bugs_fail_fast():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=3),  # Configure 3 retries
     )
 
@@ -378,7 +378,7 @@ async def test_retry_succeeds_on_final_attempt():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(
             max_attempts=3,
             initial_wait=0.01,
@@ -437,7 +437,7 @@ async def test_token_usage_tracked_across_retries():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 

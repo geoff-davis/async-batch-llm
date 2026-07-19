@@ -173,7 +173,7 @@ store = JsonlArtifactStore(
 )
 config = ProcessorConfig(
     max_workers=20,
-    timeout_per_item=30,  # one provider attempt
+    attempt_timeout=30,  # one provider attempt
     guardrails=GuardrailConfig(
         total_timeout_per_item=180,  # admission, waits, calls, and retries
         batch_timeout=3600,
@@ -244,8 +244,8 @@ and [OpenAI-compatible high-throughput guide](https://geoff-davis.github.io/asyn
 
 ## Timing, retry, and ordering semantics
 
-- `timeout_per_item` limits one provider execution attempt. It retains its
-  original meaning for backward compatibility.
+- `attempt_timeout` limits one provider execution attempt (renamed from
+  `timeout_per_item` in v0.19; the old name is a deprecated alias).
 - `GuardrailConfig.total_timeout_per_item` limits the complete logical item,
   including coordinated cooldown, startup ramp, proactive rate limiting,
   provider-capacity admission, calls, retry cooldowns, and backoff.

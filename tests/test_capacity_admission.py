@@ -76,7 +76,7 @@ async def test_advertised_capacity_limits_batch_execute_concurrency() -> None:
     strategy = _TrackingStrategy(capacity=2)
     metrics = MetricsObserver()
     processor = ParallelBatchProcessor[str, str, None](
-        config=ProcessorConfig(max_workers=8, timeout_per_item=1.0),
+        config=ProcessorConfig(max_workers=8, attempt_timeout=1.0),
         observers=[metrics],
     )
 
@@ -104,7 +104,7 @@ async def test_explicit_capacity_limits_strategy_with_unknown_capacity() -> None
     config = ProcessorConfig(
         max_workers=6,
         max_provider_concurrency=2,
-        timeout_per_item=1.0,
+        attempt_timeout=1.0,
     )
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         for i in range(6):
@@ -123,7 +123,7 @@ async def test_admission_wait_does_not_consume_execution_timeout() -> None:
     )
     config = ProcessorConfig(
         max_workers=2,
-        timeout_per_item=0.20,
+        attempt_timeout=0.20,
         retry=RetryConfig(max_attempts=1),
     )
 
@@ -145,7 +145,7 @@ async def test_retries_release_and_reacquire_capacity() -> None:
     strategy = _TrackingStrategy(capacity=1, fail_first=True)
     config = ProcessorConfig(
         max_workers=2,
-        timeout_per_item=1.0,
+        attempt_timeout=1.0,
         retry=RetryConfig(
             max_attempts=2,
             initial_wait=0.001,
@@ -175,7 +175,7 @@ async def test_strategies_sharing_scope_share_capacity() -> None:
     first = _TrackingStrategy(capacity=1, state=shared_state, scope=shared_scope)
     second = _TrackingStrategy(capacity=1, state=shared_state, scope=shared_scope)
     processor = ParallelBatchProcessor[str, str, None](
-        config=ProcessorConfig(max_workers=4, timeout_per_item=1.0)
+        config=ProcessorConfig(max_workers=4, attempt_timeout=1.0)
     )
     with pytest.warns(UserWarning) as caught:
         for i in range(4):
@@ -208,8 +208,11 @@ def test_explicit_capacity_must_be_positive() -> None:
 
 
 def test_new_capacity_field_preserves_existing_positional_config_order() -> None:
-    config = ProcessorConfig(7, 42.0)
+    # Position 2 is the deprecated timeout_per_item alias (kept positional
+    # for backward compat), so constructing through it warns.
+    with pytest.warns(DeprecationWarning, match="timeout_per_item"):
+        config = ProcessorConfig(7, 42.0)
 
     assert config.max_workers == 7
-    assert config.timeout_per_item == 42.0
+    assert config.attempt_timeout == 42.0
     assert config.max_provider_concurrency is None

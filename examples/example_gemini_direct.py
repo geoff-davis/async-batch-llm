@@ -185,7 +185,7 @@ async def main():
         },
     )
 
-    config = ProcessorConfig(max_workers=3, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=3, attempt_timeout=30.0)
 
     async with ParallelBatchProcessor[str, SummaryOutput, None](config=config) as processor:
         for i, text in enumerate(texts):

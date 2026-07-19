@@ -59,7 +59,7 @@ drain — otherwise it waits as long as the admitted work takes.
 ## Timeout and capacity semantics
 
 The gateway semaphore is acquired before item execution, so semaphore wait does
-not consume `timeout_per_item`. `submit_timeout` is the end-to-end caller budget:
+not consume `attempt_timeout`. `submit_timeout` is the end-to-end caller budget:
 it includes semaphore wait, provider-capacity admission, coordinated cooldown,
 retry backoff, and every
 attempt. If a model built with `from_api_key(max_connections=N)` advertises less

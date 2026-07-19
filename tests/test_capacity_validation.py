@@ -65,7 +65,7 @@ async def test_processor_warns_once_when_workers_exceed_strategy_capacity() -> N
 
     capacity_warnings = [w for w in caught if "max_concurrency=2" in str(w.message)]
     assert len(capacity_warnings) == 1
-    assert "before timeout_per_item starts" in str(capacity_warnings[0].message)
+    assert "before attempt_timeout starts" in str(capacity_warnings[0].message)
     await processor.cleanup()
 
 

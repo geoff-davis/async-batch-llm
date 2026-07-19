@@ -58,7 +58,7 @@ async def example_pydantic_ai_strategy():
     strategy = PydanticAIStrategy(agent=agent)
 
     # Configure the processor
-    config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
 
     # Process items using the strategy
     async with ParallelBatchProcessor[None, SummaryOutput, None](config=config) as processor:
@@ -107,7 +107,7 @@ async def example_gemini_strategy():
     strategy = GeminiStrategy(model, response_parser=parse_response, temperature=0.7)
 
     # Configure the processor
-    config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
 
     # Process items
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:
@@ -193,7 +193,7 @@ async def example_gemini_cached_strategy():
     strategy = GeminiStrategy(cached_model, response_parser=parse_response)
 
     # Configure the processor
-    config = ProcessorConfig(max_workers=3, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=3, attempt_timeout=30.0)
 
     # Process multiple questions using the same cached context
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:
@@ -271,7 +271,7 @@ async def example_custom_strategy():
 
     # Use the custom strategy
     strategy = MockLLMStrategy()
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:
         await processor.add_work(

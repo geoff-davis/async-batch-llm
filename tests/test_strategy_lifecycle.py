@@ -49,7 +49,7 @@ class LifecycleTrackingStrategy(LLMCallStrategy[str]):
 async def test_shared_strategy_prepared_once_cleaned_once():
     """Test that shared strategy instance is prepared once and cleaned up once."""
     strategy = LifecycleTrackingStrategy()
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         # Add multiple items with same strategy instance
@@ -81,7 +81,7 @@ async def test_multiple_unique_strategies_each_get_lifecycle():
     strategy1 = LifecycleTrackingStrategy(output="output1")
     strategy2 = LifecycleTrackingStrategy(output="output2")
     strategy3 = LifecycleTrackingStrategy(output="output3")
-    config = ProcessorConfig(max_workers=3, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=3, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         # Add items with different strategies
@@ -125,7 +125,7 @@ async def test_cleanup_happens_even_on_processing_error():
             raise ValueError("Intentional test failure")
 
     strategy = FailingStrategy()
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
@@ -156,7 +156,7 @@ async def test_cleanup_error_does_not_fail_batch():
             raise RuntimeError("Cleanup failed")
 
     strategy = CleanupFailStrategy()
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
 
     # Should not raise despite cleanup failure
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
@@ -174,7 +174,7 @@ async def test_cleanup_error_does_not_fail_batch():
 async def test_backward_compatibility_no_context_manager_no_cleanup():
     """Test that without context manager, cleanup is not called (backward compatible)."""
     strategy = LifecycleTrackingStrategy()
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
 
     # Don't use context manager
     processor = ParallelBatchProcessor[str, str, None](config=config)
@@ -195,7 +195,7 @@ async def test_backward_compatibility_no_context_manager_no_cleanup():
 async def test_shutdown_triggers_cleanup_without_context_manager():
     """shutdown() should run strategy cleanup when not using context manager."""
     strategy = LifecycleTrackingStrategy()
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
 
     processor = ParallelBatchProcessor[str, str, None](config=config)
     await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
@@ -213,7 +213,7 @@ async def test_shutdown_triggers_cleanup_without_context_manager():
 async def test_cannot_add_work_after_process_all_starts():
     """Test that add_work() raises RuntimeError after process_all() starts."""
     strategy = LifecycleTrackingStrategy()
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         # Add first item
@@ -256,7 +256,7 @@ async def test_strategy_without_cleanup_method_works():
             return "output", tokens
 
     strategy = NoCleanupStrategy()
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
 
     # Should work fine without cleanup method
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
@@ -291,7 +291,7 @@ async def test_strategy_without_prepare_method_works():
             return "output", tokens
 
     strategy = NoPrepareStrategy()
-    config = ProcessorConfig(max_workers=2, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
 
     # Should work fine without prepare method
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
@@ -308,7 +308,7 @@ async def test_mixed_shared_and_unique_strategies():
     shared_strategy = LifecycleTrackingStrategy(output="shared")
     unique_strategy1 = LifecycleTrackingStrategy(output="unique1")
     unique_strategy2 = LifecycleTrackingStrategy(output="unique2")
-    config = ProcessorConfig(max_workers=3, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=3, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         # Add multiple items with shared strategy

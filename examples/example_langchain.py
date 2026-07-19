@@ -83,7 +83,7 @@ Answer:"""
     strategy = LangChainStrategy(chain=chain)
 
     # Configure processor
-    config = ProcessorConfig(max_workers=3, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=3, attempt_timeout=30.0)
 
     # Process items
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:
@@ -141,7 +141,7 @@ Summary:"""
     strategy = LangChainStrategy(chain=chain)
 
     # Configure processor
-    config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
 
     # Process items
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:
@@ -252,7 +252,7 @@ async def example_langchain_rag():
     strategy = RAGStrategy(qa_chain=qa_chain)
 
     # Configure processor
-    config = ProcessorConfig(max_workers=2, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
 
     # Process questions
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:
@@ -325,7 +325,7 @@ Creative response:"""
     creative_strategy = LangChainStrategy(chain=creative_chain)
 
     # Configure processor
-    config = ProcessorConfig(max_workers=4, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=4, attempt_timeout=30.0)
 
     # Process mixed task types
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:

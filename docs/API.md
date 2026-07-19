@@ -129,7 +129,7 @@ class WorkItemResult(Generic[TOutput, TContext]):
 - `exception` (Exception | None): The original exception when the item failed
   (what `call()` / `LLMGateway.submit()` re-raise); None on success
 - `admission_wait_seconds` (float): Cumulative provider-capacity wait across all
-  attempts. This wait occurs before `timeout_per_item` starts.
+  attempts. This wait occurs before `attempt_timeout` starts.
 - `timing` (WorkItemTiming): Total wall time and typed per-try timing for
   admission, startup ramp, execution, provider calls where available, cooldown,
   retry backoff, error classification, and timeout category.
@@ -253,7 +253,7 @@ class ParallelBatchProcessor(
         self,
         max_workers: int | None = None,          # deprecated, use config
         post_processor: PostProcessorFunc[TOutput, TContext] | None = None,
-        timeout_per_item: float | None = None,   # deprecated, use config
+        attempt_timeout: float | None = None,   # deprecated, use config
         rate_limit_cooldown: float | None = None,  # deprecated, use config
         config: ProcessorConfig | None = None,
         error_classifier: ErrorClassifier | None = None,
@@ -279,7 +279,7 @@ Pass everything by keyword — the first positional parameter is the deprecated
 - `rate_limit_strategy` (RateLimitStrategy | None): Custom rate limit handling. Default: `ExponentialBackoffStrategy()`
 - `middlewares` (list[Middleware] | None): List of middleware for pre/post processing
 - `observers` (list[ProcessorObserver] | None): List of observers for monitoring events
-- `max_workers`, `timeout_per_item`, `rate_limit_cooldown`: deprecated loose parameters;
+- `max_workers`, `attempt_timeout`, `rate_limit_cooldown`: deprecated loose parameters;
   set them on `ProcessorConfig` instead
 
 > **Post-processing:** By default the optional `post_processor` runs inline with the worker's item lifecycle
@@ -344,7 +344,7 @@ async with ParallelBatchProcessor(config=config) as processor:
 ```python
 from async_batch_llm import ParallelBatchProcessor, ProcessorConfig, LLMWorkItem
 
-config = ProcessorConfig(max_workers=5, timeout_per_item=60.0)
+config = ProcessorConfig(max_workers=5, attempt_timeout=60.0)
 
 async with ParallelBatchProcessor(config=config) as processor:
     for i in range(100):
@@ -853,7 +853,7 @@ Complete configuration for batch processor.
 @dataclass
 class ProcessorConfig:
     max_workers: int = 5
-    timeout_per_item: float = 120.0
+    attempt_timeout: float = 120.0
     post_processor_timeout: float = 90.0
     concurrent_post_processing: bool = False
     retry: RetryConfig = field(default_factory=RetryConfig)
@@ -872,11 +872,11 @@ class ProcessorConfig:
 
 - `max_workers` (int): Maximum number of concurrent workers. Default: 5
 - `max_provider_concurrency` (int | None): Optional provider/client concurrency
-  limit applied before `strategy.execute()` and outside `timeout_per_item`.
+  limit applied before `strategy.execute()` and outside `attempt_timeout`.
   When the strategy also advertises `max_concurrency`, the lower limit applies.
 - `startup_ramp` (StartupRampConfig | None): Optional initial concurrency ramp.
-  Ramp wait is admission time outside `timeout_per_item`. Default: None.
-- `timeout_per_item` (float): Timeout applied to each `execute()` attempt in seconds (per-attempt, not a
+  Ramp wait is admission time outside `attempt_timeout`. Default: None.
+- `attempt_timeout` (float): Timeout applied to each `execute()` attempt in seconds (per-attempt, not a
   total budget across retries). Default: 120.0
 - `post_processor_timeout` (float): Max seconds to wait for the sync or async `post_processor`
   callback per item. Default: 90.0
@@ -900,7 +900,7 @@ from async_batch_llm import ProcessorConfig, RetryConfig
 
 config = ProcessorConfig(
     max_workers=10,
-    timeout_per_item=60.0,
+    attempt_timeout=60.0,
     retry=RetryConfig(max_attempts=5, initial_wait=2.0),
     progress_interval=20,
     max_queue_size=1000,
@@ -1012,7 +1012,7 @@ The allowed concurrency begins at `initial_concurrency` and adds
 `concurrency_step` after each interval. The effective maximum is the lowest of
 the ramp maximum, explicit `max_provider_concurrency`, advertised model capacity,
 and host worker limit. Optional jitter spreads cold-start admissions. All ramp
-wait occurs before `timeout_per_item`.
+wait occurs before `attempt_timeout`.
 
 ---
 
@@ -1088,7 +1088,7 @@ class ErrorInfo:
 - `is_rate_limit` (bool): Whether this is a rate limit error (429, resource_exhausted, etc.)
 - `is_timeout` (bool): Whether this is a timeout error (framework or API timeout)
 - `error_category` (str): Error category for logging/metrics. Common values:
-  - `"framework_timeout"` - Framework timeout (exceeded `timeout_per_item`)
+  - `"framework_timeout"` - Framework timeout (exceeded `attempt_timeout`)
   - `"api_timeout"` - API-level timeout
   - `"rate_limit"` - Rate limit error
   - `"validation_error"` - Pydantic validation error
@@ -1488,7 +1488,7 @@ class FrameworkTimeoutError(TimeoutError):
     Timeout enforced by the async-batch-llm framework (asyncio.wait_for).
 
     This distinguishes framework-level timeouts from API-level timeouts.
-    Framework timeouts indicate the configured timeout_per_item was exceeded,
+    Framework timeouts indicate the configured attempt_timeout was exceeded,
     whereas API timeouts indicate the LLM provider returned a timeout error.
     """
 ```
@@ -1497,7 +1497,7 @@ class FrameworkTimeoutError(TimeoutError):
 
 Differentiates between:
 
-- **Framework timeout**: `asyncio.wait_for()` timed out (exceeded `timeout_per_item`)
+- **Framework timeout**: `asyncio.wait_for()` timed out (exceeded `attempt_timeout`)
 - **API timeout**: LLM provider returned timeout error (network issue, slow response)
 
 **Error Classification:**
@@ -1506,13 +1506,13 @@ Differentiates between:
 - `is_timeout`: `True`
 - `error_category`: `"framework_timeout"`
 
-**When to increase `timeout_per_item`:**
+**When to increase `attempt_timeout`:**
 
 If you see frequent `FrameworkTimeoutError`, it indicates:
 
 1. LLM calls are taking longer than configured timeout
 2. Retry delays don't fit within timeout window
-3. Solution: Increase `timeout_per_item` or reduce retry configuration
+3. Solution: Increase `attempt_timeout` or reduce retry configuration
 
 **Example:**
 
@@ -1523,7 +1523,7 @@ try:
     result = await processor.process_all()
 except FrameworkTimeoutError as e:
     print(f"Framework timeout: {e}")
-    print("Consider increasing timeout_per_item in config")
+    print("Consider increasing attempt_timeout in config")
 
 # Or check in results
 for item_result in result.results:
@@ -1663,7 +1663,7 @@ async def main():
     # Configure processor
     config = ProcessorConfig(
         max_workers=10,
-        timeout_per_item=60.0,
+        attempt_timeout=60.0,
         max_queue_size=100,
     )
 

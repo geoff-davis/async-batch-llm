@@ -224,7 +224,7 @@ async def embed_corpus(
     Returns a {text: vector} mapping. Results complete in any order, so
     each chunk's texts travel alongside it in the work item's context.
     """
-    config = ProcessorConfig(max_workers=4, timeout_per_item=60.0)
+    config = ProcessorConfig(max_workers=4, attempt_timeout=60.0)
 
     async with ParallelBatchProcessor[dict[str, Any], list[list[float]], None](
         config=config,

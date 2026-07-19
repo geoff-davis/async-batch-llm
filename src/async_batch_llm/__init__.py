@@ -24,7 +24,7 @@ Example:
     >>>
     >>> agent = Agent("openai:gpt-4o-mini", result_type=MyOutput)
     >>> strategy = PydanticAIStrategy(agent=agent)
-    >>> config = ProcessorConfig(max_workers=5, timeout_per_item=60.0)
+    >>> config = ProcessorConfig(max_workers=5, attempt_timeout=60.0)
     >>>
     >>> async with ParallelBatchProcessor(config=config) as processor:
     ...     await processor.add_work(LLMWorkItem(

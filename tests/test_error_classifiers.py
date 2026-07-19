@@ -193,7 +193,7 @@ async def test_gemini_classifier_rate_limit_retries_after_processor_cooldown():
     )
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=1.0,
+        attempt_timeout=1.0,
         retry=RetryConfig(max_attempts=2, initial_wait=0.001, max_wait=0.001, jitter=False),
         rate_limit=RateLimitConfig(
             cooldown_seconds=0.001,
@@ -236,7 +236,7 @@ async def test_persistent_rate_limit_exhausts_rate_limit_budget():
     strategy = _PersistentRateLimitStrategy()
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=1.0,
+        attempt_timeout=1.0,
         retry=RetryConfig(
             max_attempts=3,  # irrelevant for pure rate limits; budget never consumed
             initial_wait=0.001,
@@ -302,7 +302,7 @@ async def test_rate_limit_retry_does_not_add_exponential_backoff():
     initial_wait = 0.5
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=2.0,
+        attempt_timeout=2.0,
         retry=RetryConfig(
             max_attempts=2,
             initial_wait=initial_wait,

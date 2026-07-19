@@ -77,7 +77,7 @@ async def test_retry_state_persistence():
     strategy = RetryStateStrategy(fail_until_attempt=3)
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 
@@ -116,7 +116,7 @@ async def test_retry_state_isolation():
     strategy = RetryStateStrategy(fail_until_attempt=2)
     config = ProcessorConfig(
         max_workers=2,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 
@@ -183,7 +183,7 @@ async def test_retry_state_none_backward_compatibility():
             return "Success", {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
 
     strategy = LegacyStrategy()
-    config = ProcessorConfig(max_workers=1, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=10.0)
 
     async with ParallelBatchProcessor[str, str, None](config=config) as processor:
         await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
@@ -222,7 +222,7 @@ async def test_on_error_receives_state():
     strategy = ErrorTrackingStrategy()
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 
@@ -363,7 +363,7 @@ async def test_shared_strategy_with_retry_state():
     strategy = SharedStrategy()
     config = ProcessorConfig(
         max_workers=3,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 

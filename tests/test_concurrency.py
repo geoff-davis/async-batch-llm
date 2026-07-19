@@ -43,7 +43,7 @@ async def test_concurrent_stats_updates():
     mock_agent = MockAgent(response_factory=mock_response, latency=0.01)
 
     # Use many workers to maximize concurrency
-    config = ProcessorConfig(max_workers=10, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=10, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     # Add many items
@@ -102,7 +102,7 @@ async def test_concurrent_rate_limit_handling():
 
     config = ProcessorConfig(
         max_workers=3,  # Fewer workers
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         rate_limit=fast_rate_limit,
     )
     metrics = MetricsObserver()
@@ -167,7 +167,7 @@ async def test_rate_limit_requeue_completes_without_deadlock():
 
     config = ProcessorConfig(
         max_workers=2,
-        timeout_per_item=1.0,
+        attempt_timeout=1.0,
         rate_limit=RateLimitConfig(
             cooldown_seconds=0.01,
             slow_start_items=0,
@@ -211,7 +211,7 @@ async def test_process_item_retries_propagate_cancellation():
             await asyncio.sleep(10)
             return "unreachable", {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=30.0)
     processor = ParallelBatchProcessor[str, str, None](config=config)
 
     work_item = LLMWorkItem(item_id="cancel_test", strategy=HangingStrategy(), prompt="wait")
@@ -305,7 +305,7 @@ async def test_progress_callback_timeout_for_sync_function():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=1.0,
+        attempt_timeout=1.0,
         progress_interval=1,
         progress_callback_timeout=0.05,
         rate_limit=RateLimitConfig(
@@ -357,7 +357,7 @@ async def test_progress_callback_timeout_for_async_function():
 
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=1.0,
+        attempt_timeout=1.0,
         progress_interval=1,
         progress_callback_timeout=0.05,
         rate_limit=RateLimitConfig(
@@ -411,7 +411,7 @@ async def test_slow_start_skipped_before_rate_limit():
 
     mock_agent = MockAgent(response_factory=mock_response, latency=0.001)
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=5.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=5.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config, rate_limit_strategy=strategy
     )
@@ -475,7 +475,7 @@ async def test_slow_start_engages_after_rate_limit():
                 error_category="unknown",
             )
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=5.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=5.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config,
         error_classifier=TestRateLimitClassifier(),
@@ -509,7 +509,7 @@ async def test_metrics_observer_thread_safety():
 
     mock_agent = MockAgent(response_factory=mock_response, latency=0.001)  # Reduced from 0.01s
 
-    config = ProcessorConfig(max_workers=10, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=10, attempt_timeout=10.0)
     metrics = MetricsObserver()
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config, observers=[metrics])
 
@@ -549,7 +549,7 @@ async def test_no_result_loss_under_concurrency():
     mock_agent = MockAgent(response_factory=mock_response, latency=0.005)
 
     # Many workers, short latency = high concurrency
-    config = ProcessorConfig(max_workers=20, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=20, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     # Add many items
@@ -599,7 +599,7 @@ async def test_concurrent_post_processor_calls():
 
     mock_agent = MockAgent(response_factory=mock_response, latency=0.01)
 
-    config = ProcessorConfig(max_workers=10, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=10, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](
         config=config, post_processor=post_process
     )
@@ -631,7 +631,7 @@ async def test_get_stats_thread_safety():
 
     mock_agent = MockAgent(response_factory=mock_response, latency=0.02)
 
-    config = ProcessorConfig(max_workers=10, timeout_per_item=10.0)
+    config = ProcessorConfig(max_workers=10, attempt_timeout=10.0)
     processor = ParallelBatchProcessor[str, TestOutput, None](config=config)
 
     # Add items
@@ -691,7 +691,7 @@ async def test_slow_start_counter_accuracy():
 
     config = ProcessorConfig(
         max_workers=5,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         rate_limit=RateLimitConfig(
             cooldown_seconds=0.1,  # Very short for testing
             slow_start_items=10,
@@ -730,7 +730,7 @@ async def test_proactive_rate_limiting_configured():
     # Configure proactive rate limit
     config = ProcessorConfig(
         max_workers=2,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         max_requests_per_minute=60.0,
     )
 
@@ -769,7 +769,7 @@ async def test_proactive_rate_limiting_disabled():
     # No rate limit configured
     config = ProcessorConfig(
         max_workers=5,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         max_requests_per_minute=None,  # Disabled
     )
 
@@ -809,7 +809,7 @@ async def test_proactive_rate_limiting_with_multiple_workers():
     # Configure with multiple workers
     config = ProcessorConfig(
         max_workers=5,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         max_requests_per_minute=60.0,
     )
 
@@ -843,7 +843,7 @@ async def test_proactive_rate_limit_validation():
     with pytest.raises(ValueError, match="max_requests_per_minute must be > 0"):
         config = ProcessorConfig(
             max_workers=5,
-            timeout_per_item=10.0,
+            attempt_timeout=10.0,
             max_requests_per_minute=-10.0,  # Invalid
         )
         config.validate()
@@ -852,7 +852,7 @@ async def test_proactive_rate_limit_validation():
     with pytest.raises(ValueError, match="max_requests_per_minute must be > 0"):
         config = ProcessorConfig(
             max_workers=5,
-            timeout_per_item=10.0,
+            attempt_timeout=10.0,
             max_requests_per_minute=0.0,  # Invalid
         )
         config.validate()
@@ -860,7 +860,7 @@ async def test_proactive_rate_limit_validation():
     # Test: None should be valid (no rate limiting)
     config = ProcessorConfig(
         max_workers=5,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         max_requests_per_minute=None,  # Valid
     )
     config.validate()  # Should not raise

@@ -104,7 +104,7 @@ async def call(
     """Run one prompt and return its output, raising on failure.
 
     Set a timeout or retry policy via ``config`` (e.g.
-    ``ProcessorConfig(timeout_per_item=20)``).
+    ``ProcessorConfig(attempt_timeout=20)``).
     """
     result = await call_result(strategy, prompt, config=config, error_classifier=error_classifier)
     return unwrap_result(result)

@@ -167,7 +167,7 @@ class TestWorkItemResultMetadata:
     @pytest.mark.asyncio
     async def test_three_tuple_strategy_populates_workitem_metadata(self):
         strategy = _ThreeTupleStrategy(metadata={"provider": "test", "model": "x"})
-        config = ProcessorConfig(max_workers=1, timeout_per_item=2.0)
+        config = ProcessorConfig(max_workers=1, attempt_timeout=2.0)
 
         async with ParallelBatchProcessor[str, str, None](config=config) as processor:
             await processor.add_work(LLMWorkItem(item_id="i1", strategy=strategy, prompt="hi"))
@@ -180,7 +180,7 @@ class TestWorkItemResultMetadata:
     async def test_two_tuple_legacy_strategy_yields_none_metadata(self):
         """Pre-v0.10.0 strategies still work; metadata defaults to None."""
         strategy = _TwoTupleLegacyStrategy()
-        config = ProcessorConfig(max_workers=1, timeout_per_item=2.0)
+        config = ProcessorConfig(max_workers=1, attempt_timeout=2.0)
 
         async with ParallelBatchProcessor[str, str, None](config=config) as processor:
             await processor.add_work(LLMWorkItem(item_id="i1", strategy=strategy, prompt="hi"))
@@ -193,7 +193,7 @@ class TestWorkItemResultMetadata:
     @pytest.mark.asyncio
     async def test_three_tuple_with_none_metadata(self):
         strategy = _ThreeTupleStrategy(metadata=None)
-        config = ProcessorConfig(max_workers=1, timeout_per_item=2.0)
+        config = ProcessorConfig(max_workers=1, attempt_timeout=2.0)
 
         async with ParallelBatchProcessor[str, str, None](config=config) as processor:
             await processor.add_work(LLMWorkItem(item_id="i1", strategy=strategy, prompt="hi"))
@@ -212,7 +212,7 @@ class TestWorkItemResultMetadata:
                 "tool_calls": [{"id": "c1", "name": "f", "arguments": "{}"}],
             }
         )
-        config = ProcessorConfig(max_workers=1, timeout_per_item=2.0)
+        config = ProcessorConfig(max_workers=1, attempt_timeout=2.0)
 
         async with ParallelBatchProcessor[str, str, None](config=config) as processor:
             await processor.add_work(LLMWorkItem(item_id="i1", strategy=strategy, prompt="hi"))
@@ -230,7 +230,7 @@ class TestWorkItemResultMetadata:
     @pytest.mark.asyncio
     async def test_legacy_two_tuple_strategy_views_are_none(self):
         strategy = _TwoTupleLegacyStrategy()
-        config = ProcessorConfig(max_workers=1, timeout_per_item=2.0)
+        config = ProcessorConfig(max_workers=1, attempt_timeout=2.0)
 
         async with ParallelBatchProcessor[str, str, None](config=config) as processor:
             await processor.add_work(LLMWorkItem(item_id="i1", strategy=strategy, prompt="hi"))

@@ -74,7 +74,7 @@ async def test_cleanup_failure_does_not_crash_or_skip_siblings(caplog):
     bad = _BadCleanupStrategy("bad", ValueError("simulated cleanup boom"))
     ok = _OkStrategy("ok")
 
-    config = ProcessorConfig(max_workers=2, timeout_per_item=5.0)
+    config = ProcessorConfig(max_workers=2, attempt_timeout=5.0)
     async with ParallelBatchProcessor[str, str, None](config=config) as proc:
         await proc.add_work(LLMWorkItem(item_id="1", strategy=bad, prompt="a"))
         await proc.add_work(LLMWorkItem(item_id="2", strategy=ok, prompt="b"))
@@ -98,7 +98,7 @@ async def test_cleanup_does_not_swallow_base_exceptions():
     """
     bad = _BadCleanupStrategy("bad", KeyboardInterrupt())
 
-    config = ProcessorConfig(max_workers=1, timeout_per_item=5.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=5.0)
     processor = ParallelBatchProcessor[str, str, None](config=config)
     await processor.add_work(LLMWorkItem(item_id="1", strategy=bad, prompt="a"))
     await processor.process_all()
@@ -111,7 +111,7 @@ async def test_cleanup_does_not_swallow_base_exceptions():
 async def test_cleanup_is_idempotent():
     """Calling cleanup twice must not re-run strategy cleanup."""
     ok = _OkStrategy("ok")
-    config = ProcessorConfig(max_workers=1, timeout_per_item=5.0)
+    config = ProcessorConfig(max_workers=1, attempt_timeout=5.0)
     processor = ParallelBatchProcessor[str, str, None](config=config)
     await processor.add_work(LLMWorkItem(item_id="1", strategy=ok, prompt="a"))
     await processor.process_all()

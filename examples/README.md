@@ -94,5 +94,5 @@ Processed 5 items:
 
 - Start with Example 4 (MockAgent) - it doesn't require an API key
 - Examples 1-3 require a valid Gemini API key
-- Adjust `max_workers` and `timeout_per_item` for your use case
+- Adjust `max_workers` and `attempt_timeout` for your use case
 - Check the metrics output to monitor performance

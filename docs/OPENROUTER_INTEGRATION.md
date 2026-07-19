@@ -44,7 +44,7 @@ async def main() -> None:
         title="My App",
     )
     strategy = OpenRouterStrategy(model)
-    config = ProcessorConfig(max_workers=5, timeout_per_item=60.0)
+    config = ProcessorConfig(max_workers=5, attempt_timeout=60.0)
 
     async with ParallelBatchProcessor[None, str, None](
         config=config,

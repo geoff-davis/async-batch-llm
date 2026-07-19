@@ -51,7 +51,7 @@ async def test_startup_ramp_increases_allowed_concurrency_over_time() -> None:
     strategy = _RampStrategy({str(i): 0.09 for i in range(5)})
     config = ProcessorConfig(
         max_workers=5,
-        timeout_per_item=1.0,
+        attempt_timeout=1.0,
         startup_ramp=StartupRampConfig(
             initial_concurrency=1,
             concurrency_step=1,
@@ -77,7 +77,7 @@ async def test_ramp_wait_is_outside_execution_timeout_in_gateway() -> None:
     strategy = _RampStrategy({"first": 0.12, "second": 0.08})
     config = ProcessorConfig(
         max_workers=2,
-        timeout_per_item=0.10,
+        attempt_timeout=0.10,
         retry=RetryConfig(max_attempts=1),
         startup_ramp=StartupRampConfig(
             initial_concurrency=1,
@@ -104,7 +104,7 @@ async def test_ramp_composes_with_lower_advertised_capacity() -> None:
     strategy = _RampStrategy({str(i): 0.05 for i in range(4)}, capacity=2)
     config = ProcessorConfig(
         max_workers=4,
-        timeout_per_item=1.0,
+        attempt_timeout=1.0,
         startup_ramp=StartupRampConfig(
             initial_concurrency=1,
             concurrency_step=4,

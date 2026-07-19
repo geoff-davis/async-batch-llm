@@ -156,7 +156,7 @@ class ParallelBatchProcessor(
         if timeout_per_item is not None:
             warnings.warn(
                 "The 'timeout_per_item' parameter is deprecated. "
-                "Use ProcessorConfig(timeout_per_item=...) instead.",
+                "Use ProcessorConfig(attempt_timeout=...) instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -174,7 +174,7 @@ class ParallelBatchProcessor(
 
             config = ProcessorConfig(
                 max_workers=max_workers or 5,
-                timeout_per_item=timeout_per_item or 120.0,
+                attempt_timeout=timeout_per_item or 120.0,
                 rate_limit=RateLimitConfig(cooldown_seconds=rate_limit_cooldown or 300.0),
             )
         else:
@@ -189,7 +189,7 @@ class ParallelBatchProcessor(
             if max_workers is not None:
                 overrides["max_workers"] = max_workers
             if timeout_per_item is not None:
-                overrides["timeout_per_item"] = timeout_per_item
+                overrides["attempt_timeout"] = timeout_per_item
             if rate_limit_cooldown is not None:
                 overrides["rate_limit"] = dataclasses.replace(
                     config.rate_limit, cooldown_seconds=rate_limit_cooldown

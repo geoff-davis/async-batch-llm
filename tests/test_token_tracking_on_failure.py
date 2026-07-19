@@ -63,7 +63,7 @@ async def test_tokens_tracked_on_validation_failure():
     strategy = FailingParserStrategy()
     config = ProcessorConfig(
         max_workers=2,
-        timeout_per_item=10.0,
+        attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 
@@ -136,7 +136,7 @@ async def test_cached_tokens_tracked_on_failure():
     strategy = CachedFailStrategy()
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=5.0,
+        attempt_timeout=5.0,
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
     )
 

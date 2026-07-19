@@ -104,7 +104,7 @@ strategy = GeminiStrategy(
 )
 
 # Configure processor
-config = ProcessorConfig(max_workers=5, timeout_per_item=30.0)
+config = ProcessorConfig(max_workers=5, attempt_timeout=30.0)
 
 # Process items
 async with ParallelBatchProcessor[str, SummaryOutput, None](config=config) as processor:
@@ -165,7 +165,7 @@ cached_model = GeminiCachedModel(
 strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
 
 # Use in processor
-config = ProcessorConfig(max_workers=3, timeout_per_item=30.0)
+config = ProcessorConfig(max_workers=3, attempt_timeout=30.0)
 
 async with ParallelBatchProcessor[str, str, None](config=config) as processor:
     questions = [
@@ -398,7 +398,7 @@ from async_batch_llm import RateLimitConfig
 
 config = ProcessorConfig(
     max_workers=10,
-    timeout_per_item=30.0,
+    attempt_timeout=30.0,
     rate_limit=RateLimitConfig(
         cooldown_seconds=60.0,  # Wait 60s after rate limit
         slow_start_items=50,  # Gradually resume over 50 items
@@ -598,7 +598,7 @@ asyncio.TimeoutError
 **Fix**: Increase timeout:
 
 ```python
-config = ProcessorConfig(timeout_per_item=60.0)  # 60 seconds
+config = ProcessorConfig(attempt_timeout=60.0)  # 60 seconds
 ```
 
 ## Advanced: Smart Retry with on_error

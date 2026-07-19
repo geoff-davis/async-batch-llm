@@ -106,7 +106,7 @@ class _FailValidationThenSucceed(LLMCallStrategy[str]):
 async def test_failed_attempt_tokens_merged_into_successful_result():
     config = ProcessorConfig(
         max_workers=1,
-        timeout_per_item=5.0,
+        attempt_timeout=5.0,
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, jitter=False),
     )
     strategy = _FailValidationThenSucceed()
@@ -148,7 +148,7 @@ async def test_metrics_counts_match_batch_result_on_exhausted_retries():
     metrics = MetricsObserver()
     config = ProcessorConfig(
         max_workers=2,
-        timeout_per_item=5.0,
+        attempt_timeout=5.0,
         retry=RetryConfig(max_attempts=2, initial_wait=0.01, jitter=False),
     )
     strategy = _AlwaysFails()

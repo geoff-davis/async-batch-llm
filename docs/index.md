@@ -82,7 +82,7 @@ async def main():
     strategy = PydanticAIStrategy(agent=agent)
 
     # Configure processor
-    config = ProcessorConfig(max_workers=5, timeout_per_item=30.0)
+    config = ProcessorConfig(max_workers=5, attempt_timeout=30.0)
 
     # Process items with automatic resource cleanup
     async with ParallelBatchProcessor[str, Summary, None](config=config) as processor:
