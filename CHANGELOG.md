@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Zero-config checkpointing ([#99])** — `JsonlArtifactStore("run.jsonl")`
+  now works without an `ArtifactIdentity`: `provider` and `model` are
+  inferred from the strategy at run start (built-in models map to their
+  provider names, custom models use their class name) and the remaining
+  identity fields default to `"unversioned"`. Prompt — and, by default,
+  context — still participate in the per-item compatibility fingerprint, so
+  a changed prompt or model never silently replays a stale result. The full
+  explicit `ArtifactIdentity` remains the recommended path for versioned
+  production pipelines.
+
 - **Unified `concurrency=` knob ([#97])** — `ProcessorConfig(concurrency=N)`
   (or the `process_prompts(..., concurrency=N)` /
   `process_stream(..., concurrency=N)` shorthand) coherently sizes every
@@ -713,6 +723,7 @@ Details for each live under **Changed**/**Removed** below.
 [#96]: https://github.com/geoff-davis/async-batch-llm/issues/96
 [#97]: https://github.com/geoff-davis/async-batch-llm/issues/97
 [#98]: https://github.com/geoff-davis/async-batch-llm/issues/98
+[#99]: https://github.com/geoff-davis/async-batch-llm/issues/99
 [#101]: https://github.com/geoff-davis/async-batch-llm/issues/101
 
 ## [0.8.0] - 2026-04-24
