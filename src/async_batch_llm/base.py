@@ -470,6 +470,25 @@ class CachedTokenRates:
     that took effect April 2026; earlier the discount was ~10%)."""
 
 
+class _CallableRate(float):
+    """Transitional return type for ``BatchResult.cache_hit_rate``.
+
+    Behaves as a plain float in every numeric/format context; calling it
+    (the pre-0.19 method spelling) still works but warns. Remove together
+    with the deprecation in the next major release.
+    """
+
+    def __call__(self) -> float:
+        warnings.warn(
+            "BatchResult.cache_hit_rate is now a property; drop the "
+            "parentheses (batch.cache_hit_rate). The callable form will be "
+            "removed in the next major release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return float(self)
+
+
 @dataclass(frozen=True)
 class BatchTermination:
     """Serializable reason a batch stopped accepting or executing work."""
@@ -526,16 +545,19 @@ class BatchResult(Generic[TOutput, TContext]):
             r.token_usage.get("cached_input_tokens", 0) for r in self.results
         )
 
+    @property
     def cache_hit_rate(self) -> float:
-        """
-        Calculate cache hit rate as percentage of input tokens that were cached.
+        """Percentage (0.0–100.0) of input tokens served from cache.
 
-        Returns:
-            Percentage (0.0 to 100.0) of input tokens served from cache
+        A property since v0.19.0 (issue #93), consistent with the sibling
+        zero-arg scalars (``total_cached_tokens``, ``succeeded``, ...).
+        The pre-0.19 method spelling ``batch.cache_hit_rate()`` still works
+        via a transitional callable-float return value and emits a
+        ``DeprecationWarning``; drop the parentheses.
         """
         if self.total_input_tokens == 0:
-            return 0.0
-        return (self.total_cached_tokens / self.total_input_tokens) * 100.0
+            return _CallableRate(0.0)
+        return _CallableRate((self.total_cached_tokens / self.total_input_tokens) * 100.0)
 
     def effective_input_tokens(self, cached_token_rate: float | None = None) -> int:
         """

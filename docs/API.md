@@ -202,7 +202,7 @@ automatically in `__post_init__` — construct with `BatchResult(results=[...])`
   `(item_id, output)` pairs with `with_ids=True` (v0.19.0)
 - `successes` / `failures` (properties) — lists of successful / failed results
 - `summary()` — printable plain-text post-run report (v0.19.0)
-- `by_id()`, `in_input_order()`, `cache_hit_rate()`,
+- `by_id()`, `in_input_order()`, `cache_hit_rate`,
   `effective_input_tokens()`, `estimated_cost()` — see below
 - `to_dict()`/`from_dict()`, `to_json()`/`from_json()`,
   `to_jsonl()`/`from_jsonl()` — versioned round-trips; `summary()` works
