@@ -38,13 +38,11 @@ Install only the core package with `pip install async-batch-llm`.
 ```python
 import asyncio
 
-from async_batch_llm import OpenAIModel, OpenAIStrategy, ProcessorConfig, process_prompts
+from async_batch_llm import ProcessorConfig, llm, process_prompts
 
 
 async def main() -> None:
-    strategy = OpenAIStrategy(
-        OpenAIModel.from_api_key("gpt-4o-mini")  # reads OPENAI_API_KEY
-    )
+    strategy = llm("openai:gpt-4o-mini")  # reads OPENAI_API_KEY
     batch = await process_prompts(
         strategy,
         ["Summarize document A", "Summarize document B"],
@@ -59,6 +57,13 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+`llm("provider:model")` covers `openai:`, `gemini:`, `openrouter:`, and
+`deepseek:`; keyword arguments forward to the model constructor (e.g.
+`llm("deepseek:deepseek-v4-flash", thinking=False, max_connections=150)`).
+For custom clients, cached models, or custom strategies, use the explicit
+two-object form — `OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))` —
+described in the [provider guides](https://geoff-davis.github.io/async-batch-llm/).
 
 Pass `(item_id, prompt)` pairs to control IDs, or `(item_id, prompt, context)`
 triples to carry application data into each result. Collected results remain in

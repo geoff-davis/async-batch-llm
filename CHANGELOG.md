@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **String-based strategy factory ([#95])** — `llm("provider:model")` builds a
+  ready-to-use built-in strategy in one line: `llm("openai:gpt-4o-mini")`,
+  `llm("gemini:gemini-2.5-flash")`, `llm("openrouter:anthropic/claude-haiku-4-5")`,
+  `llm("deepseek:deepseek-v4-flash", thinking=False, max_connections=150)`.
+  Keyword arguments forward to the model constructor;
+  `response_parser`/`temperature`/`generation_config` forward to the strategy.
+  Unknown prefixes and missing optional dependencies raise errors naming the
+  valid prefixes and the exact install extra. The explicit two-object form
+  remains the documented path for custom clients, cached models, and custom
+  strategies.
+
 ## [0.18.0] - 2026-07-13
 
 ### Added
@@ -650,6 +663,7 @@ Details for each live under **Changed**/**Removed** below.
 [#51]: https://github.com/geoff-davis/async-batch-llm/pull/51
 [#52]: https://github.com/geoff-davis/async-batch-llm/issues/52
 [#81]: https://github.com/geoff-davis/async-batch-llm/issues/81
+[#95]: https://github.com/geoff-davis/async-batch-llm/issues/95
 
 ## [0.8.0] - 2026-04-24
 

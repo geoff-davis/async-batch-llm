@@ -108,6 +108,9 @@ from .core import (
 # Protocols
 from .core.protocols import LLMModel, ManagedLLMModel
 
+# String-based strategy factory: llm("openai:gpt-4o-mini")
+from .factory import llm
+
 # Queue-less convenience surfaces (single call + shared gateway), built on the
 # same per-item resilience pipeline as the batch processor.
 from .gateway import LLMGateway
@@ -246,6 +249,8 @@ __all__ = [
     "call_result",
     "LLMCallError",
     "LLMGateway",
+    # String-based strategy factory
+    "llm",
     # LLM Strategies
     "DeepSeekStrategy",
     "GeminiStrategy",

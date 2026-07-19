@@ -36,9 +36,10 @@ gives backpressure (constant memory for huge inputs). Error classifier is
 auto-selected from the strategy:
 
 ```python
-from async_batch_llm import OpenAIModel, OpenAIStrategy, process_prompts, process_stream
+from async_batch_llm import llm, process_prompts, process_stream
 
-strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
+strategy = llm("openai:gpt-4o-mini")  # factory (v0.19); explicit form:
+# strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
 
 result = await process_prompts(strategy, ["Summarize A", "Summarize B"])  # -> BatchResult
 async for r in process_stream(strategy, prompts):  # yields WorkItemResult in completion order

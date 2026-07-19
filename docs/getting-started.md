@@ -40,10 +40,10 @@ keyword argument.
 
 ```python
 import asyncio
-from async_batch_llm import OpenAIModel, OpenAIStrategy, process_prompts, process_stream
+from async_batch_llm import llm, process_prompts, process_stream
 
 async def main():
-    strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
+    strategy = llm("openai:gpt-4o-mini")  # reads OPENAI_API_KEY
 
     # Collect all results into a BatchResult:
     result = await process_prompts(strategy, ["Summarize A", "Summarize B"])
@@ -64,6 +64,25 @@ result onto an internal queue, so results arrive in **completion order**. When
 you don't pass `error_classifier=`, it's auto-selected from the strategy
 (`OpenAIStrategy` → `OpenAIErrorClassifier`, `GeminiStrategy` →
 `GeminiErrorClassifier`, etc.).
+
+The `llm()` factory builds the same strategy objects as the explicit
+two-object form. It accepts `"gemini:..."`, `"openai:..."`,
+`"openrouter:..."`, and `"deepseek:..."` prefixes; keyword arguments forward
+to the model constructor:
+
+```python
+from async_batch_llm import llm
+
+strategy = llm("openai:gpt-4o-mini")                     # reads OPENAI_API_KEY
+strategy = llm("gemini:gemini-2.5-flash")                # reads GOOGLE_API_KEY
+strategy = llm("openrouter:anthropic/claude-haiku-4-5")  # reads OPENROUTER_API_KEY
+strategy = llm("deepseek:deepseek-v4-flash", thinking=False, max_connections=150)
+```
+
+For custom clients, Gemini cached models, response parsers with structured
+output, or providers without a prefix, use the explicit two-object
+construction shown in [Built-in Strategies](#built-in-strategies) below —
+that remains the "advanced construction" path.
 
 For large sources, use a lazy iterable plus
 `ProcessorConfig(max_queue_size=N)` and consume `process_stream` incrementally.
