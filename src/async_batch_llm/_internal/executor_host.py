@@ -165,3 +165,6 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
     async def aclose(self) -> None:
         """Run cleanup() on every strategy this host prepared."""
         await self._strategy_lifecycle.cleanup_all()
+        # Cancel any in-flight coordinator-owned cooldown task so a gateway
+        # or single-call host teardown doesn't leak it (issue #88).
+        await self._rate_limit_coord.shutdown()

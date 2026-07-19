@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Caller cancellation no longer finishes a shared cooldown early ([#88])**
+  — the coordinated rate-limit cooldown now runs in a coordinator-owned task
+  instead of the reporting caller's task. Previously, cancelling the caller
+  that reported the 429 (a gateway `submit_timeout`, an item deadline)
+  success-finalized the shared cooldown and woke every waiter — e.g. ~45s
+  into a 300s pause. Now a cancelled caller cancels only itself; all other
+  waiters stay paused until the real cooldown expires. Host teardown
+  (`ParallelBatchProcessor.cleanup()` / gateway & single-call `aclose()`)
+  cancels the owned task via the new `RateLimitCoordinator.shutdown()`,
+  waking waiters so shutdown never hangs and the task is never leaked.
+
 - **`WorkItemResult.exception` propagation confirmed fixed ([#101])** — the
   pre-0.13 backlog concern is closed with regression tests pinning the
   behavior on every surface: batch and streaming paths store the originating
@@ -738,6 +749,7 @@ Details for each live under **Changed**/**Removed** below.
 [#51]: https://github.com/geoff-davis/async-batch-llm/pull/51
 [#52]: https://github.com/geoff-davis/async-batch-llm/issues/52
 [#81]: https://github.com/geoff-davis/async-batch-llm/issues/81
+[#88]: https://github.com/geoff-davis/async-batch-llm/issues/88
 [#93]: https://github.com/geoff-davis/async-batch-llm/issues/93
 [#95]: https://github.com/geoff-davis/async-batch-llm/issues/95
 [#96]: https://github.com/geoff-davis/async-batch-llm/issues/96
