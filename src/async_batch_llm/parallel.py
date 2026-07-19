@@ -198,9 +198,11 @@ class ParallelBatchProcessor(
                 config = dataclasses.replace(config, **overrides)
 
         config.validate()
+        # Always an int after ProcessorConfig.__post_init__ resolution.
+        resolved_max_workers = cast(int, config.max_workers)
 
         super().__init__(
-            config.max_workers,
+            resolved_max_workers,
             post_processor,
             max_queue_size=config.max_queue_size,
             progress_callback=progress_callback,
@@ -216,7 +218,7 @@ class ParallelBatchProcessor(
         self._batch_timeout_task: asyncio.Task[None] | None = None
 
         # Diagnostic: high max_workers can outrun the OS open-file limit.
-        _warn_if_fd_limit_low(config.max_workers)
+        _warn_if_fd_limit_low(resolved_max_workers)
 
         # Set up strategies. When the caller didn't pass an explicit
         # error_classifier, it's auto-selected from the work items' strategies at
@@ -269,7 +271,7 @@ class ParallelBatchProcessor(
         self._strategy_lock = self._strategy_lifecycle._lock
         self._capacity_limiter = CapacityLimiter(
             config.max_provider_concurrency,
-            max_workers=config.max_workers,
+            max_workers=resolved_max_workers,
             startup_ramp=config.startup_ramp,
         )
 
@@ -464,9 +466,27 @@ class ParallelBatchProcessor(
 
         strategy_id = id(work_item.strategy)
         if strategy_id not in self._capacity_checked_strategy_ids:
+            if self.config.concurrency is not None:
+                # Single-knob path (v0.19.0): let built-in models right-size
+                # their connection pools before the first request. Runs before
+                # the capacity check so a successful resize (advertised
+                # capacity == concurrency == workers) produces no warning;
+                # an explicit smaller max_connections refuses the resize and
+                # the warning below surfaces the real contradiction.
+                hook = getattr(work_item.strategy, "request_concurrency", None)
+                if hook is not None:
+                    try:
+                        await hook(self.config.concurrency)
+                    except Exception as e:
+                        logger.warning(
+                            "request_concurrency(%s) failed for %s: %s",
+                            self.config.concurrency,
+                            type(work_item.strategy).__name__,
+                            e,
+                        )
             warn_if_worker_capacity_exceeded(
                 strategy=work_item.strategy,
-                max_workers=self.config.max_workers,
+                max_workers=cast(int, self.config.max_workers),
                 surface="ParallelBatchProcessor",
                 stacklevel=3,
             )

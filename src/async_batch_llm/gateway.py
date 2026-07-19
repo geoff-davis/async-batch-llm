@@ -32,7 +32,7 @@ cap that rejects instantly instead of growing an unbounded waiter list) and
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 from ._internal.capacity import warn_if_worker_capacity_exceeded
 from ._internal.executor_host import ExecutorHost
@@ -84,9 +84,11 @@ class LLMGateway(Generic[TOutput]):
             raise ValueError(f"submit_timeout must be > 0 (got {submit_timeout})")
 
         cfg = config or ProcessorConfig(max_workers=5)
+        # Always an int after ProcessorConfig.__post_init__ resolution.
+        gateway_workers = cast(int, cfg.max_workers)
         warn_if_worker_capacity_exceeded(
             strategy=strategy,
-            max_workers=cfg.max_workers,
+            max_workers=gateway_workers,
             surface="LLMGateway",
             stacklevel=3,
         )
@@ -94,12 +96,12 @@ class LLMGateway(Generic[TOutput]):
         self._host: ExecutorHost[Any, TOutput, Any] = ExecutorHost(
             cfg, strategy=strategy, error_classifier=error_classifier
         )
-        self._sem = asyncio.Semaphore(cfg.max_workers)
+        self._sem = asyncio.Semaphore(gateway_workers)
         self._seq = 0
         self._closed = False
 
         # Admission cap: max requests in flight (running + waiting). None = off.
-        self._max_inflight = None if max_pending is None else cfg.max_workers + max_pending
+        self._max_inflight = None if max_pending is None else gateway_workers + max_pending
         self._inflight = 0
         self._submit_timeout = submit_timeout
         # Set whenever no request is in flight; aclose() waits on it to drain

@@ -898,6 +898,11 @@ class OpenAICompatibleModel:
         # Set to True only by from_api_key(); cleanup() uses this to decide
         # whether to close the underlying httpx connections.
         self._owns_client: bool = False
+        # SDK constructor kwargs stashed by from_api_key() when it built the
+        # client with the *default* httpx pool — lets request_concurrency()
+        # rebuild the client with a right-sized pool before the first request.
+        # None when the caller supplied the client or an explicit pool.
+        self._rebuild_client_kwargs: dict[str, Any] | None = None
 
     async def generate(
         self,
@@ -1106,6 +1111,60 @@ class OpenAICompatibleModel:
         """No-op; OpenAI-compatible models have nothing to initialize."""
         return
 
+    async def request_concurrency(self, concurrency: int) -> bool:
+        """Ask the model to support ``concurrency`` parallel requests.
+
+        Called by execution surfaces when ``ProcessorConfig.concurrency`` is
+        set (v0.19.0, issue #97), before the first request. When this model
+        owns its client (built via :meth:`from_api_key`) and no explicit
+        ``max_connections`` was given, the ``AsyncOpenAI`` client is rebuilt
+        with an httpx pool sized to ``concurrency`` (the SDK's default pool of
+        ~100 connections would otherwise silently cap throughput) and
+        ``max_concurrency`` starts advertising the new size.
+
+        Returns True when the pool was resized. Returns False — leaving the
+        model untouched — for caller-supplied clients and for models built
+        with an explicit ``max_connections`` (an explicit value always wins;
+        a genuine contradiction is surfaced by the existing capacity warning
+        instead).
+        """
+        if concurrency < 1:
+            raise ValueError(f"concurrency must be >= 1; got {concurrency}.")
+        if (
+            not self._owns_client
+            or self.max_concurrency is not None
+            or self._rebuild_client_kwargs is None
+        ):
+            return False
+        import httpx
+
+        new_client = AsyncOpenAI(
+            http_client=httpx.AsyncClient(
+                limits=httpx.Limits(
+                    max_connections=concurrency,
+                    max_keepalive_connections=concurrency,
+                )
+            ),
+            **self._rebuild_client_kwargs,
+        )
+        old_client = self._client
+        self._client = new_client
+        self.max_concurrency = concurrency
+        # The old client made no requests yet (this runs before batch start);
+        # close it so its default httpx transport doesn't linger.
+        close = getattr(old_client, "close", None)
+        if close is not None:
+            try:
+                result = close()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception as e:
+                logger.warning(
+                    f"Failed to close replaced {type(self).__name__} client: {e}",
+                    exc_info=True,
+                )
+        return True
+
     async def cleanup(self) -> None:
         """Close the underlying AsyncOpenAI client if this model owns it.
 
@@ -1230,9 +1289,8 @@ class OpenAICompatibleModel:
         # don't pass api_key at all — letting the SDK raise its own clear
         # error if neither path produces one.
         if resolved_key is not None:
-            client = AsyncOpenAI(api_key=resolved_key, **client_kwargs)
-        else:
-            client = AsyncOpenAI(**client_kwargs)
+            client_kwargs["api_key"] = resolved_key
+        client = AsyncOpenAI(**client_kwargs)
 
         if json_mode:
             # Inject a JSON response_format, letting any explicit caller-supplied
@@ -1252,6 +1310,10 @@ class OpenAICompatibleModel:
         )
         instance.max_concurrency = max_connections
         instance._owns_client = True
+        if max_connections is None and "http_client" not in client_kwargs:
+            # Default-pool client: keep the constructor kwargs so
+            # request_concurrency() can rebuild it with a right-sized pool.
+            instance._rebuild_client_kwargs = dict(client_kwargs)
         return instance
 
 
