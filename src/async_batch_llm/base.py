@@ -1159,17 +1159,31 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             except asyncio.QueueEmpty:
                 break
 
-        # Cancel any pending progress callbacks
+        # Drain pending progress callbacks. The final item's callback is
+        # dispatched just before its result is published, so a consumer that
+        # stops right after the last result routinely reaches cleanup while
+        # that callback is still running — give callbacks a bounded chance to
+        # finish (v0.19.0; previously they were cancelled outright, which
+        # silently dropped the last progress update) and cancel only
+        # stragglers.
         if self._progress_tasks:
-            for task in list(self._progress_tasks):
-                task.cancel()
+            pending = list(self._progress_tasks)
             try:
                 await asyncio.wait_for(
-                    asyncio.gather(*self._progress_tasks, return_exceptions=True),
+                    asyncio.gather(*pending, return_exceptions=True),
                     timeout=PROGRESS_TASK_CANCELLATION_TIMEOUT,
                 )
-            except asyncio.TimeoutError:
-                logger.warning("[WARN]Some progress callbacks did not cancel in time")
+            except (TimeoutError, asyncio.TimeoutError):
+                for task in pending:
+                    if not task.done():
+                        task.cancel()
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*pending, return_exceptions=True),
+                        timeout=PROGRESS_TASK_CANCELLATION_TIMEOUT,
+                    )
+                except (TimeoutError, asyncio.TimeoutError):
+                    logger.warning("[WARN]Some progress callbacks did not cancel in time")
             finally:
                 self._progress_tasks.clear()
 

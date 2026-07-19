@@ -30,8 +30,9 @@ Install the provider extra you need. For OpenAI:
 pip install 'async-batch-llm[openai]'
 ```
 
-Other extras are `pydantic-ai`, `gemini`, `openrouter`, `deepseek`, and `all`.
-Install only the core package with `pip install async-batch-llm`.
+Other extras are `pydantic-ai`, `gemini`, `openrouter`, `deepseek`, `progress`
+(tqdm progress bars), and `all`. Install only the core package with
+`pip install async-batch-llm`.
 
 ### Run a batch
 
@@ -47,6 +48,7 @@ async def main() -> None:
         strategy,
         ["Summarize document A", "Summarize document B"],
         concurrency=10,  # sizes workers, admission, and the connection pool
+        progress=True,  # tqdm bar if installed, else interval logging
     )
 
     print(batch.summary())  # counts, tokens, timing percentiles, failures
