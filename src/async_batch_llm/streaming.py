@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -213,6 +214,7 @@ async def process_prompts(
     ``config.max_queue_size`` and consume results promptly.
     """
     termination: list[BatchTermination] = []
+    started = time.monotonic()
     results = [
         result
         async for result in _process_stream_impl(
@@ -228,5 +230,6 @@ async def process_prompts(
     batch = BatchResult(
         results=results,
         termination=termination[0] if termination else BatchTermination(),
+        wall_time_seconds=time.monotonic() - started,
     )
     return batch.in_input_order() if preserve_order else batch

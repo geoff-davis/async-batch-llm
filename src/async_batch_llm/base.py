@@ -4,13 +4,14 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import math
 import sys
 import time
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Generic, Literal, TypedDict, cast  # noqa: F401
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypedDict, cast, overload  # noqa: F401
 
 from typing_extensions import TypeVar  # PEP 696 defaults on Python < 3.13
 
@@ -508,6 +509,10 @@ class BatchResult(Generic[TOutput, TContext]):
     total_output_tokens: int = field(init=False, default=0)
     total_cached_tokens: int = field(init=False, default=0)  # v0.2.0
     termination: BatchTermination = field(default_factory=BatchTermination)
+    # Wall-clock duration of the run that produced this batch, stamped by the
+    # execution surfaces (process_all / process_prompts). None for batches
+    # assembled by hand or restored from pre-v0.19 serialized records.
+    wall_time_seconds: float | None = None
 
     def __post_init__(self):
         """Calculate summary statistics from results."""
@@ -620,6 +625,142 @@ class BatchResult(Generic[TOutput, TContext]):
         """
         return {r.item_id: r for r in self.results}
 
+    @overload
+    def outputs(self) -> Iterator[TOutput]: ...
+
+    @overload
+    def outputs(self, *, with_ids: Literal[True]) -> Iterator[tuple[str, TOutput]]: ...
+
+    def outputs(
+        self, *, with_ids: bool = False
+    ) -> Iterator[TOutput] | Iterator[tuple[str, TOutput]]:
+        """Iterate over the outputs of successful results, in result order.
+
+        The happy-path accessor — no ``if item.success`` loop needed:
+
+        .. code-block:: python
+
+            for output in batch.outputs():
+                print(output)
+            for item_id, output in batch.outputs(with_ids=True):
+                print(item_id, output)
+
+        Args:
+            with_ids: When True, yield ``(item_id, output)`` pairs instead of
+                bare outputs.
+
+        Added in v0.19.0. Failed results are skipped; iterate ``.failures``
+        (or check ``batch.failed``) to handle them.
+        """
+        if with_ids:
+            return ((r.item_id, cast(TOutput, r.output)) for r in self.results if r.success)
+        return (cast(TOutput, r.output) for r in self.results if r.success)
+
+    def summary(self) -> str:
+        """Return a printable plain-text report of the whole run.
+
+        ``print(batch.summary())`` is a complete post-run report: item
+        counts, termination, retry totals, token totals (with replayed work
+        accounted separately, consistent with v0.18 replay accounting),
+        admission/execution percentiles, wall time, and failures grouped by
+        error category. Works identically on collected batches and on
+        batches restored via ``from_dict``/``from_json``/``from_jsonl``.
+
+        Added in v0.19.0.
+        """
+        current = [r for r in self.results if not r.replayed_from_artifact]
+        replayed = [r for r in self.results if r.replayed_from_artifact]
+
+        def _tokens(results: list[WorkItemResult[TOutput, TContext]]) -> tuple[int, int, int]:
+            return (
+                sum(r.token_usage.get("input_tokens", 0) for r in results),
+                sum(r.token_usage.get("cached_input_tokens", 0) for r in results),
+                sum(r.token_usage.get("output_tokens", 0) for r in results),
+            )
+
+        def _fmt_seconds(seconds: float) -> str:
+            if seconds >= 100:
+                return f"{seconds:,.0f}s"
+            if seconds >= 10:
+                return f"{seconds:.1f}s"
+            return f"{seconds:.2f}s"
+
+        def _percentile_line(label: str, values: list[float]) -> str:
+            ordered = sorted(values)
+            picks = []
+            for q in (0.50, 0.95, 0.99):
+                # Nearest-rank percentile on the sorted sample.
+                index = min(len(ordered) - 1, max(0, math.ceil(q * len(ordered)) - 1))
+                picks.append(_fmt_seconds(ordered[index]))
+            return f"  {label:<15} p50 {picks[0]}  p95 {picks[1]}  p99 {picks[2]}"
+
+        lines = ["Batch summary", "============="]
+
+        replay_note = f" ({len(replayed)} replayed from artifact)" if replayed else ""
+        lines.append(
+            f"Items:     {self.total_items} total — {self.succeeded} succeeded, "
+            f"{self.failed} failed{replay_note}"
+        )
+
+        termination = self.termination.kind
+        if self.termination.kind != "completed":
+            details = [
+                part
+                for part in (
+                    self.termination.reason,
+                    f"category={self.termination.error_category}"
+                    if self.termination.error_category
+                    else None,
+                    f"item={self.termination.triggering_item_id}"
+                    if self.termination.triggering_item_id
+                    else None,
+                )
+                if part
+            ]
+            if details:
+                termination += f" — {'; '.join(details)}"
+        lines.append(f"Stopped:   {termination}")
+
+        extra_tries = sum(max(0, len(r.timing.attempts) - 1) for r in current)
+        retried_items = sum(1 for r in current if len(r.timing.attempts) > 1)
+        lines.append(f"Retries:   {extra_tries} extra attempt(s) across {retried_items} item(s)")
+
+        input_tokens, cached_tokens, output_tokens = _tokens(current)
+        lines.append(
+            f"Tokens:    in {input_tokens:,} (cached {cached_tokens:,}) · out {output_tokens:,}"
+        )
+        if replayed:
+            r_in, r_cached, r_out = _tokens(replayed)
+            lines.append(
+                f"Replayed:  in {r_in:,} (cached {r_cached:,}) · out {r_out:,} "
+                "(prior run; excluded above)"
+            )
+
+        wall = _fmt_seconds(self.wall_time_seconds) if self.wall_time_seconds is not None else "n/a"
+        lines.append(f"Wall time: {wall}")
+
+        timed = [r for r in current if r.timing.attempts]
+        if timed:
+            lines.append(
+                _percentile_line("admission wait", [r.admission_wait_seconds for r in timed])
+            )
+            lines.append(_percentile_line("execution", [r.timing.execution_seconds for r in timed]))
+
+        if self.failed:
+            lines.append("Failures by category:")
+            by_category: dict[str, list[str]] = {}
+            for r in self.results:
+                if not r.success:
+                    by_category.setdefault(r.error_category or "uncategorized", []).append(
+                        r.item_id
+                    )
+            for category in sorted(by_category):
+                ids = by_category[category]
+                shown = ", ".join(ids[:3]) + ("..." if len(ids) > 3 else "")
+                lines.append(f"  {category:<15} {len(ids)} — {shown}")
+
+        return "\n".join(lines)
+
     def in_input_order(self) -> "BatchResult[TOutput, TContext]":
         """Return a new batch whose results are sorted by submission order.
 
@@ -637,7 +778,11 @@ class BatchResult(Generic[TOutput, TContext]):
         ordered = sorted(self.results, key=lambda result: result.submission_index)  # type: ignore[arg-type,return-value]
         return cast(
             "BatchResult[TOutput, TContext]",
-            BatchResult(results=ordered, termination=self.termination),
+            BatchResult(
+                results=ordered,
+                termination=self.termination,
+                wall_time_seconds=self.wall_time_seconds,
+            ),
         )
 
     def to_dict(self, *, encoder: "ValueEncoder | None" = None) -> dict[str, Any]:
@@ -1348,7 +1493,14 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
 
         # Snapshot results before returning so callers receive an independent list.
         results_snapshot = list(self._results)
-        return BatchResult(results=results_snapshot, termination=self.termination)
+        wall_time = (
+            time.time() - self._stats.start_time if self._stats.start_time is not None else None
+        )
+        return BatchResult(
+            results=results_snapshot,
+            termination=self.termination,
+            wall_time_seconds=wall_time,
+        )
 
     @abstractmethod
     async def _worker(self, worker_id: int):

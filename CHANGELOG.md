@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Readable run reports ([#96])** — `BatchResult.summary()` returns a
+  printable post-run report: item counts, termination (including guardrail
+  metadata), retry totals, token totals with replayed work reported separately,
+  admission/execution p50/p95/p99, wall time, and failures grouped by error
+  category. `BatchResult.outputs()` iterates successful outputs (or
+  `(item_id, output)` pairs with `with_ids=True`), complementing the existing
+  `.successes`/`.failures` properties. New `BatchResult.wall_time_seconds`
+  field is stamped by `process_all()`/`process_prompts()` and survives
+  dict/JSON/JSONL round-trips (older records restore as `None`), so
+  `summary()` works identically on deserialized batches.
+
 - **String-based strategy factory ([#95])** — `llm("provider:model")` builds a
   ready-to-use built-in strategy in one line: `llm("openai:gpt-4o-mini")`,
   `llm("gemini:gemini-2.5-flash")`, `llm("openrouter:anthropic/claude-haiku-4-5")`,
@@ -664,6 +675,7 @@ Details for each live under **Changed**/**Removed** below.
 [#52]: https://github.com/geoff-davis/async-batch-llm/issues/52
 [#81]: https://github.com/geoff-davis/async-batch-llm/issues/81
 [#95]: https://github.com/geoff-davis/async-batch-llm/issues/95
+[#96]: https://github.com/geoff-davis/async-batch-llm/issues/96
 
 ## [0.8.0] - 2026-04-24
 

@@ -344,6 +344,14 @@ def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _optional_seconds(value: Any, *, path: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ResultSerializationError(f"Expected a number or null at {path}")
+    return float(value)
+
+
 def _exception_descriptor(exception: Exception | None) -> dict[str, JSONValue] | None:
     if exception is None:
         return None
@@ -486,6 +494,7 @@ def batch_result_to_dict(
         "schema_version": RESULT_SCHEMA_VERSION,
         "record_type": "batch_result",
         "termination": _termination_to_dict(batch.termination),
+        "wall_time_seconds": batch.wall_time_seconds,
         "results": [work_item_result_to_dict(result, encoder=encoder) for result in batch.results],
     }
 
@@ -511,6 +520,9 @@ def batch_result_from_dict(
             for result in results
         ],
         termination=_termination_from_dict(data.get("termination", {"kind": "completed"})),
+        wall_time_seconds=_optional_seconds(
+            data.get("wall_time_seconds"), path="$.wall_time_seconds"
+        ),
     )
 
 
@@ -564,6 +576,7 @@ def batch_result_to_jsonl(
                     "schema_version": RESULT_SCHEMA_VERSION,
                     "record_type": "batch_metadata",
                     "batch_termination": termination,
+                    "batch_wall_time_seconds": batch.wall_time_seconds,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -574,6 +587,7 @@ def batch_result_to_jsonl(
     for result in batch.results:
         record = work_item_result_to_dict(result, encoder=encoder)
         record["batch_termination"] = termination
+        record["batch_wall_time_seconds"] = batch.wall_time_seconds
         lines.append(
             json.dumps(
                 record, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -597,6 +611,7 @@ def batch_result_from_jsonl(
         raise ResultSerializationError(f"Could not read result JSONL {path!s}: {exc}") from exc
     results: list[WorkItemResult[Any, Any]] = []
     termination: BatchTermination | None = None
+    wall_time_seconds: float | None = None
     for line_number, line in enumerate(lines, 1):
         if not line.strip():
             continue
@@ -607,6 +622,11 @@ def batch_result_from_jsonl(
                 f"Malformed result JSONL at line {line_number}: {exc}"
             ) from exc
         data = _require_mapping(record, path=f"line {line_number}")
+        if wall_time_seconds is None:
+            wall_time_seconds = _optional_seconds(
+                data.get("batch_wall_time_seconds"),
+                path=f"line {line_number} batch_wall_time_seconds",
+            )
         if data.get("record_type") == "batch_metadata":
             _check_schema(data, record_type="batch_metadata")
             if results or termination is not None:
@@ -631,7 +651,11 @@ def batch_result_from_jsonl(
                 context_decoder=context_decoder,
             )
         )
-    return BatchResult(results=results, termination=termination or BatchTermination())
+    return BatchResult(
+        results=results,
+        termination=termination or BatchTermination(),
+        wall_time_seconds=wall_time_seconds,
+    )
 
 
 __all__ = [
