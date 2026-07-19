@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`progress=` on `process_prompts()`/`process_stream()` ([#100])** —
+  `progress=True` installs a bundled reporter: a tqdm bar when tqdm is
+  importable (new optional extra `[progress]`; also included in `[all]`),
+  falling back to interval logging otherwise. Pass a callable
+  `(completed, total, current_item_id)` for a custom reporter. Supported for
+  both collected and streamed runs. Alongside this, `progress_callback` now
+  fires for **every** completed item (previously it was gated to
+  `progress_interval`, which stays as the log-line cadence), runs before the
+  item's result is published, and pending callbacks are drained instead of
+  cancelled at shutdown — so the final update is never dropped.
+
 - **Zero-config checkpointing ([#99])** — `JsonlArtifactStore("run.jsonl")`
   now works without an `ArtifactIdentity`: `provider` and `model` are
   inferred from the strategy at run start (built-in models map to their
@@ -724,6 +735,7 @@ Details for each live under **Changed**/**Removed** below.
 [#97]: https://github.com/geoff-davis/async-batch-llm/issues/97
 [#98]: https://github.com/geoff-davis/async-batch-llm/issues/98
 [#99]: https://github.com/geoff-davis/async-batch-llm/issues/99
+[#100]: https://github.com/geoff-davis/async-batch-llm/issues/100
 [#101]: https://github.com/geoff-davis/async-batch-llm/issues/101
 
 ## [0.8.0] - 2026-04-24

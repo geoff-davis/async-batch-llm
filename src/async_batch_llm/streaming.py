@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import logging
 import time
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -29,7 +30,10 @@ from .core import ProcessorConfig
 from .parallel import ParallelBatchProcessor
 
 if TYPE_CHECKING:
+    from .base import ProgressCallbackFunc
     from .llm_strategies import LLMCallStrategy
+
+logger = logging.getLogger(__name__)
 
 TOutput = TypeVar("TOutput")
 
@@ -84,6 +88,76 @@ def _to_work_item(
     return LLMWorkItem(item_id=f"item_{index}", strategy=strategy, prompt=str(entry))
 
 
+class _ProgressReporter:
+    """Bundled ``progress=True`` reporter: tqdm when importable, else logging.
+
+    Implements the ``progress_callback(completed, total, current_item_id)``
+    contract. The tqdm bar's total follows the processor's running total, so
+    streaming sources that keep adding work render correctly. Added in
+    v0.19.0 (issue #100).
+    """
+
+    def __init__(self) -> None:
+        self._bar: Any = None
+        self._tqdm_failed = False
+        self._last_logged = 0
+
+    def __call__(self, completed: int, total: int, current_item_id: str) -> None:
+        if not self._tqdm_failed:
+            if self._bar is None:
+                try:
+                    from tqdm.auto import tqdm  # type: ignore[import-not-found]
+
+                    self._bar = tqdm(total=total, unit="item", desc="batch")
+                except ImportError:
+                    self._tqdm_failed = True
+                    logger.info(
+                        "progress=True: tqdm is not installed "
+                        "(pip install 'async-batch-llm[progress]'); "
+                        "falling back to interval logging."
+                    )
+            if self._bar is not None:
+                if self._bar.total != total:
+                    self._bar.total = total
+                self._bar.n = completed
+                self._bar.refresh()
+                return
+        # Logging fallback: every 10 items and on completion.
+        if completed - self._last_logged >= 10 or completed >= total:
+            self._last_logged = completed
+            logger.info("progress: %d/%d items completed", completed, total)
+
+    def close(self) -> None:
+        if self._bar is not None:
+            self._bar.close()
+            self._bar = None
+
+
+def _resolve_progress(
+    progress: bool | ProgressCallbackFunc,
+    processor_kwargs: dict[str, Any],
+) -> _ProgressReporter | None:
+    """Fold the ``progress=`` option into ``processor_kwargs``.
+
+    Returns the bundled reporter (so the caller can close it) when
+    ``progress=True``; a user-supplied callable is passed through untouched.
+    """
+    if progress is False:
+        return None
+    if "progress_callback" in processor_kwargs:
+        raise ValueError(
+            "Pass either progress= or progress_callback=, not both. "
+            "progress=True is a convenience wrapper that installs a bundled "
+            "progress_callback."
+        )
+    if progress is True:
+        reporter = _ProgressReporter()
+        processor_kwargs["progress_callback"] = reporter
+        return reporter
+    processor_kwargs["progress_callback"] = progress
+    return None
+
+
 def _apply_concurrency_shorthand(
     config: ProcessorConfig | None, concurrency: int | None
 ) -> ProcessorConfig | None:
@@ -118,6 +192,7 @@ async def _process_stream_impl(
     *,
     config: ProcessorConfig | None = None,
     concurrency: int | None = None,
+    progress: bool | ProgressCallbackFunc = False,
     artifact_store: ArtifactStore | None = None,
     resume: ResumePolicy = ResumePolicy.NONE,
     termination_out: list[BatchTermination] | None = None,
@@ -142,6 +217,7 @@ async def _process_stream_impl(
         out of the loop early cancels the producer and tears down the workers.
     """
     config = _apply_concurrency_shorthand(config, concurrency)
+    reporter = _resolve_progress(progress, processor_kwargs)
     processor = ParallelBatchProcessor(
         config=config or ProcessorConfig(),
         artifact_store=artifact_store,
@@ -189,6 +265,8 @@ async def _process_stream_impl(
             with contextlib.suppress(asyncio.CancelledError):
                 await producer
             await asyncio.gather(abort_watcher, return_exceptions=True)
+            if reporter is not None:
+                reporter.close()
 
     if termination_out is not None:
         termination_out.append(processor.termination)
@@ -205,6 +283,7 @@ async def process_stream(
     *,
     config: ProcessorConfig | None = None,
     concurrency: int | None = None,
+    progress: bool | ProgressCallbackFunc = False,
     artifact_store: ArtifactStore | None = None,
     resume: ResumePolicy = ResumePolicy.NONE,
     **processor_kwargs: Any,
@@ -225,6 +304,7 @@ async def process_stream(
         prompts,
         config=config,
         concurrency=concurrency,
+        progress=progress,
         artifact_store=artifact_store,
         resume=resume,
         **processor_kwargs,
@@ -238,6 +318,7 @@ async def process_prompts(
     *,
     config: ProcessorConfig | None = None,
     concurrency: int | None = None,
+    progress: bool | ProgressCallbackFunc = False,
     preserve_order: bool = False,
     artifact_store: ArtifactStore | None = None,
     resume: ResumePolicy = ResumePolicy.NONE,
@@ -254,6 +335,12 @@ async def process_prompts(
     ``concurrency=N`` is shorthand for ``ProcessorConfig(concurrency=N)`` —
     the single knob that coherently sizes workers, provider admission, and
     built-in model connection pools (v0.19.0).
+
+    ``progress=True`` renders a tqdm bar when tqdm is installed
+    (``pip install 'async-batch-llm[progress]'``) and falls back to interval
+    logging otherwise; pass a callable ``(completed, total, current_item_id)``
+    for a custom reporter. Works for both collected and streamed runs
+    (v0.19.0).
     """
     termination: list[BatchTermination] = []
     started = time.monotonic()
@@ -264,6 +351,7 @@ async def process_prompts(
             prompts,
             config=config,
             concurrency=concurrency,
+            progress=progress,
             artifact_store=artifact_store,
             resume=resume,
             termination_out=termination,

@@ -763,19 +763,25 @@ class ParallelBatchProcessor(
                     },
                 )
 
+        completed, total, current_item, stats_snapshot = await self._record_terminal_stats(
+            work_item, result
+        )
+        # The callback fires for EVERY completed item so live progress bars
+        # stay smooth (v0.19.0 — previously gated to progress_interval);
+        # progress_interval keeps gating only the log line below. It runs
+        # BEFORE the result is published so a consumer that stops after the
+        # final result never tears down a still-running callback.
+        if self.progress_callback:
+            await self._run_progress_callback(completed, total, current_item)
+        if stats_snapshot is not None:
+            self._log_progress(stats_snapshot)
+
         if self._streaming:
             assert self._result_stream is not None
             await self._result_stream.put(result)
         else:
             async with self._results_lock:
                 self._results.append(result)
-
-        progress = await self._record_terminal_stats(work_item, result)
-        if progress is not None:
-            completed, total, current_item, stats_snapshot = progress
-            if self.progress_callback:
-                await self._run_progress_callback(completed, total, current_item)
-            self._log_progress(stats_snapshot)
 
         if self.config.concurrent_post_processing:
             self._spawn_post_processor(result, self.config.post_processor_timeout)
@@ -793,7 +799,7 @@ class ParallelBatchProcessor(
         self,
         work_item: LLMWorkItem[TInput, TOutput, TContext],
         result: WorkItemResult[TOutput, TContext],
-    ) -> tuple[int, int, str, dict] | None:
+    ) -> tuple[int, int, str, dict | None]:
         async with self._stats_lock:
             self._stats.processed += 1
             if result.success:
@@ -834,13 +840,12 @@ class ParallelBatchProcessor(
                         self._stats.structured_output_recovery_reasons.get(reason, 0) + 1
                     )
 
-            if self._stats.processed % self.config.progress_interval != 0:
-                return None
+            at_interval = self._stats.processed % self.config.progress_interval == 0
             return (
                 self._stats.processed,
                 self._stats.total,
                 work_item.item_id,
-                self._stats.copy(),
+                self._stats.copy() if at_interval else None,
             )
 
     @staticmethod

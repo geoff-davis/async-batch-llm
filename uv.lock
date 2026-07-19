@@ -135,6 +135,7 @@ all = [
     { name = "google-genai" },
     { name = "openai" },
     { name = "pydantic-ai" },
+    { name = "tqdm" },
 ]
 deepseek = [
     { name = "openai" },
@@ -150,6 +151,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
     { name = "ruff" },
+    { name = "tqdm" },
     { name = "ty" },
 ]
 docs = [
@@ -167,6 +169,9 @@ openai = [
 ]
 openrouter = [
     { name = "openai" },
+]
+progress = [
+    { name = "tqdm" },
 ]
 pydantic-ai = [
     { name = "pydantic-ai" },
@@ -199,10 +204,13 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
+    { name = "tqdm", marker = "extra == 'all'", specifier = ">=4.66" },
+    { name = "tqdm", marker = "extra == 'dev'", specifier = ">=4.66" },
+    { name = "tqdm", marker = "extra == 'progress'", specifier = ">=4.66" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a16" },
     { name = "typing-extensions", specifier = ">=4.4.0" },
 ]
-provides-extras = ["pydantic-ai", "gemini", "openai", "openrouter", "deepseek", "all", "docs", "dev"]
+provides-extras = ["pydantic-ai", "gemini", "openai", "openrouter", "deepseek", "progress", "all", "docs", "dev"]
 
 [[package]]
 name = "attrs"
