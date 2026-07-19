@@ -57,3 +57,88 @@ async def test_no_suggested_wait_uses_strategy_cooldown(monkeypatch):
     coord = _make_coordinator(cooldown=8.0)
     duration = await _captured_cooldown(coord, monkeypatch)
     assert duration == 8.0
+
+
+# ── Issue #88: caller cancellation must not finish the shared cooldown ──
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reporter_does_not_finish_shared_cooldown():
+    """A gateway submit timeout cancels the caller that reported the 429;
+    the shared cooldown must survive and other waiters stay paused."""
+    coord = _make_coordinator(cooldown=0.5)
+
+    reporter = asyncio.create_task(coord.handle_rate_limit(worker_id=0, observed_generation=0))
+    await asyncio.sleep(0.05)  # cooldown underway
+    assert coord._in_cooldown
+
+    waiter = asyncio.create_task(coord.handle_rate_limit(worker_id=1, observed_generation=0))
+    await asyncio.sleep(0.02)
+
+    # Simulate the submit timeout: cancel only the reporting caller.
+    reporter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reporter
+
+    # The shared pause survives the caller's cancellation.
+    await asyncio.sleep(0.1)
+    assert coord._in_cooldown
+    assert not coord._rate_limit_event.is_set()
+    assert not waiter.done()
+
+    # The waiter resumes only once the real cooldown expires.
+    await asyncio.wait_for(waiter, timeout=1.0)
+    assert not coord._in_cooldown
+    assert coord._rate_limit_event.is_set()
+    await coord.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_two_waiters_survive_reporter_cancellation():
+    """Regression per the issue: two waiters + a cancelled reporter."""
+    coord = _make_coordinator(cooldown=0.4)
+    started = asyncio.get_running_loop().time()
+
+    reporter = asyncio.create_task(coord.handle_rate_limit(worker_id=0, observed_generation=0))
+    await asyncio.sleep(0.02)
+    waiters = [
+        asyncio.create_task(coord.handle_rate_limit(worker_id=i, observed_generation=0))
+        for i in (1, 2)
+    ]
+    await asyncio.sleep(0.02)
+    reporter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reporter
+
+    await asyncio.wait_for(asyncio.gather(*waiters), timeout=1.0)
+    elapsed = asyncio.get_running_loop().time() - started
+    # Both waiters waited out the REAL cooldown, not the 0.04s to cancellation.
+    assert elapsed >= 0.35
+    await coord.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_cooldown_and_wakes_waiters():
+    """Host teardown cancels the owned task without leaking it; waiters wake."""
+    coord = _make_coordinator(cooldown=30.0)
+
+    reporter = asyncio.create_task(coord.handle_rate_limit(worker_id=0, observed_generation=0))
+    await asyncio.sleep(0.05)
+    task = coord._cooldown_task
+    assert task is not None and not task.done()
+
+    await asyncio.wait_for(coord.shutdown(), timeout=1.0)
+    assert task.done()
+    assert coord._cooldown_task is None
+    # Waiters (including the reporter) are woken by teardown finalization.
+    await asyncio.wait_for(reporter, timeout=1.0)
+    assert coord._rate_limit_event.is_set()
+    # Idempotent.
+    await coord.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_without_cooldown_is_noop():
+    coord = _make_coordinator(cooldown=1.0)
+    await coord.shutdown()
+    assert coord._cooldown_task is None
