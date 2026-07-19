@@ -133,7 +133,7 @@ from async_batch_llm import CachedTokenRates
 
 result = await processor.process_all()
 print(f"input={result.total_input_tokens} cached={result.total_cached_tokens}")
-print(f"cache hit rate: {result.cache_hit_rate():.1f}%")
+print(f"cache hit rate: {result.cache_hit_rate:.1f}%")
 # OpenAI charges 50% of normal for cached tokens — pass the matching rate.
 print(f"billable tokens: {result.effective_input_tokens(CachedTokenRates.OPENAI)}")
 ```
