@@ -316,7 +316,7 @@ branched and when you push. It fetches `origin/main` (failing open when
 offline) and refuses the push if the branch is missing commits from main,
 printing the rebase fix. For an intentionally-behind push, skip once with
 `SKIP=check-branch-fresh git push`. The hook is installed per machine/clone
-by `uv run pre-commit install` (it installs both the pre-commit and
+by `uv run prek install` (it installs both the pre-commit and
 pre-push hook types via `default_install_hook_types`).
 
 ### One-liner commands
@@ -340,16 +340,18 @@ uv run ruff format src/ tests/
 uv run mypy src/async_batch_llm/ --ignore-missing-imports
 ```
 
-### Pre-commit hooks
+### Git hooks (prek)
 
-`uv run pre-commit install` once per machine/clone (installs both the
-pre-commit and pre-push hook types). Hooks then run on every commit: ruff
-(format + lint, with `examples/` excluded), mypy, trailing whitespace,
-EOF newline, YAML/TOML validation, markdownlint, prevention of commits
-to `main`/`master`. On every push, `check-branch-fresh` blocks branches
-based on a stale main (see "Sync before working"). Manual run on all
-files: `uv run pre-commit run --all-files`. Bypass with `--no-verify`
-only if you know what you're doing.
+Hooks are managed with [prek](https://github.com/j178/prek), a drop-in
+Rust replacement for pre-commit that reads the same
+`.pre-commit-config.yaml`. `uv run prek install` once per machine/clone
+(installs both the pre-commit and pre-push hook types). Hooks then run on
+every commit: ruff (format + lint, with `examples/` excluded), mypy,
+trailing whitespace, EOF newline, YAML/TOML validation, markdownlint,
+prevention of commits to `main`/`master`. On every push,
+`check-branch-fresh` blocks branches based on a stale main (see "Sync
+before working"). Manual run on all files: `uv run prek run --all-files`.
+Bypass with `--no-verify` only if you know what you're doing.
 
 ### Markdown config
 

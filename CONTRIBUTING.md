@@ -29,13 +29,12 @@ uv sync --all-extras
 npm install --save-dev markdownlint-cli2
 ```
 
-1. **Install pre-commit hooks** (recommended)
+1. **Install git hooks via prek** (recommended)
 
 ```bash
 make pre-commit-install
 # or manually:
-pip install pre-commit
-pre-commit install
+uv run prek install
 ```
 
 This will automatically run linting and type checking before each commit.
@@ -68,7 +67,7 @@ uv run pytest -v
 
 We use several tools to maintain code quality:
 
-#### Automated Pre-commit Hooks (Recommended)
+#### Automated Git Hooks via prek (Recommended)
 
 ```bash
 # Install hooks (one-time setup)
@@ -81,7 +80,7 @@ make pre-commit-run
 make pre-commit-update
 ```
 
-Pre-commit will automatically run these checks before each commit:
+prek will automatically run these checks before each commit:
 
 - Ruff linting and formatting
 - Mypy type checking

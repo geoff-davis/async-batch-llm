@@ -15,10 +15,13 @@ uv venv
 uv sync --all-extras
 ```
 
-### 2. Install Pre-commit Hooks
+### 2. Install Git Hooks
+
+Hooks are managed with [prek](https://github.com/j178/prek), a drop-in
+replacement for pre-commit (same `.pre-commit-config.yaml`):
 
 ```bash
-uv run pre-commit install
+uv run prek install
 ```
 
 This will automatically run code quality checks before each commit.

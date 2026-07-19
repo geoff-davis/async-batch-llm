@@ -105,7 +105,7 @@ dev = [
     "pydantic-ai>=1.0.0",  # Required for tests
     "google-genai>=1.49.0",  # Required for Gemini tests
     "openai>=1.50.0",  # Required for OpenAI/OpenRouter tests
-    "pre-commit>=3.0.0",
+    "prek>=0.4.0",
 ]
 
 [project.urls]
