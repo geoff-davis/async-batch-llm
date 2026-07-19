@@ -66,6 +66,68 @@ class ArtifactIdentity:
     extra: Mapping[str, JSONValue] = field(default_factory=dict)
 
 
+# Deterministic provider labels for the built-in model classes, used when
+# inferring an identity from a strategy (zero-config artifacts, issue #99).
+_PROVIDER_BY_MODEL_CLASS = {
+    "GeminiModel": "gemini",
+    "GeminiCachedModel": "gemini",
+    "OpenAIModel": "openai",
+    "OpenRouterModel": "openrouter",
+    "DeepSeekModel": "deepseek",
+}
+
+_UNVERSIONED = "unversioned"
+
+
+def infer_artifact_identity(strategy: Any) -> ArtifactIdentity:
+    """Derive a deterministic :class:`ArtifactIdentity` from a strategy.
+
+    Used by :class:`JsonlArtifactStore` when no explicit identity is given
+    (v0.19.0, issue #99). ``provider`` and ``model`` come from the strategy's
+    wrapped model (built-in model classes map to their provider name; other
+    models use their class name); the version fields default to
+    ``"unversioned"``. The result is deterministic for the same strategy
+    setup across processes, so resume keeps working — and changing the model
+    changes the identity fingerprint, which invalidates reuse.
+
+    Prompt (and, by default, context) always participate in the per-item
+    compatibility fingerprint regardless of identity, so a changed prompt
+    never silently replays a stale result even with a defaulted identity.
+    """
+    provider: str | None = None
+    model_id: str | None = None
+
+    model_obj = getattr(strategy, "model", None)
+    if model_obj is not None:
+        raw_model = getattr(model_obj, "_model", None)
+        if isinstance(raw_model, str) and raw_model:
+            model_id = raw_model
+        provider = _PROVIDER_BY_MODEL_CLASS.get(type(model_obj).__name__)
+        if provider is None:
+            provider = type(model_obj).__name__
+    else:
+        # PydanticAIStrategy and similar wrappers expose an agent.
+        agent = getattr(strategy, "agent", None)
+        agent_model = getattr(agent, "model", None) if agent is not None else None
+        if isinstance(agent_model, str) and agent_model:
+            model_id = agent_model
+        elif agent_model is not None:
+            name = getattr(agent_model, "model_name", None)
+            if isinstance(name, str) and name:
+                model_id = name
+
+    if provider is None:
+        provider = type(strategy).__name__
+
+    return ArtifactIdentity(
+        provider=provider,
+        model=model_id or "unknown",
+        prompt_version=_UNVERSIONED,
+        parser_version=_UNVERSIONED,
+        application_version=_UNVERSIONED,
+    )
+
+
 class ResumePolicy(str, Enum):
     """Which compatible terminal artifact records may bypass provider work."""
 
@@ -227,7 +289,7 @@ class JsonlArtifactStore:
         self,
         path: str | Path,
         *,
-        identity: ArtifactIdentity,
+        identity: ArtifactIdentity | None = None,
         user_metadata: Mapping[str, JSONValue] | None = None,
         include_output: bool = True,
         include_metadata: bool = True,
@@ -256,8 +318,15 @@ class JsonlArtifactStore:
         self.cost_calculator = cost_calculator
         self.fsync = fsync
 
-        self._identity_value = _identity_mapping(identity)
-        self.identity_fingerprint = _sha256(_identity_mapping(identity, for_fingerprint=True))
+        # With no explicit identity, resolution is deferred to the first
+        # prepare_item() call, which infers provider/model from the item's
+        # strategy (zero-config artifacts, v0.19.0). Until then the
+        # fingerprint is unset and lookup/append refuse to run.
+        self._identity_value: dict[str, JSONValue] | None = None
+        self.identity_fingerprint: str | None = None
+        if identity is not None:
+            self._identity_value = _identity_mapping(identity)
+            self.identity_fingerprint = _sha256(_identity_mapping(identity, for_fingerprint=True))
         try:
             metadata_value = to_json_value(self.user_metadata, path="$.user_metadata")
         except ResultSerializationError as exc:
@@ -279,8 +348,28 @@ class JsonlArtifactStore:
 
     async def prepare_item(self, work_item: LLMWorkItem[Any, Any, Any]) -> _ItemFingerprint:
         """Create/validate the artifact and fingerprint input before provider work."""
+        self._resolve_identity_from(work_item.strategy)
         await self._prepare()
         return self._fingerprint_item(work_item)
+
+    def _resolve_identity_from(self, strategy: Any) -> None:
+        """Infer and pin the identity from the first item's strategy (v0.19.0)."""
+        if self.identity is not None:
+            return
+        inferred = infer_artifact_identity(strategy)
+        self.identity = inferred
+        self._identity_value = _identity_mapping(inferred)
+        self.identity_fingerprint = _sha256(_identity_mapping(inferred, for_fingerprint=True))
+
+    def _require_resolved_fingerprint(self) -> str:
+        if self.identity_fingerprint is None:
+            raise ArtifactError(
+                "Artifact identity is not resolved yet. Pass "
+                "identity=ArtifactIdentity(...) to JsonlArtifactStore, or run the "
+                "store through a processor so prepare_item() can infer the "
+                "identity from the strategy."
+            )
+        return self.identity_fingerprint
 
     def _fingerprint_item(self, work_item: LLMWorkItem[Any, Any, Any]) -> _ItemFingerprint:
         prompt_hash = hashlib.sha256(work_item.prompt.encode("utf-8")).hexdigest()
@@ -361,7 +450,7 @@ class JsonlArtifactStore:
             fingerprint.prompt,
             fingerprint.context,
             fingerprint.combined,
-            self.identity_fingerprint,
+            self._require_resolved_fingerprint(),
         )
 
     @staticmethod
@@ -452,6 +541,9 @@ class JsonlArtifactStore:
             ) from exc
 
         strategy_type = type(work_item.strategy)
+        identity_fingerprint = self._require_resolved_fingerprint()
+        identity = self.identity
+        assert identity is not None  # resolved together with the fingerprint
         record: dict[str, Any] = {
             "record_type": "item",
             "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
@@ -464,13 +556,13 @@ class JsonlArtifactStore:
             "prompt_fingerprint": fingerprint.prompt,
             "context_fingerprint": fingerprint.context,
             "input_fingerprint": fingerprint.combined,
-            "identity_fingerprint": self.identity_fingerprint,
+            "identity_fingerprint": identity_fingerprint,
             "strategy_class": f"{strategy_type.__module__}.{strategy_type.__qualname__}",
-            "provider": self.identity.provider,
-            "model": self.identity.model,
-            "prompt_version": self.identity.prompt_version,
-            "parser_version": self.identity.parser_version,
-            "application_version": self.identity.application_version,
+            "provider": identity.provider,
+            "model": identity.model,
+            "prompt_version": identity.prompt_version,
+            "parser_version": identity.parser_version,
+            "application_version": identity.application_version,
             "identity": self._identity_value,
             "success": result.success,
             "error_category": result.error_category,
@@ -546,6 +638,13 @@ class JsonlArtifactStore:
                     max((int(record.get("record_sequence", -1)) for record in records), default=-1)
                     + 1
                 )
+                if needs_manifest and self._identity_value is None:
+                    raise ArtifactError(
+                        f"Cannot create a new artifact {self.path} without a "
+                        "resolved identity. Pass identity=ArtifactIdentity(...) "
+                        "to JsonlArtifactStore, or run the store through a "
+                        "processor so it can be inferred from the strategy."
+                    )
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 self._handle = self.path.open("a", encoding="utf-8", newline="\n")
                 if needs_manifest:

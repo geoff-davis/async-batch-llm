@@ -98,6 +98,32 @@ contains input fingerprints, current submission index, strategy class,
 identity/provenance, safe result data, timing, token use, error category, replay
 eligibility, and optional caller-calculated cost.
 
+The minimal form needs only a path (v0.19.0):
+
+```python
+from async_batch_llm import JsonlArtifactStore, ResumePolicy, process_prompts
+
+result = await process_prompts(
+    strategy,
+    prompts,
+    artifact_store=JsonlArtifactStore("runs/customer-tagging.jsonl"),
+    resume=ResumePolicy.REUSE_SUCCESSES,
+)
+```
+
+When no `ArtifactIdentity` is given, `provider` and `model` are inferred from
+the strategy at run start (built-in models map to their provider names;
+custom models use their class name) and the remaining identity fields default
+to `"unversioned"`. Prompt — and, by default, context — still participate in
+the per-item compatibility fingerprint, so a changed prompt or a changed
+model never silently replays a stale result.
+
+**When to use the full identity:** versioned production pipelines. An
+explicit `ArtifactIdentity` lets a prompt-template change, parser change, or
+application release invalidate replay even when the literal prompt text is
+unchanged (e.g. context assembled outside the prompt, or a new parser reading
+the same outputs):
+
 ```python
 from async_batch_llm import (
     ArtifactIdentity,
