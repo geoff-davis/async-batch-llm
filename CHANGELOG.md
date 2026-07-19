@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`WorkItemResult.exception` propagation confirmed fixed ([#101])** — the
+  pre-0.13 backlog concern is closed with regression tests pinning the
+  behavior on every surface: batch and streaming paths store the originating
+  exception (last attempt on retry exhaustion, `FrameworkTimeoutError` on
+  framework timeouts) with its traceback detached, post-processors see it,
+  successes carry `None`, and serialization emits a safe descriptor that
+  deliberately restores as `None` (no class loading from untrusted JSON).
+  No code change was needed — the fix shipped across the executor rework and
+  the v0.18 serialization design.
+
 ### Deprecated
 
 - **`ProcessorConfig.timeout_per_item` → `attempt_timeout` ([#98])** — the
@@ -701,6 +713,7 @@ Details for each live under **Changed**/**Removed** below.
 [#96]: https://github.com/geoff-davis/async-batch-llm/issues/96
 [#97]: https://github.com/geoff-davis/async-batch-llm/issues/97
 [#98]: https://github.com/geoff-davis/async-batch-llm/issues/98
+[#101]: https://github.com/geoff-davis/async-batch-llm/issues/101
 
 ## [0.8.0] - 2026-04-24
 
