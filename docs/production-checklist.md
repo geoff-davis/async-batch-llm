@@ -33,7 +33,7 @@ model = DeepSeekModel.from_api_key(
 ```
 
 Models built with `from_api_key(max_connections=N)` advertise that capacity to
-their strategy. `ParallelBatchProcessor` and `LLMGateway` emit a `UserWarning`
+their strategy. `ParallelBatchProcessor` and `LLMCallPool` emit a `UserWarning`
 when `max_workers > N`; the shared executor holds excess attempts in ABL
 admission before `strategy.execute()` and before `attempt_timeout` starts.
 Matching values avoids unnecessary admission wait:
@@ -85,7 +85,7 @@ The timeout boundary is deliberately narrow:
 | Phase | Counts against `attempt_timeout`? |
 | --- | --- |
 | Batch queue wait / streaming backpressure | No |
-| Worker or gateway semaphore admission | No |
+| Worker or shared-call semaphore admission | No |
 | Provider-capacity admission | No |
 | Coordinated cooldown / post-cooldown slow-start | No |
 | Proactive request-rate limiter wait | No |
@@ -128,7 +128,7 @@ ProcessorConfig(
 )
 ```
 
-For `LLMGateway`, semaphore wait is outside `attempt_timeout`, while
+For `LLMCallPool`, semaphore wait is outside `attempt_timeout`, while
 `submit_timeout` wraps the full caller path: both admission waits, cooldown, all
 attempts, and backoff. Use `submit_timeout` for an end-to-end request latency
 budget and `attempt_timeout` for one provider attempt.
@@ -164,17 +164,22 @@ a preceding rate limit. Ramp wait remains outside `attempt_timeout`.
 See the [OpenAI-compatible high-throughput guide](openai-high-throughput.md) for
 owned/custom client recipes and troubleshooting.
 
-## 6. Bounded-input streaming for large inputs
+## 6. Bounded streaming for large inputs
 
 For a very large (or unbounded) input, don't buffer all the work up front. Use
-**streaming mode** with a **bounded** `max_queue_size`: workers run while you
-feed, so a full queue applies **backpressure** instead of deadlocking, holding
-pending-input memory roughly constant regardless of input size.
+**streaming mode** with bounded `max_queue_size` and
+`max_result_queue_size`: workers run while you feed, so full queues apply
+**backpressure** instead of deadlocking or accumulating work in proportion to
+input size.
 
 ```python
-from async_batch_llm import process_stream, ProcessorConfig
+from async_batch_llm import ProcessorConfig, process_stream
 
-config = ProcessorConfig(max_workers=50, max_queue_size=200)  # bounded pending input
+config = ProcessorConfig(
+    max_workers=50,
+    max_queue_size=200,
+    max_result_queue_size=100,
+)
 
 async for result in process_stream(strategy, huge_prompt_source, config=config):
     if result.success:
@@ -188,19 +193,19 @@ a file lazily). The low-level equivalent is
 `process_prompts()` retains every result in its returned `BatchResult`, and
 `process_all()` requires work to be added before workers start. Neither is a
 bounded-memory result path for an unbounded workload. `process_stream()` avoids
-retaining results itself, but its result handoff queue is unbounded; consume
-results promptly so a slow consumer does not accumulate completed items. See
+retaining results itself; set `max_result_queue_size` so a slow consumer applies
+backpressure to provider workers instead of accumulating completed items. See
 [Bounded Work and Backpressure](bounded-work.md) for incremental database input,
-low-level streaming, and separate queue/provider/gateway limits.
+low-level streaming, and separate input/output/provider/shared-call limits.
 
-## 7. Single calls and the gateway (request paths)
+## 7. Single calls and the shared call pool (request paths)
 
 For a web service's request path — where work arrives one call at a time, not as
-a batch — use [`LLMGateway`](api/single-gateway.md) instead of standing up a
+a batch — use [`LLMCallPool`](api/single-gateway.md) instead of standing up a
 processor per request:
 
-- **One long-lived gateway per app.** Create it once at startup (e.g. a FastAPI
-  lifespan handler) and share it across all request handlers. A single gateway
+- **One long-lived pool per app.** Create it once at startup (e.g. a FastAPI
+  lifespan handler) and share it across all request handlers. A single pool
   means one shared rate-limit cooldown — when one caller hits a 429, all callers
   briefly pause and then slow-start, instead of a thundering herd.
 - **Set `max_pending` and `submit_timeout` for web paths.** `max_pending` caps
@@ -208,7 +213,7 @@ processor per request:
   (rejecting with a failed result) rather than growing an unbounded waiter list;
   `submit_timeout` bounds per-caller latency so a request stuck behind a cooldown
   returns instead of hanging the handler. Both are off by default.
-- **Do not create unbounded outer tasks.** `max_pending` bounds gateway
+- **Do not create unbounded outer tasks.** `max_pending` bounds pool
   admission, but one large `asyncio.gather()` still materializes every caller
   task. Use the [bounded batch pattern](bounded-work.md#recommended-large-batch-pattern)
   for ingestion jobs or an explicitly bounded task window.

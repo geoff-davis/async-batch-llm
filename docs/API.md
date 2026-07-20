@@ -127,7 +127,7 @@ class WorkItemResult(Generic[TOutput, TContext]):
 - `metadata` (dict[str, Any] | None): Provider metadata (provider name,
   finish reason, safety ratings, ...) forwarded from the strategy
 - `exception` (Exception | None): The original exception when the item failed
-  (what `call()` / `LLMGateway.submit()` re-raise); None on success
+  (what `call()` / `LLMCallPool.submit()` re-raise); None on success
 - `admission_wait_seconds` (float): Cumulative provider-capacity wait across all
   attempts. This wait occurs before `attempt_timeout` starts.
 - `timing` (WorkItemTiming): Total wall time and typed per-try timing for
@@ -538,16 +538,14 @@ Called by the framework when `execute()` raises an exception, before deciding wh
 
    ```python
    class SmartModelEscalationStrategy(LLMCallStrategy[Output]):
-       def __init__(self):
-           self.validation_failures = 0
-
        async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
-           if isinstance(exception, ValidationError):
-               self.validation_failures += 1
+           if state is not None and isinstance(exception, ValidationError):
+               state.set("validation_failures", state.get("validation_failures", 0) + 1)
 
        async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
            # Only escalate model on validation errors
-           model_index = min(self.validation_failures, len(MODELS) - 1)
+           failures = state.get("validation_failures", 0) if state is not None else 0
+           model_index = min(failures, len(MODELS) - 1)
            model = MODELS[model_index]
            # Make call with appropriate model...
    ```
@@ -556,19 +554,15 @@ Called by the framework when `execute()` raises an exception, before deciding wh
 
    ```python
    class SmartRetryStrategy(LLMCallStrategy[Output]):
-       def __init__(self):
-           self.last_error = None
-           self.last_response = None
-
        async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
-           if isinstance(exception, ValidationError):
-               self.last_error = exception
+           if state is not None and isinstance(exception, ValidationError):
+               state.set("last_validation_error", exception)
                # last_response set in execute() before raising
 
        async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
-           if attempt > 1 and self.last_error:
+           if attempt > 1 and state and state.get("last_validation_error"):
                # Build smart retry prompt with partial parsing feedback
-               prompt = self._create_retry_prompt_with_partial_data(prompt)
+               prompt = self._create_retry_prompt_with_partial_data(prompt, state)
            # Make call with improved prompt...
    ```
 
@@ -576,18 +570,18 @@ Called by the framework when `execute()` raises an exception, before deciding wh
 
    ```python
    class ErrorTrackingStrategy(LLMCallStrategy[Output]):
-       def __init__(self):
-           self.validation_errors = 0
-           self.network_errors = 0
-           self.rate_limit_errors = 0
-
        async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
+           if state is None:
+               return
            if isinstance(exception, ValidationError):
-               self.validation_errors += 1
+               key = "validation_errors"
            elif isinstance(exception, ConnectionError):
-               self.network_errors += 1
+               key = "network_errors"
            elif "429" in str(exception):
-               self.rate_limit_errors += 1
+               key = "rate_limit_errors"
+           else:
+               key = "other_errors"
+           state.set(key, state.get(key, 0) + 1)
    ```
 
 **Important Notes:**
@@ -595,7 +589,8 @@ Called by the framework when `execute()` raises an exception, before deciding wh
 - Exceptions in `on_error()` are caught and logged by the framework - they won't crash processing
 - `on_error()` is only called when `execute()` raises an exception, not on success
 - The error is still propagated to the framework's retry logic after `on_error()` returns
-- For stateful strategies, each work item should use a separate strategy instance
+- Share strategy/client instances across work items, and keep all item-specific mutation in
+  the supplied `RetryState`. Use concurrency-safe metrics or observers for batch-wide counters.
 
 **See Also:**
 

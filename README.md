@@ -4,10 +4,10 @@
 coordinated rate-limit cooldowns, bounded input buffering, resumable
 checkpoints, deadlines, and complete token accounting.**
 
-The execution pipeline is provider-neutral: use the built-in OpenAI-compatible,
-Gemini, or PydanticAI strategies, or bring your own strategy. Use it when you
-need results during the current workflow; latency-tolerant jobs may be better
-suited to a provider's native batch API.
+The execution pipeline is provider-neutral: wrap your existing async client or
+use the built-in OpenAI-compatible, Gemini, or PydanticAI conveniences. Use it
+when you need results during the current workflow; latency-tolerant jobs may be
+better suited to a provider's native batch API.
 
 [![PyPI version](https://badge.fury.io/py/async-batch-llm.svg)](https://badge.fury.io/py/async-batch-llm)
 [![Python 3.10-3.14](https://img.shields.io/badge/python-3.10--3.14-blue.svg)](https://www.python.org/downloads/)
@@ -33,6 +33,47 @@ pip install 'async-batch-llm[openai]'
 Other extras are `pydantic-ai`, `gemini`, `openrouter`, `deepseek`, `progress`
 (tqdm progress bars), and `all`. Install only the core package with
 `pip install async-batch-llm`.
+
+### Use your existing async client
+
+```python
+from async_batch_llm import (
+    ArtifactIdentity,
+    CallOutcome,
+    CallableStrategy,
+    ProcessorConfig,
+    process_stream,
+)
+
+
+async def invoke(prompt, *, attempt, timeout, state):
+    response = await existing_client.generate(prompt, timeout=timeout)
+    return CallOutcome(
+        response.text,
+        token_usage=response.usage,
+        metadata={"route": response.route},
+    )
+
+
+strategy = CallableStrategy(
+    invoke,
+    identity=ArtifactIdentity(provider="my-gateway", model="summary-route"),
+)
+config = ProcessorConfig(
+    concurrency=32,
+    max_queue_size=128,
+    max_result_queue_size=64,
+)
+
+async for result in process_stream(strategy, database_prompt_source(), config=config):
+    await save_result(result)
+```
+
+`CallableStrategy` is an adapter to the same execution path used by built-in
+strategies—not a second runtime. It adds bounded input/output handoff,
+concurrency admission, coordinated cooldowns, LLM-aware retries, per-item retry
+state, deadlines, checkpoint/replay, accounting, and observers around one
+existing async operation. See [Use Your Existing Async Client](https://geoff-davis.github.io/async-batch-llm/callable-integration/).
 
 ### Run a batch
 
@@ -77,15 +118,19 @@ backpressure to the producer:
 ```python
 from async_batch_llm import ProcessorConfig, process_stream
 
-config = ProcessorConfig(max_workers=50, max_queue_size=200)
+config = ProcessorConfig(
+    max_workers=50,
+    max_queue_size=200,
+    max_result_queue_size=100,
+)
 
 async for item in process_stream(strategy, huge_prompt_source, config=config):
     await save(item)  # completion order
 ```
 
-`max_queue_size` bounds pending input. The result handoff queue is unbounded, so
-consume streamed results promptly. `process_prompts()` retains every result by
-design.
+`max_queue_size` bounds accepted input waiting for workers;
+`max_result_queue_size` bounds completed results waiting for the consumer. Both
+default to unbounded. `process_prompts()` retains every result by design.
 
 ### Choose an execution surface
 
@@ -94,12 +139,12 @@ design.
 | Collect a finite run | `process_prompts()` |
 | Handle results incrementally | `process_stream()` |
 | Execute one resilient request | `call()` / `call_result()` |
-| Share limits across service requests | `LLMGateway` |
+| Share limits across service requests | `LLMCallPool` (`LLMGateway` compatibility alias) |
 | Customize queueing and lifecycle | `ParallelBatchProcessor` |
 
-Batch, streaming, single-call, and gateway execution share the same retry,
+Batch, streaming, single-call, and shared-call execution share the same retry,
 timing, provider-admission, and token-accounting pipeline. See the
-[single-call and gateway guide](https://geoff-davis.github.io/async-batch-llm/api/single-gateway/)
+[single-call and shared-call guide](https://geoff-davis.github.io/async-batch-llm/api/single-gateway/)
 and [core API](https://geoff-davis.github.io/async-batch-llm/api/core/) for the
 lower-level surfaces.
 
@@ -109,7 +154,7 @@ lower-level surfaces.
 | --- | --- |
 | Error-aware retries | Separate budgets for content/transport failures and rate limits |
 | Coordinated cooldowns | One worker's rate limit pauses the shared execution scope |
-| Bounded input | Lazy sync or async sources stop producing when the work queue fills |
+| Bounded streaming | Lazy sources and slow result consumers apply backpressure independently |
 | Durable resume | Versioned JSONL checkpoints replay only compatible prior results |
 | Guardrails | End-to-end item deadlines, batch deadlines, and category-based fail-fast |
 | Accounting | Attempt timing and tokens include retries and failed provider calls |
@@ -233,10 +278,10 @@ Built-in strategies cover:
   caching.
 - `PydanticAIStrategy` for PydanticAI agents and typed output.
 
-Anthropic can be used through PydanticAI or a custom strategy. Other
-OpenAI-compatible services can reuse the common model layer; any async provider
-can implement `LLMCallStrategy`. Swapping a compatible strategy does not require
-changing processor code.
+Anthropic can be used through PydanticAI or `CallableStrategy`. Other
+OpenAI-compatible services can reuse the common model layer or be wrapped as an
+existing async client. Subclassing `LLMCallStrategy` remains available for more
+specialized integrations; built-in provider models are not required.
 
 Model identifiers and service limits change independently of this package.
 Confirm current provider documentation when choosing a model, connection pool,
@@ -306,9 +351,10 @@ The project test suite makes no live provider calls. See the
 
 Start with these runnable examples:
 
+- [Existing async application client, bounded streaming, and replay](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_callable_application.py)
 - [Production checkpoints and guardrails](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_production_resume.py)
 - [OpenAI batch processing](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_openai.py)
-- [Single calls and a shared gateway](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_gateway.py)
+- [Single calls and a shared call pool](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_gateway.py)
 - [Validation-aware model escalation](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_smart_model_escalation.py)
 - [Custom embedding strategies](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_embeddings.py)
 

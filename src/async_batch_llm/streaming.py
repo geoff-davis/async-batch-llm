@@ -9,8 +9,8 @@ triples (the context flows to ``WorkItemResult.context`` and your post_processor
 Because the processor runs workers while work is still being fed, a bounded
 ``ProcessorConfig.max_queue_size`` becomes input backpressure: the producer
 blocks on a full work queue instead of buffering the complete source up front.
-The result handoff queue is unbounded, so callers should consume results
-promptly when streaming a large or unbounded source.
+Set ``ProcessorConfig.max_result_queue_size`` to separately bound completed
+results waiting for a slow consumer; zero preserves the unbounded default.
 """
 
 from __future__ import annotations
@@ -228,7 +228,9 @@ async def _process_stream_impl(
             auto-generated), ``(item_id, prompt)`` pairs, and/or
             ``(item_id, prompt, context)`` triples (context → result.context).
         config: Processor configuration. Defaults to ``ProcessorConfig()``. Set
-            ``max_queue_size`` to bound memory for very large inputs.
+            ``max_queue_size`` to bound accepted-but-not-started input and
+            ``max_result_queue_size`` to bound completed results waiting for
+            the consumer.
         **processor_kwargs: Forwarded to ``ParallelBatchProcessor`` (observers,
             middlewares, ``error_classifier``, ``progress_callback``, …).
 
@@ -357,7 +359,9 @@ async def process_prompts(
     :class:`BatchResult` (whose ``results`` are in completion order). For
     lazy, bounded-input processing of very large inputs, use
     :func:`process_stream` directly with a positive
-    ``config.max_queue_size`` and consume results promptly.
+    ``config.max_queue_size`` and ``config.max_result_queue_size`` and consume
+    results promptly. This collection API still retains every final result in
+    its returned :class:`BatchResult`.
 
     ``concurrency=N`` is shorthand for ``ProcessorConfig(concurrency=N)`` —
     the single knob that coherently sizes workers, provider admission, and

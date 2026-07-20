@@ -1,4 +1,4 @@
-# Single Call & Gateway
+# Single Call & Shared Call Pool
 
 Convenience surfaces for running individual calls through the full resilience
 pipeline — error-type-aware retries, the coordinated rate-limit cooldown, and
@@ -7,7 +7,7 @@ token accounting — without constructing a
 
 - **`call` / `call_result`** — one prompt, one result. No queue, workers, or result
   stream are created.
-- **`LLMGateway`** — a long-lived, shared entry point for the request path: many
+- **`LLMCallPool`** — a long-lived, shared entry point for the request path: many
   concurrent callers, one coordinated cooldown, concurrency bounded by a
   semaphore.
 
@@ -17,7 +17,7 @@ For large bulk jobs, keep using `ParallelBatchProcessor` /
 ## Example
 
 ```python
-from async_batch_llm import OpenAIModel, OpenAIStrategy, call, call_result, LLMGateway, ProcessorConfig
+from async_batch_llm import LLMCallPool, OpenAIModel, OpenAIStrategy, ProcessorConfig, call, call_result
 
 strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
 
@@ -25,22 +25,22 @@ strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
 summary = await call(strategy, "Summarize: ...")        # output, or raises
 
 # A long-lived, shared entry point for a web service's request path.
-async with LLMGateway(
+async with LLMCallPool(
     strategy,
     config=ProcessorConfig(max_workers=5),
     max_pending=100,     # admission cap: reject instantly when saturated
     submit_timeout=30,   # per-caller latency budget (seconds)
-) as gw:
-    reply = await gw.submit("Answer this one request")
+) as pool:
+    reply = await pool.submit("Answer this one request")
 ```
 
 ## Failure semantics
 
-- **`call()` / `LLMGateway.submit()`** re-raise the **provider's own exception**
+- **`call()` / `LLMCallPool.submit()`** re-raise the **provider's own exception**
   on failure, preserving its type. [`LLMCallError`](#llmcallerror) is raised only
-  when no provider exception was preserved — the gateway's `max_pending` /
+  when no provider exception was preserved — the pool's `max_pending` /
   `submit_timeout` rejections.
-- **`call_result()` / `LLMGateway.submit_result()`** never raise for a request
+- **`call_result()` / `LLMCallPool.submit_result()`** never raise for a request
   failure; they return the full
   [`WorkItemResult`](core.md#workitemresult) — inspect `success`, `error`,
   `token_usage`, `metadata`, and the originating `exception`.
@@ -51,29 +51,42 @@ if not result.success:
     print(result.error, result.exception)   # exception preserves the provider type
 ```
 
-The gateway drains already-admitted requests on `aclose()` (the `async with`
+The pool drains already-admitted requests on `aclose()` (the `async with`
 exit) before cleaning up the shared strategy, so in-flight calls aren't cut off
 by shutdown. Set `submit_timeout` to bound how long shutdown waits for that
 drain — otherwise it waits as long as the admitted work takes.
 
 ## Timeout and capacity semantics
 
-The gateway semaphore is acquired before item execution, so semaphore wait does
+The pool semaphore is acquired before item execution, so semaphore wait does
 not consume `attempt_timeout`. `submit_timeout` is the end-to-end caller budget:
 it includes semaphore wait, provider-capacity admission, coordinated cooldown,
 retry backoff, and every
 attempt. If a model built with `from_api_key(max_connections=N)` advertises less
-capacity than `config.max_workers`, gateway construction emits a `UserWarning`
+capacity than `config.max_workers`, pool construction emits a `UserWarning`
 and the shared executor gates attempts at `N`. Use
 `ProcessorConfig(max_provider_concurrency=N)` for a custom client whose capacity
 cannot be inspected.
 
 Avoid wrapping an unbounded input in `asyncio.gather(gw.submit(...))`: the
-gateway bounds active provider calls, but every gathered coroutine is still a
+pool bounds active provider calls, but every gathered coroutine is still a
 pending task. Bound the outer producer or use `process_stream` with a bounded
 `max_queue_size` for large batch workloads. The
-[bounded-work guide](../bounded-work.md#gateway-task-counts) includes both the
-recommended batch path and a bounded gateway task window.
+[bounded-work guide](../bounded-work.md#shared-call-task-counts) includes both the
+recommended batch path and a bounded shared-call task window.
+
+`LLMCallPool` is an in-process, queue-less object. Each caller directly uses the
+shared `ItemExecutor` under a semaphore; there is no background dispatcher,
+network service, or provider-routing layer. The strategy beneath it may use a
+direct SDK, `CallableStrategy`, or a real third-party gateway client.
+
+`LLMGateway` remains an exact, warning-free compatibility alias in v0.20:
+
+```python
+from async_batch_llm import LLMCallPool, LLMGateway
+
+assert LLMCallPool is LLMGateway
+```
 
 ## call
 
@@ -83,7 +96,11 @@ recommended batch path and a bounded gateway task window.
 
 ::: async_batch_llm.call_result
 
-## LLMGateway
+## LLMCallPool
+
+::: async_batch_llm.LLMCallPool
+
+## LLMGateway Compatibility Alias
 
 ::: async_batch_llm.LLMGateway
 

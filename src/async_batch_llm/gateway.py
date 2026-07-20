@@ -1,4 +1,4 @@
-"""Queue-less rate-limited gateway: many callers, one shared cooldown.
+"""Queue-less shared call pool: many callers, one shared cooldown.
 
 A long-lived service object for a web app's request path. Many concurrent
 callers each :meth:`submit` one prompt; an :class:`asyncio.Semaphore` caps
@@ -17,13 +17,13 @@ cap that rejects instantly instead of growing an unbounded waiter list) and
 
     from contextlib import asynccontextmanager
     from async_batch_llm import OpenAIModel, OpenAIStrategy, ProcessorConfig
-    from async_batch_llm.gateway import LLMGateway
+    from async_batch_llm import LLMCallPool
 
     @asynccontextmanager
     async def lifespan(app):
         strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
-        async with LLMGateway(strategy, config=ProcessorConfig(max_workers=5)) as gw:
-            app.state.llm = gw
+        async with LLMCallPool(strategy, config=ProcessorConfig(max_workers=5)) as pool:
+            app.state.llm = pool
             yield
 
     # in a handler:  summary = await request.app.state.llm.submit(prompt)
@@ -45,7 +45,7 @@ TOutput = TypeVar("TOutput")
 
 
 class LLMGateway(Generic[TOutput]):
-    """A shared, rate-limited entry point for single LLM calls from many callers.
+    """An in-process shared call pool for single LLM calls from many callers.
 
     Create one at startup and call :meth:`submit` from any number of concurrent
     handlers. ``config.max_workers`` is the global concurrency budget. The
@@ -124,7 +124,7 @@ class LLMGateway(Generic[TOutput]):
         Blocks on the semaphore when the pool is saturated (backpressure), unless
         ``max_pending`` is set (then an over-cap submit raises immediately). A
         rejected/timed-out submit raises :class:`LLMCallError`. ``timeout``
-        overrides the gateway's ``submit_timeout`` for this call.
+        overrides the pool's ``submit_timeout`` for this call.
         """
         return unwrap_result(await self.submit_result(prompt, timeout=timeout))
 
@@ -138,10 +138,10 @@ class LLMGateway(Generic[TOutput]):
         admission cap or cut off by the timeout comes back as a failed result
         (``success=False``) rather than raising.
 
-        ``timeout`` overrides the gateway's ``submit_timeout`` for this call.
+        ``timeout`` overrides the pool's ``submit_timeout`` for this call.
         """
         if self._closed:
-            raise RuntimeError("LLMGateway is closed")
+            raise RuntimeError("Shared call pool is closed")
 
         self._seq += 1
         item_id = f"req-{self._seq}"
@@ -151,7 +151,7 @@ class LLMGateway(Generic[TOutput]):
         # toward the bound.
         if self._max_inflight is not None and self._inflight >= self._max_inflight:
             return WorkItemResult(
-                item_id=item_id, success=False, error="gateway saturated", context=None
+                item_id=item_id, success=False, error="shared call pool saturated", context=None
             )
 
         effective_timeout = self._submit_timeout if timeout is None else timeout
@@ -187,7 +187,7 @@ class LLMGateway(Generic[TOutput]):
     async def aclose(self) -> None:
         """Stop accepting work and run the strategy's cleanup(). Idempotent.
 
-        Marks the gateway closed (new submits raise immediately), then waits for
+        Marks the pool closed (new submits raise immediately), then waits for
         already-admitted requests — running *or* still waiting on the semaphore —
         to drain before cleaning up the shared strategy, whose clients/caches may
         still be in use. Set ``submit_timeout`` to bound how long an admitted
@@ -212,3 +212,10 @@ class LLMGateway(Generic[TOutput]):
         if self._inflight > 0:
             await self._idle.wait()
         await self._host.aclose()
+
+
+# Preferred v0.20 name. This is deliberately an exact alias: both imports use
+# the same queue-less class and the same shared ItemExecutor path.
+LLMCallPool = LLMGateway
+
+__all__ = ["LLMCallPool", "LLMGateway"]

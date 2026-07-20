@@ -10,6 +10,7 @@ from async_batch_llm import (
     LLMWorkItem,
     ParallelBatchProcessor,
     ProcessorConfig,
+    RateLimitConfig,
     RetryConfig,
     RetryState,
 )
@@ -412,64 +413,115 @@ async def test_on_error_callback_called():
 
 @pytest.mark.asyncio
 async def test_on_error_callback_with_state():
-    """Test using on_error to track state for smart retry logic."""
+    """A shared smart-retry strategy keeps mixed concurrent item state isolated."""
+
+    class ValidationFailure(Exception):
+        pass
 
     class SmartRetryStrategy(LLMCallStrategy[TestOutput]):
-        def __init__(self):
-            self.validation_errors = 0
-            self.network_errors = 0
-            self.last_error = None
+        def __init__(self) -> None:
+            self.first_calls_started = 0
+            self.first_calls_lock = asyncio.Lock()
+            self.release_first_calls = asyncio.Event()
+            self.attempts: dict[str, list[int]] = {}
+            self.models: dict[str, list[str]] = {}
+            self.prompts: dict[str, list[str]] = {}
 
         async def on_error(
             self, exception: Exception, attempt: int, state: RetryState | None = None
         ) -> None:
-            self.last_error = exception
-            # Track different error types
-            if "validation" in str(exception).lower():
-                self.validation_errors += 1
-            elif isinstance(exception, ConnectionError):
-                self.network_errors += 1
+            assert state is not None
+            if isinstance(exception, ValidationFailure):
+                state.set("validation_failures", state.get("validation_failures", 0) + 1)
+                state.set("last_validation_error", str(exception))
+            else:
+                # Transport/rate-limit failures must not erase validation feedback.
+                state.set("last_transport_error", type(exception).__name__)
 
         async def execute(
             self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
         ) -> tuple[TestOutput, dict[str, int]]:
-            if attempt == 1:
-                raise Exception("Validation error")  # Generic exception (retryable)
-            elif attempt == 2:
-                raise ConnectionError("Network error")
-            else:
-                # On 3rd attempt, use state to create custom response
-                return TestOutput(
-                    text=f"Recovered after {self.validation_errors} validation "
-                    f"and {self.network_errors} network errors"
-                ), {
-                    "input_tokens": 10,
-                    "output_tokens": 20,
-                    "total_tokens": 30,
-                }
+            assert state is not None
+            call = state.get("calls", 0) + 1
+            state.set("calls", call)
+
+            # Force the first call for all four items to overlap deterministically.
+            if call == 1:
+                async with self.first_calls_lock:
+                    self.first_calls_started += 1
+                    if self.first_calls_started == 4:
+                        self.release_first_calls.set()
+                await self.release_first_calls.wait()
+
+            failures = state.get("validation_failures", 0)
+            feedback = state.get("last_response") if state.get("last_validation_error") else None
+            model = "smart" if failures else "cheap"
+            effective_prompt = f"{prompt}|feedback={feedback}" if feedback else prompt
+            self.attempts.setdefault(prompt, []).append(attempt)
+            self.models.setdefault(prompt, []).append(model)
+            self.prompts.setdefault(prompt, []).append(effective_prompt)
+
+            if prompt == "validation" and call == 1:
+                state.set("last_response", "partial-validation")
+                raise ValidationFailure("schema mismatch")
+            if prompt == "validation" and call == 2:
+                raise ConnectionError("transient network error")
+            if prompt == "network" and call == 1:
+                raise ConnectionError("transient network error")
+            if prompt == "rate-limit" and call == 1:
+                raise Exception("429 Too Many Requests")
+
+            return TestOutput(text=f"{prompt}|model={model}|feedback={feedback}"), {
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "total_tokens": 30,
+            }
 
     strategy = SmartRetryStrategy()
     config = ProcessorConfig(
-        max_workers=1,
+        max_workers=4,
         attempt_timeout=10.0,
         retry=RetryConfig(max_attempts=3, initial_wait=0.01, max_wait=0.05, jitter=False),
+        rate_limit=RateLimitConfig(cooldown_seconds=0.0, slow_start_items=0),
     )
 
     async with ParallelBatchProcessor[None, TestOutput, None](config=config) as processor:
-        await processor.add_work(
-            LLMWorkItem(
-                item_id="test1",
-                strategy=strategy,
-                prompt="Test",
+        for prompt in ("validation", "network", "rate-limit", "success"):
+            await processor.add_work(
+                LLMWorkItem(
+                    item_id=prompt,
+                    strategy=strategy,
+                    prompt=prompt,
+                )
             )
-        )
 
         result = await processor.process_all()
 
-    assert result.succeeded == 1
-    assert strategy.validation_errors == 1
-    assert strategy.network_errors == 1
-    assert "Recovered after 1 validation and 1 network errors" in result.results[0].output.text
+    assert result.succeeded == 4
+    outputs = {item.item_id: item.output.text for item in result.results if item.output}
+    assert outputs["validation"] == "validation|model=smart|feedback=partial-validation"
+    assert outputs["network"] == "network|model=cheap|feedback=None"
+    assert outputs["rate-limit"] == "rate-limit|model=cheap|feedback=None"
+    assert outputs["success"] == "success|model=cheap|feedback=None"
+
+    # Validation feedback survives its intervening network error but never leaks.
+    assert strategy.prompts["validation"] == [
+        "validation",
+        "validation|feedback=partial-validation",
+        "validation|feedback=partial-validation",
+    ]
+    assert all("feedback=" not in prompt for prompt in strategy.prompts["network"])
+    assert all("feedback=" not in prompt for prompt in strategy.prompts["rate-limit"])
+    assert all("feedback=" not in prompt for prompt in strategy.prompts["success"])
+
+    assert strategy.models["validation"] == ["cheap", "smart", "smart"]
+    assert strategy.models["network"] == ["cheap", "cheap"]
+    assert strategy.models["rate-limit"] == ["cheap", "cheap"]
+    assert strategy.models["success"] == ["cheap"]
+    assert strategy.attempts["validation"] == [1, 2, 3]
+    assert strategy.attempts["network"] == [1, 2]
+    assert strategy.attempts["rate-limit"] == [1, 1]
+    assert strategy.attempts["success"] == [1]
 
 
 @pytest.mark.asyncio

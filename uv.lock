@@ -125,7 +125,7 @@ wheels = [
 
 [[package]]
 name = "async-batch-llm"
-version = "0.18.0"
+version = "0.20.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiolimiter" },

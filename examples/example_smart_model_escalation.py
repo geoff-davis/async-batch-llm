@@ -38,15 +38,20 @@ import os
 from typing import Annotated
 
 from google import genai
-
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-
 from google.genai.types import GenerateContentConfig
 from pydantic import BaseModel, Field, ValidationError
 
-from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
+from async_batch_llm import (
+    LLMWorkItem,
+    ParallelBatchProcessor,
+    ProcessorConfig,
+    RetryState,
+    TokenUsage,
+)
 from async_batch_llm.core import RetryConfig
 from async_batch_llm.llm_strategies import LLMCallStrategy
+
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 
 
 class PersonData(BaseModel):
@@ -91,28 +96,28 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
         self.client = client
         self.verbose = verbose
 
-        # State tracked across retries
-        self.last_error: Exception | None = None
-        self.validation_failures = 0  # Count of validation errors only
-        self.total_attempts = 0
-
-    async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
+    async def on_error(
+        self, exception: Exception, attempt: int, state: RetryState | None = None
+    ) -> None:
         """
         Track error type to make smart escalation decisions.
 
         Only validation errors trigger model escalation.
         Network/rate limit errors retry with same model.
         """
-        self.last_error = exception
-        self.total_attempts = attempt
+        if state is None:
+            return
+        state.set("last_error", exception)
+        state.set("total_attempts", attempt)
 
         # Check if this was a validation error
         if self._is_validation_error(exception):
-            self.validation_failures += 1
+            failures = state.get("validation_failures", 0) + 1
+            state.set("validation_failures", failures)
             if self.verbose:
                 print(
                     f"  ⚠️  Validation error on attempt {attempt} "
-                    f"(total validation failures: {self.validation_failures})"
+                    f"(total validation failures: {failures})"
                 )
         else:
             # Network/rate limit error - don't escalate
@@ -121,7 +126,7 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
                 print(f"  ⚠️  {error_type} on attempt {attempt} (will retry same model)")
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float, state=None
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
     ) -> tuple[PersonData, TokenUsage]:
         """
         Select model based on validation failure count (not total attempts).
@@ -132,13 +137,15 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
         """
         # Select model based on validation failures, not total attempts
         # This ensures we only escalate when quality is the issue
-        model_index = min(self.validation_failures, len(self.MODELS) - 1)
+        failures = state.get("validation_failures", 0) if state is not None else 0
+        last_error = state.get("last_error") if state is not None else None
+        model_index = min(failures, len(self.MODELS) - 1)
         model = self.MODELS[model_index]
 
         if self.verbose:
             if attempt == 1:
                 print(f"  Attempt {attempt}: Using {model}")
-            elif self.last_error and self._is_validation_error(self.last_error):
+            elif last_error and self._is_validation_error(last_error):
                 print(f"  Attempt {attempt}: Escalating to {model} (after validation error)")
             else:
                 print(f"  Attempt {attempt}: Retrying with {model} (network/rate limit error)")
@@ -320,13 +327,13 @@ async def example_comparison():
 
     # Test smart escalation
     print("Testing Smart Escalation (validation errors only):")
+    smart_strategy = SmartModelEscalationStrategy(client=client, verbose=False)
     async with ParallelBatchProcessor[str, PersonData, None](config=config) as processor:
         for i, text in enumerate(test_texts):
-            strategy = SmartModelEscalationStrategy(client=client, verbose=False)
             await processor.add_work(
                 LLMWorkItem(
                     item_id=f"smart_{i}",
-                    strategy=strategy,
+                    strategy=smart_strategy,
                     prompt=f"Extract person information:\n\n{text}",
                 )
             )
@@ -337,13 +344,13 @@ async def example_comparison():
 
     # Test blind escalation
     print("Testing Blind Escalation (always escalate):")
+    blind_strategy = BlindEscalationStrategy(client=client, verbose=False)
     async with ParallelBatchProcessor[str, PersonData, None](config=config) as processor:
         for i, text in enumerate(test_texts):
-            strategy = BlindEscalationStrategy(client=client, verbose=False)
             await processor.add_work(
                 LLMWorkItem(
                     item_id=f"blind_{i}",
-                    strategy=strategy,
+                    strategy=blind_strategy,
                     prompt=f"Extract person information:\n\n{text}",
                 )
             )

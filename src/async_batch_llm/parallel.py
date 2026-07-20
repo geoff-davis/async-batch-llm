@@ -207,6 +207,7 @@ class ParallelBatchProcessor(
             max_queue_size=config.max_queue_size,
             progress_callback=progress_callback,
             progress_callback_timeout=config.progress_callback_timeout,
+            max_result_queue_size=config.max_result_queue_size,
         )
         self.config = config
         self.artifact_store = artifact_store
@@ -781,7 +782,7 @@ class ParallelBatchProcessor(
 
         if self._streaming:
             assert self._result_stream is not None
-            await self._result_stream.put(result)
+            await self._publish_stream_result(result)
         else:
             async with self._results_lock:
                 self._results.append(result)

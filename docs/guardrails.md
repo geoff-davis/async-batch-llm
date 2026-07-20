@@ -49,9 +49,9 @@ Postprocessing and artifact persistence occur after the logical provider
 execution pipeline and are not included in the total item deadline. They have
 their own timeout/durability semantics. The queue wait before a worker picks up
 an item is also outside the item deadline; use `batch_timeout` to bound the
-whole run. In `LLMGateway`, the gateway semaphore wait is outside the executor's
+whole run. In `LLMCallPool`, the pool semaphore wait is outside the executor's
 item deadline; use `submit_timeout` when the caller needs one budget that also
-includes gateway admission.
+includes pool admission.
 
 Total expiry is terminal and non-retryable:
 

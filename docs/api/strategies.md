@@ -1,5 +1,17 @@
 # Strategies API Reference
 
+## CallableStrategy
+
+Adapter for an existing asynchronous SDK, gateway client, agent, or application
+service. See [Use Your Existing Async Client](../callable-integration.md) for
+callback and retry-state semantics.
+
+::: async_batch_llm.CallableStrategy
+
+## CallOutcome
+
+::: async_batch_llm.CallOutcome
+
 ## LLMCallStrategy
 
 ::: async_batch_llm.LLMCallStrategy

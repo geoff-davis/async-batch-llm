@@ -1,6 +1,6 @@
-"""Example: a shared, rate-limited gateway for the request path.
+"""Example: an in-process shared call pool for the request path.
 
-LLMGateway is a long-lived object you create once (e.g. at app startup) and call
+LLMCallPool is a long-lived object you create once (e.g. at app startup) and call
 `submit()` on from any number of concurrent handlers. A semaphore caps global
 concurrency against the provider, and a single shared rate-limit coordinator
 gives every caller one coordinated cooldown: when one request hits a 429, all
@@ -21,7 +21,7 @@ import asyncio
 from pydantic import BaseModel
 
 from async_batch_llm import (
-    LLMGateway,
+    LLMCallPool,
     ProcessorConfig,
     PydanticAIStrategy,
     RateLimitConfig,
@@ -36,8 +36,8 @@ class Reply(BaseModel):
     text: str
 
 
-def build_gateway() -> LLMGateway[Reply]:
-    """Construct the shared gateway once, at startup.
+def build_pool() -> LLMCallPool[Reply]:
+    """Construct the shared call pool once, at startup.
 
     max_workers is the global concurrency budget against the provider. The mock
     raises a single 429 (on the 3rd call) so the shared cooldown is visible; a
@@ -54,34 +54,34 @@ def build_gateway() -> LLMGateway[Reply]:
         rate_limit=RateLimitConfig(cooldown_seconds=0.1),
         retry=RetryConfig(max_attempts=3, max_rate_limit_retries=5),
     )
-    return LLMGateway(strategy, config=config)
+    return LLMCallPool(strategy, config=config)
 
 
-async def handle_request(gateway: LLMGateway[Reply], n: int) -> None:
-    """Simulate one incoming request handler calling the shared gateway."""
-    reply = await gateway.submit(f"request #{n}")
+async def handle_request(pool: LLMCallPool[Reply], n: int) -> None:
+    """Simulate one incoming request handler calling the shared pool."""
+    reply = await pool.submit(f"request #{n}")
     print(f"  request #{n} -> {reply.text!r}")
 
 
 async def main() -> None:
-    # Manage the gateway's lifetime with `async with` (calls aclose() on exit,
+    # Manage the pool's lifetime with `async with` (calls aclose() on exit,
     # which runs the strategy's cleanup()). In a web app this maps to a lifespan
-    # handler that stashes the gateway on app state.
-    async with build_gateway() as gateway:
-        print("Dispatching 8 concurrent requests through the gateway...")
-        await asyncio.gather(*(handle_request(gateway, n) for n in range(8)))
+    # handler that stashes the pool on app state.
+    async with build_pool() as pool:
+        print("Dispatching 8 concurrent requests through the shared call pool...")
+        await asyncio.gather(*(handle_request(pool, n) for n in range(8)))
 
         # submit_result() returns the full WorkItemResult instead of raising, so you
         # can read token usage or branch on failure.
-        result = await gateway.submit_result("one more, please")
+        result = await pool.submit_result("one more, please")
         print(
             f"\nsubmit_result() -> success={result.success}, "
             f"tokens={result.token_usage.get('total_tokens')}"
         )
 
-    # After the context exits the gateway is closed and rejects further work.
+    # After the context exits the pool is closed and rejects further work.
     try:
-        await gateway.submit("too late")
+        await pool.submit("too late")
     except RuntimeError as exc:
         print(f"submit after close -> {exc}")
 
@@ -100,18 +100,18 @@ async def demo_load_shedding() -> None:
     strategy = PydanticAIStrategy(agent=slow)
 
     # Admission cap: max_workers=1 + max_pending=0 → at most 1 in flight.
-    async with LLMGateway(strategy, config=ProcessorConfig(max_workers=1), max_pending=0) as gw:
-        held = asyncio.create_task(gw.submit_result("holds the slot"))
+    async with LLMCallPool(strategy, config=ProcessorConfig(max_workers=1), max_pending=0) as pool:
+        held = asyncio.create_task(pool.submit_result("holds the slot"))
         await asyncio.sleep(0.05)  # let it become in-flight
-        rejected = await gw.submit_result("over the cap")
+        rejected = await pool.submit_result("over the cap")
         print(f"  over-cap submit -> success={rejected.success}, error={rejected.error!r}")
         await held
 
     # Latency budget: the call takes ~0.3s but the budget is 0.05s.
-    async with LLMGateway(
+    async with LLMCallPool(
         strategy, config=ProcessorConfig(max_workers=2), submit_timeout=0.05
-    ) as gw:
-        timed_out = await gw.submit_result("too slow for the budget")
+    ) as pool:
+        timed_out = await pool.submit_result("too slow for the budget")
         print(f"  timed-out submit -> success={timed_out.success}, error={timed_out.error!r}")
 
 

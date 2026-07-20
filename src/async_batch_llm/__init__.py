@@ -87,6 +87,7 @@ from .base import (
     WorkItemResult,
     WorkItemTiming,
 )
+from .callable_strategy import CallableStrategy, CallOutcome
 
 # Classifiers
 from .classifiers import (
@@ -111,9 +112,9 @@ from .core.protocols import LLMModel, ManagedLLMModel
 # String-based strategy factory: llm("openai:gpt-4o-mini")
 from .factory import llm
 
-# Queue-less convenience surfaces (single call + shared gateway), built on the
+# Queue-less convenience surfaces (single call + shared call pool), built on the
 # same per-item resilience pipeline as the batch processor.
-from .gateway import LLMGateway
+from .gateway import LLMCallPool, LLMGateway
 
 # LLM call strategies
 from .llm_strategies import (
@@ -225,6 +226,8 @@ __all__ = [
     "WorkItemResult",
     "WorkItemTiming",
     "ResultSerializationError",
+    "CallOutcome",
+    "CallableStrategy",
     # Audit/checkpoint artifacts
     "ArtifactError",
     "ArtifactFormatError",
@@ -244,10 +247,11 @@ __all__ = [
     # High-level convenience API
     "process_prompts",
     "process_stream",
-    # Single-call + gateway surfaces
+    # Single-call + shared-call surfaces
     "call",
     "call_result",
     "LLMCallError",
+    "LLMCallPool",
     "LLMGateway",
     # String-based strategy factory
     "llm",

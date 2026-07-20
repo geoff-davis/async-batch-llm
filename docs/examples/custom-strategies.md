@@ -65,22 +65,27 @@ Use `on_error()` to track failures and adjust behavior:
 
 ```python
 from pydantic import ValidationError
+from async_batch_llm import RetryState
 
 class SmartRetryStrategy(LLMCallStrategy[dict]):
     def __init__(self, client):
         self.client = client
-        self.validation_failures = 0
 
-    async def on_error(self, exception: Exception, attempt: int, state=None):
+    async def on_error(
+        self, exception: Exception, attempt: int, state: RetryState | None = None
+    ):
         """Track validation errors for smart escalation."""
-        if isinstance(exception, ValidationError):
-            self.validation_failures += 1
+        if state is not None and isinstance(exception, ValidationError):
+            state.set("validation_failures", state.get("validation_failures", 0) + 1)
 
-    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
+    async def execute(
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+    ):
         # Use cheaper model initially, escalate only on validation errors
-        if self.validation_failures == 0:
+        failures = state.get("validation_failures", 0) if state is not None else 0
+        if failures == 0:
             model = "cheap-model"
-        elif self.validation_failures == 1:
+        elif failures == 1:
             model = "medium-model"
         else:
             model = "expensive-model"

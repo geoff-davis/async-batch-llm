@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-20
+
 ### Fixed
+
+- **Per-item smart-retry state ([#125])** — shared strategy instances no longer
+  retain validation feedback or other item-specific recovery data. Validation
+  feedback now lives in each work item's `RetryState`, remains isolated under
+  deterministic concurrent interleaving, and survives an intervening transport
+  failure without leaking to another item.
+
+- **Streaming worker-crash ordering** — a failed worker is reported on the
+  control plane before end-of-stream even when completed-result capacity is
+  exhausted. This closes a callback-ordering race that could otherwise let a
+  consumer observe normal stream termination before the crash signal.
 
 - **Caller cancellation no longer finishes a shared cooldown early ([#88])**
   — the coordinated rate-limit cooldown now runs in a coordinator-owned task
@@ -49,6 +62,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release. All docs and examples now use `attempt_timeout`.
 
 ### Added
+
+- **Existing async client integration** — new `CallableStrategy` and immutable
+  `CallOutcome` adapt an existing async SDK, third-party gateway client,
+  PydanticAI agent, or internal service to the existing `ItemExecutor` pipeline.
+  Invocation, lifecycle, error, dry-run, capacity, shared-scope, and resize
+  callbacks may be supplied without subclassing. Usage and metadata are copied
+  and validated, provider timing follows existing conventions, callbacks share
+  per-item `RetryState`, and failed billed calls continue to use
+  `TokenTrackingError`. Arbitrary callables require an explicit stable
+  `ArtifactIdentity` before artifact execution; compatible replay bypasses the
+  callback and an identity change invalidates reuse.
+
+- **Bounded completed-result handoff** —
+  `ProcessorConfig.max_result_queue_size` optionally limits terminal results
+  waiting for a `process_stream()` consumer. The default `0` preserves the
+  historical unbounded behavior. A result-only bounded semaphore leaves the
+  mixed control queue unbounded, so worker failures and end-of-stream remain
+  deliverable at full data capacity. Checkpointing and terminal bookkeeping
+  still precede capacity acquisition and publication.
+
+- **`LLMCallPool` preferred shared-call name** — exported as an exact alias of
+  `LLMGateway`, preserving every existing import and behavior without warnings.
+  The preferred name describes the queue-less, in-process shared executor and
+  avoids implying a network gateway or provider-routing service.
+
+- **Embedded application example and guide** — a credential-free flagship
+  example streams paginated repository input through `CallableStrategy` into an
+  async transactional sink with bounded input/output handoff, item-private
+  validation recovery, failed-attempt usage, checkpoint-before-publication, and
+  a second compatible replay run that makes no live calls. New documentation
+  covers callable composition, retry ownership, lifecycle, identity, usage,
+  cancellation, and output backpressure.
 
 - **`progress=` on `process_prompts()`/`process_stream()` ([#100])** —
   `progress=True` installs a bundled reporter: a tqdm bar when tqdm is

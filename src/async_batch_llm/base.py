@@ -319,7 +319,7 @@ class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
         exception: The originating exception for a failed result, when one was
             raised (all retries exhausted, or a permanent non-retryable error).
             ``None`` for successes and for non-error outcomes such as a
-            middleware filter-skip. ``call()`` / ``LLMGateway.submit()`` re-raise
+            middleware filter-skip. ``call()`` / ``LLMCallPool.submit()`` re-raise
             this exact exception (preserving the provider's type) rather than a
             generic ``LLMCallError``. Its traceback is detached before storage
             (the full failure is already logged at the failure site) so
@@ -1074,6 +1074,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         max_queue_size: int = 0,
         progress_callback: ProgressCallbackFunc | None = None,
         progress_callback_timeout: float | None = None,
+        max_result_queue_size: int = 0,
     ):
         """
         Initialize the batch processor.
@@ -1084,6 +1085,8 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             max_queue_size: Maximum queue size (0 = unlimited)
             progress_callback: Optional callback(completed, total, current_item_id) for progress updates
             progress_callback_timeout: Maximum seconds to wait for progress callback (None = no limit)
+            max_result_queue_size: Completed results waiting for a streaming
+                consumer (0 = unlimited)
         """
         self.max_workers = max_workers
         self.post_processor = post_processor
@@ -1093,6 +1096,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 callable(post_processor) and inspect.iscoroutinefunction(post_processor.__call__)  # type: ignore[operator]
             )
         self.max_queue_size = max_queue_size
+        self.max_result_queue_size = max_result_queue_size
         self.progress_callback = progress_callback
         self.progress_callback_timeout = progress_callback_timeout
         self._progress_callback_is_async = False
@@ -1131,6 +1135,11 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._result_stream: (
             asyncio.Queue[WorkItemResult[TOutput, TContext] | _EndOfStream | _WorkerCrashed] | None
         ) = None
+        # The mixed queue stays unbounded so control-plane messages are always
+        # deliverable. In streaming mode this optional semaphore bounds only
+        # queued WorkItemResult objects.
+        self._result_slots: asyncio.BoundedSemaphore | None = None
+        self._reported_worker_crash_task_ids: set[int] = set()
         self._finalize_task: asyncio.Task[None] | None = None
         self.termination = BatchTermination()
 
@@ -1172,6 +1181,10 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 )
             except (TimeoutError, asyncio.TimeoutError):
                 logger.warning("Some workers did not cancel within timeout")
+
+        # Results abandoned by an early consumer own one permit each. Release
+        # those permits after publishers are stopped; control messages own none.
+        self._drain_result_stream()
 
         # Clear any remaining items in queue
         while not self._queue.empty():
@@ -1320,6 +1333,12 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._finished = False
         self.termination = BatchTermination()
         self._result_stream = asyncio.Queue()
+        self._result_slots = (
+            asyncio.BoundedSemaphore(self.max_result_queue_size)
+            if self.max_result_queue_size > 0
+            else None
+        )
+        self._reported_worker_crash_task_ids = set()
         # Count any work added before start(); add_work() increments thereafter.
         self._results = []
         self._stats = ProcessingStats(total=self._queue.qsize())
@@ -1352,6 +1371,10 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             for _ in range(self.max_workers):  # release workers
                 await self._queue.put(None)
             await asyncio.gather(*self._workers, return_exceptions=True)
+            # Do not rely solely on task done-callback scheduling: report any
+            # worker failure before end-of-stream is enqueued.
+            for worker in self._workers:
+                self._report_worker_crash(worker)
             # Let any concurrent (background) post-processors finish too.
             if self._post_processor_tasks:
                 await asyncio.gather(*self._post_processor_tasks, return_exceptions=True)
@@ -1363,12 +1386,52 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             # reach the stream consumer rather than becoming an unobserved task
             # exception followed by an apparently normal end-of-stream.
             if self._result_stream is not None:
-                await self._result_stream.put(_WorkerCrashed(exc))
+                self._publish_control(_WorkerCrashed(exc))
         finally:
             # Always close the stream so results() terminates, even on error.
             self._is_processing = False
             if self._result_stream is not None:
-                await self._result_stream.put(_END_OF_STREAM)
+                self._publish_control(_END_OF_STREAM)
+
+    async def _publish_stream_result(self, result: WorkItemResult[TOutput, TContext]) -> None:
+        """Publish one result while preserving result-slot ownership."""
+        if self._result_stream is None:
+            raise RuntimeError("Result publication requires streaming mode")
+        slots = self._result_slots
+        acquired = False
+        if slots is not None:
+            await slots.acquire()
+            acquired = True
+        try:
+            # The mixed queue is deliberately unbounded, so this cannot block
+            # and introduces no cancellation point after permit acquisition.
+            self._result_stream.put_nowait(result)
+        except BaseException:
+            if acquired and slots is not None:
+                slots.release()
+            raise
+
+    def _publish_control(self, message: _EndOfStream | _WorkerCrashed) -> None:
+        """Publish a control-plane message without consuming result capacity."""
+        if self._result_stream is not None:
+            self._result_stream.put_nowait(message)
+
+    def _release_result_slot(self) -> None:
+        if self._result_slots is not None:
+            # BoundedSemaphore detects accidental over-release in tests and in
+            # future changes to the queue ownership protocol.
+            self._result_slots.release()
+
+    def _drain_result_stream(self) -> None:
+        if self._result_stream is None:
+            return
+        while True:
+            try:
+                item = self._result_stream.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            if isinstance(item, WorkItemResult):
+                self._release_result_slot()
 
     async def results(self) -> AsyncIterator[WorkItemResult[TOutput, TContext]]:
         """Yield results in completion order until :meth:`finish` + queue drain.
@@ -1380,6 +1443,10 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             raise RuntimeError("results() requires streaming mode (call start() first).")
         while True:
             item = await self._result_stream.get()
+            if isinstance(item, WorkItemResult):
+                # A result being handled by application code is outside the
+                # configured queue bound. Release before yielding it.
+                self._release_result_slot()
             if isinstance(item, _EndOfStream):
                 return
             if isinstance(item, _WorkerCrashed):
@@ -1393,11 +1460,17 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         expected during shutdown. Anything else is a framework bug that would
         otherwise hang :meth:`results`, so push an error sentinel.
         """
-        if task.cancelled():
+        self._report_worker_crash(task)
+
+    def _report_worker_crash(self, task: "asyncio.Task[Any]") -> None:
+        """Publish one crash signal per failed worker task."""
+        task_id = id(task)
+        if task_id in self._reported_worker_crash_task_ids or task.cancelled():
             return
         exc = task.exception()
         if exc is not None and self._result_stream is not None:
-            self._result_stream.put_nowait(_WorkerCrashed(exc))
+            self._reported_worker_crash_task_ids.add(task_id)
+            self._publish_control(_WorkerCrashed(exc))
 
     async def _on_batch_started(self) -> None:
         """Hook for subclasses to run logic when a batch starts."""
