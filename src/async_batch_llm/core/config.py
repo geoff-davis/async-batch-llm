@@ -292,6 +292,12 @@ class ProcessorConfig:
     # capacity smaller than the requested concurrency), not on an override.
     concurrency: int | None = None
 
+    # Maximum completed WorkItemResult objects waiting for a streaming
+    # consumer. Appended for positional compatibility. 0 preserves the
+    # historical unbounded handoff; a positive value applies backpressure to
+    # workers after execution, checkpointing, and terminal bookkeeping.
+    max_result_queue_size: int = 0
+
     def __post_init__(self) -> None:
         """Resolve the deprecated timeout alias, then validate."""
         # Raw constructor value — the alias property's setter stores writes in
@@ -372,6 +378,16 @@ class ProcessorConfig:
             raise ValueError(
                 f"max_queue_size must be >= 0 (got {self.max_queue_size}). "
                 f"Set config.max_queue_size to 0 for unlimited, or a positive number to limit queue size."
+            )
+        if (
+            isinstance(self.max_result_queue_size, bool)
+            or not isinstance(self.max_result_queue_size, int)
+            or self.max_result_queue_size < 0
+        ):
+            raise ValueError(
+                "max_result_queue_size must be a non-negative integer "
+                f"(got {self.max_result_queue_size!r}). Set it to 0 for unlimited, "
+                "or a positive integer to bound completed results waiting for a consumer."
             )
         if self.max_requests_per_minute is not None and self.max_requests_per_minute <= 0:
             raise ValueError(
