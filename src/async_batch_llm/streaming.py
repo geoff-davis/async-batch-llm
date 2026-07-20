@@ -9,8 +9,8 @@ triples (the context flows to ``WorkItemResult.context`` and your post_processor
 Because the processor runs workers while work is still being fed, a bounded
 ``ProcessorConfig.max_queue_size`` becomes input backpressure: the producer
 blocks on a full work queue instead of buffering the complete source up front.
-The result handoff queue is unbounded, so callers should consume results
-promptly when streaming a large or unbounded source.
+Set ``ProcessorConfig.max_result_queue_size`` to separately bound completed
+results waiting for a slow consumer; zero preserves the unbounded default.
 """
 
 from __future__ import annotations

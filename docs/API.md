@@ -127,7 +127,7 @@ class WorkItemResult(Generic[TOutput, TContext]):
 - `metadata` (dict[str, Any] | None): Provider metadata (provider name,
   finish reason, safety ratings, ...) forwarded from the strategy
 - `exception` (Exception | None): The original exception when the item failed
-  (what `call()` / `LLMGateway.submit()` re-raise); None on success
+  (what `call()` / `LLMCallPool.submit()` re-raise); None on success
 - `admission_wait_seconds` (float): Cumulative provider-capacity wait across all
   attempts. This wait occurs before `attempt_timeout` starts.
 - `timing` (WorkItemTiming): Total wall time and typed per-try timing for

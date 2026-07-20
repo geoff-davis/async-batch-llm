@@ -113,20 +113,22 @@ outer attempt and size `attempt_timeout` for all SDK work inside it.
 Startup-ramp and provider-capacity wait occur before `attempt_timeout`.
 `WorkItemResult.timing` separates them from execution, cooldown, and backoff.
 
-## Gateway Services
+## Shared Call Pools
 
-For request-serving applications, construct one long-lived `LLMGateway` so all
+For request-serving applications, construct one long-lived `LLMCallPool` so all
 callers share capacity and cooldown state. Set `max_pending` for load shedding
 and `submit_timeout` for the end-to-end request budget:
 
 ```python
-async with LLMGateway(
+from async_batch_llm import LLMCallPool
+
+async with LLMCallPool(
     strategy,
     config=config,
     max_pending=100,
     submit_timeout=30,
-) as gateway:
-    response = await gateway.submit("Summarize this request")
+) as pool:
+    response = await pool.submit("Summarize this request")
 ```
 
 ## Troubleshooting
@@ -139,7 +141,7 @@ async with LLMGateway(
 | httpx pool timeouts with a custom client | `httpx.Limits`, pool timeout, explicit ABL capacity | Set `max_provider_concurrency` no higher than the httpx pool |
 | Initial 429/5xx burst | First-attempt errors and startup timing | Enable `StartupRampConfig`; do not confuse it with post-429 slow-start |
 | Repeated 429s after recovery | Cooldown duration and rate-limit retry count | Lower steady capacity/RPM or increase coordinated cooldown |
-| Long request tail in a service | Gateway admission and `submit_timeout` | Bound `max_pending`; set an end-to-end submit budget |
+| Long request tail in a service | Pool admission and `submit_timeout` | Bound `max_pending`; set an end-to-end submit budget |
 
 For the exact timing boundary, see the
 [production checklist](production-checklist.md#4-timeout-and-concurrency-semantics).

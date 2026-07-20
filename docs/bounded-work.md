@@ -11,8 +11,9 @@ queued items or asyncio tasks. Bound both layers deliberately.
 | `ProcessorConfig.max_workers` | Active processor workers | Work remains queued |
 | Model `max_concurrency` / `max_provider_concurrency` | Attempts inside `strategy.execute()` | Workers wait before the execution timeout |
 | `ProcessorConfig.max_queue_size` in streaming mode | Work items waiting for a worker | Producer awaits queue space (backpressure) |
-| `LLMGateway.max_pending` | Gateway calls running or waiting | New calls are rejected immediately |
-| `LLMGateway.submit_timeout` | One caller's total gateway wall time | The call returns a timeout failure |
+| `ProcessorConfig.max_result_queue_size` | Completed results waiting for the stream consumer | Provider workers await result capacity |
+| `LLMCallPool.max_pending` | Shared calls running or waiting | New calls are rejected immediately |
+| `LLMCallPool.submit_timeout` | One caller's total shared-call wall time | The call returns a timeout failure |
 
 `max_queue_size` is the batch equivalent of a bounded pending-work buffer. It
 does not change provider concurrency. Set provider capacity independently.
@@ -36,6 +37,7 @@ async def prompts_from_database() -> AsyncIterator[tuple[str, str, int]]:
 config = ProcessorConfig(
     max_workers=32,
     max_queue_size=128,
+    max_result_queue_size=64,
     max_provider_concurrency=32,
 )
 
@@ -44,9 +46,12 @@ async for result in process_stream(strategy, prompts_from_database(), config=con
 ```
 
 At most 128 items wait in the processor queue, up to 32 workers process items,
-and at most 32 attempts enter the provider call. When the queue fills,
-`process_stream` pauses `prompts_from_database()` until a worker frees space.
-The database iterator therefore does not run ahead indefinitely.
+at most 32 attempts enter the provider call, and at most 64 completed results
+wait in the handoff queue. When the input queue fills, `process_stream` pauses
+`prompts_from_database()` until a worker frees space. When the output handoff
+fills, provider workers pause after terminal bookkeeping until the consumer
+dequeues results. The database iterator and result production therefore cannot
+run ahead indefinitely.
 
 When the feed finishes, fails, is cancelled, or stops under a batch guardrail,
 the high-level streaming API calls `aclose()` on async input iterators that
@@ -57,12 +62,32 @@ expect to resume or share it afterward.
 Results arrive in completion order. Persist or aggregate them incrementally if
 the result set itself is large.
 
+The output limit bounds completed results **queued for the consumer**, not every
+result object alive in the process. A result currently being handled by the
+consumer is outside the queue, and each active worker may temporarily hold one
+completed result while waiting to publish. The meaningful result-object bound
+is therefore approximately:
+
+```text
+max_result_queue_size + active worker count + current consumer item
+```
+
+It is independent of total run size, but not independent of `concurrency` or
+data retained by application code.
+
+Artifact persistence, terminal statistics, observers, and progress bookkeeping
+occur before a worker reserves result capacity. A newly executed checkpoint is
+therefore durable before the corresponding result can be observed, and slow
+artifact I/O does not occupy an output slot. Worker-crash and end-of-stream
+signals use a separate control path and remain deliverable when result capacity
+is exhausted.
+
 ## APIs That Collect Work or Results
 
 - `process_stream(...)` bounds pending input when its input is lazy and
-  `max_queue_size` is positive. Consume results promptly and do not retain them
-  all when the result set itself is large: the result handoff queue is
-  intentionally unbounded and does not apply consumer backpressure.
+  `max_queue_size` is positive. A positive `max_result_queue_size` separately
+  bounds completed results waiting to be consumed; zero preserves the
+  historical unbounded handoff.
 - `process_prompts(...)` uses streaming execution internally but returns one
   `BatchResult`, so it retains every completed result. It is convenient for
   bounded jobs, not bounded-memory output handling.
@@ -106,25 +131,25 @@ async with ParallelBatchProcessor(config=config) as processor:
 `add_work()` is the backpressure point. Always call `finish()` after the
 producer reaches end-of-input so `results()` can terminate.
 
-## Gateway Task Counts
+## Shared Call Task Counts
 
-`LLMGateway` bounds calls inside the gateway, but this still creates one asyncio
-task per input item:
+`LLMCallPool` bounds calls inside the in-process shared call pool, but this still
+creates one asyncio task per input item:
 
 ```python
 # Avoid for an unbounded or very large source.
-await asyncio.gather(*(gateway.submit(prompt) for prompt in prompts))
+await asyncio.gather(*(pool.submit(prompt) for prompt in prompts))
 ```
 
 `max_pending` rejects overload; it does not prevent the outer `gather()` from
 materializing every coroutine. Use `process_stream` for batch ingestion. When a
-gateway is required, keep the outer task window bounded as well:
+shared call pool is required, keep the outer task window bounded as well:
 
 ```python
-async def submit_windowed(gateway, prompts, *, window: int = 100):
+async def submit_windowed(pool, prompts, *, window: int = 100):
     pending: set[asyncio.Task] = set()
     async for prompt in prompts:
-        pending.add(asyncio.create_task(gateway.submit_result(prompt)))
+        pending.add(asyncio.create_task(pool.submit_result(prompt)))
         if len(pending) >= window:
             done, pending = await asyncio.wait(
                 pending,
@@ -138,4 +163,4 @@ async def submit_windowed(gateway, prompts, *, window: int = 100):
 ```
 
 For request-serving applications, also set `max_pending` and `submit_timeout`
-so server traffic cannot grow an unlimited gateway waiter list.
+so server traffic cannot grow an unlimited shared-call waiter list.

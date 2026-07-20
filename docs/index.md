@@ -7,11 +7,11 @@ checkpoints, deadlines, and token accounting—including failed attempts.**
 Use it for results you need during the current workflow. For latency-tolerant
 jobs, provider batch APIs may offer lower prices in exchange for a longer
 turnaround. The package provides a worker pool for bulk runs plus queue-less
-single-call and gateway helpers for request paths.
+single-call and shared-call helpers for request paths.
 
-Works with any LLM provider (OpenAI, Anthropic, Google, DeepSeek, OpenRouter,
-PydanticAI, or custom) through a simple strategy pattern. Built on asyncio for
-efficient I/O-bound processing.
+Wrap an existing async SDK, third-party gateway client, PydanticAI agent, or
+internal service with `CallableStrategy`, or use the built-in provider
+conveniences. Built on asyncio for efficient I/O-bound processing.
 
 [![PyPI version](https://badge.fury.io/py/async-batch-llm.svg)](https://badge.fury.io/py/async-batch-llm)
 [![Python 3.10-3.14](https://img.shields.io/badge/python-3.10--3.14-blue.svg)](https://www.python.org/downloads/)

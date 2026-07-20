@@ -16,7 +16,7 @@ No worker pool, queue, or result stream is created.
         print(result.output, result.token_usage)
 
 For many calls that share context (e.g. a ``GeminiCachedModel``), prefer
-:class:`~async_batch_llm.gateway.LLMGateway` or ``process_prompts`` so the
+:class:`~async_batch_llm.gateway.LLMCallPool` or ``process_prompts`` so the
 prepared strategy and coordinator are reused across calls.
 """
 
@@ -35,13 +35,13 @@ _SINGLE_CALL_ITEM_ID = "single"
 
 
 class LLMCallError(RuntimeError):
-    """Raised by :func:`call` / ``LLMGateway.submit`` when a request fails and no
+    """Raised by :func:`call` / ``LLMCallPool.submit`` when a request fails and no
     originating provider exception was preserved.
 
     When the failure carried a provider exception — the usual case for an
     exhausted-retry or permanent error — that exact exception is re-raised
     instead, preserving its type. ``LLMCallError`` is the fallback for failures
-    that produce no exception: the gateway's admission-cap (``max_pending``) and
+    that produce no exception: the pool's admission-cap (``max_pending``) and
     ``submit_timeout`` rejections.
 
     Carries the originating :class:`WorkItemResult` on ``.result`` so callers

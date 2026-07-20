@@ -35,6 +35,16 @@ python example.py
 
 ## What's Included
 
+### `example_callable_application.py`
+
+The flagship embedded-application example is fully local and needs no API key.
+It wraps a fake existing async gateway client with `CallableStrategy`, streams a
+paginated database-style source through bounded input and completed-result
+handoffs, writes results to an async transactional sink, retains billed tokens
+from validation failures, keeps retry feedback private per item, checkpoints
+before publication, and performs a second run with zero live calls through
+compatible replay.
+
 ### `example_production_resume.py`
 
 A production-oriented OpenAI run with versioned JSONL checkpoints, compatible

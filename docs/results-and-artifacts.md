@@ -112,11 +112,19 @@ result = await process_prompts(
 ```
 
 When no `ArtifactIdentity` is given, `provider` and `model` are inferred from
-the strategy at run start (built-in models map to their provider names;
-custom models use their class name) and the remaining identity fields default
-to `"unversioned"`. Prompt — and, by default, context — still participate in
-the per-item compatibility fingerprint, so a changed prompt or a changed
-model never silently replays a stale result.
+ordinary model-backed strategies at run start (built-in models map to their
+provider names; custom models use their class name) and the remaining identity
+fields default to `"unversioned"`. Prompt — and, by default, context — still
+participate in the per-item compatibility fingerprint, so a changed prompt or
+a changed model never silently replays a stale result.
+
+`CallableStrategy` is intentionally stricter: an arbitrary function cannot
+safely reveal its provider, model, route, parser, or application version. Pass
+`identity=ArtifactIdentity(...)` to `CallableStrategy` or directly to
+`JsonlArtifactStore`. Omitting both fails before the invocation callback runs;
+ABL never derives identity from a lambda, closure, object ID, memory address, or
+unstable `repr()`. An explicit store identity takes precedence over the
+strategy's identity.
 
 **When to use the full identity:** versioned production pipelines. An
 explicit `ArtifactIdentity` lets a prompt-template change, parser change, or
@@ -196,6 +204,15 @@ provider-token statistics returned by `processor.get_stats()`. In contrast,
 `BatchResult` aggregate token fields are computed from all returned results and
 therefore include replayed historical usage. This makes live processor stats a
 "spent this run" view and the collected batch an auditable result-history view.
+
+For a callable, compatible replay likewise bypasses the invocation callback.
+Changing its explicit identity invalidates replay and executes it again.
+
+When a billed response fails parsing or validation, raise
+`TokenTrackingError(token_usage=...)` from the callback. That attempt's usage is
+retained and added to later successful or terminal usage. ABL cannot account
+for transport retries hidden inside an upstream gateway unless the gateway
+reports them.
 
 Setting `include_output=False` makes a success record audit-only and therefore
 ineligible for replay. A failure remains reusable under `REUSE_ALL` because it

@@ -6,7 +6,7 @@ cooldown, and token accounting — but with no queue, workers, or result stream.
 
 Reach for these when you have *one* prompt (or a few unrelated ones) and want the
 operational layer without standing up a ParallelBatchProcessor. For many calls
-that should share a cooldown or a prepared/cached strategy, use LLMGateway or
+that should share a cooldown or a prepared/cached strategy, use LLMCallPool or
 process_prompts instead.
 
 Runs against MockAgent, so no API key is needed:
@@ -88,7 +88,7 @@ async def main() -> None:
 
     # call() instead re-raises the provider's own exception, preserving its type.
     # (LLMCallError is the fallback only when a failed result has no preserved
-    # exception — e.g. the gateway's max_pending / submit_timeout rejections.)
+    # exception — e.g. the pool's max_pending / submit_timeout rejections.)
     try:
         await call(
             _strategy(failure_rate=1.0),

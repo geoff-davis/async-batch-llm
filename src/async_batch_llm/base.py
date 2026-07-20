@@ -319,7 +319,7 @@ class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
         exception: The originating exception for a failed result, when one was
             raised (all retries exhausted, or a permanent non-retryable error).
             ``None`` for successes and for non-error outcomes such as a
-            middleware filter-skip. ``call()`` / ``LLMGateway.submit()`` re-raise
+            middleware filter-skip. ``call()`` / ``LLMCallPool.submit()`` re-raise
             this exact exception (preserving the provider's type) rather than a
             generic ``LLMCallError``. Its traceback is detached before storage
             (the full failure is already logged at the failure site) so
