@@ -626,22 +626,23 @@ class SmartGeminiStrategy(LLMCallStrategy[PersonData]):
 
     def __init__(self, client: genai.Client):
         self.client = client
-        self.validation_failures = 0  # Track quality issues only
-        self.safety_blocks = 0        # Track Gemini safety blocks
 
     async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
         """Track Gemini-specific error types."""
-        if isinstance(exception, ValidationError):
-            self.validation_failures += 1
+        if state is not None and isinstance(exception, ValidationError):
+            state.set("validation_failures", state.get("validation_failures", 0) + 1)
         elif "SAFETY" in str(exception) or "BLOCKED" in str(exception):
-            self.safety_blocks += 1
+            if state is not None:
+                state.set("safety_blocks", state.get("safety_blocks", 0) + 1)
             # Note: Could adjust safety_settings on retry
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[PersonData, TokenUsage]:
         # Select model based on validation failures (not total attempts)
-        model_index = min(self.validation_failures, len(self.MODELS) - 1)
+        failures = state.get("validation_failures", 0) if state is not None else 0
+        safety_blocks = state.get("safety_blocks", 0) if state is not None else 0
+        model_index = min(failures, len(self.MODELS) - 1)
         model = self.MODELS[model_index]
 
         # Adjust safety settings if we've hit safety blocks
@@ -651,7 +652,7 @@ class SmartGeminiStrategy(LLMCallStrategy[PersonData]):
             response_schema=PersonData,
         )
 
-        if self.safety_blocks > 0:
+        if safety_blocks > 0:
             # Could make safety_settings more permissive
             # config.safety_settings = [...]
             pass
@@ -691,13 +692,11 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
 
     def __init__(self, client: genai.Client):
         self.client = client
-        self.last_error = None
-        self.last_response = None
 
     async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
         """Track validation errors for smart retry."""
-        if isinstance(exception, ValidationError):
-            self.last_error = exception
+        if state is not None and isinstance(exception, ValidationError):
+            state.set("last_validation_error", exception)
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
@@ -706,7 +705,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
             final_prompt = prompt
         else:
             # Build focused retry prompt
-            final_prompt = self._create_retry_prompt(prompt)
+            final_prompt = self._create_retry_prompt(prompt, state)
 
         config = genai.types.GenerateContentConfig(
             temperature=0.7,
@@ -730,17 +729,19 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
             }
             return output, tokens
         except ValidationError as e:
-            self.last_response = response.text
+            if state is not None:
+                state.set("last_response", response.text)
             raise  # Framework calls on_error, then retries
 
-    def _create_retry_prompt(self, original_prompt: str) -> str:
+    def _create_retry_prompt(self, original_prompt: str, state) -> str:
         """Create targeted retry prompt with field-specific feedback."""
-        if not self.last_error:
+        last_error = state.get("last_validation_error") if state is not None else None
+        if not last_error:
             return original_prompt
 
         # Parse which fields succeeded vs failed
         failed_fields = []
-        for error in self.last_error.errors():
+        for error in last_error.errors():
             field = ".".join(str(loc) for loc in error["loc"])
             msg = error["msg"]
             failed_fields.append(f"  - {field}: {msg}")

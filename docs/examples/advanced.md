@@ -6,7 +6,7 @@ Save costs by starting with cheap models and escalating only on validation error
 
 ```python
 from pydantic import ValidationError
-from async_batch_llm import LLMCallStrategy
+from async_batch_llm import LLMCallStrategy, RetryState
 
 class SmartModelEscalation(LLMCallStrategy[dict]):
     MODELS = [
@@ -17,17 +17,17 @@ class SmartModelEscalation(LLMCallStrategy[dict]):
 
     def __init__(self, client):
         self.client = client
-        self.validation_failures = 0
 
-    async def on_error(self, exception: Exception, attempt: int, state=None):
+    async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None):
         """Only escalate on validation errors, not network/rate limit errors."""
-        if isinstance(exception, ValidationError):
-            self.validation_failures += 1
+        if state is not None and isinstance(exception, ValidationError):
+            state.set("validation_failures", state.get("validation_failures", 0) + 1)
 
-    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
+    async def execute(self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None):
         # Network error on attempt 2? Retry with same cheap model
         # Validation error on attempt 2? Escalate to better model
-        model_index = min(self.validation_failures, len(self.MODELS) - 1)
+        failures = state.get("validation_failures", 0) if state is not None else 0
+        model_index = min(failures, len(self.MODELS) - 1)
         model = self.MODELS[model_index]
 
         response = await self.client.generate(prompt, model=model)
@@ -44,30 +44,30 @@ Tell the LLM exactly what failed on retry:
 class SmartRetryStrategy(LLMCallStrategy[PersonData]):
     def __init__(self, client):
         self.client = client
-        self.last_error = None
-        self.last_response = None
 
-    async def on_error(self, exception: Exception, attempt: int, state=None):
-        if isinstance(exception, ValidationError):
-            self.last_error = exception
+    async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None):
+        if state is not None and isinstance(exception, ValidationError):
+            state.set("last_validation_error", exception)
 
-    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
+    async def execute(self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None):
         if attempt == 1:
             final_prompt = prompt
         else:
             # Create retry prompt with field-level feedback
-            final_prompt = self._create_retry_prompt(prompt)
+            final_prompt = self._create_retry_prompt(prompt, state)
 
         try:
             response = await self.client.generate(final_prompt)
             output = PersonData.model_validate_json(response.text)
             return output, tokens
         except ValidationError as e:
-            self.last_response = response.text
+            if state is not None:
+                state.set("last_response", response.text)
             raise
 
-    def _create_retry_prompt(self, original_prompt: str) -> str:
-        # Parse self.last_error to identify which fields failed
+    def _create_retry_prompt(self, original_prompt: str, state: RetryState | None) -> str:
+        # Parse state.get("last_validation_error") to identify which fields failed.
+        # A transport error must not overwrite this validation feedback.
         # Build prompt like: "These fields succeeded: [age]. Fix these: [name, email]"
         return retry_prompt
 ```

@@ -203,20 +203,11 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
 
         Default: no-op
 
-        Example (v0.2.0):
-            async def on_error(self, exception: Exception, attempt: int) -> None:
-                # Store last error for smart retry logic
-                self.last_error = exception
-
-                # Track validation errors vs network errors
-                if isinstance(exception, ValidationError):
-                    self.should_escalate_model = True
-
-        Example (v0.3.0 with retry state):
+        Example:
             async def on_error(
                 self, exception: Exception, attempt: int, state: RetryState | None = None
             ) -> None:
-                if state:
+                if state is not None:
                     # Track validation errors separately from other errors
                     if isinstance(exception, ValidationError):
                         count = state.get('validation_failures', 0) + 1

@@ -26,15 +26,20 @@ import os
 from typing import Annotated
 
 from google import genai
-
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-
 from google.genai.types import GenerateContentConfig
 from pydantic import BaseModel, Field, ValidationError
 
-from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
+from async_batch_llm import (
+    LLMWorkItem,
+    ParallelBatchProcessor,
+    ProcessorConfig,
+    RetryState,
+    TokenUsage,
+)
 from async_batch_llm.core import RetryConfig
 from async_batch_llm.llm_strategies import LLMCallStrategy
+
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 
 
 class PersonData(BaseModel):
@@ -117,8 +122,6 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
 
     def __init__(self, client: genai.Client):
         self.client = client
-        self.last_response = None  # Track last response for smart retry
-        self.last_error = None  # Track last error for smart retry
 
     async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
         """
@@ -127,13 +130,17 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
         This callback captures the error information before the retry,
         allowing us to build a more targeted prompt for the next attempt.
         """
+        if state is None:
+            return
         if isinstance(exception, ValidationError):
-            self.last_error = exception
-            # Note: We can't access response.text here because the exception
-            # is raised after parsing. We need to save it during execute().
+            state.set("last_validation_error", exception)
+            state.set("last_error_category", "validation")
+        else:
+            # Keep prior validation feedback across transient transport errors.
+            state.set("last_error_category", "transport")
 
     async def execute(
-        self, prompt: str, attempt: int, timeout: float, state=None
+        self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
     ) -> tuple[PersonData, TokenUsage]:
         # Adjust prompt based on attempt
         if attempt == 1:
@@ -142,7 +149,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
             temperature = 0.0
         else:
             # Retry: create smart prompt with feedback
-            final_prompt = self._create_retry_prompt(prompt)
+            final_prompt = self._create_retry_prompt(prompt, state)
             temperature = 0.5  # Slightly higher temp for retries
 
         config = GenerateContentConfig(
@@ -171,25 +178,30 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
         except ValidationError as e:
             # Save the response text for retry prompt generation
             # Note: on_error callback is called by framework after this raises
-            self.last_response = response.text
-            self.last_error = e  # Also save here for immediate access
+            if state is not None:
+                state.set("last_response", response.text)
+                state.set("last_validation_error", e)
             raise  # Re-raise so framework can retry
 
-    def _create_retry_prompt(self, original_prompt: str) -> str:
+    def _create_retry_prompt(self, original_prompt: str, state: RetryState | None) -> str:
         """
         Create a smart retry prompt that tells the LLM:
         1. Which fields succeeded (keep these)
         2. Which fields failed (fix these)
         3. Specific validation errors for each failed field
         """
-        if not self.last_response or not self.last_error:
+        if state is None:
+            return original_prompt
+        last_response = state.get("last_response")
+        last_error = state.get("last_validation_error")
+        if not last_response or not isinstance(last_error, ValidationError):
             return original_prompt
 
         # Parse what we can from the last response
         partial_data = {}
         failed_fields = {}
 
-        for error in self.last_error.errors():
+        for error in last_error.errors():
             field_name = error["loc"][0] if error["loc"] else "unknown"
             error_msg = error["msg"]
             failed_fields[field_name] = error_msg
@@ -198,7 +210,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
         try:
             import json
 
-            raw_data = json.loads(self.last_response)
+            raw_data = json.loads(last_response)
             for field_name, _field_info in PersonData.model_fields.items():
                 if field_name not in failed_fields and field_name in raw_data:
                     partial_data[field_name] = raw_data[field_name]
@@ -380,14 +392,13 @@ async def example_comparison():
 
     # Test smart retry
     print("Testing Smart Retry Strategy:")
+    smart_strategy = SmartRetryGeminiStrategy(client=client)
     async with ParallelBatchProcessor[str, PersonData, None](config=config) as processor:
         for i, text in enumerate(difficult_texts):
-            # Note: Need new instance per item for stateful strategy
-            item_strategy = SmartRetryGeminiStrategy(client=client)
             await processor.add_work(
                 LLMWorkItem(
                     item_id=f"smart_{i}",
-                    strategy=item_strategy,
+                    strategy=smart_strategy,
                     prompt=f"Extract person information:\n\n{text}",
                 )
             )
