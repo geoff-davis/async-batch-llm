@@ -18,6 +18,7 @@ Behavior is preserved 1:1, including log message prefixes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from typing import Any
@@ -62,6 +63,12 @@ class RateLimitCoordinator:
         self._items_since_resume = 0
         self._slow_start_active = False
         self._consecutive_rate_limits = 0
+
+        # The cooldown sleep runs in a coordinator-OWNED task (issue #88):
+        # cancelling the caller that reported the rate limit (gateway
+        # submit_timeout, item deadline) must cancel only that caller, never
+        # finish the shared pause early. shutdown() cancels this task.
+        self._cooldown_task: asyncio.Task[None] | None = None
 
         self._lock = asyncio.Lock()
 
@@ -140,13 +147,11 @@ class RateLimitCoordinator:
         async with self._lock:
             current_generation = self._cooldown_generation
             generation_event = self._current_generation_event
-            consecutive = 0  # set on coordinator path below
             if self._in_cooldown or observed_generation < current_generation:
                 logger.debug(
                     f"Worker {worker_id} waiting for cooldown gen {current_generation} "
                     f"(obs={observed_generation})"
                 )
-                should_wait = True
                 generation = current_generation
             else:
                 self._in_cooldown = True
@@ -157,94 +162,132 @@ class RateLimitCoordinator:
                 self._rate_limit_event.clear()
                 self._current_generation_event = asyncio.Event()
                 generation_event = self._current_generation_event
-                consecutive = self._consecutive_rate_limits
-                should_wait = False
+                # The cooldown runs in a coordinator-owned task, NOT in this
+                # caller's task (issue #88): a gateway submit timeout or item
+                # deadline cancelling the reporting caller must cancel only
+                # that caller — a caller cancellation used to success-finalize
+                # the shared cooldown and wake every waiter early. Only
+                # shutdown() cancels the owned task (and then waking waiters
+                # is the intended teardown behavior).
+                self._cooldown_task = asyncio.create_task(
+                    self._run_cooldown(
+                        worker_id,
+                        generation,
+                        self._consecutive_rate_limits,
+                        suggested_wait,
+                    )
+                )
 
-        if should_wait:
-            await generation_event.wait()
-            logger.debug(f"Worker {worker_id} resumed after cooldown gen {generation}")
-            return
+        # Coordinator and waiters alike wait for the generation to complete;
+        # each caller's cancellation affects only itself.
+        await generation_event.wait()
+        logger.debug(f"Worker {worker_id} resumed after cooldown gen {generation}")
 
-        # We're the coordinator — run the cooldown sleep.
+    async def _run_cooldown(
+        self,
+        worker_id: int,
+        generation: int,
+        consecutive: int,
+        suggested_wait: float | None,
+    ) -> None:
+        """Owned cooldown cycle: compute the wait, sleep, finalize."""
         pause_started_at = time.time()
         cooldown_error: Exception | None = None
 
         try:
-            cooldown = await self._strategy.on_rate_limit(worker_id, consecutive)
+            try:
+                cooldown = await self._strategy.on_rate_limit(worker_id, consecutive)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                cooldown_error = exc
+                cooldown = 0.0
+                logger.warning(
+                    "[WARN]Rate limit strategy failed to determine cooldown: %s. "
+                    "Resuming workers immediately.",
+                    exc,
+                )
+
+            # Respect a server-suggested wait (e.g. Retry-After) as a floor:
+            # the backoff strategy may ask for longer, but we never undershoot
+            # the server's request. Only applied when the strategy itself
+            # didn't error.
+            if cooldown_error is None and suggested_wait is not None and suggested_wait > cooldown:
+                logger.info(
+                    "[RATE-LIMIT]Raising cooldown from %.1fs to server-suggested %.1fs.",
+                    cooldown,
+                    suggested_wait,
+                )
+                cooldown = suggested_wait
+
+            await self._events.emit(
+                ProcessingEvent.COOLDOWN_STARTED,
+                {
+                    "worker_id": worker_id,
+                    "duration": cooldown,
+                    "consecutive": consecutive,
+                },
+            )
+
+            if cooldown_error is not None:
+                logger.warning(
+                    "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). "
+                    "Skipping cooldown due to prior error.",
+                    worker_id,
+                    generation,
+                )
+            elif cooldown > 0:
+                logger.warning(
+                    "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). "
+                    "Pausing all workers for %.1fs...",
+                    worker_id,
+                    generation,
+                    cooldown,
+                )
+            else:
+                # A strategy can legitimately return 0.0 (no cooldown wanted);
+                # don't mislabel that as an error.
+                logger.warning(
+                    "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). "
+                    "Strategy requested no cooldown; resuming immediately.",
+                    worker_id,
+                    generation,
+                )
+
+            try:
+                if cooldown > 0:
+                    await asyncio.sleep(cooldown)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "[WARN]Cooldown sleep interrupted for worker %s: %s. Resuming immediately.",
+                    worker_id,
+                    exc,
+                )
+                cooldown_error = cooldown_error or exc
+
+            await self._finalize_cooldown(pause_started_at, cooldown_error)
         except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            cooldown_error = exc
-            cooldown = 0.0
-            logger.warning(
-                "[WARN]Rate limit strategy failed to determine cooldown: %s. "
-                "Resuming workers immediately.",
-                exc,
-            )
-
-        # Respect a server-suggested wait (e.g. Retry-After) as a floor: the
-        # backoff strategy may ask for longer, but we never undershoot the
-        # server's request. Only applied when the strategy itself didn't error.
-        if cooldown_error is None and suggested_wait is not None and suggested_wait > cooldown:
-            logger.info(
-                "[RATE-LIMIT]Raising cooldown from %.1fs to server-suggested %.1fs.",
-                cooldown,
-                suggested_wait,
-            )
-            cooldown = suggested_wait
-
-        await self._events.emit(
-            ProcessingEvent.COOLDOWN_STARTED,
-            {
-                "worker_id": worker_id,
-                "duration": cooldown,
-                "consecutive": consecutive,
-            },
-        )
-
-        if cooldown_error is not None:
-            logger.warning(
-                "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). "
-                "Skipping cooldown due to prior error.",
-                worker_id,
-                generation,
-            )
-        elif cooldown > 0:
-            logger.warning(
-                "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). "
-                "Pausing all workers for %.1fs...",
-                worker_id,
-                generation,
-                cooldown,
-            )
-        else:
-            # A strategy can legitimately return 0.0 (no cooldown wanted);
-            # don't mislabel that as an error.
-            logger.warning(
-                "[RATE-LIMIT]Rate limit detected by worker %s (gen %d). "
-                "Strategy requested no cooldown; resuming immediately.",
-                worker_id,
-                generation,
-            )
-
-        try:
-            if cooldown > 0:
-                await asyncio.sleep(cooldown)
-        except asyncio.CancelledError:
-            # Shield so workers still resume even when cancelled.
+            # Only shutdown() cancels this owned task — wake the waiters so
+            # host teardown never hangs on the pause, then propagate.
             await asyncio.shield(self._finalize_cooldown(pause_started_at, None))
             raise
-        except Exception as exc:
-            logger.warning(
-                "[WARN]Cooldown sleep interrupted for worker %s: %s. Resuming immediately.",
-                worker_id,
-                exc,
-            )
-            cooldown_error = cooldown_error or exc
-            await self._finalize_cooldown(pause_started_at, cooldown_error)
-            return
 
-        await self._finalize_cooldown(pause_started_at, cooldown_error)
+    async def shutdown(self) -> None:
+        """Cancel an in-flight cooldown task during host teardown.
+
+        The cancelled task finalizes the generation (waking any remaining
+        waiters) before propagating, so shutdown never hangs on a pause and
+        the task is never leaked. Safe to call multiple times or with no
+        cooldown active.
+        """
+        task = self._cooldown_task
+        self._cooldown_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     async def _finalize_cooldown(self, start_time: float, error: Exception | None) -> None:
         """Resume workers and emit COOLDOWN_ENDED."""

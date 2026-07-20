@@ -431,6 +431,9 @@ class ParallelBatchProcessor(
         """Cancel the batch timer before the base worker/task cleanup."""
         await self._cancel_batch_timeout()
         await super().cleanup()
+        # After workers are gone: cancel any in-flight coordinator-owned
+        # cooldown task so it doesn't outlive the processor (issue #88).
+        await self._rate_limit_coord.shutdown()
 
     def start(self) -> None:
         """Start streaming workers and the batch deadline clock."""
