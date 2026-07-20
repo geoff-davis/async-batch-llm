@@ -3,11 +3,13 @@
 import pytest
 
 from async_batch_llm import (
+    BatchResult,
     CachedTokenRates,
     LLMWorkItem,
     ParallelBatchProcessor,
     ProcessorConfig,
     RetryState,
+    WorkItemResult,
 )
 from async_batch_llm.base import TokenUsage
 from async_batch_llm.llm_strategies import LLMCallStrategy
@@ -87,7 +89,7 @@ async def test_get_stats_reports_cached_tokens_under_both_keys():
 
 @pytest.mark.asyncio
 async def test_cache_hit_rate_calculation():
-    """Test cache_hit_rate() method."""
+    """Test the cache_hit_rate property."""
     strategy = CachedTokenStrategy(
         input_tokens=500,
         output_tokens=100,
@@ -104,7 +106,7 @@ async def test_cache_hit_rate_calculation():
         result = await processor.process_all()
 
     # Should be 90% cache hit rate (4500 / 5000 * 100)
-    assert result.cache_hit_rate() == 90.0
+    assert result.cache_hit_rate == 90.0
 
 
 @pytest.mark.asyncio
@@ -258,7 +260,7 @@ async def test_no_cached_tokens():
         result = await processor.process_all()
 
     assert result.total_cached_tokens == 0
-    assert result.cache_hit_rate() == 0.0
+    assert result.cache_hit_rate == 0.0
     assert result.effective_input_tokens() == 100  # No caching discount
 
 
@@ -306,12 +308,12 @@ async def test_mixed_cached_and_noncached():
     assert result.total_cached_tokens == 2250
 
     # Cache hit rate: 2250 / 3000 * 100 = 75%
-    assert result.cache_hit_rate() == 75.0
+    assert result.cache_hit_rate == 75.0
 
 
 @pytest.mark.asyncio
 async def test_cache_hit_rate_with_zero_input_tokens():
-    """Test that cache_hit_rate() handles edge case of zero input tokens."""
+    """Test that cache_hit_rate handles edge case of zero input tokens."""
 
     class ZeroTokenStrategy(LLMCallStrategy[str]):
         async def execute(
@@ -332,7 +334,7 @@ async def test_cache_hit_rate_with_zero_input_tokens():
         result = await processor.process_all()
 
     # Should handle division by zero gracefully
-    assert result.cache_hit_rate() == 0.0
+    assert result.cache_hit_rate == 0.0
     assert result.effective_input_tokens() == 0
 
 
@@ -354,7 +356,7 @@ async def test_100_percent_cache_hit_rate():
 
         result = await processor.process_all()
 
-    assert result.cache_hit_rate() == 100.0
+    assert result.cache_hit_rate == 100.0
 
     # Effective tokens = 5000 - (5000 * 0.9) = 500
     assert result.effective_input_tokens(CachedTokenRates.GEMINI) == 500
@@ -385,6 +387,30 @@ async def test_partial_cache_hit_rate():
 
             result = await processor.process_all()
 
-        assert result.cache_hit_rate() == expected_rate, (
+        assert result.cache_hit_rate == expected_rate, (
             f"Expected {expected_rate}% hit rate for {cached_tokens}/{input_tokens} cached tokens"
         )
+
+
+async def test_cache_hit_rate_legacy_call_still_works_with_warning():
+    """The pre-0.19 method spelling keeps working via the callable-float shim."""
+
+    result = BatchResult(
+        results=[
+            WorkItemResult(
+                item_id="1",
+                success=True,
+                output="x",
+                token_usage={
+                    "input_tokens": 100,
+                    "output_tokens": 10,
+                    "total_tokens": 110,
+                    "cached_input_tokens": 90,
+                },
+            )
+        ]
+    )
+    assert result.cache_hit_rate == 90.0
+    assert f"{result.cache_hit_rate:.1f}" == "90.0"  # formats as a float
+    with pytest.warns(DeprecationWarning, match="drop the"):
+        assert result.cache_hit_rate() == 90.0
