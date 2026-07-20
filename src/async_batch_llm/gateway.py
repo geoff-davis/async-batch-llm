@@ -1,4 +1,4 @@
-"""Queue-less rate-limited gateway: many callers, one shared cooldown.
+"""Queue-less shared call pool: many callers, one shared cooldown.
 
 A long-lived service object for a web app's request path. Many concurrent
 callers each :meth:`submit` one prompt; an :class:`asyncio.Semaphore` caps
@@ -45,7 +45,7 @@ TOutput = TypeVar("TOutput")
 
 
 class LLMGateway(Generic[TOutput]):
-    """A shared, rate-limited entry point for single LLM calls from many callers.
+    """An in-process shared call pool for single LLM calls from many callers.
 
     Create one at startup and call :meth:`submit` from any number of concurrent
     handlers. ``config.max_workers`` is the global concurrency budget. The
@@ -212,3 +212,10 @@ class LLMGateway(Generic[TOutput]):
         if self._inflight > 0:
             await self._idle.wait()
         await self._host.aclose()
+
+
+# Preferred v0.20 name. This is deliberately an exact alias: both imports use
+# the same queue-less class and the same shared ItemExecutor path.
+LLMCallPool = LLMGateway
+
+__all__ = ["LLMCallPool", "LLMGateway"]

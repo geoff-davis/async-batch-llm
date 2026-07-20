@@ -114,7 +114,7 @@ from .factory import llm
 
 # Queue-less convenience surfaces (single call + shared gateway), built on the
 # same per-item resilience pipeline as the batch processor.
-from .gateway import LLMGateway
+from .gateway import LLMCallPool, LLMGateway
 
 # LLM call strategies
 from .llm_strategies import (
@@ -251,6 +251,7 @@ __all__ = [
     "call",
     "call_result",
     "LLMCallError",
+    "LLMCallPool",
     "LLMGateway",
     # String-based strategy factory
     "llm",

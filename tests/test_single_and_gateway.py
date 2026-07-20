@@ -6,13 +6,17 @@ import pytest
 from pydantic import BaseModel
 
 from async_batch_llm import (
+    CallableStrategy,
+    CallOutcome,
     LLMCallError,
+    LLMCallPool,
     LLMGateway,
     ProcessorConfig,
     PydanticAIStrategy,
     call,
     call_result,
 )
+from async_batch_llm.base import RetryState
 from async_batch_llm.core import RateLimitConfig, RetryConfig
 from async_batch_llm.testing import MockAgent
 
@@ -207,6 +211,54 @@ def test_gateway_rejects_invalid_knobs():
         LLMGateway(_strategy(), max_pending=-1)
     with pytest.raises(ValueError):
         LLMGateway(_strategy(), submit_timeout=0)
+
+
+def test_call_pool_is_exact_gateway_alias_from_root_and_module():
+    from async_batch_llm.gateway import LLMCallPool as ModulePool
+    from async_batch_llm.gateway import LLMGateway as ModuleGateway
+
+    assert LLMCallPool is LLMGateway
+    assert ModulePool is ModuleGateway
+    assert LLMCallPool is ModulePool
+
+
+@pytest.mark.asyncio
+async def test_call_pool_uses_callable_strategy_and_propagates_exceptions():
+    active = 0
+    peak = 0
+    prepared = 0
+    cleaned = 0
+
+    async def invoke(
+        prompt: str, *, attempt: int, timeout: float, state: RetryState | None
+    ) -> CallOutcome[str]:
+        nonlocal active, peak
+        if prompt == "fail":
+            raise ValueError("application failure")
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return CallOutcome(f"ok:{prompt}")
+
+    def prepare() -> None:
+        nonlocal prepared
+        prepared += 1
+
+    async def cleanup() -> None:
+        nonlocal cleaned
+        cleaned += 1
+
+    strategy = CallableStrategy(invoke, prepare=prepare, cleanup=cleanup)
+    async with LLMCallPool(strategy, config=ProcessorConfig(max_workers=2)) as pool:
+        outputs = await asyncio.gather(*(pool.submit(str(index)) for index in range(8)))
+        with pytest.raises(ValueError, match="application failure"):
+            await pool.submit("fail")
+
+    assert outputs == [f"ok:{index}" for index in range(8)]
+    assert peak == 2
+    assert prepared == 1
+    assert cleaned == 1
 
 
 @pytest.mark.asyncio
