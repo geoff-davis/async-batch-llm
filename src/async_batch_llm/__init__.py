@@ -87,6 +87,7 @@ from .base import (
     WorkItemResult,
     WorkItemTiming,
 )
+from .callable_strategy import CallableStrategy, CallOutcome
 
 # Classifiers
 from .classifiers import (
@@ -225,6 +226,8 @@ __all__ = [
     "WorkItemResult",
     "WorkItemTiming",
     "ResultSerializationError",
+    "CallOutcome",
+    "CallableStrategy",
     # Audit/checkpoint artifacts
     "ArtifactError",
     "ArtifactFormatError",

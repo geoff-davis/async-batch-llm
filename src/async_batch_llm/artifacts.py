@@ -77,6 +77,7 @@ _PROVIDER_BY_MODEL_CLASS = {
 }
 
 _UNVERSIONED = "unversioned"
+_NO_IDENTITY_HOOK = object()
 
 
 def infer_artifact_identity(strategy: Any) -> ArtifactIdentity:
@@ -94,6 +95,20 @@ def infer_artifact_identity(strategy: Any) -> ArtifactIdentity:
     compatibility fingerprint regardless of identity, so a changed prompt
     never silently replays a stale result even with a defaulted identity.
     """
+    explicit_hook = getattr(strategy, "artifact_identity", _NO_IDENTITY_HOOK)
+    if explicit_hook is not _NO_IDENTITY_HOOK:
+        if explicit_hook is None:
+            raise ArtifactError(
+                f"{type(strategy).__name__} cannot safely infer artifact identity. "
+                "Pass identity=ArtifactIdentity(...) to CallableStrategy or "
+                "JsonlArtifactStore."
+            )
+        if not isinstance(explicit_hook, ArtifactIdentity):
+            raise ArtifactError(
+                f"{type(strategy).__name__}.artifact_identity must be an ArtifactIdentity or None"
+            )
+        return explicit_hook
+
     provider: str | None = None
     model_id: str | None = None
 
