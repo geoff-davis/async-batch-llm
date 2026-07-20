@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-20
+
 ### Fixed
 
 - **Per-item smart-retry state ([#125])** — shared strategy instances no longer
