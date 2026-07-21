@@ -133,7 +133,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
         if state is None:
             return
         if isinstance(exception, ValidationError):
-            state.set("last_validation_error", exception)
+            state.set("last_validation_errors", exception.errors(include_url=False))
             state.set("last_error_category", "validation")
         else:
             # Keep prior validation feedback across transient transport errors.
@@ -180,7 +180,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
             # Note: on_error callback is called by framework after this raises
             if state is not None:
                 state.set("last_response", response.text)
-                state.set("last_validation_error", e)
+                state.set("last_validation_errors", e.errors(include_url=False))
             raise  # Re-raise so framework can retry
 
     def _create_retry_prompt(self, original_prompt: str, state: RetryState | None) -> str:
@@ -193,15 +193,15 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
         if state is None:
             return original_prompt
         last_response = state.get("last_response")
-        last_error = state.get("last_validation_error")
-        if not last_response or not isinstance(last_error, ValidationError):
+        validation_errors = state.get("last_validation_errors")
+        if not last_response or not isinstance(validation_errors, list):
             return original_prompt
 
         # Parse what we can from the last response
         partial_data = {}
         failed_fields = {}
 
-        for error in last_error.errors():
+        for error in validation_errors:
             field_name = error["loc"][0] if error["loc"] else "unknown"
             error_msg = error["msg"]
             failed_fields[field_name] = error_msg
