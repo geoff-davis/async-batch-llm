@@ -248,7 +248,12 @@ def _artifact_item_count(path: Path) -> int:
     )
 
 
-async def run_demo(artifact_path: Path, *, verbose: bool = True) -> DemoReport:
+async def run_demo(
+    artifact_path: Path,
+    *,
+    verbose: bool = True,
+    progress: bool = False,
+) -> DemoReport:
     repository = DocumentRepository()
     first_client = FakeApplicationGateway()
     first_sink = TransactionalResultSink(artifact_path)
@@ -258,6 +263,7 @@ async def run_demo(artifact_path: Path, *, verbose: bool = True) -> DemoReport:
         build_strategy(first_client),
         prompt_source(repository),
         config=CONFIG,
+        progress=progress,
         artifact_store=JsonlArtifactStore(artifact_path),
     ):
         await first_sink.save(result)
@@ -272,6 +278,7 @@ async def run_demo(artifact_path: Path, *, verbose: bool = True) -> DemoReport:
         build_strategy(resumed_client),
         prompt_source(DocumentRepository()),
         config=CONFIG,
+        progress=progress,
         artifact_store=JsonlArtifactStore(artifact_path),
         resume=ResumePolicy.REUSE_SUCCESSES,
     ):
@@ -296,6 +303,7 @@ async def run_demo(artifact_path: Path, *, verbose: bool = True) -> DemoReport:
         print(batch.summary())
         print("completion order:", [result.item_id for result in first_results])
         print("input order:", [result.item_id for result in batch.in_input_order().results])
+        print("validation retries recovered: doc-1, doc-3")
         print("live client calls:", first_client.calls)
         print("resume client calls:", resumed_client.calls)
     return report
@@ -303,7 +311,7 @@ async def run_demo(artifact_path: Path, *, verbose: bool = True) -> DemoReport:
 
 async def main() -> None:
     with tempfile.TemporaryDirectory(prefix="abl-callable-demo-") as directory:
-        await run_demo(Path(directory) / "documents.jsonl")
+        await run_demo(Path(directory) / "documents.jsonl", progress=True)
 
 
 if __name__ == "__main__":

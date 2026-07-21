@@ -1,321 +1,201 @@
 # Getting Started
 
-This guide will help you get started with async-batch-llm.
+This path starts with the smallest public API and adds operational controls one
+at a time. Built-in provider wrappers are optional; the final section shows how
+to bring an existing async client.
 
-## Installation
+## 1. Installation
 
-Install async-batch-llm with the extras you need:
+Install the extra for your provider. Add `progress` for a tqdm terminal bar:
 
 ```bash
-# Basic installation
-pip install async-batch-llm
-
-# With PydanticAI support (recommended for structured output)
-pip install 'async-batch-llm[pydantic-ai]'
-
-# With Google Gemini support
-pip install 'async-batch-llm[gemini]'
-
-# With OpenAI support
-pip install 'async-batch-llm[openai]'
-
-# With OpenRouter support (any of OpenAI/Anthropic/Google/DeepSeek/etc.
-# behind one OpenAI-compatible API)
-pip install 'async-batch-llm[openrouter]'
-
-# With DeepSeek support (direct DeepSeek API, native cache-hit tracking)
-pip install 'async-batch-llm[deepseek]'
-
-# With everything
-pip install 'async-batch-llm[all]'
+pip install 'async-batch-llm[openai,progress]'
+export OPENAI_API_KEY='...'
 ```
 
-## Quickstart: the high-level API
+Available provider extras are `openai`, `gemini`, `openrouter`, `deepseek`, and
+`pydantic-ai`. The credential-free
+[embedded application example](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_callable_application.py)
+and [Colab notebook](https://colab.research.google.com/github/geoff-davis/async-batch-llm/blob/main/notebooks/async_batch_llm_quickstart.ipynb)
+need only the core package plus the optional progress extra.
 
-For the common case — "run this strategy over these prompts" — reach for
-`process_prompts` (collect everything) or `process_stream` (handle each result
-as it finishes). Both accept bare strings (ids auto-generated) or
-`(item_id, prompt)` pairs, and forward any `ParallelBatchProcessor` option as a
-keyword argument.
+## 2. First small batch
+
+`llm()` constructs a tested built-in strategy. `concurrency=` aligns workers,
+provider admission, and the connection pool when the model supports resizing.
 
 ```python
 import asyncio
-from async_batch_llm import llm, process_prompts, process_stream
+from async_batch_llm import llm, process_prompts
 
 async def main():
-    strategy = llm("openai:gpt-4o-mini")  # reads OPENAI_API_KEY
-
-    # Collect all results into a BatchResult:
-    result = await process_prompts(strategy, ["Summarize A", "Summarize B"])
-    print(f"{result.succeeded}/{result.total_items} succeeded")
-    for r in result.successes:
-        print(r.item_id, "->", r.output)
-
-    # …or stream results as each item completes:
-    async for r in process_stream(strategy, [("a", "first"), ("b", "second")]):
-        print("done:", r.item_id, r.success)
+    batch = await process_prompts(
+        llm("openai:gpt-4o-mini"),
+        ["Summarize document A", "Summarize document B"],
+        concurrency=10,
+    )
+    print(batch.summary())
 
 asyncio.run(main())
 ```
 
-`process_stream` is built on the processor's first-class streaming mode
-(`start()`/`add_work()`/`finish()`/`results()`) — workers push each completed
-result onto an internal queue, so results arrive in **completion order**. When
-you don't pass `error_classifier=`, it's auto-selected from the strategy
-(`OpenAIStrategy` → `OpenAIErrorClassifier`, `GeminiStrategy` →
-`GeminiErrorClassifier`, etc.).
+The factory also supports `gemini:`, `openrouter:`, and `deepseek:` model
+specifications. It reads each provider's normal environment variable.
 
-The `llm()` factory builds the same strategy objects as the explicit
-two-object form. It accepts `"gemini:..."`, `"openai:..."`,
-`"openrouter:..."`, and `"deepseek:..."` prefixes; keyword arguments forward
-to the model constructor:
+## 3. Read successes and failures
+
+Every accepted item receives one terminal `WorkItemResult`; failures are data,
+not exception objects mixed into an output list.
 
 ```python
-from async_batch_llm import llm
+for result in batch.results:
+    if result.success:
+        print(result.item_id, result.output)
+    else:
+        print(result.item_id, result.error_category, result.exception)
 
-strategy = llm("openai:gpt-4o-mini")                     # reads OPENAI_API_KEY
-strategy = llm("gemini:gemini-2.5-flash")                # reads GOOGLE_API_KEY
-strategy = llm("openrouter:anthropic/claude-haiku-4-5")  # reads OPENROUTER_API_KEY
-strategy = llm("deepseek:deepseek-v4-flash", thinking=False, max_connections=150)
+for item_id, output in batch.outputs(with_ids=True):
+    print("successful output:", item_id, output)
 ```
 
-For custom clients, Gemini cached models, response parsers with structured
-output, or providers without a prefix, use the explicit two-object
-construction shown in [Built-in Strategies](#built-in-strategies) below —
-that remains the "advanced construction" path.
+Results are collected in completion order. Pass `preserve_order=True` to
+`process_prompts()`, or call `batch.in_input_order()`, when submission order is
+more useful.
 
-For large sources, use a lazy iterable plus
-`ProcessorConfig(max_queue_size=N)` and consume `process_stream` incrementally.
-`process_prompts` collects every result and therefore is not a constant-memory
-output path. See [Bounded Work and Backpressure](bounded-work.md).
+## 4. Print a summary
 
-The rest of this guide covers the underlying building blocks, which you use
-directly when you need custom queueing, per-item context, middleware, or
-observers.
-
-## Core Concepts
-
-### 1. Strategy Pattern
-
-async-batch-llm uses a strategy pattern to support any LLM provider. A strategy encapsulates:
-
-- How to call the LLM
-- How to handle errors
-- How to manage resources (e.g., caches)
+`BatchResult.summary()` reports terminal counts, retries, current-run token
+usage, wall time, timing percentiles, and failure categories:
 
 ```python
-from async_batch_llm import LLMCallStrategy
-
-class MyCustomStrategy(LLMCallStrategy[str]):
-    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
-        # Call your LLM here
-        response = await my_llm.generate(prompt)
-        tokens = {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
-        return response, tokens
+print(batch.summary())
 ```
 
-### 2. Work Items
+Replayed token totals remain attached to replayed items for auditing but are
+separated from current-run consumption in the summary.
 
-Each task is represented by an `LLMWorkItem`:
+## 5. Add progress
 
 ```python
-from async_batch_llm import LLMWorkItem
-
-work_item = LLMWorkItem(
-    item_id="unique-id",
-    strategy=my_strategy,
-    prompt="Your prompt here",
-    context={"metadata": "optional"}
+batch = await process_prompts(
+    strategy,
+    prompts,
+    concurrency=10,
+    progress=True,
 )
 ```
 
-### 3. Parallel Processing
+The bundled reporter sees every exact count but coalesces terminal rendering to
+`ProcessorConfig.progress_refresh_interval_seconds` (0.1 seconds by default).
+It renders the first observation and one final exact state. Lazy async sources
+may increase the displayed total while running. Without tqdm, a slower
+coalesced logging fallback is used.
 
-The `ParallelBatchProcessor` manages parallel execution:
+A custom callback still receives every completed item and retains the existing
+timeout/thread behavior:
 
 ```python
-from async_batch_llm import ParallelBatchProcessor, ProcessorConfig
+def on_progress(completed: int, total: int, item_id: str) -> None:
+    metrics.gauge("batch.completed", completed)
+
+batch = await process_prompts(strategy, prompts, progress=on_progress)
+```
+
+`progress_interval` is different: it controls processor log lines by item
+count, not the bundled terminal refresh cadence.
+
+## 6. Add checkpoint and resume
+
+```python
+from async_batch_llm import JsonlArtifactStore, ResumePolicy
+
+store = JsonlArtifactStore("runs/summaries.jsonl")
+batch = await process_prompts(
+    strategy,
+    prompts,
+    artifact_store=store,
+    resume=ResumePolicy.REUSE_SUCCESSES,
+)
+```
+
+Built-in strategies provide a stable zero-configuration identity. Checkpoint
+compatibility still includes item ID, prompt, participating context, provider,
+model, and identity versions. A compatible success is returned with
+`replayed_from_artifact=True` without another provider call.
+
+For an arbitrary callable, provide an explicit `ArtifactIdentity`; ABL cannot
+safely infer the provider, route, parser, or application version from a Python
+function.
+
+## 7. Stream from an async source
+
+Use `process_stream()` when the source is lazy or the result set is large:
+
+```python
+from collections.abc import AsyncIterator
+from async_batch_llm import ProcessorConfig, process_stream
+
+async def source() -> AsyncIterator[tuple[str, str]]:
+    async for row in repository.iter_documents(page_size=500):
+        yield row.id, f"Summarize:\n{row.text}"
 
 config = ProcessorConfig(
-    max_workers=5,
-    attempt_timeout=30.0,
+    concurrency=32,
+    max_queue_size=128,
+    max_result_queue_size=64,
+    attempt_timeout=30,
 )
 
-async with ParallelBatchProcessor(config=config) as processor:
-    await processor.add_work(work_item)
-    result = await processor.process_all()
+async for result in process_stream(strategy, source(), config=config):
+    await repository.save_result(result)
 ```
 
-## Built-in Strategies
+`max_queue_size` bounds accepted input waiting for workers.
+`max_result_queue_size` bounds completed results waiting for the consumer. An
+active worker can temporarily hold one additional completed result, and the
+consumer owns its current item. `process_prompts()` still retains the complete
+final `BatchResult`.
 
-### PydanticAI Strategy
+## 8. Bring an existing async client
 
-For structured output with validation:
-
-```python
-from async_batch_llm import PydanticAIStrategy
-from pydantic_ai import Agent
-from pydantic import BaseModel
-
-class Output(BaseModel):
-    field1: str
-    field2: int
-
-agent = Agent("gemini-2.5-flash", output_type=Output)
-strategy = PydanticAIStrategy(agent=agent)
-```
-
-### Gemini Strategy
-
-Direct Gemini API calls:
+`CallableStrategy` adapts an async operation to the same `ItemExecutor` used by
+built-in strategies:
 
 ```python
-from async_batch_llm import GeminiModel, GeminiStrategy
-from google import genai
+from async_batch_llm import ArtifactIdentity, CallOutcome, CallableStrategy
 
-client = genai.Client(api_key="your-key")
-model = GeminiModel("gemini-2.5-flash", client)
-strategy = GeminiStrategy(model, response_parser=lambda r: r.text)
-```
+async def invoke(prompt, *, attempt, timeout, state):
+    response = await existing_client.generate(prompt, timeout=timeout)
+    return CallOutcome(
+        output=response.text,
+        token_usage=response.usage,
+        metadata={"route": response.route},
+    )
 
-### Gemini with Context Caching
-
-With context caching for repeated prompts (70-90% cost savings):
-
-```python
-from async_batch_llm import GeminiCachedModel, GeminiStrategy
-
-cached_model = GeminiCachedModel(
-    "gemini-2.5-flash", client,
-    cached_content=[system_instruction, context_docs],
+strategy = CallableStrategy(
+    invoke,
+    identity=ArtifactIdentity(
+        provider="application-gateway",
+        model="summary-route",
+        parser_version="summary-v2",
+    ),
 )
-strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
 ```
 
-### OpenAI Strategy
+Put item-specific validation feedback or escalation state in the supplied
+`RetryState`, never on a strategy shared by concurrent items. Avoid letting
+both ABL and an upstream gateway run the same transport retry policy at full
+strength.
 
-Direct OpenAI API calls (added in v0.9.0):
+See [Use Your Existing Async Client](callable-integration.md) for lifecycle,
+token accounting, cancellation, classification, and shared-call composition.
 
-```python
-from async_batch_llm import OpenAIModel, OpenAIStrategy
+## 9. Production guides
 
-model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-...")
-strategy = OpenAIStrategy(model)
-```
-
-See [OpenAI Integration](OPENAI_INTEGRATION.md) for structured output,
-caching, and error handling.
-
-### OpenRouter Strategy
-
-Reach Anthropic, OpenAI, Google, DeepSeek, etc. through one OpenAI-compatible
-API (added in v0.9.0):
-
-```python
-from async_batch_llm import OpenRouterModel, OpenRouterStrategy
-
-model = OpenRouterModel.from_api_key(
-    "anthropic/claude-haiku-4-5",
-    api_key="sk-or-...",
-)
-strategy = OpenRouterStrategy(model)
-```
-
-See [OpenRouter Integration](OPENROUTER_INTEGRATION.md) for the
-per-upstream-provider caching matrix and the Anthropic `cache_control`
-opt-in pattern.
-
-### DeepSeek Strategy
-
-Direct DeepSeek API access with native cache-hit token tracking (added in
-v0.10.0):
-
-```python
-from async_batch_llm import DeepSeekModel, DeepSeekStrategy
-
-model = DeepSeekModel.from_api_key(
-    "deepseek-v4-flash",     # reads DEEPSEEK_API_KEY
-    thinking=False,          # non-thinking: cheaper/faster for batch work
-    max_connections=200,     # see the high-concurrency note below
-)
-strategy = DeepSeekStrategy(model)
-```
-
-DeepSeek allows **thousands of concurrent connections** — far more than most
-providers — so it's a great fit for large parallel batches. To actually use
-that headroom, raise `ProcessorConfig(max_workers=...)` *and* pass a matching
-`max_connections` so the underlying httpx pool (default ~100) doesn't become
-the bottleneck. See the [DeepSeek quickstart in the
-README](https://github.com/geoff-davis/async-batch-llm#deepseek-quickstart)
-for the full pattern (thinking toggle, JSON mode, connection pool,
-fence-tolerant parser, and the prepaid-balance gotcha).
-
-### Structured (JSON) output
-
-For the OpenAI-compatible providers (OpenAI / OpenRouter / DeepSeek), request
-JSON with `from_api_key(..., json_mode=True)` and parse it with the built-in
-`pydantic_json_parser`, which strips markdown code fences before validating:
-
-```python
-from pydantic import BaseModel
-
-from async_batch_llm import DeepSeekModel, DeepSeekStrategy, pydantic_json_parser
-
-
-class Topic(BaseModel):
-    label: str
-    confidence: float
-
-
-model = DeepSeekModel.from_api_key("deepseek-chat", json_mode=True)
-strategy = DeepSeekStrategy(model, pydantic_json_parser(Topic))
-```
-
-## Open file limits and high concurrency
-
-Each in-flight request typically holds a socket — an operating-system **file
-descriptor** — so a high `max_workers` (together with the provider connection
-pool and your app's own fds) can run into the OS **open-file limit**. The
-symptom is `OSError: [Errno 24] Too many open files`, and it bites hardest on
-**macOS**, whose default soft limit is only ~256.
-
-`ParallelBatchProcessor` emits a `UserWarning` at construction when
-`max_workers` is close to the current soft limit (`RLIMIT_NOFILE`). It does
-**not** raise the limit for you — changing it mutates process-global state, so
-that's your call. Three ways to handle it:
-
-1. **Raise the limit for the shell**, before running:
-
-   ```bash
-   ulimit -n 8192      # raise the soft limit (must be ≤ the hard limit)
-   ```
-
-2. **Raise it in-process**, early in your program (Unix only):
-
-   ```python
-   import resource
-
-   soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-   target = hard if hard != resource.RLIM_INFINITY else 8192
-   resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, target), hard))
-   ```
-
-3. **Lower `max_workers`** to fit the available limit. For I/O-bound LLM calls
-   the throughput gain flattens out well before you exhaust the fd budget, so
-   capping workers is often fine.
-
-Also size the **connection pool** to your worker count so the pool itself isn't
-the bottleneck — `max_connections=` on the OpenAI-compatible `from_api_key(...)`
-(see the [OpenAI integration guide](OPENAI_INTEGRATION.md#connection-pool-sizing-max_connections)),
-and httpx limits via `HttpOptions` for the Gemini client.
-
-## Next Steps
-
-- [Choosing Your Limits](choosing-your-limits.md) - One decision tree for
-  `concurrency=`, connection pools, admission, timeouts, deadlines, ramp, and
-  cooldown, with a worked 10k-item sizing example
-- [Production Checklist](production-checklist.md) - Worker count, connection
-  pools, fd limits, timeout/retry budgets, rate-limit tuning, constant-memory streaming
-- [Basic Examples](examples/basic.md) - See more usage examples
-- [Custom Strategies](examples/custom-strategies.md) - Build your own strategies
-- [Advanced Patterns](examples/advanced.md) - Learn advanced techniques
+- [Choosing Your Limits](choosing-your-limits.md)
+- [Production Checklist](production-checklist.md)
+- [Deadlines and Fail-Fast Guardrails](guardrails.md)
+- [Bounded Work and Backpressure](bounded-work.md)
+- [Results, Artifacts, and Resume](results-and-artifacts.md)
+- [Troubleshooting and FAQ](troubleshooting.md)
+- [Compare alternatives](comparison.md)

@@ -4,7 +4,7 @@ Collapses the model/strategy split for the common case. The explicit
 two-object form (``OpenAIStrategy(OpenAIModel.from_api_key(...))``) remains
 the path for custom clients, cached models, and custom strategies.
 
-Added in v0.19.0 (issue #95).
+Added in v0.20.0 (issue #95).
 """
 
 from __future__ import annotations
@@ -128,7 +128,7 @@ def llm(
         ImportError: The provider's optional dependency is not installed;
             the message names the exact install extra.
 
-    Added in v0.19.0.
+    Added in v0.20.0.
     """
     provider, sep, model_id = spec.partition(":")
     provider = provider.strip().lower()

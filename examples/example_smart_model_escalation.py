@@ -107,7 +107,9 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
         """
         if state is None:
             return
-        state.set("last_error", exception)
+        error_category = "validation" if self._is_validation_error(exception) else "transport"
+        state.set("last_error_category", error_category)
+        state.set("last_error_type", type(exception).__name__)
         state.set("total_attempts", attempt)
 
         # Check if this was a validation error
@@ -138,14 +140,14 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
         # Select model based on validation failures, not total attempts
         # This ensures we only escalate when quality is the issue
         failures = state.get("validation_failures", 0) if state is not None else 0
-        last_error = state.get("last_error") if state is not None else None
+        last_error_category = state.get("last_error_category") if state is not None else None
         model_index = min(failures, len(self.MODELS) - 1)
         model = self.MODELS[model_index]
 
         if self.verbose:
             if attempt == 1:
                 print(f"  Attempt {attempt}: Using {model}")
-            elif last_error and self._is_validation_error(last_error):
+            elif last_error_category == "validation":
                 print(f"  Attempt {attempt}: Escalating to {model} (after validation error)")
             else:
                 print(f"  Attempt {attempt}: Retrying with {model} (network/rate limit error)")

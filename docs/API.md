@@ -190,7 +190,7 @@ class BatchResult(Generic[TOutput, TContext]):
   `batch_timeout`, `fail_fast`, `artifact_error`)
 - `wall_time_seconds` (float | None): Wall-clock duration of the run, stamped
   by `process_all()` / `process_prompts()`. `None` for hand-assembled batches
-  and records serialized before v0.19. (v0.19.0)
+  and records serialized before v0.20. (v0.20.0)
 
 **Note:** Only `results`, `termination`, and `wall_time_seconds` are
 constructor arguments. The summary fields are `init=False` and calculated
@@ -199,9 +199,9 @@ automatically in `__post_init__` — construct with `BatchResult(results=[...])`
 **Accessors:**
 
 - `outputs(with_ids=False)` — iterator over successful outputs, or
-  `(item_id, output)` pairs with `with_ids=True` (v0.19.0)
+  `(item_id, output)` pairs with `with_ids=True` (v0.20.0)
 - `successes` / `failures` (properties) — lists of successful / failed results
-- `summary()` — printable plain-text post-run report (v0.19.0)
+- `summary()` — printable plain-text post-run report (v0.20.0)
 - `by_id()`, `in_input_order()`, `cache_hit_rate`,
   `effective_input_tokens()`, `estimated_cost()` — see below
 - `to_dict()`/`from_dict()`, `to_json()`/`from_json()`,
@@ -366,7 +366,7 @@ async with ParallelBatchProcessor(config=config) as processor:
 ### llm() factory
 
 Build a ready-to-use built-in strategy from a `"provider:model"` string.
-Added in v0.19.0.
+Added in v0.20.0.
 
 ```python
 def llm(
@@ -862,11 +862,13 @@ class ProcessorConfig:
     max_provider_concurrency: int | None = None
     startup_ramp: StartupRampConfig | None = None
     concurrency: int | None = None
+    max_result_queue_size: int = 0
+    progress_refresh_interval_seconds: float = 0.1
 ```
 
 **Fields:**
 
-- `concurrency` (int | None): **The single concurrency knob** (v0.19.0). When
+- `concurrency` (int | None): **The single concurrency knob** (v0.20.0). When
   set, coherently sizes every alignment-sensitive limit that is not
   explicitly configured: `max_workers`, `max_provider_concurrency`, and the
   httpx connection pool on built-in OpenAI-compatible models built via
@@ -895,8 +897,13 @@ class ProcessorConfig:
 - `progress_interval` (int): Log progress every N items. Default: 10
 - `progress_callback_timeout` (float | None): Max seconds to wait for progress callback. Default: 5.0.
   Set to `None` for no timeout.
+- `progress_refresh_interval_seconds` (float): Minimum seconds between renders
+  for the bundled `progress=True` reporter. Custom callbacks remain per-item.
+  Default: 0.1.
 - `enable_detailed_logging` (bool): Enable detailed debug logging. Default: False
 - `max_queue_size` (int): Max queue size (0 = unlimited). Default: 0
+- `max_result_queue_size` (int): Completed results waiting for a streaming
+  consumer (0 = unlimited). Default: 0
 - `max_requests_per_minute` (float | None): Optional proactive rate limiter that throttles
   requests before hitting provider limits
 - `dry_run` (bool): Skip actual API calls, use mock data from `strategy.dry_run()`. Default: False

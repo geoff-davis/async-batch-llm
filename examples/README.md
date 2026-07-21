@@ -35,6 +35,14 @@ python example.py
 
 ## What's Included
 
+### Quickstart assets
+
+The [no-key Colab notebook](https://colab.research.google.com/github/geoff-davis/async-batch-llm/blob/main/notebooks/async_batch_llm_quickstart.ipynb)
+shows coalesced progress, item-local retry feedback, a terminal failure,
+`BatchResult.summary()`, and checkpoint replay. The README terminal animation
+is generated from the same credential-free application scenario; see
+[`docs/terminal-demo.md`](../docs/terminal-demo.md) for regeneration.
+
 ### `example_callable_application.py`
 
 The flagship embedded-application example is fully local and needs no API key.

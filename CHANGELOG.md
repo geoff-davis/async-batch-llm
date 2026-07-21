@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.20.0] - 2026-07-20
+> v0.19.0 was not published. Its planned onboarding and ergonomics
+> improvements are included in v0.20.0.
 
 ### Fixed
 
@@ -48,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`BatchResult.cache_hit_rate` is now a property ([#93])** — consistent
   with the sibling zero-arg scalar accessors (`total_cached_tokens`,
   `succeeded`, `.successes`, ...), so forgetting the `()` no longer yields a
-  silently-truthy bound method in f-strings. The pre-0.19 call spelling
+  silently-truthy bound method in f-strings. The v0.18 call spelling
   `batch.cache_hit_rate()` still works via a transitional callable-float
   return value and emits a `DeprecationWarning`; removal with the next major
   release.
@@ -100,11 +101,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   importable (new optional extra `[progress]`; also included in `[all]`),
   falling back to interval logging otherwise. Pass a callable
   `(completed, total, current_item_id)` for a custom reporter. Supported for
-  both collected and streamed runs. Alongside this, `progress_callback` now
-  fires for **every** completed item (previously it was gated to
-  `progress_interval`, which stays as the log-line cadence), runs before the
-  item's result is published, and pending callbacks are drained instead of
-  cancelled at shutdown — so the final update is never dropped.
+  both collected and streamed runs. The bundled reporter observes exact counts
+  inline without a per-item thread-dispatch task, coalesces terminal rendering
+  by `progress_refresh_interval_seconds`, supports growing lazy-source totals,
+  and forces one exact final state during finalization. User-supplied progress
+  callbacks still fire for **every** completed item with their existing
+  async/sync timeout and thread behavior; `progress_interval` remains only the
+  processor log-line cadence.
 
 - **Zero-config checkpointing ([#99])** — `JsonlArtifactStore("run.jsonl")`
   now works without an `ArtifactIdentity`: `provider` and `model` are
@@ -150,6 +153,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   valid prefixes and the exact install extra. The explicit two-object form
   remains the documented path for custom clients, cached models, and custom
   strategies.
+
+### Documentation
+
+- **Complete onboarding path** — the README and documentation home now lead
+  with `llm()`, `process_prompts()`, unified concurrency, coalesced progress,
+  and `BatchResult.summary()`. A credential-free terminal animation,
+  regeneration recipe, and no-key Colab notebook cover retry, terminal
+  failures, summaries, checkpoint/replay, and cleanup.
+- **Honest alternatives guide** — a dated scenario comparison covers
+  `asyncio.gather`, Bespoke Curator, LiteLLM and other gateways, provider-native
+  batch APIs, and durable workflow engines, including direct guidance about
+  when not to use ABL.
+- **Troubleshooting and migration** — new operational guidance covers pools,
+  429s, deadlines, blocked responses, apparent hangs, artifacts, memory,
+  progress, gateway composition, and deprecations. The primary migration guide
+  targets v0.18.x directly; the old v0.19 URL remains as a historical pointer.
 
 ## [0.18.0] - 2026-07-13
 

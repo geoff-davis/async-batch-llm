@@ -696,7 +696,10 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
     async def on_error(self, exception: Exception, attempt: int, state=None) -> None:
         """Track validation errors for smart retry."""
         if state is not None and isinstance(exception, ValidationError):
-            state.set("last_validation_error", exception)
+            state.set(
+                "last_validation_errors",
+                exception.errors(include_url=False),
+            )
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
@@ -735,13 +738,15 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
 
     def _create_retry_prompt(self, original_prompt: str, state) -> str:
         """Create targeted retry prompt with field-specific feedback."""
-        last_error = state.get("last_validation_error") if state is not None else None
-        if not last_error:
+        validation_errors = (
+            state.get("last_validation_errors") if state is not None else None
+        )
+        if not validation_errors:
             return original_prompt
 
         # Parse which fields succeeded vs failed
         failed_fields = []
-        for error in last_error.errors():
+        for error in validation_errors:
             field = ".".join(str(loc) for loc in error["loc"])
             msg = error["msg"]
             failed_fields.append(f"  - {field}: {msg}")

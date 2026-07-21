@@ -208,7 +208,7 @@ class ProcessorConfig:
     # `concurrency` when that knob is set, else the historical default of 5 —
     # always an int afterwards. An explicit value overrides the derived one.
     max_workers: int | None = None
-    # Deprecated alias for attempt_timeout (v0.19.0) — kept in this position
+    # Deprecated alias for attempt_timeout — kept in this position
     # so positional construction keeps working. The property attached below
     # the class routes reads to attempt_timeout (with a DeprecationWarning)
     # and normalizes the stored slot to None after __post_init__ resolution,
@@ -272,13 +272,13 @@ class ProcessorConfig:
     # backoff waits between attempts). Size it for one slow call, not the whole
     # retry chain; for a whole-item budget use
     # GuardrailConfig.total_timeout_per_item. Renamed from timeout_per_item in
-    # v0.19.0 (the old name remains a deprecated constructor alias and
+    # v0.20.0 (the old name remains a deprecated constructor alias and
     # attribute); None means "not passed" and resolves to the 120.0 default in
     # __post_init__, so it is always a float afterwards. Appended after all
     # prior fields for positional compatibility.
     attempt_timeout: float | None = None
 
-    # Single concurrency knob (v0.19.0, issue #97). When set, coherently sizes
+    # Single concurrency knob (issue #97). When set, coherently sizes
     # every alignment-sensitive limit that is not explicitly configured:
     #
     # - max_workers (worker-pool size)
@@ -297,6 +297,11 @@ class ProcessorConfig:
     # historical unbounded handoff; a positive value applies backpressure to
     # workers after execution, checkpointing, and terminal bookkeeping.
     max_result_queue_size: int = 0
+
+    # Minimum time between terminal renders for the bundled ``progress=True``
+    # reporter. Custom progress callbacks remain per-item and are unaffected.
+    # Appended for positional compatibility.
+    progress_refresh_interval_seconds: float = 0.1
 
     def __post_init__(self) -> None:
         """Resolve the deprecated timeout alias, then validate."""
@@ -388,6 +393,16 @@ class ProcessorConfig:
                 "max_result_queue_size must be a non-negative integer "
                 f"(got {self.max_result_queue_size!r}). Set it to 0 for unlimited, "
                 "or a positive integer to bound completed results waiting for a consumer."
+            )
+        if (
+            isinstance(self.progress_refresh_interval_seconds, bool)
+            or not isinstance(self.progress_refresh_interval_seconds, (int, float))
+            or not math.isfinite(self.progress_refresh_interval_seconds)
+            or self.progress_refresh_interval_seconds <= 0
+        ):
+            raise ValueError(
+                "progress_refresh_interval_seconds must be finite and > 0 "
+                f"(got {self.progress_refresh_interval_seconds!r})."
             )
         if self.max_requests_per_minute is not None and self.max_requests_per_minute <= 0:
             raise ValueError(

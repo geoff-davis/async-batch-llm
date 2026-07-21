@@ -393,7 +393,7 @@ async def test_partial_cache_hit_rate():
 
 
 async def test_cache_hit_rate_legacy_call_still_works_with_warning():
-    """The pre-0.19 method spelling keeps working via the callable-float shim."""
+    """The v0.18 method spelling keeps working via the callable-float shim."""
 
     result = BatchResult(
         results=[

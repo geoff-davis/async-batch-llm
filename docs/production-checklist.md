@@ -3,6 +3,9 @@
 Tuning knobs that matter when you move from a 10-item test to a real bulk run.
 Each item links to the deeper reference where one exists.
 
+When a run is already failing or appears stuck, use the
+[Troubleshooting and FAQ](troubleshooting.md) alongside this preflight list.
+
 ## 1. Worker count (`max_workers`)
 
 LLM calls are **I/O-bound**, so `max_workers` is "how many calls in flight at
@@ -71,7 +74,7 @@ plus the connection pool plus your app's own fds can hit the OS open-file limit
 when `max_workers` is close to the soft limit; it does not raise the limit for
 you. Fix by raising it (`ulimit -n 8192`, or `resource.setrlimit` early in the
 process) or lowering `max_workers`. Full guidance:
-[Getting started → open file limits](getting-started.md#open-file-limits-and-high-concurrency).
+[Troubleshooting → throughput and connection pools](troubleshooting.md#throughput-stops-below-the-worker-count).
 
 ## 4. Timeout and concurrency semantics
 

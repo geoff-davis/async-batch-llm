@@ -14,6 +14,7 @@ better suited to a provider's native batch API.
 [![Tests](https://github.com/geoff-davis/async-batch-llm/workflows/Tests/badge.svg)](https://github.com/geoff-davis/async-batch-llm/actions)
 [![Coverage](https://raw.githubusercontent.com/geoff-davis/async-batch-llm/python-coverage-comment-action-data/badge.svg)](https://github.com/geoff-davis/async-batch-llm/tree/python-coverage-comment-action-data)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/geoff-davis/async-batch-llm/blob/main/notebooks/async_batch_llm_quickstart.ipynb)
 
 **[Documentation](https://geoff-davis.github.io/async-batch-llm/)** ·
 [Getting started](https://geoff-davis.github.io/async-batch-llm/getting-started/) ·
@@ -22,17 +23,35 @@ better suited to a provider's native batch API.
 
 ## Quick start
 
-### Install
-
-Install the provider extra you need. For OpenAI:
+Install the OpenAI and terminal-progress extras, then set `OPENAI_API_KEY`:
 
 ```bash
-pip install 'async-batch-llm[openai]'
+pip install 'async-batch-llm[openai,progress]'
+export OPENAI_API_KEY='...'
 ```
 
-Other extras are `pydantic-ai`, `gemini`, `openrouter`, `deepseek`, `progress`
-(tqdm progress bars), and `all`. Install only the core package with
-`pip install async-batch-llm`.
+```python
+import asyncio
+from async_batch_llm import llm, process_prompts
+
+async def main():
+    batch = await process_prompts(
+        llm("openai:gpt-4o-mini"), ["Summarize A", "Summarize B"],
+        concurrency=10, progress=True,
+    )
+    print(batch.summary())
+
+asyncio.run(main())
+```
+
+[Run the credential-free embedded-application demo](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_callable_application.py),
+or [open the no-key notebook in Colab](https://colab.research.google.com/github/geoff-davis/async-batch-llm/blob/main/notebooks/async_batch_llm_quickstart.ipynb).
+
+![Credential-free v0.20 terminal demo](https://raw.githubusercontent.com/geoff-davis/async-batch-llm/main/docs/assets/v0.20-quickstart.gif)
+
+Other provider extras are `gemini`, `openrouter`, `deepseek`, and
+`pydantic-ai`; `progress` installs tqdm. The core package has no provider SDK
+dependency.
 
 ### Use your existing async client
 
@@ -75,30 +94,7 @@ concurrency admission, coordinated cooldowns, LLM-aware retries, per-item retry
 state, deadlines, checkpoint/replay, accounting, and observers around one
 existing async operation. See [Use Your Existing Async Client](https://geoff-davis.github.io/async-batch-llm/callable-integration/).
 
-### Run a batch
-
-```python
-import asyncio
-
-from async_batch_llm import llm, process_prompts
-
-
-async def main() -> None:
-    strategy = llm("openai:gpt-4o-mini")  # reads OPENAI_API_KEY
-    batch = await process_prompts(
-        strategy,
-        ["Summarize document A", "Summarize document B"],
-        concurrency=10,  # sizes workers, admission, and the connection pool
-        progress=True,  # tqdm bar if installed, else interval logging
-    )
-
-    print(batch.summary())  # counts, tokens, timing percentiles, failures
-    for item_id, output in batch.outputs(with_ids=True):  # successes only
-        print(item_id, output)
-
-
-asyncio.run(main())
-```
+### Built-in providers and result handling
 
 `llm("provider:model")` covers `openai:`, `gemini:`, `openrouter:`, and
 `deepseek:`; keyword arguments forward to the model constructor (e.g.
@@ -170,7 +166,9 @@ code to interpret exception objects mixed into the result list.
 
 Use `gather()` for a small script when those operational guarantees do not
 matter. Use a provider's native batch API when delayed results are acceptable
-and its current pricing or throughput is a better fit.
+and its current pricing or throughput is a better fit. See the
+[scenario-based comparison](https://geoff-davis.github.io/async-batch-llm/comparison/)
+for Bespoke Curator, gateways, native batch APIs, and workflow engines.
 
 ### A dated benchmark snapshot
 
@@ -297,7 +295,7 @@ connection pools, admission, timeouts, deadlines, ramp, and cooldown — with a
 worked 10k-item sizing example.
 
 - `attempt_timeout` limits one provider execution attempt (renamed from
-  `timeout_per_item` in v0.19; the old name is a deprecated alias).
+  `timeout_per_item` in v0.20; the old name is a deprecated alias).
 - `GuardrailConfig.total_timeout_per_item` limits the complete logical item,
   including coordinated cooldown, startup ramp, proactive rate limiting,
   provider-capacity admission, calls, retry cooldowns, and backoff.
@@ -365,7 +363,9 @@ benchmark walkthroughs.
 ## Documentation
 
 - [Getting Started](https://geoff-davis.github.io/async-batch-llm/getting-started/)
+- [Compare Alternatives](https://geoff-davis.github.io/async-batch-llm/comparison/)
 - [Production Checklist](https://geoff-davis.github.io/async-batch-llm/production-checklist/)
+- [Troubleshooting and FAQ](https://geoff-davis.github.io/async-batch-llm/troubleshooting/)
 - [Results, Artifacts, and Resume](https://geoff-davis.github.io/async-batch-llm/results-and-artifacts/)
 - [Deadlines and Fail-Fast Guardrails](https://geoff-davis.github.io/async-batch-llm/guardrails/)
 - [Bounded Work and Backpressure](https://geoff-davis.github.io/async-batch-llm/bounded-work/)
@@ -383,7 +383,9 @@ make ci
 ```
 
 See the [contributing guide](https://geoff-davis.github.io/async-batch-llm/contributing/)
-or open an [issue](https://github.com/geoff-davis/async-batch-llm/issues).
+or open an [issue](https://github.com/geoff-davis/async-batch-llm/issues). For
+operational help, start with the
+[troubleshooting guide](https://geoff-davis.github.io/async-batch-llm/troubleshooting/).
 
 ## License
 

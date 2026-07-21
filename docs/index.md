@@ -1,125 +1,81 @@
 # async-batch-llm
 
-**Run independent LLM calls concurrently with production-grade retries,
-coordinated rate-limit cooldowns, bounded input buffering, resumable
-checkpoints, deadlines, and token accounting—including failed attempts.**
+Run independent LLM calls concurrently with bounded input and result handoffs,
+coordinated retries, deadlines, checkpoint/replay, and terminal outcomes for
+every accepted item. Use a built-in provider convenience or wrap an async
+client you already have.
 
-Use it for results you need during the current workflow. For latency-tolerant
-jobs, provider batch APIs may offer lower prices in exchange for a longer
-turnaround. The package provides a worker pool for bulk runs plus queue-less
-single-call and shared-call helpers for request paths.
+## First batch
 
-Wrap an existing async SDK, third-party gateway client, PydanticAI agent, or
-internal service with `CallableStrategy`, or use the built-in provider
-conveniences. Built on asyncio for efficient I/O-bound processing.
-
-[![PyPI version](https://badge.fury.io/py/async-batch-llm.svg)](https://badge.fury.io/py/async-batch-llm)
-[![Python 3.10-3.14](https://img.shields.io/badge/python-3.10--3.14-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
----
-
-## Why async-batch-llm?
-
-- ✅ **Universal** - Works with any LLM provider through a simple strategy interface
-- ✅ **Reliable** - Built-in retry logic, timeout handling, and coordinated rate limiting
-- ✅ **Fast** - Parallel async processing with configurable concurrency
-- ✅ **Observable** - Token tracking, metrics collection, and event hooks
-- ✅ **Resumable** - Versioned checkpoints can replay compatible prior results
-- ✅ **Guarded** - End-to-end item deadlines, batch deadlines, and configurable fail-fast behavior
-- ✅ **Cost-Aware** - Shared caching and complete token accounting expose repeated-input costs
-- ✅ **Type-Safe** - Full generic type support with Pydantic validation
-
----
-
-## Installation
+Install a provider and the optional terminal progress bar:
 
 ```bash
-# Basic installation
-pip install async-batch-llm
-
-# With PydanticAI support (recommended for structured output)
-pip install 'async-batch-llm[pydantic-ai]'
-
-# With Google Gemini support
-pip install 'async-batch-llm[gemini]'
-
-# With OpenAI support
-pip install 'async-batch-llm[openai]'
-
-# With OpenRouter support
-pip install 'async-batch-llm[openrouter]'
-
-# With DeepSeek support
-pip install 'async-batch-llm[deepseek]'
-
-# With everything
-pip install 'async-batch-llm[all]'
+pip install 'async-batch-llm[openai,progress]'
+export OPENAI_API_KEY='...'
 ```
-
----
-
-## Quick Example
 
 ```python
 import asyncio
-from async_batch_llm import (
-    ParallelBatchProcessor,
-    LLMWorkItem,
-    ProcessorConfig,
-    PydanticAIStrategy,
-)
-from pydantic_ai import Agent
-from pydantic import BaseModel
-
-class Summary(BaseModel):
-    title: str
-    key_points: list[str]
+from async_batch_llm import llm, process_prompts
 
 async def main():
-    # Create agent and wrap in strategy
-    agent = Agent("gemini-2.5-flash", output_type=Summary)
-    strategy = PydanticAIStrategy(agent=agent)
-
-    # Configure processor
-    config = ProcessorConfig(max_workers=5, attempt_timeout=30.0)
-
-    # Process items with automatic resource cleanup
-    async with ParallelBatchProcessor[str, Summary, None](config=config) as processor:
-        # Add work items
-        for doc in ["Document 1 text...", "Document 2 text..."]:
-            await processor.add_work(
-                LLMWorkItem(
-                    item_id=f"doc_{hash(doc)}",
-                    strategy=strategy,
-                    prompt=f"Summarize: {doc}",
-                )
-            )
-
-        # Process all in parallel
-        result = await processor.process_all()
-
-    print(f"Succeeded: {result.succeeded}/{result.total_items}")
-    print(f"Tokens used: {result.total_input_tokens + result.total_output_tokens}")
+    batch = await process_prompts(
+        llm("openai:gpt-4o-mini"), ["Summarize A", "Summarize B"],
+        concurrency=10, progress=True,
+    )
+    print(batch.summary())
 
 asyncio.run(main())
 ```
 
----
+The same execution engine powers collection, completion-order streaming,
+single calls, and the in-process `LLMCallPool`. Built-in provider wrappers are
+conveniences, not requirements.
 
-## Next Steps
+## Bring an existing client
 
-- [Getting Started Guide](getting-started.md) - Learn the basics
-- [Results, Artifacts, and Resume](results-and-artifacts.md) - Ordering, safe
-  serialization, checkpoints, privacy, and replay
-- [Deadlines and Fail-Fast Guardrails](guardrails.md) - Total item and batch
-  deadlines plus controlled abort behavior
-- [Examples](examples/basic.md) - See more examples
-- [API Reference](api/core.md) - Full API documentation
-- [Contributing](contributing.md) - Help improve async-batch-llm
+`CallableStrategy` adapts an async SDK, gateway client, PydanticAI agent, or
+internal service without introducing another executor:
 
----
+```python
+from async_batch_llm import ArtifactIdentity, CallOutcome, CallableStrategy
+
+async def invoke(prompt, *, attempt, timeout, state):
+    response = await client.generate(prompt, timeout=timeout)
+    return CallOutcome(response.text, token_usage=response.usage)
+
+strategy = CallableStrategy(
+    invoke,
+    identity=ArtifactIdentity(provider="internal", model="summary-route"),
+)
+```
+
+The [credential-free application example](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_callable_application.py)
+demonstrates a lazy source, stateful recovery, failed-attempt token accounting,
+bounded result handoff, transactional writes, and checkpoint replay.
+
+## Where to go next
+
+- [Getting Started](getting-started.md) — one batch through streaming and an
+  existing client
+- [Choosing Your Limits](choosing-your-limits.md) — concurrency, pools,
+  admission, retries, and deadlines
+- [Bounded Work and Backpressure](bounded-work.md) — memory behavior for large
+  lazy sources
+- [Results, Artifacts, and Resume](results-and-artifacts.md) — terminal results
+  and durable replay
+- [Compare alternatives](comparison.md) — when gather, Curator, a gateway,
+  native batch, or a workflow engine is a better fit
+- [Troubleshooting and FAQ](troubleshooting.md) — operational symptoms and
+  fixes
+- [API Reference](api/core.md) — public classes and functions
+
+## Project status
+
+The project is beta software. APIs are typed and covered by deterministic
+tests, but release notes and migration guides should be reviewed before an
+upgrade. Contributions and focused production feedback are welcome.
 
 ## License
 
-MIT License - See [LICENSE](https://github.com/geoff-davis/async-batch-llm/blob/main/LICENSE) for details.
+MIT License — see [LICENSE](https://github.com/geoff-davis/async-batch-llm/blob/main/LICENSE).

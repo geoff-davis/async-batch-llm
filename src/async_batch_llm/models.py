@@ -1115,7 +1115,7 @@ class OpenAICompatibleModel:
         """Ask the model to support ``concurrency`` parallel requests.
 
         Called by execution surfaces when ``ProcessorConfig.concurrency`` is
-        set (v0.19.0, issue #97), before the first request. When this model
+        set (v0.20.0, issue #97), before the first request. When this model
         owns its client (built via :meth:`from_api_key`) and no explicit
         ``max_connections`` was given, the ``AsyncOpenAI`` client is rebuilt
         with an httpx pool sized to ``concurrency`` (the SDK's default pool of
