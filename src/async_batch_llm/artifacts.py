@@ -84,7 +84,7 @@ def infer_artifact_identity(strategy: Any) -> ArtifactIdentity:
     """Derive a deterministic :class:`ArtifactIdentity` from a strategy.
 
     Used by :class:`JsonlArtifactStore` when no explicit identity is given
-    (v0.19.0, issue #99). ``provider`` and ``model`` come from the strategy's
+    (v0.20.0, issue #99). ``provider`` and ``model`` come from the strategy's
     wrapped model (built-in model classes map to their provider name; other
     models use their class name); the version fields default to
     ``"unversioned"``. The result is deterministic for the same strategy
@@ -335,7 +335,7 @@ class JsonlArtifactStore:
 
         # With no explicit identity, resolution is deferred to the first
         # prepare_item() call, which infers provider/model from the item's
-        # strategy (zero-config artifacts, v0.19.0). Until then the
+        # strategy. Until then the
         # fingerprint is unset and lookup/append refuse to run.
         self._identity_value: dict[str, JSONValue] | None = None
         self.identity_fingerprint: str | None = None
@@ -368,7 +368,7 @@ class JsonlArtifactStore:
         return self._fingerprint_item(work_item)
 
     def _resolve_identity_from(self, strategy: Any) -> None:
-        """Infer and pin the identity from the first item's strategy (v0.19.0)."""
+        """Infer and pin the identity from the first item's strategy."""
         if self.identity is not None:
             return
         inferred = infer_artifact_identity(strategy)

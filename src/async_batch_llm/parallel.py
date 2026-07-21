@@ -471,7 +471,7 @@ class ParallelBatchProcessor(
         strategy_id = id(work_item.strategy)
         if strategy_id not in self._capacity_checked_strategy_ids:
             if self.config.concurrency is not None:
-                # Single-knob path (v0.19.0): let built-in models right-size
+                # Let built-in models right-size
                 # their connection pools before the first request. Runs before
                 # the capacity check so a successful resize (advertised
                 # capacity == concurrency == workers) produces no warning;

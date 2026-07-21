@@ -98,7 +98,7 @@ contains input fingerprints, current submission index, strategy class,
 identity/provenance, safe result data, timing, token use, error category, replay
 eligibility, and optional caller-calculated cost.
 
-The minimal form needs only a path (v0.19.0):
+The minimal form needs only a path (v0.20.0):
 
 ```python
 from async_batch_llm import JsonlArtifactStore, ResumePolicy, process_prompts

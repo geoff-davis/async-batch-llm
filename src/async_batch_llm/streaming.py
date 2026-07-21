@@ -11,6 +11,8 @@ Because the processor runs workers while work is still being fed, a bounded
 blocks on a full work queue instead of buffering the complete source up front.
 Set ``ProcessorConfig.max_result_queue_size`` to separately bound completed
 results waiting for a slow consumer; zero preserves the unbounded default.
+``process_prompts()`` still retains every terminal result in its final
+``BatchResult``.
 """
 
 from __future__ import annotations
@@ -374,7 +376,7 @@ async def process_stream(
 
     ``concurrency=N`` is shorthand for ``ProcessorConfig(concurrency=N)`` —
     the single knob that coherently sizes workers, provider admission, and
-    built-in model connection pools (v0.19.0).
+    built-in model connection pools (v0.20.0).
     """
     stream = _process_stream_impl(
         strategy,
@@ -419,13 +421,13 @@ async def process_prompts(
 
     ``concurrency=N`` is shorthand for ``ProcessorConfig(concurrency=N)`` —
     the single knob that coherently sizes workers, provider admission, and
-    built-in model connection pools (v0.19.0).
+    built-in model connection pools (v0.20.0).
 
     ``progress=True`` renders a tqdm bar when tqdm is installed
     (``pip install 'async-batch-llm[progress]'``) and falls back to interval
     logging otherwise; pass a callable ``(completed, total, current_item_id)``
     for a custom reporter. Works for both collected and streamed runs
-    (v0.19.0).
+    (v0.20.0).
     """
     termination: list[BatchTermination] = []
     started = time.monotonic()

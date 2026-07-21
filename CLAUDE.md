@@ -38,7 +38,7 @@ auto-selected from the strategy:
 ```python
 from async_batch_llm import llm, process_prompts, process_stream
 
-strategy = llm("openai:gpt-4o-mini")  # factory (v0.19); explicit form:
+strategy = llm("openai:gpt-4o-mini")  # factory (v0.20); explicit form:
 # strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
 
 result = await process_prompts(strategy, ["Summarize A", "Summarize B"])  # -> BatchResult

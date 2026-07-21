@@ -295,7 +295,7 @@ connection pools, admission, timeouts, deadlines, ramp, and cooldown — with a
 worked 10k-item sizing example.
 
 - `attempt_timeout` limits one provider execution attempt (renamed from
-  `timeout_per_item` in v0.19; the old name is a deprecated alias).
+  `timeout_per_item` in v0.20; the old name is a deprecated alias).
 - `GuardrailConfig.total_timeout_per_item` limits the complete logical item,
   including coordinated cooldown, startup ramp, proactive rate limiting,
   provider-capacity admission, calls, retry cooldowns, and backoff.

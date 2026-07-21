@@ -474,7 +474,7 @@ class _CallableRate(float):
     """Transitional return type for ``BatchResult.cache_hit_rate``.
 
     Behaves as a plain float in every numeric/format context; calling it
-    (the pre-0.19 method spelling) still works but warns. Remove together
+    (the v0.18 method spelling) still works but warns. Remove together
     with the deprecation in the next major release.
     """
 
@@ -530,7 +530,7 @@ class BatchResult(Generic[TOutput, TContext]):
     termination: BatchTermination = field(default_factory=BatchTermination)
     # Wall-clock duration of the run that produced this batch, stamped by the
     # execution surfaces (process_all / process_prompts). None for batches
-    # assembled by hand or restored from pre-v0.19 serialized records.
+    # assembled by hand or restored from records created before v0.20.
     wall_time_seconds: float | None = None
 
     def __post_init__(self):
@@ -549,9 +549,9 @@ class BatchResult(Generic[TOutput, TContext]):
     def cache_hit_rate(self) -> float:
         """Percentage (0.0–100.0) of input tokens served from cache.
 
-        A property since v0.19.0 (issue #93), consistent with the sibling
+        A property since v0.20.0 (issue #93), consistent with the sibling
         zero-arg scalars (``total_cached_tokens``, ``succeeded``, ...).
-        The pre-0.19 method spelling ``batch.cache_hit_rate()`` still works
+        The v0.18 method spelling ``batch.cache_hit_rate()`` still works
         via a transitional callable-float return value and emits a
         ``DeprecationWarning``; drop the parentheses.
         """
@@ -671,7 +671,7 @@ class BatchResult(Generic[TOutput, TContext]):
             with_ids: When True, yield ``(item_id, output)`` pairs instead of
                 bare outputs.
 
-        Added in v0.19.0. Failed results are skipped; iterate ``.failures``
+        Added in v0.20.0. Failed results are skipped; iterate ``.failures``
         (or check ``batch.failed``) to handle them.
         """
         if with_ids:
@@ -688,7 +688,7 @@ class BatchResult(Generic[TOutput, TContext]):
         error category. Works identically on collected batches and on
         batches restored via ``from_dict``/``from_json``/``from_jsonl``.
 
-        Added in v0.19.0.
+        Added in v0.20.0.
         """
         current = [r for r in self.results if not r.replayed_from_artifact]
         replayed = [r for r in self.results if r.replayed_from_artifact]
@@ -1204,7 +1204,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         # dispatched just before its result is published, so a consumer that
         # stops right after the last result routinely reaches cleanup while
         # that callback is still running — give callbacks a bounded chance to
-        # finish (v0.19.0; previously they were cancelled outright, which
+        # finish (previously they were cancelled outright, which
         # silently dropped the last progress update) and cancel only
         # stragglers.
         if self._progress_tasks:

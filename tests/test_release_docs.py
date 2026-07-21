@@ -81,3 +81,34 @@ def test_comparison_and_troubleshooting_are_linked_and_navigable() -> None:
         assert path in navigation
         assert path in docs_home
         assert path.removesuffix(".md") in readme
+
+
+def test_release_history_and_migration_are_coherent() -> None:
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    navigation = (ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+    migration = (ROOT / "docs" / "MIGRATION_V0_20.md").read_text(encoding="utf-8")
+    historical = (ROOT / "docs" / "MIGRATION_V0_19.md").read_text(encoding="utf-8")
+
+    assert "v0.19.0 was not published" in changelog
+    assert "## [0.19" not in changelog
+    assert "## [0.20.0] -" not in changelog  # no release date until the maintainer supplies it
+    assert "v0.18.x to v0.20.0" in migration
+    assert "v0.19.0 was not published" in migration
+    assert "MIGRATION_V0_20.md" in historical
+    assert "v0.20 Migration: MIGRATION_V0_20.md" in navigation
+    assert "Historical v0.19 Link: MIGRATION_V0_19.md" in navigation
+
+
+def test_release_version_and_tag_workflow_agree() -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+    assert re.search(r'^version = "0\.20\.0"$', pyproject, re.MULTILINE)
+    assert '"v${PKG_VERSION}" != "${GITHUB_REF_NAME}"' in workflow
+
+
+def test_source_does_not_claim_features_shipped_in_v019() -> None:
+    stale = []
+    for path in (ROOT / "src").rglob("*.py"):
+        if "v0.19" in path.read_text(encoding="utf-8"):
+            stale.append(path.relative_to(ROOT))
+    assert not stale

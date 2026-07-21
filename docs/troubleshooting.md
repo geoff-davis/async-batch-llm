@@ -305,4 +305,4 @@ so v0.18 applications can migrate incrementally.
 `.cache_hit_rate`. The old forms remain supported without behavior changes in
 v0.20 and are planned for removal in the next major release.
 
-**Related guide.** [Getting Started](getting-started.md).
+**Related guide.** [Migrating from v0.18.x to v0.20.0](MIGRATION_V0_20.md).

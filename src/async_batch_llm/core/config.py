@@ -208,7 +208,7 @@ class ProcessorConfig:
     # `concurrency` when that knob is set, else the historical default of 5 —
     # always an int afterwards. An explicit value overrides the derived one.
     max_workers: int | None = None
-    # Deprecated alias for attempt_timeout (v0.19.0) — kept in this position
+    # Deprecated alias for attempt_timeout — kept in this position
     # so positional construction keeps working. The property attached below
     # the class routes reads to attempt_timeout (with a DeprecationWarning)
     # and normalizes the stored slot to None after __post_init__ resolution,
@@ -272,13 +272,13 @@ class ProcessorConfig:
     # backoff waits between attempts). Size it for one slow call, not the whole
     # retry chain; for a whole-item budget use
     # GuardrailConfig.total_timeout_per_item. Renamed from timeout_per_item in
-    # v0.19.0 (the old name remains a deprecated constructor alias and
+    # v0.20.0 (the old name remains a deprecated constructor alias and
     # attribute); None means "not passed" and resolves to the 120.0 default in
     # __post_init__, so it is always a float afterwards. Appended after all
     # prior fields for positional compatibility.
     attempt_timeout: float | None = None
 
-    # Single concurrency knob (v0.19.0, issue #97). When set, coherently sizes
+    # Single concurrency knob (issue #97). When set, coherently sizes
     # every alignment-sensitive limit that is not explicitly configured:
     #
     # - max_workers (worker-pool size)

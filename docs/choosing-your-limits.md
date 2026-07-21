@@ -26,7 +26,7 @@ batch = await process_prompts(
 )
 ```
 
-`concurrency=N` (v0.19) coherently sizes the worker pool, provider-capacity
+`concurrency=N` (v0.20) coherently sizes the worker pool, provider-capacity
 admission, and — for built-in models created via `llm()` or `from_api_key()`
 without an explicit `max_connections` — the httpx connection pool. If you set
 nothing else, the rest of this page is the explanation of what you just got
@@ -97,7 +97,7 @@ Bounds **one** `execute()` call (default 120s). Size it for a single slow
 response, not the whole retry chain: p99 latency of one call plus margin.
 30s is a sane starting point for chat-completion workloads; long-output or
 reasoning models may need the default or more. Renamed from
-`timeout_per_item` in v0.19 (the old name still works, with a warning).
+`timeout_per_item` in v0.20 (the old name still works, with a warning).
 
 ### 5. Total item deadline — `GuardrailConfig.total_timeout_per_item`
 

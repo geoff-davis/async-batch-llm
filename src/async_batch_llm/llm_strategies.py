@@ -368,7 +368,7 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
         """Forward a concurrency request to the model, when supported.
 
         Execution surfaces call this when ``ProcessorConfig.concurrency`` is
-        set (v0.19.0) so built-in models can right-size their connection
+        set (v0.20.0) so built-in models can right-size their connection
         pools. Models without the hook (custom ``LLMModel`` implementations,
         Gemini) simply return False and are left untouched.
         """
