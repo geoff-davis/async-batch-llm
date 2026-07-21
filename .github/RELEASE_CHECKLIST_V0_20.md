@@ -34,7 +34,7 @@ reviewed and the corresponding external result is verified.
 ## Packaging
 
 - [x] `pyproject.toml` version is `0.20.0`.
-- [ ] Maintainer supplies the release date before changelog finalization.
+- [x] Maintainer supplied the 2026-07-20 release date; changelog finalized.
 - [x] Intended `v0.20.0` tag agrees with package metadata.
 - [x] Wheel and sdist build.
 - [x] Wheel installs in a clean environment.
