@@ -1,11 +1,20 @@
-"""Tests for progress=True on process_prompts/process_stream (issue #100)."""
+"""Tests for coalesced bundled progress and per-item user callbacks."""
 
+import asyncio
 import logging
 
 import pytest
 
 import async_batch_llm.streaming as streaming_module
-from async_batch_llm import LLMCallStrategy, process_prompts, process_stream
+from async_batch_llm import (
+    AbortMode,
+    GuardrailConfig,
+    LLMCallStrategy,
+    ProcessorConfig,
+    RetryConfig,
+    process_prompts,
+    process_stream,
+)
 from async_batch_llm.streaming import _ProgressReporter
 
 
@@ -30,6 +39,17 @@ class FakeBar:
 
     def close(self):
         self.closed = True
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 @pytest.fixture
@@ -86,7 +106,9 @@ class TestProgressTrue:
         with caplog.at_level(logging.INFO, logger=streaming_module.__name__):
             batch = await process_prompts(EchoStrategy(), ["a", "b"], progress=True)
         assert batch.succeeded == 2
-        assert any("falling back to interval logging" in r.message for r in caplog.records)
+        assert any(
+            "falling back to coalesced interval logging" in r.message for r in caplog.records
+        )
         assert any("items completed" in r.message for r in caplog.records)
 
     async def test_progress_false_installs_nothing(self):
@@ -108,6 +130,42 @@ class TestCustomCallable:
         # completion count is delivered exactly once.
         assert sorted(c[0] for c in calls) == [1, 2]
 
+    async def test_async_callable_receives_every_update(self):
+        calls = []
+
+        async def reporter(completed, total, item_id):
+            calls.append((completed, total, item_id))
+
+        batch = await process_prompts(EchoStrategy(), ["a", "b", "c"], progress=reporter)
+        assert batch.succeeded == 3
+        assert sorted(c[0] for c in calls) == [1, 2, 3]
+
+    async def test_sync_callable_keeps_thread_dispatch(self, monkeypatch):
+        real_to_thread = asyncio.to_thread
+        thread_dispatches = 0
+
+        async def tracking_to_thread(func, /, *args, **kwargs):
+            nonlocal thread_dispatches
+            thread_dispatches += 1
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", tracking_to_thread)
+        await process_prompts(EchoStrategy(), ["a", "b", "c"], progress=lambda *_: None)
+        assert thread_dispatches == 3
+
+    async def test_bundled_reporter_avoids_thread_dispatch(self, monkeypatch, fake_tqdm):
+        real_to_thread = asyncio.to_thread
+        thread_dispatches = 0
+
+        async def tracking_to_thread(func, /, *args, **kwargs):
+            nonlocal thread_dispatches
+            thread_dispatches += 1
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", tracking_to_thread)
+        await process_prompts(EchoStrategy(), ["a", "b", "c"], progress=True)
+        assert thread_dispatches == 0
+
     async def test_conflict_with_progress_callback_raises(self):
         def cb(completed, total, item_id):
             pass
@@ -117,53 +175,182 @@ class TestCustomCallable:
 
 
 class TestReporterUnit:
-    def test_fallback_logs_every_ten_and_on_completion(self, monkeypatch, caplog):
-        reporter = _ProgressReporter()
-        reporter._tqdm_failed = True
-        with caplog.at_level(logging.INFO, logger=streaming_module.__name__):
-            for i in range(1, 26):
-                reporter(i, 25, f"item_{i}")
-        messages = [r.message for r in caplog.records]
-        assert "progress: 10/25 items completed" in messages
-        assert "progress: 20/25 items completed" in messages
-        assert "progress: 25/25 items completed" in messages
-        # No per-item spam.
-        assert len(messages) == 3
+    async def test_first_update_coalesces_intermediate_and_forces_final(self):
+        clock = FakeClock()
+        bar = FakeBar(total=0)
+        reporter = _ProgressReporter(
+            0.1,
+            clock=clock,
+            bar_factory=lambda **_: bar,
+        )
 
-    def test_bar_total_follows_growth(self, fake_tqdm):
-        reporter = _ProgressReporter()
-        reporter(1, 2, "a")
-        reporter(2, 4, "b")
-        bar = fake_tqdm.instances[0]
-        assert bar.total == 4
-        assert bar.n == 2
-        reporter.close()
+        await reporter(1, 4, "a")
+        await reporter(2, 4, "b")
+        await reporter(3, 4, "c")
+        assert bar.refreshes == 1
+        assert (bar.n, bar.total) == (1, 4)
+
+        clock.advance(0.1)
+        await reporter(3, 5, "c")
+        assert bar.refreshes == 2
+        assert (bar.n, bar.total) == (3, 5)
+
+        await reporter.aclose(completed=4, total=5)
+        assert bar.refreshes == 3
+        assert (bar.n, bar.total) == (4, 5)
         assert bar.closed
 
-    def test_concurrent_threads_create_exactly_one_bar(self, fake_tqdm):
-        # Sync callbacks run via asyncio.to_thread, so the reporter is hit
-        # from many threads at once; the lazy bar creation must not race.
-        from concurrent.futures import ThreadPoolExecutor
+    async def test_growing_total_does_not_treat_temporary_equality_as_final(self):
+        clock = FakeClock()
+        bar = FakeBar(total=0)
+        reporter = _ProgressReporter(1.0, clock=clock, bar_factory=lambda **_: bar)
 
-        reporter = _ProgressReporter()
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(lambda i: reporter(i, 100, f"item_{i}"), range(1, 101)))
-        assert len(fake_tqdm.instances) == 1
-        assert fake_tqdm.instances[0].n == 100
+        await reporter(1, 1, "first")
+        await reporter(1, 3, "producer-added-more")
+        assert bar.refreshes == 1
+        assert (bar.n, bar.total) == (1, 1)
+        await reporter.aclose(completed=3, total=3)
+        assert bar.refreshes == 2
+        assert (bar.n, bar.total) == (3, 3)
 
-    def test_out_of_order_updates_stay_monotonic(self, fake_tqdm):
-        reporter = _ProgressReporter()
-        reporter(3, 3, "c")
-        reporter(2, 3, "b")  # late arrival must not move the bar backwards
-        assert fake_tqdm.instances[0].n == 3
+    async def test_out_of_order_concurrent_updates_stay_monotonic(self):
+        clock = FakeClock()
+        bar = FakeBar(total=0)
+        reporter = _ProgressReporter(0.1, clock=clock, bar_factory=lambda **_: bar)
+        await asyncio.gather(
+            reporter(3, 4, "c"),
+            reporter(1, 2, "a"),
+            reporter(2, 3, "b"),
+        )
+        clock.advance(0.1)
+        await reporter(2, 2, "late")
+        assert (bar.n, bar.total) == (3, 4)
+        await reporter.aclose()
 
-    def test_late_callback_after_close_creates_no_new_bar(self, fake_tqdm):
-        # A cancelled asyncio.to_thread callback doesn't stop its thread, so
-        # an update can land after close(); it must be dropped, not re-open
-        # a fresh bar.
-        reporter = _ProgressReporter()
-        reporter(1, 2, "a")
-        reporter.close()
-        reporter(2, 2, "b")
+    async def test_close_is_idempotent_and_drops_late_updates(self):
+        bar = FakeBar(total=0)
+        reporter = _ProgressReporter(bar_factory=lambda **_: bar)
+        await reporter(1, 2, "a")
+        await reporter.aclose(completed=1, total=2)
+        refreshes = bar.refreshes
+        await reporter.aclose(completed=2, total=2)
+        await reporter(2, 2, "b")
+        assert bar.refreshes == refreshes
+        assert bar.closed
+
+    async def test_logging_fallback_is_time_coalesced(self):
+        clock = FakeClock()
+        messages: list[tuple[int, int]] = []
+        reporter = _ProgressReporter(
+            0.01,
+            clock=clock,
+            log_progress=lambda completed, total: messages.append((completed, total)),
+        )
+        reporter._tqdm_failed = True
+        reporter._bar_factory_resolved = True
+
+        for i in range(1, 1_001):
+            await reporter(i, 1_000, "item")
+        assert messages == [(1, 1_000)]
+        clock.advance(1.0)
+        await reporter(1_000, 1_000, "item")
+        await reporter.aclose()
+        assert messages == [(1, 1_000), (1_000, 1_000), (1_000, 1_000)]
+
+    async def test_one_million_updates_have_bounded_render_count(self):
+        clock = FakeClock()
+        bar = FakeBar(total=0)
+        reporter = _ProgressReporter(0.1, clock=clock, bar_factory=lambda **_: bar)
+        for completed in range(1, 1_000_001):
+            await reporter(completed, 1_000_000, "item")
+        await reporter.aclose(completed=1_000_000, total=1_000_000)
+        assert bar.refreshes == 2
+
+
+class TestFinalization:
+    async def test_failure_still_forces_exact_final_state(self, fake_tqdm):
+        class FailingStrategy(EchoStrategy):
+            async def execute(self, prompt, attempt, timeout, state=None):
+                if prompt == "bad":
+                    raise ValueError("bad item")
+                return await super().execute(prompt, attempt, timeout, state)
+
+        batch = await process_prompts(
+            FailingStrategy(),
+            ["good", "bad"],
+            config=ProcessorConfig(retry=RetryConfig(max_attempts=1)),
+            progress=True,
+        )
+        assert batch.total_items == 2
+        bar = fake_tqdm.instances[0]
+        assert (bar.n, bar.total) == (2, 2)
+        assert bar.closed
+
+    async def test_producer_error_closes_with_exact_accepted_count(self, fake_tqdm):
+        async def source():
+            yield "a"
+            yield "b"
+            raise RuntimeError("producer failed")
+
+        with pytest.raises(RuntimeError, match="producer failed"):
+            async for _ in process_stream(EchoStrategy(), source(), progress=True):
+                pass
+        bar = fake_tqdm.instances[0]
+        assert (bar.n, bar.total) == (2, 2)
+        assert bar.closed
+
+    async def test_early_stream_exit_closes_reporter(self, fake_tqdm):
+        stream = process_stream(EchoStrategy(), ["a", "b", "c"], progress=True)
+        async for _ in stream:
+            break
+        await stream.aclose()
         assert len(fake_tqdm.instances) == 1
         assert fake_tqdm.instances[0].closed
+
+    async def test_batch_deadline_forces_final_state(self, fake_tqdm):
+        class SlowStrategy(EchoStrategy):
+            async def execute(self, prompt, attempt, timeout, state=None):
+                await asyncio.sleep(60)
+                return await super().execute(prompt, attempt, timeout, state)
+
+        batch = await process_prompts(
+            SlowStrategy(),
+            ["a", "b"],
+            config=ProcessorConfig(
+                concurrency=2,
+                guardrails=GuardrailConfig(
+                    batch_timeout=0.01,
+                    abort_mode=AbortMode.CANCEL_ACTIVE,
+                ),
+            ),
+            progress=True,
+        )
+        assert batch.termination.kind == "batch_timeout"
+        bar = fake_tqdm.instances[0]
+        assert (bar.n, bar.total) == (2, 2)
+        assert bar.closed
+
+    async def test_external_cancellation_closes_reporter(self, fake_tqdm):
+        started = asyncio.Event()
+
+        class BlockingStrategy(EchoStrategy):
+            async def execute(self, prompt, attempt, timeout, state=None):
+                started.set()
+                await asyncio.Event().wait()
+                return await super().execute(prompt, attempt, timeout, state)
+
+        task = asyncio.create_task(
+            process_prompts(BlockingStrategy(), ["a", "b"], concurrency=1, progress=True)
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(fake_tqdm.instances) == 1
+        assert fake_tqdm.instances[0].closed
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, float("inf"), float("nan"), "0.1"])
+def test_progress_refresh_interval_validation(value):
+    with pytest.raises(ValueError, match="progress_refresh_interval_seconds"):
+        ProcessorConfig(progress_refresh_interval_seconds=value)

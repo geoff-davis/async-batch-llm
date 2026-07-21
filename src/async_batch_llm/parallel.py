@@ -770,11 +770,11 @@ class ParallelBatchProcessor(
         completed, total, current_item, stats_snapshot = await self._record_terminal_stats(
             work_item, result
         )
-        # The callback fires for EVERY completed item so live progress bars
-        # stay smooth (v0.19.0 — previously gated to progress_interval);
-        # progress_interval keeps gating only the log line below. It runs
-        # BEFORE the result is published so a consumer that stops after the
-        # final result never tears down a still-running callback.
+        # User callbacks fire for every completed item. The private bundled
+        # reporter observes every exact count too, but coalesces terminal
+        # rendering by time. progress_interval gates only the log line below.
+        # Progress runs before publication so finalization cannot lose the
+        # terminal count when a consumer stops after the final result.
         if self.progress_callback:
             await self._run_progress_callback(completed, total, current_item)
         if stats_snapshot is not None:

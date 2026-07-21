@@ -298,6 +298,11 @@ class ProcessorConfig:
     # workers after execution, checkpointing, and terminal bookkeeping.
     max_result_queue_size: int = 0
 
+    # Minimum time between terminal renders for the bundled ``progress=True``
+    # reporter. Custom progress callbacks remain per-item and are unaffected.
+    # Appended for positional compatibility.
+    progress_refresh_interval_seconds: float = 0.1
+
     def __post_init__(self) -> None:
         """Resolve the deprecated timeout alias, then validate."""
         # Raw constructor value — the alias property's setter stores writes in
@@ -388,6 +393,16 @@ class ProcessorConfig:
                 "max_result_queue_size must be a non-negative integer "
                 f"(got {self.max_result_queue_size!r}). Set it to 0 for unlimited, "
                 "or a positive integer to bound completed results waiting for a consumer."
+            )
+        if (
+            isinstance(self.progress_refresh_interval_seconds, bool)
+            or not isinstance(self.progress_refresh_interval_seconds, (int, float))
+            or not math.isfinite(self.progress_refresh_interval_seconds)
+            or self.progress_refresh_interval_seconds <= 0
+        ):
+            raise ValueError(
+                "progress_refresh_interval_seconds must be finite and > 0 "
+                f"(got {self.progress_refresh_interval_seconds!r})."
             )
         if self.max_requests_per_minute is not None and self.max_requests_per_minute <= 0:
             raise ValueError(

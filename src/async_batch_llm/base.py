@@ -1099,6 +1099,12 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self.max_result_queue_size = max_result_queue_size
         self.progress_callback = progress_callback
         self.progress_callback_timeout = progress_callback_timeout
+        # The bundled reporter opts into a cheap inline path. This marker is
+        # private so user callbacks retain the established per-item task,
+        # timeout, and asyncio.to_thread behavior.
+        self._progress_callback_inline = bool(
+            getattr(progress_callback, "_abl_inline_progress", False)
+        )
         self._progress_callback_is_async = False
         if progress_callback is not None:
             self._progress_callback_is_async = inspect.iscoroutinefunction(progress_callback) or (
@@ -1720,6 +1726,16 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
     async def _run_progress_callback(self, completed: int, total: int, current_item: str) -> None:
         """Invoke progress callback with timeout and non-blocking handling."""
         if self.progress_callback is None:
+            return
+        if self._progress_callback_inline:
+            try:
+                callback_result = self.progress_callback(completed, total, current_item)
+                if inspect.isawaitable(callback_result):
+                    await callback_result
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(f"[WARN]Progress callback failed: {exc}")
             return
         if self._progress_callback_is_async:
             callback_awaitable = self.progress_callback(completed, total, current_item)

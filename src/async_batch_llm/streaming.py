@@ -19,9 +19,8 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
-import threading
 import time
-from collections.abc import AsyncIterable, AsyncIterator, Iterable
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Iterable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from ._internal.guardrails import BatchAdmissionStopped
@@ -90,74 +89,119 @@ def _to_work_item(
 
 
 class _ProgressReporter:
-    """Bundled ``progress=True`` reporter: tqdm when importable, else logging.
+    """Coalesced ``progress=True`` reporter: tqdm when importable, else logging.
 
     Implements the ``progress_callback(completed, total, current_item_id)``
     contract. The tqdm bar's total follows the processor's running total, so
-    streaming sources that keep adding work render correctly. Added in
-    v0.19.0 (issue #100).
+    streaming sources that keep adding work render correctly. The processor
+    recognizes this private reporter and awaits it inline, avoiding the generic
+    per-item task/thread dispatch used for user callbacks.
     """
 
-    def __init__(self) -> None:
+    _abl_inline_progress = True
+
+    def __init__(
+        self,
+        refresh_interval_seconds: float = 0.1,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        bar_factory: Callable[..., Any] | None = None,
+        log_progress: Callable[[int, int], None] | None = None,
+    ) -> None:
+        self._refresh_interval_seconds = refresh_interval_seconds
+        self._fallback_refresh_interval_seconds = max(refresh_interval_seconds, 1.0)
+        self._clock = clock
+        self._bar_factory = bar_factory
+        self._bar_factory_resolved = bar_factory is not None
+        self._log_progress = log_progress or self._default_log_progress
         self._bar: Any = None
         self._tqdm_failed = False
         self._closed = False
-        self._last_logged = 0
+        self._observed = False
         self._max_completed = 0
         self._max_total = 0
-        # Sync progress callbacks are dispatched via asyncio.to_thread, so
-        # concurrent items invoke __call__ from DIFFERENT threads — the whole
-        # update must be atomic or two callbacks can race the lazy bar
-        # creation and each build one (seen as a flaky double bar in CI).
-        self._mutex = threading.Lock()
+        self._last_rendered: tuple[int, int] | None = None
+        self._next_render_at = 0.0
+        self._lock = asyncio.Lock()
 
-    def __call__(self, completed: int, total: int, current_item_id: str) -> None:
-        with self._mutex:
+    @staticmethod
+    def _default_log_progress(completed: int, total: int) -> None:
+        logger.info("progress: %d/%d items completed", completed, total)
+
+    def _resolve_bar_factory(self) -> Callable[..., Any] | None:
+        if self._bar_factory_resolved:
+            return self._bar_factory
+        self._bar_factory_resolved = True
+        try:
+            from tqdm.auto import tqdm  # type: ignore[import-not-found,import-untyped]
+
+            self._bar_factory = tqdm
+        except ImportError:
+            self._tqdm_failed = True
+            logger.info(
+                "progress=True: tqdm is not installed "
+                "(pip install 'async-batch-llm[progress]'); "
+                "falling back to coalesced interval logging."
+            )
+        return self._bar_factory
+
+    def _render(self, now: float) -> None:
+        completed = self._max_completed
+        total = self._max_total
+        factory = self._resolve_bar_factory()
+        if factory is not None and not self._tqdm_failed:
+            if self._bar is None:
+                self._bar = factory(total=total, unit="item", desc="batch")
+            if self._bar.total != total:
+                self._bar.total = total
+            self._bar.n = completed
+            self._bar.refresh()
+            interval = self._refresh_interval_seconds
+        else:
+            self._log_progress(completed, total)
+            interval = self._fallback_refresh_interval_seconds
+        self._last_rendered = (completed, total)
+        self._next_render_at = now + interval
+
+    async def __call__(self, completed: int, total: int, current_item_id: str) -> None:
+        del current_item_id
+        async with self._lock:
             if self._closed:
-                # A cancelled asyncio.to_thread callback doesn't stop its
-                # thread — a straggler can land after close(). Creating a
-                # fresh bar then would leak a second bar; drop the update.
                 return
-            # Updates can also arrive out of order — keep the display monotonic.
+            self._observed = True
             self._max_completed = max(self._max_completed, completed)
             self._max_total = max(self._max_total, total)
-            completed = self._max_completed
-            total = self._max_total
-            if not self._tqdm_failed:
-                if self._bar is None:
-                    try:
-                        from tqdm.auto import tqdm  # type: ignore[import-not-found]
+            now = self._clock()
+            if self._last_rendered is None or now >= self._next_render_at:
+                self._render(now)
 
-                        self._bar = tqdm(total=total, unit="item", desc="batch")
-                    except ImportError:
-                        self._tqdm_failed = True
-                        logger.info(
-                            "progress=True: tqdm is not installed "
-                            "(pip install 'async-batch-llm[progress]'); "
-                            "falling back to interval logging."
-                        )
-                if self._bar is not None:
-                    if self._bar.total != total:
-                        self._bar.total = total
-                    self._bar.n = completed
-                    self._bar.refresh()
-                    return
-            # Logging fallback: every 10 items and on completion.
-            if completed - self._last_logged >= 10 or completed >= total:
-                self._last_logged = completed
-                logger.info("progress: %d/%d items completed", completed, total)
-
-    def close(self) -> None:
-        with self._mutex:
+    async def aclose(self, *, completed: int | None = None, total: int | None = None) -> None:
+        """Force the latest exact state to render, then close exactly once."""
+        async with self._lock:
+            if self._closed:
+                return
+            if completed is not None:
+                self._observed = True
+                self._max_completed = max(self._max_completed, completed)
+            if total is not None:
+                self._observed = True
+                self._max_total = max(self._max_total, total)
+            # Finalization, not completed == total, is the only reliable end
+            # signal because a lazy producer may grow total after a temporary
+            # equality. Force one final render even if a periodic refresh just
+            # displayed the same values.
+            if self._observed:
+                self._render(self._clock())
             self._closed = True
             if self._bar is not None:
                 self._bar.close()
-                self._bar = None
 
 
 def _resolve_progress(
     progress: bool | ProgressCallbackFunc,
     processor_kwargs: dict[str, Any],
+    *,
+    refresh_interval_seconds: float,
 ) -> _ProgressReporter | None:
     """Fold the ``progress=`` option into ``processor_kwargs``.
 
@@ -173,7 +217,7 @@ def _resolve_progress(
             "progress_callback."
         )
     if progress is True:
-        reporter = _ProgressReporter()
+        reporter = _ProgressReporter(refresh_interval_seconds)
         processor_kwargs["progress_callback"] = reporter
         return reporter
     processor_kwargs["progress_callback"] = progress
@@ -219,7 +263,7 @@ async def _process_stream_impl(
     resume: ResumePolicy = ResumePolicy.NONE,
     termination_out: list[BatchTermination] | None = None,
     **processor_kwargs: Any,
-) -> AsyncIterator[WorkItemResult[TOutput, Any]]:
+) -> AsyncGenerator[WorkItemResult[TOutput, Any], None]:
     """Yield each :class:`WorkItemResult` as it completes, in completion order.
 
     Args:
@@ -240,10 +284,14 @@ async def _process_stream_impl(
         propagates to the consumer after already-queued results drain; breaking
         out of the loop early cancels the producer and tears down the workers.
     """
-    config = _apply_concurrency_shorthand(config, concurrency)
-    reporter = _resolve_progress(progress, processor_kwargs)
+    config = _apply_concurrency_shorthand(config, concurrency) or ProcessorConfig()
+    reporter = _resolve_progress(
+        progress,
+        processor_kwargs,
+        refresh_interval_seconds=config.progress_refresh_interval_seconds,
+    )
     processor = ParallelBatchProcessor(
-        config=config or ProcessorConfig(),
+        config=config,
         artifact_store=artifact_store,
         resume=resume,
         **processor_kwargs,
@@ -291,11 +339,11 @@ async def _process_stream_impl(
                     await producer
                 await asyncio.gather(abort_watcher, return_exceptions=True)
     finally:
-        # After the async-with: cleanup() has drained in-flight progress
-        # callbacks, so closing here can't race a late update re-creating
-        # the bar (the reporter also drops post-close updates as a backstop).
         if reporter is not None:
-            reporter.close()
+            await reporter.aclose(
+                completed=processor._stats.processed,
+                total=processor._stats.total,
+            )
 
     if termination_out is not None:
         termination_out.append(processor.termination)
@@ -328,7 +376,7 @@ async def process_stream(
     the single knob that coherently sizes workers, provider admission, and
     built-in model connection pools (v0.19.0).
     """
-    async for result in _process_stream_impl(
+    stream = _process_stream_impl(
         strategy,
         prompts,
         config=config,
@@ -337,8 +385,14 @@ async def process_stream(
         artifact_store=artifact_store,
         resume=resume,
         **processor_kwargs,
-    ):
-        yield result
+    )
+    try:
+        async for result in stream:
+            yield result
+    finally:
+        # Explicitly close the nested generator so an early consumer exit
+        # completes processor and reporter cleanup before aclose() returns.
+        await stream.aclose()
 
 
 async def process_prompts(
