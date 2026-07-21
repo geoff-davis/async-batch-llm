@@ -15,14 +15,14 @@
 | src/async\_batch\_llm/\_internal/rate\_limit\_coordinator.py |      123 |        8 |       24 |        2 |     93.20% |100, 106-108, 201, 262-268 |
 | src/async\_batch\_llm/\_internal/strategy\_lifecycle.py      |       40 |        2 |       10 |        1 |     94.00% |79-\>78, 100, 104 |
 | src/async\_batch\_llm/artifacts.py                           |      408 |       57 |      122 |       27 |     83.40% |107, 118-\>120, 128, 130-132, 193-194, 217-218, 220, 236-237, 244, 248-249, 268, 275, 281, 285, 290, 347-348, 350, 381, 392-\>414, 394-401, 411-412, 448-449, 485, 493, 549-554, 597, 608, 614-\>613, 640, 643, 679-680, 689, 703, 714, 719-\>721, 723, 730-731, 749-750, 756, 782-783 |
-| src/async\_batch\_llm/base.py                                |      679 |       78 |      186 |       19 |     85.78% |107, 286, 290, 367-\>exit, 651-\>exit, 654-\>exit, 705, 742-\>744, 1015, 1017, 1152-1153, 1182-1183, 1194-1195, 1211-1221, 1234-1235, 1328, 1363, 1380, 1384-1389, 1393-\>exit, 1399, 1409-1412, 1416-\>exit, 1477, 1481, 1517-1525, 1537, 1539-1556, 1574-1590, 1658, 1704, 1723, 1738-\>exit, 1747-1751, 1768-1770 |
+| src/async\_batch\_llm/base.py                                |      690 |       82 |      190 |       20 |     85.45% |107, 286, 290, 367-\>exit, 651-\>exit, 654-\>exit, 705, 742-\>744, 1015, 1017, 1158-1159, 1188-1189, 1200-1201, 1217-1227, 1240-1241, 1334, 1369, 1386, 1390-1395, 1399-\>exit, 1405, 1415-1418, 1422-\>exit, 1483, 1487, 1523-1531, 1543, 1545-1562, 1580-1596, 1664, 1710, 1729, 1733-\>1739, 1735-1738, 1754-\>exit, 1763-1767, 1784-1786 |
 | src/async\_batch\_llm/callable\_strategy.py                  |      120 |        3 |       44 |        6 |     94.51% |49-\>exit, 62-\>exit, 81, 121, 160, 231-\>237 |
 | src/async\_batch\_llm/classifiers/\_\_init\_\_.py            |        4 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/classifiers/gemini.py                  |       69 |        9 |       38 |        5 |     86.92% |51, 53, 55, 84-85, 119-120, 222, 230 |
 | src/async\_batch\_llm/classifiers/openai.py                  |       72 |       10 |       42 |        6 |     85.96% |68, 70, 72, 98-99, 107, 117, 183-184, 272 |
 | src/async\_batch\_llm/classifiers/openrouter.py              |       19 |        0 |        8 |        0 |    100.00% |           |
 | src/async\_batch\_llm/core/\_\_init\_\_.py                   |        3 |        0 |        0 |        0 |    100.00% |           |
-| src/async\_batch\_llm/core/config.py                         |      177 |        2 |       88 |        3 |     98.11% |200, 405, 421-\>exit |
+| src/async\_batch\_llm/core/config.py                         |      180 |        2 |       90 |        3 |     98.15% |200, 420, 436-\>exit |
 | src/async\_batch\_llm/core/protocols.py                      |        2 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/factory.py                             |       45 |        0 |       22 |        2 |     97.01% |63-\>exit, 74-\>exit |
 | src/async\_batch\_llm/gateway.py                             |       72 |        0 |       14 |        0 |    100.00% |           |
@@ -41,9 +41,9 @@
 | src/async\_batch\_llm/strategies/\_\_init\_\_.py             |        3 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/strategies/errors.py                   |      113 |       12 |       26 |        1 |     90.65% |62-73, 130-\>exit, 375-376 |
 | src/async\_batch\_llm/strategies/rate\_limit.py              |       31 |        0 |        2 |        0 |    100.00% |           |
-| src/async\_batch\_llm/streaming.py                           |      154 |        1 |       64 |        3 |     98.17% |62-\>exit, 205-\>208, 263, 269-\>exit |
+| src/async\_batch\_llm/streaming.py                           |      190 |        1 |       72 |        4 |     98.09% |63-\>exit, 195-\>197, 251-\>254, 313, 319-\>exit |
 | src/async\_batch\_llm/token\_extractor.py                    |       63 |        3 |       30 |        5 |     91.40% |51-\>61, 68-\>72, 76-\>89, 114, 132-\>135, 151-152 |
-| **TOTAL**                                                    | **4747** |  **375** | **1520** |  **205** | **90.11%** |           |
+| **TOTAL**                                                    | **4797** |  **379** | **1534** |  **207** | **90.11%** |           |
 
 
 ## Setup coverage badge

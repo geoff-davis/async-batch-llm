@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_227b7fe2e7ae88a8_base_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-20 23:58 +0000
+            created at 2026-07-21 01:26 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -168,7 +168,7 @@
     <p class="pln"><span class="n"><a id="t84" href="#t84">84</a></span><span class="t">    <span class="str">"""Derive a deterministic :class:`ArtifactIdentity` from a strategy.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t85" href="#t85">85</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t86" href="#t86">86</a></span><span class="t"><span class="str">    Used by :class:`JsonlArtifactStore` when no explicit identity is given</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t87" href="#t87">87</a></span><span class="t"><span class="str">    (v0.19.0, issue #99). ``provider`` and ``model`` come from the strategy's</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t87" href="#t87">87</a></span><span class="t"><span class="str">    (v0.20.0, issue #99). ``provider`` and ``model`` come from the strategy's</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t88" href="#t88">88</a></span><span class="t"><span class="str">    wrapped model (built-in model classes map to their provider name; other</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t89" href="#t89">89</a></span><span class="t"><span class="str">    models use their class name); the version fields default to</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t90" href="#t90">90</a></span><span class="t"><span class="str">    ``"unversioned"``. The result is deterministic for the same strategy</span>&nbsp;</span><span class="r"></span></p>
@@ -419,7 +419,7 @@
     <p class="pln"><span class="n"><a id="t335" href="#t335">335</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t336" href="#t336">336</a></span><span class="t">        <span class="com"># With no explicit identity, resolution is deferred to the first</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t337" href="#t337">337</a></span><span class="t">        <span class="com"># prepare_item() call, which infers provider/model from the item's</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t338" href="#t338">338</a></span><span class="t">        <span class="com"># strategy (zero-config artifacts, v0.19.0). Until then the</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t338" href="#t338">338</a></span><span class="t">        <span class="com"># strategy. Until then the</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t339" href="#t339">339</a></span><span class="t">        <span class="com"># fingerprint is unset and lookup/append refuse to run.</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t340" href="#t340">340</a></span><span class="t">        <span class="nam">self</span><span class="op">.</span><span class="nam">_identity_value</span><span class="op">:</span> <span class="nam">dict</span><span class="op">[</span><span class="nam">str</span><span class="op">,</span> <span class="nam">JSONValue</span><span class="op">]</span> <span class="op">|</span> <span class="key">None</span> <span class="op">=</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t341" href="#t341">341</a></span><span class="t">        <span class="nam">self</span><span class="op">.</span><span class="nam">identity_fingerprint</span><span class="op">:</span> <span class="nam">str</span> <span class="op">|</span> <span class="key">None</span> <span class="op">=</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
@@ -452,7 +452,7 @@
     <p class="run"><span class="n"><a id="t368" href="#t368">368</a></span><span class="t">        <span class="key">return</span> <span class="nam">self</span><span class="op">.</span><span class="nam">_fingerprint_item</span><span class="op">(</span><span class="nam">work_item</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t369" href="#t369">369</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t370" href="#t370">370</a></span><span class="t">    <span class="key">def</span> <span class="nam">_resolve_identity_from</span><span class="op">(</span><span class="nam">self</span><span class="op">,</span> <span class="nam">strategy</span><span class="op">:</span> <span class="nam">Any</span><span class="op">)</span> <span class="op">-></span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t371" href="#t371">371</a></span><span class="t">        <span class="str">"""Infer and pin the identity from the first item's strategy (v0.19.0)."""</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t371" href="#t371">371</a></span><span class="t">        <span class="str">"""Infer and pin the identity from the first item's strategy."""</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t372" href="#t372">372</a></span><span class="t">        <span class="key">if</span> <span class="nam">self</span><span class="op">.</span><span class="nam">identity</span> <span class="key">is</span> <span class="key">not</span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t373" href="#t373">373</a></span><span class="t">            <span class="key">return</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t374" href="#t374">374</a></span><span class="t">        <span class="nam">inferred</span> <span class="op">=</span> <span class="nam">infer_artifact_identity</span><span class="op">(</span><span class="nam">strategy</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
@@ -888,7 +888,7 @@
             <a class="nav" href="z_227b7fe2e7ae88a8_base_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-20 23:58 +0000
+            created at 2026-07-21 01:26 +0000
         </p>
     </div>
 </footer>

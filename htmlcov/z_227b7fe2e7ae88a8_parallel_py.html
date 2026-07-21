@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_227b7fe2e7ae88a8_parsing_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-20 23:58 +0000
+            created at 2026-07-21 01:26 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -555,7 +555,7 @@
     <p class="run"><span class="n"><a id="t471" href="#t471">471</a></span><span class="t">        <span class="nam">strategy_id</span> <span class="op">=</span> <span class="nam">id</span><span class="op">(</span><span class="nam">work_item</span><span class="op">.</span><span class="nam">strategy</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t472" href="#t472">472</a></span><span class="t">        <span class="key">if</span> <span class="nam">strategy_id</span> <span class="key">not</span> <span class="key">in</span> <span class="nam">self</span><span class="op">.</span><span class="nam">_capacity_checked_strategy_ids</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t473" href="#t473">473</a></span><span class="t">            <span class="key">if</span> <span class="nam">self</span><span class="op">.</span><span class="nam">config</span><span class="op">.</span><span class="nam">concurrency</span> <span class="key">is</span> <span class="key">not</span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t474" href="#t474">474</a></span><span class="t">                <span class="com"># Single-knob path (v0.19.0): let built-in models right-size</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t474" href="#t474">474</a></span><span class="t">                <span class="com"># Let built-in models right-size</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t475" href="#t475">475</a></span><span class="t">                <span class="com"># their connection pools before the first request. Runs before</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t476" href="#t476">476</a></span><span class="t">                <span class="com"># the capacity check so a successful resize (advertised</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t477" href="#t477">477</a></span><span class="t">                <span class="com"># capacity == concurrency == workers) produces no warning;</span>&nbsp;</span><span class="r"></span></p>
@@ -854,11 +854,11 @@
     <p class="run"><span class="n"><a id="t770" href="#t770">770</a></span><span class="t">        <span class="nam">completed</span><span class="op">,</span> <span class="nam">total</span><span class="op">,</span> <span class="nam">current_item</span><span class="op">,</span> <span class="nam">stats_snapshot</span> <span class="op">=</span> <span class="key">await</span> <span class="nam">self</span><span class="op">.</span><span class="nam">_record_terminal_stats</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t771" href="#t771">771</a></span><span class="t">            <span class="nam">work_item</span><span class="op">,</span> <span class="nam">result</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t772" href="#t772">772</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t773" href="#t773">773</a></span><span class="t">        <span class="com"># The callback fires for EVERY completed item so live progress bars</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t774" href="#t774">774</a></span><span class="t">        <span class="com"># stay smooth (v0.19.0 &#8212; previously gated to progress_interval);</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t775" href="#t775">775</a></span><span class="t">        <span class="com"># progress_interval keeps gating only the log line below. It runs</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t776" href="#t776">776</a></span><span class="t">        <span class="com"># BEFORE the result is published so a consumer that stops after the</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t777" href="#t777">777</a></span><span class="t">        <span class="com"># final result never tears down a still-running callback.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t773" href="#t773">773</a></span><span class="t">        <span class="com"># User callbacks fire for every completed item. The private bundled</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t774" href="#t774">774</a></span><span class="t">        <span class="com"># reporter observes every exact count too, but coalesces terminal</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t775" href="#t775">775</a></span><span class="t">        <span class="com"># rendering by time. progress_interval gates only the log line below.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t776" href="#t776">776</a></span><span class="t">        <span class="com"># Progress runs before publication so finalization cannot lose the</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t777" href="#t777">777</a></span><span class="t">        <span class="com"># terminal count when a consumer stops after the final result.</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t778" href="#t778">778</a></span><span class="t">        <span class="key">if</span> <span class="nam">self</span><span class="op">.</span><span class="nam">progress_callback</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t779" href="#t779">779</a></span><span class="t">            <span class="key">await</span> <span class="nam">self</span><span class="op">.</span><span class="nam">_run_progress_callback</span><span class="op">(</span><span class="nam">completed</span><span class="op">,</span> <span class="nam">total</span><span class="op">,</span> <span class="nam">current_item</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t780" href="#t780">780</a></span><span class="t">        <span class="key">if</span> <span class="nam">stats_snapshot</span> <span class="key">is</span> <span class="key">not</span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
@@ -1048,7 +1048,7 @@
             <a class="nav" href="z_227b7fe2e7ae88a8_parsing_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.14.3">coverage.py v7.14.3</a>,
-            created at 2026-07-20 23:58 +0000
+            created at 2026-07-21 01:26 +0000
         </p>
     </div>
 </footer>
