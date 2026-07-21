@@ -70,3 +70,14 @@ def test_primary_onboarding_uses_high_level_api() -> None:
     assert "progress=True" in readme
     assert "ParallelBatchProcessor(" not in docs_home
     assert "PydanticAIStrategy(" not in docs_home
+
+
+def test_comparison_and_troubleshooting_are_linked_and_navigable() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    docs_home = (ROOT / "docs" / "index.md").read_text(encoding="utf-8")
+    navigation = (ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+    for path in ("comparison.md", "troubleshooting.md"):
+        assert (ROOT / "docs" / path).is_file()
+        assert path in navigation
+        assert path in docs_home
+        assert path.removesuffix(".md") in readme

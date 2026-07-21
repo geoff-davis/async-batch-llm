@@ -166,7 +166,9 @@ code to interpret exception objects mixed into the result list.
 
 Use `gather()` for a small script when those operational guarantees do not
 matter. Use a provider's native batch API when delayed results are acceptable
-and its current pricing or throughput is a better fit.
+and its current pricing or throughput is a better fit. See the
+[scenario-based comparison](https://geoff-davis.github.io/async-batch-llm/comparison/)
+for Bespoke Curator, gateways, native batch APIs, and workflow engines.
 
 ### A dated benchmark snapshot
 
@@ -361,7 +363,9 @@ benchmark walkthroughs.
 ## Documentation
 
 - [Getting Started](https://geoff-davis.github.io/async-batch-llm/getting-started/)
+- [Compare Alternatives](https://geoff-davis.github.io/async-batch-llm/comparison/)
 - [Production Checklist](https://geoff-davis.github.io/async-batch-llm/production-checklist/)
+- [Troubleshooting and FAQ](https://geoff-davis.github.io/async-batch-llm/troubleshooting/)
 - [Results, Artifacts, and Resume](https://geoff-davis.github.io/async-batch-llm/results-and-artifacts/)
 - [Deadlines and Fail-Fast Guardrails](https://geoff-davis.github.io/async-batch-llm/guardrails/)
 - [Bounded Work and Backpressure](https://geoff-davis.github.io/async-batch-llm/bounded-work/)
@@ -379,7 +383,9 @@ make ci
 ```
 
 See the [contributing guide](https://geoff-davis.github.io/async-batch-llm/contributing/)
-or open an [issue](https://github.com/geoff-davis/async-batch-llm/issues).
+or open an [issue](https://github.com/geoff-davis/async-batch-llm/issues). For
+operational help, start with the
+[troubleshooting guide](https://geoff-davis.github.io/async-batch-llm/troubleshooting/).
 
 ## License
 
