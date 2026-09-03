@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: Cleanup failures now raise instead of only logging.** `async with`
+  exit, `shutdown()`, `cleanup()`, `LLMCallPool.aclose()`, and
+  `process_stream()` now attempt every cleanup step and then raise the first
+  ordinary failure (every failure is logged with a traceback). A body
+  exception or the caller's cancellation is never replaced by a cleanup
+  error. `process_prompts()`, `process_stream()`, and `call_result()` still
+  return completed results when the only failure came from a user strategy's
+  own `cleanup()`; runtime, admission, and artifact-store failures propagate.
+  Previously every cleanup failure was logged and swallowed. See
+  `docs/cleanup-lifecycle-contract.md`.
+- **BREAKING: Synchronous progress and post-processor callbacks are now an
+  ordering barrier.** Their timeouts still stop the worker waiting, but the
+  callback thread cannot be cancelled, so batch and stream finalization
+  (artifact-store close, `BATCH_COMPLETED`, end of stream) wait for the
+  thread to finish instead of closing resources underneath it. Callbacks run
+  in a processor-owned thread pool.
+- **BREAKING: Once a close has started, preparing a new strategy raises
+  `RuntimeError`.** Lifecycle state is one-way (open, closing, closed); a
+  failed close stays closing and the next explicit close retries only the
+  steps that did not complete.
+- Manual `shutdown()` now runs the same ordered close as `async with` exit:
+  runtime tasks and callbacks, then admission resources, then prepared
+  strategies, then the artifact store. It closes the artifact store
+  (including the SQLite executor and WAL checkpoint) after an early stream
+  exit, a producer error, or a failed run, where it previously leaked it.
+- Worker and progress cancellation waits are diagnostic: one warning after two
+  seconds, then the wait continues. Any cleanup step still running after 30
+  seconds logs one warning. There is no cleanup deadline.
+- Cancelling the task that is closing once defers the cancellation until
+  cleanup finishes, then re-raises it. Cancelling it a second time
+  force-aborts the running step, skips and logs the rest, and propagates
+  immediately, which may leave an artifact store unflushed. This is the
+  operator's escape from a cleanup callback that never returns.
+- Streaming `results()` now ends with exactly one durable terminal decision.
+  A worker crash or finalization failure re-raises the original exception;
+  a finalizer cancelled by `shutdown()` before `finish()` completed raises
+  the new `StreamFinalizationError` instead of ending cleanly or hanging.
+  Results published before the decision are delivered first, and repeated or
+  concurrent `results()` calls observe the same outcome.
+- A batch worker that fails after the queue drained now raises its original
+  exception after finalization instead of a fabricated `CancelledError`.
+
+### Added
+
+- `StreamFinalizationError` and `CleanupInterruptedError` (both ordinary
+  `Exception` subclasses). The latter reports a strategy `cleanup()` that
+  raised `CancelledError` itself or whose private task was cancelled by
+  something else; the caller's task is not cancelled and the next close
+  retries the step.
+- User strategy `cleanup()` must be idempotent and safe after a partially
+  completed earlier attempt; documented on `LLMCallStrategy.cleanup()`.
+
+### Fixed
+
+- `RetryState.clear()` can no longer disable the total-item deadline or erase
+  framework accounting: executor deadlines, try counters, quota values, and
+  timing now live in a private sidecar that is absent from `RetryState.data`,
+  `asdict()`, equality, `repr`, `copy`, `deepcopy`, and pickling. Every
+  `_abl_*` key was removed from user data. Quota events report
+  `try_number=None` before a physical try is assigned.
+- `KeyboardInterrupt` and `SystemExit` raised during cleanup or stream
+  finalization keep their type; they are never converted into item failures
+  or a clean end of stream, and they take precedence over a deferred
+  cancellation.
+- A failed `AdmissionRegistry.shutdown()` is retryable: each quota scope is
+  released only after both of its components closed.
+
 ## [0.23.0] - 2026-08-27
 
 ### Added

@@ -59,6 +59,7 @@ Type Aliases:
 
 from typing import TypeVar
 
+from ._internal.cleanup import CleanupInterruptedError
 from .artifacts import (
     ArtifactError,
     ArtifactFormatError,
@@ -83,6 +84,7 @@ from .base import (
     ProcessingStats,
     ProgressCallbackFunc,
     RetryState,
+    StreamFinalizationError,
     TokenUsage,
     WorkItemResult,
     WorkItemTiming,
@@ -229,6 +231,7 @@ __all__ = [
     "ProcessingStats",
     "ProgressCallbackFunc",
     "RetryState",
+    "StreamFinalizationError",
     "TokenUsage",
     "TokenEstimate",
     "TokenEstimator",
@@ -237,6 +240,7 @@ __all__ = [
     "WorkItemTiming",
     "ResultSerializationError",
     "CallOutcome",
+    "CleanupInterruptedError",
     "CallableStrategy",
     # Audit/checkpoint artifacts
     "ArtifactError",

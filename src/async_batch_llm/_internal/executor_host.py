@@ -14,6 +14,7 @@ makes concurrent callers coordinate by quota-scope identity.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Generic, cast
 
 from ..base import (
@@ -36,11 +37,14 @@ from ..token_extractor import TokenExtractor
 from .admission import AdmissionRegistry
 from .capacity import CapacityLimiter
 from .classifier_resolver import StrategyClassifierResolver
+from .cleanup import CleanupReport, CleanupStep, SharedCloser
 from .event_dispatcher import EventDispatcher
 from .guardrails import AbortController
 from .item_executor import ItemExecutor
 from .rate_limit_coordinator import RateLimitCoordinator
 from .strategy_lifecycle import StrategyLifecycle
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutorHost(Generic[TInput, TOutput, TContext]):
@@ -110,6 +114,7 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         self._abort_controller: AbortController | None = None
 
         self.executor: ItemExecutor[TInput, TOutput, TContext] = ItemExecutor(self)
+        self._closer = SharedCloser(self._cleanup_steps, name="ExecutorHost", logger=logger)
 
     # These three satisfy ExecutorHostProtocol's override-point hooks. On the
     # queue-less path there's no subclass to override them, so they delegate
@@ -148,22 +153,32 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
             exception, work_item, worker_id, attempt_number
         )
 
-    async def aclose(self) -> None:
-        """Run cleanup() on every strategy this host prepared."""
-        errors: list[BaseException] = []
-        try:
-            await self._strategy_lifecycle.cleanup_all()
-        except BaseException as exc:
-            errors.append(exc)
-        try:
-            await self._admission_registry.shutdown()
-        except BaseException as exc:
-            errors.append(exc)
+    def _cleanup_steps(self) -> list[CleanupStep]:
+        """Ordered teardown: admission resources, then strategies, then caches."""
+        self._strategy_lifecycle.mark_closing()
+        steps = [CleanupStep("admission registry", self._admission_registry.shutdown)]
         if self._owns_compatibility_coordinator:
-            try:
-                await self._rate_limit_coord.shutdown()
-            except BaseException as exc:
-                errors.append(exc)
+            steps.append(
+                CleanupStep("compatibility rate-limit coordinator", self._rate_limit_coord.shutdown)
+            )
+        steps.extend(self._strategy_lifecycle.cleanup_steps())
+        steps.append(CleanupStep("classifier resolver", self._clear_classifiers))
+        return steps
+
+    async def _clear_classifiers(self) -> None:
         self._classifier_resolver.clear()
-        if errors:
-            raise errors[0]
+
+    async def close_report(
+        self, *, primary_exception: BaseException | None = None
+    ) -> CleanupReport:
+        """Run or join the shared close attempt and return what it observed."""
+        return await self._closer.close(primary_exception=primary_exception)
+
+    async def aclose(self) -> None:
+        """Release admission state and run cleanup() on every prepared strategy.
+
+        Raises the first ordinary cleanup failure after attempting every step;
+        repeated calls retry only what did not complete.
+        """
+        report = await self.close_report()
+        report.raise_first()

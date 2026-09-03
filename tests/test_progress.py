@@ -140,18 +140,19 @@ class TestCustomCallable:
         assert batch.succeeded == 3
         assert sorted(c[0] for c in calls) == [1, 2, 3]
 
-    async def test_sync_callable_keeps_thread_dispatch(self, monkeypatch):
-        real_to_thread = asyncio.to_thread
-        thread_dispatches = 0
+    async def test_sync_callable_keeps_thread_dispatch(self):
+        import threading
 
-        async def tracking_to_thread(func, /, *args, **kwargs):
-            nonlocal thread_dispatches
-            thread_dispatches += 1
-            return await real_to_thread(func, *args, **kwargs)
+        thread_names: list[str] = []
 
-        monkeypatch.setattr(asyncio, "to_thread", tracking_to_thread)
-        await process_prompts(EchoStrategy(), ["a", "b", "c"], progress=lambda *_: None)
-        assert thread_dispatches == 3
+        def sync_progress(*_):
+            thread_names.append(threading.current_thread().name)
+
+        await process_prompts(EchoStrategy(), ["a", "b", "c"], progress=sync_progress)
+        # Synchronous callbacks run off the event loop in the processor-owned
+        # pool, so teardown can wait for their threads.
+        assert len(thread_names) == 3
+        assert all(name.startswith("abl-callback") for name in thread_names)
 
     async def test_bundled_reporter_avoids_thread_dispatch(self, monkeypatch, fake_tqdm):
         real_to_thread = asyncio.to_thread

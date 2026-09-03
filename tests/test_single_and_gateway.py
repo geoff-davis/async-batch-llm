@@ -294,7 +294,7 @@ async def test_gateway_concurrent_aclose_all_await_cleanup():
 
     await running
     await asyncio.wait_for(asyncio.gather(first, second), timeout=2.0)
-    assert gw._host._strategy_lifecycle._cleaned_up  # cleanup ran (once)
+    assert gw._host._strategy_lifecycle.cleanup_complete  # cleanup ran (once)
 
 
 @pytest.mark.asyncio
@@ -316,4 +316,4 @@ async def test_gateway_aclose_cancellation_does_not_abort_cleanup():
     result = await running
     assert result.success
     await asyncio.wait_for(gw.aclose(), timeout=2.0)
-    assert gw._host._strategy_lifecycle._cleaned_up
+    assert gw._host._strategy_lifecycle.cleanup_complete

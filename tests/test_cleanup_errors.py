@@ -1,10 +1,9 @@
 """Cleanup and best-effort error path tests.
 
 Locks in the contract that:
-- A strategy whose cleanup() raises Exception does not crash the processor
-  and does not prevent cleanup of other strategies.
-- BaseException subclasses (KeyboardInterrupt, SystemExit) are not swallowed
-  by cleanup, because the code must use `except Exception` (not `BaseException`).
+- A strategy whose cleanup() raises does not prevent cleanup of sibling
+  strategies and is raised only after every cleanup step was attempted.
+- BaseException subclasses (KeyboardInterrupt, SystemExit) keep their type.
 - Missing token usage_metadata logs a DEBUG record so users can diagnose
   why token counts come back as zero.
 """
@@ -63,39 +62,38 @@ class _BadCleanupStrategy(_OkStrategy):
 
 
 @pytest.mark.asyncio
-async def test_cleanup_failure_does_not_crash_or_skip_siblings(caplog):
+async def test_cleanup_failure_is_raised_after_cleaning_siblings(caplog):
     """A strategy whose cleanup() raises Exception must:
-    - not crash the processor,
-    - log a WARNING naming the failing class,
+    - be raised from ``async with`` exit after every cleanup step ran,
+    - log an ERROR naming the failing class,
     - still allow sibling strategies to be cleaned up.
     """
-    caplog.set_level(logging.WARNING, logger="async_batch_llm.parallel")
+    caplog.set_level(logging.ERROR)
 
     bad = _BadCleanupStrategy("bad", ValueError("simulated cleanup boom"))
     ok = _OkStrategy("ok")
 
     config = ProcessorConfig(max_workers=2, attempt_timeout=5.0)
-    async with ParallelBatchProcessor[str, str, None](config=config) as proc:
-        await proc.add_work(LLMWorkItem(item_id="1", strategy=bad, prompt="a"))
-        await proc.add_work(LLMWorkItem(item_id="2", strategy=ok, prompt="b"))
-        result = await proc.process_all()
+    with pytest.raises(ValueError, match="simulated cleanup boom"):
+        async with ParallelBatchProcessor[str, str, None](config=config) as proc:
+            await proc.add_work(LLMWorkItem(item_id="1", strategy=bad, prompt="a"))
+            await proc.add_work(LLMWorkItem(item_id="2", strategy=ok, prompt="b"))
+            result = await proc.process_all()
 
     assert result.succeeded == 2
     assert bad.cleaned is True
     assert ok.cleaned is True, "sibling cleanup must run even after one fails"
 
-    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
     assert any(
         "_BadCleanupStrategy" in r.getMessage() and "simulated cleanup boom" in r.getMessage()
-        for r in warnings
-    ), [r.getMessage() for r in warnings]
+        for r in errors
+    ), [r.getMessage() for r in errors]
 
 
 @pytest.mark.asyncio
 async def test_cleanup_does_not_swallow_base_exceptions():
-    """Cleanup uses `except Exception`, so KeyboardInterrupt (BaseException)
-    must propagate rather than being swallowed as a warning.
-    """
+    """KeyboardInterrupt raised by a strategy cleanup() keeps its type."""
     bad = _BadCleanupStrategy("bad", KeyboardInterrupt())
 
     config = ProcessorConfig(max_workers=1, attempt_timeout=5.0)

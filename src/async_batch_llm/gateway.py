@@ -32,9 +32,11 @@ cap that rejects instantly instead of growing an unbounded waiter list) and
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Generic, TypeVar, cast
 
 from ._internal.capacity import warn_if_worker_capacity_exceeded
+from ._internal.cleanup import CleanupStep, SharedCloser
 from ._internal.executor_host import ExecutorHost
 from .base import LLMWorkItem, WorkItemResult
 from .core import ProcessorConfig
@@ -42,6 +44,8 @@ from .llm_strategies import LLMCallStrategy
 from .single import unwrap_result
 
 TOutput = TypeVar("TOutput")
+
+logger = logging.getLogger(__name__)
 
 
 class LLMGateway(Generic[TOutput]):
@@ -104,19 +108,27 @@ class LLMGateway(Generic[TOutput]):
         self._max_inflight = None if max_pending is None else gateway_workers + max_pending
         self._inflight = 0
         self._submit_timeout = submit_timeout
-        # Set whenever no request is in flight; aclose() waits on it to drain
-        # already-admitted work before cleaning up the shared strategy.
+        # Set whenever no request is in flight; the close drains it before
+        # cleaning up the shared strategy.
         self._idle = asyncio.Event()
         self._idle.set()
-        # The single drain+cleanup task; concurrent aclose() callers all await it
-        # so every `await gw.aclose()` returns only once cleanup is complete.
-        self._close_task: asyncio.Task[None] | None = None
+        # Concurrent aclose() callers share one ordered close attempt.
+        self._closer = SharedCloser(self._cleanup_steps, name="LLMGateway", logger=logger)
 
     async def __aenter__(self) -> LLMGateway[TOutput]:
         return self
 
-    async def __aexit__(self, *exc_info: object) -> None:
-        await self.aclose()
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> bool:
+        self._closed = True
+        report = await self._closer.close(primary_exception=exc_val)
+        if exc_val is None:
+            report.raise_first()
+        return False
 
     async def submit(self, prompt: str, *, timeout: float | None = None) -> TOutput:
         """Submit one prompt and await its output, raising on failure.
@@ -185,33 +197,36 @@ class LLMGateway(Generic[TOutput]):
             return await self._host.executor.execute(work_item)
 
     async def aclose(self) -> None:
-        """Stop accepting work and run the strategy's cleanup(). Idempotent.
+        """Stop accepting work, drain in-flight requests, then run cleanup().
 
         Marks the pool closed (new submits raise immediately), then waits for
         already-admitted requests — running *or* still waiting on the semaphore —
         to drain before cleaning up the shared strategy, whose clients/caches may
-        still be in use. Set ``submit_timeout`` to bound how long an admitted
-        request can hold up shutdown (otherwise the drain waits indefinitely).
+        still be in use. The drain waits indefinitely; set ``submit_timeout`` to
+        bound how long an admitted request can hold up shutdown.
 
-        Concurrent callers share one drain+cleanup task, so *every*
-        ``await gw.aclose()`` returns only once cleanup has actually completed —
-        not just because another call set the closed flag first. The shared task
-        is ``shield``-ed, so cancelling one caller's ``aclose()`` doesn't abort
-        the drain/cleanup for the others.
+        Concurrent callers share one ordered close attempt, so every
+        ``await gw.aclose()`` returns only once cleanup has actually completed.
+        A successful step is never repeated; a failed one is retried by the
+        next call. Cancelling one waiter defers that cancellation until the
+        shared attempt finishes; cancelling it a second time force-aborts.
         """
         # Set synchronously so new submits are rejected immediately, even before
-        # the cleanup task below is scheduled.
+        # the close attempt is scheduled.
         self._closed = True
-        if self._close_task is None:
-            self._close_task = asyncio.ensure_future(self._drain_and_close())
-        # shield so a cancelled waiter doesn't cancel the shared drain/cleanup.
-        await asyncio.shield(self._close_task)
+        report = await self._closer.close()
+        report.raise_first()
 
-    async def _drain_and_close(self) -> None:
+    def _cleanup_steps(self) -> list[CleanupStep]:
+        return [
+            CleanupStep("gateway in-flight drain", self._drain_inflight),
+            *self._host._cleanup_steps(),
+        ]
+
+    async def _drain_inflight(self) -> None:
         # No new admissions once _closed is set, so _inflight only decreases.
         if self._inflight > 0:
             await self._idle.wait()
-        await self._host.aclose()
 
 
 # Preferred v0.20 name. This is deliberately an exact alias: both imports use

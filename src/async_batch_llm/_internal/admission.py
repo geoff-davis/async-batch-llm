@@ -569,23 +569,27 @@ class AdmissionRegistry:
         return tuple(self._scope_entries.values())
 
     async def shutdown(self) -> None:
-        if self._closed:
-            return
+        """Close every quota scope. Idempotent; a failed scope is retried next call.
+
+        ``_closed`` is set before the first await so a late ``resolve()`` cannot
+        mint a scope that shutdown would then discard unclosed. Each scope is
+        removed only after both of its components closed, so a retry resumes
+        exactly the scopes that did not complete.
+        """
         self._closed = True
-        errors: list[BaseException] = []
-        for state in tuple(self._scope_entries.values()):
+        errors: list[Exception] = []
+        for key, state in tuple(self._scope_entries.items()):
             try:
                 await state.cooldown.shutdown()
-            except BaseException as exc:  # cleanup every scope before surfacing one error
-                errors.append(exc)
-            try:
                 await state.quota_gate.shutdown()
-            except BaseException as exc:
+            except Exception as exc:  # close every scope before surfacing one error
                 errors.append(exc)
-        self._strategy_entries.clear()
-        self._scope_entries.clear()
-        if errors:
-            raise errors[0]
+                continue
+            self._scope_entries.pop(key, None)
+        if not errors:
+            self._strategy_entries.clear()
+            return
+        raise errors[0]
 
 
 __all__ = [

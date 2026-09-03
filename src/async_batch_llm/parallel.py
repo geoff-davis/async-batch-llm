@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 from ._internal.admission import AdmissionRegistry
 from ._internal.capacity import CapacityLimiter, warn_if_worker_capacity_exceeded
 from ._internal.classifier_resolver import StrategyClassifierResolver
+from ._internal.cleanup import CleanupStep
 from ._internal.event_dispatcher import EventDispatcher
 from ._internal.guardrails import (
     AbortCause,
@@ -213,6 +214,7 @@ class ParallelBatchProcessor(
         )
         self.config = config
         self.artifact_store = artifact_store
+        self._artifact_store_closed = False
         self.resume = ResumePolicy(resume)
         self._abort_controller: AbortController | None = AbortController(
             config.guardrails.abort_mode
@@ -292,11 +294,7 @@ class ParallelBatchProcessor(
 
     @property
     def _strategies_cleaned_up(self) -> bool:
-        return self._strategy_lifecycle._cleaned_up
-
-    @_strategies_cleaned_up.setter
-    def _strategies_cleaned_up(self, value: bool) -> None:
-        self._strategy_lifecycle._cleaned_up = value
+        return self._strategy_lifecycle.cleanup_complete
 
     # Back-compat attribute accessors for tests and subclasses that read
     # the rate-limit coordinator's state directly.
@@ -351,34 +349,20 @@ class ParallelBatchProcessor(
         exc_val: BaseException | None,
         exc_tb: "TracebackType | None",
     ) -> bool:
-        """
-        Context manager exit - ensures cleanup of strategies and resources.
+        """Context manager exit - releases every owned resource.
 
-        Calls cleanup() on all prepared strategies, then delegates to parent cleanup.
-
-        Args:
-            exc_type: Exception type (if any exception occurred)
-            exc_val: Exception value (if any exception occurred)
-            exc_tb: Exception traceback (if any exception occurred)
+        Runs the same ordered close as :meth:`shutdown`: runtime tasks and
+        callbacks, then admission resources, then prepared strategies, then
+        the artifact store. A body exception stays primary and cleanup
+        failures are logged; otherwise the first cleanup failure is raised
+        after every step has been attempted.
 
         Returns:
             False to indicate exceptions should not be suppressed
         """
-        # Stop workers before closing strategies or their artifact sink: a
-        # cancelled/early stream may still have an in-flight terminal write.
-        errors: list[BaseException] = []
-        for cleanup in (self.cleanup, self._cleanup_strategies):
-            try:
-                await cleanup()
-            except BaseException as error:
-                errors.append(error)
-        if self.artifact_store is not None:
-            try:
-                await self.artifact_store.close()
-            except BaseException as error:
-                errors.append(error)
-        if errors and exc_val is None:
-            raise errors[0]
+        report = await self._closer.close(primary_exception=exc_val)
+        if exc_val is None:
+            report.raise_first()
         return False  # Don't suppress exceptions
 
     def _start_guardrail_run(self) -> None:
@@ -438,22 +422,32 @@ class ParallelBatchProcessor(
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-    async def cleanup(self) -> None:
-        """Cancel workers, timers, and every quota-scoped admission resource."""
-        errors: list[BaseException] = []
-        for cleanup in (
-            self._cancel_batch_timeout,
-            super().cleanup,
-            self._admission_registry.shutdown,
-            self._compatibility_rate_limit_coord.shutdown,
-        ):
-            try:
-                await cleanup()
-            except BaseException as error:
-                errors.append(error)
+    def _cleanup_steps(self) -> list[CleanupStep]:
+        """Runtime tasks, then admission resources, then strategies, then the store."""
+        self._strategy_lifecycle.mark_closing()
+        steps = [
+            CleanupStep("batch timeout", self._cancel_batch_timeout),
+            *super()._cleanup_steps(),
+            CleanupStep("admission registry", self._admission_registry.shutdown),
+            CleanupStep(
+                "compatibility rate-limit coordinator",
+                self._compatibility_rate_limit_coord.shutdown,
+            ),
+            CleanupStep("classifier resolver", self._clear_classifier_cache),
+            *self._strategy_lifecycle.cleanup_steps(),
+        ]
+        if self.artifact_store is not None and not self._artifact_store_closed:
+            steps.append(CleanupStep("artifact store", self._close_artifact_store))
+        return steps
+
+    async def _clear_classifier_cache(self) -> None:
         self._classifier_resolver.clear()
-        if errors:
-            raise errors[0]
+
+    async def _close_artifact_store(self) -> None:
+        """Close the store once; a failed close stays retryable by a later close."""
+        assert self.artifact_store is not None
+        await self.artifact_store.close()
+        self._artifact_store_closed = True
 
     def start(self) -> None:
         """Start streaming workers and the batch deadline clock."""
@@ -614,8 +608,8 @@ class ParallelBatchProcessor(
                 "duration": duration,
             },
         )
-        if self.artifact_store is not None:
-            await self.artifact_store.close()
+        if self.artifact_store is not None and not self._artifact_store_closed:
+            await self._close_artifact_store()
 
     async def _emit_event(self, event: ProcessingEvent, data: dict | None = None) -> None:
         """Delegate to EventDispatcher (see _internal/event_dispatcher.py)."""
@@ -930,12 +924,14 @@ class ParallelBatchProcessor(
         )
 
     async def shutdown(self):
-        """Clean up resources: flush observers and cancel pending tasks."""
-        errors: list[BaseException] = []
-        for cleanup in (self.cleanup, self._cleanup_strategies):
-            try:
-                await cleanup()
-            except BaseException as error:
-                errors.append(error)
-        if errors:
-            raise errors[0]
+        """Release every owned resource; safe to call repeatedly.
+
+        Same ordered close as ``async with`` exit: runtime tasks and
+        callbacks, admission resources, prepared strategies, then the
+        artifact store (including after an early stream exit or a failed
+        run). Concurrent calls share one attempt; a step that succeeded is
+        never repeated and a failed one is retried by the next call. Raises
+        the first cleanup failure after every step has been attempted.
+        """
+        report = await self._closer.close()
+        report.raise_first()

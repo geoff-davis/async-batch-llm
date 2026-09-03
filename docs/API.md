@@ -325,15 +325,51 @@ result = await processor.process_all()
 3. Waits for all work to complete
 4. Returns aggregated results
 
-#### `async def cleanup() -> None`
+#### `async def cleanup() -> None` / `async def shutdown() -> None`
 
-Clean up resources (cancel pending workers, clear queue).
+Release every owned resource in dependency order. `cleanup()`, `shutdown()`,
+and `async with` exit all run the same ordered close:
+
+1. Runtime tasks and callbacks: the stream finalizer, workers, queued work,
+   progress callbacks, background post-processors, and callback threads.
+2. Admission resources (quota scopes and the rate-limit coordinator).
+3. Prepared strategies (`strategy.cleanup()`).
+4. The artifact store, including after an early stream exit or a failed run.
 
 ```python
-await processor.cleanup()
+await processor.shutdown()
 ```
 
-**Note:** Automatically called when using async context manager.
+Behavior (see `docs/cleanup-lifecycle-contract.md` for the full contract):
+
+- **Every step is attempted.** A failing strategy `cleanup()` does not stop
+  sibling strategies or the artifact store from closing. Every failure is
+  logged with a traceback; with no body exception, the first failure is
+  raised after all steps have run. Inside `async with`, a body exception
+  stays primary and cleanup failures are only logged.
+- **Repeat calls are safe.** A step that succeeded is never repeated. A step
+  that failed or was interrupted is retried by the next explicit close.
+  Concurrent calls share one in-flight attempt. Because a retry re-invokes a
+  strategy's whole `cleanup()`, user `cleanup()` implementations must be
+  idempotent and safe after a partially completed earlier attempt.
+- **No deadline.** Cleanup waits for the artifact store and the gateway drain
+  to finish. The two-second worker and progress thresholds only log a warning
+  and keep waiting; any step still running after 30 seconds logs one warning.
+  A dependent resource is never closed while the resource it depends on is
+  still running, including synchronous callback threads.
+- **Cancellation.** Cancelling the task that is closing once defers that
+  cancellation until cleanup finishes, then re-raises it (cleanup errors are
+  logged, not raised). Cancelling it a second time force-aborts: the running
+  step is abandoned, later steps are skipped and logged, and the cancellation
+  propagates immediately. This is the operator's escape from a cleanup that
+  never returns and deliberately sacrifices durability.
+- **Interruptions.** A strategy `cleanup()` that raises `CancelledError`
+  itself, or whose private task is cancelled by something else, surfaces as
+  `CleanupInterruptedError` (an ordinary `Exception`); the caller's task is
+  not cancelled and the next close retries the step.
+- `KeyboardInterrupt` and `SystemExit` raised by a cleanup step keep their
+  type and take precedence over a deferred cancellation.
+- Once a close has started, preparing a new strategy raises `RuntimeError`.
 
 #### Context Manager Support
 
@@ -341,7 +377,7 @@ await processor.cleanup()
 async with ParallelBatchProcessor(config=config) as processor:
     await processor.add_work(item)
     result = await processor.process_all()
-# Automatic cleanup
+# Automatic cleanup (same ordered close as shutdown())
 ```
 
 **Example:**
@@ -1372,9 +1408,10 @@ class ProcessorObserver(ABC):
 
 **Cleanup note:**
 
-- Preferred: wrap `ParallelBatchProcessor` in `async with` so strategy cleanup runs automatically.
-- If you do not use a context manager, call `await processor.shutdown()` after `process_all()` to flush
-  observers, stop workers, and run strategy cleanups.
+- Preferred: wrap `ParallelBatchProcessor` in `async with` so the ordered close runs automatically.
+- If you do not use a context manager, call `await processor.shutdown()` after `process_all()`. It
+  stops workers and callbacks, releases admission state, runs strategy cleanups, and closes the
+  artifact store. Repeated calls are safe and retry only what did not complete.
 
 ---
 

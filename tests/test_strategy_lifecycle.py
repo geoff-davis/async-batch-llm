@@ -144,8 +144,8 @@ async def test_cleanup_happens_even_on_processing_error():
 
 
 @pytest.mark.asyncio
-async def test_cleanup_error_does_not_fail_batch():
-    """Test that cleanup errors are logged but don't fail the batch."""
+async def test_cleanup_error_surfaces_after_successful_batch():
+    """A cleanup error is raised from ``async with`` exit after the body completed."""
 
     class CleanupFailStrategy(LifecycleTrackingStrategy):
         """Strategy that raises error during cleanup."""
@@ -158,15 +158,15 @@ async def test_cleanup_error_does_not_fail_batch():
     strategy = CleanupFailStrategy()
     config = ProcessorConfig(max_workers=2, attempt_timeout=10.0)
 
-    # Should not raise despite cleanup failure
-    async with ParallelBatchProcessor[str, str, None](config=config) as processor:
-        await processor.add_work(LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test"))
-        result = await processor.process_all()
+    with pytest.raises(RuntimeError, match="Cleanup failed"):
+        async with ParallelBatchProcessor[str, str, None](config=config) as processor:
+            await processor.add_work(
+                LLMWorkItem(item_id="item_1", strategy=strategy, prompt="Test")
+            )
+            result = await processor.process_all()
 
-    # Verify processing succeeded
+    # The body completed before the cleanup error surfaced.
     assert result.succeeded == 1
-
-    # Cleanup was called (and failed, but that's logged not raised)
     assert strategy.cleanup_called
 
 

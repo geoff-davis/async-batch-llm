@@ -191,11 +191,15 @@ async def test_sync_post_processor_does_not_block_event_loop():
 
 
 @pytest.mark.asyncio
-async def test_sync_post_processor_respects_wait_timeout(caplog):
-    """The processor stops waiting when a synchronous callback exceeds its budget."""
+async def test_sync_post_processor_timeout_logs_but_thread_is_a_barrier(caplog):
+    """The budget stops the worker waiting on a synchronous callback, but the
+    callback's thread cannot be cancelled, so batch finalization (artifact
+    close, BATCH_COMPLETED) still waits for it to finish."""
+    finished = threading.Event()
 
     def post(result: WorkItemResult) -> None:
         time.sleep(0.2)
+        finished.set()
 
     config = ProcessorConfig(max_workers=1, post_processor_timeout=0.02)
     strategy = _InstantStrategy()
@@ -206,8 +210,9 @@ async def test_sync_post_processor_respects_wait_timeout(caplog):
     ) as processor:
         await processor.add_work(LLMWorkItem(item_id="x", strategy=strategy, prompt="x"))
         result = await processor.process_all()
+        assert finished.is_set(), "process_all() returned while the callback thread was live"
     elapsed = time.monotonic() - started
 
     assert result.succeeded == 1
-    assert elapsed < 0.15
+    assert 0.2 <= elapsed < 1.0
     assert "Post-processor execution timed out" in caplog.text

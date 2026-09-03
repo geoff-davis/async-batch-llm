@@ -156,6 +156,15 @@ async with ParallelBatchProcessor(config=config) as processor:
 `add_work()` is the backpressure point. Always call `finish()` after the
 producer reaches end-of-input so `results()` can terminate.
 
+`results()` ends in exactly one of two ways, decided once and kept durable
+for repeated or concurrent consumers: it returns normally only after every
+worker, post-processor, and progress callback finished and the artifact store
+closed, or it raises. A worker crash or a finalization failure re-raises the
+original exception; a finalizer cancelled by `shutdown()` before `finish()`
+completed raises `StreamFinalizationError` (an ordinary `Exception`, with the
+cancellation as `__cause__`), never a clean end of stream. Results published
+before the decision are always delivered first.
+
 ## Shared Call Task Counts
 
 `LLMCallPool` bounds calls inside the in-process shared call pool, but this still
