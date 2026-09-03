@@ -56,6 +56,7 @@ from .admission import (
 from .capacity import CapacityLimiter
 from .classifier_resolver import StrategyClassifierResolver
 from .error_logging import log_retryable_error, log_validation_error
+from .execution_state import current_try_number, reset_attempt_runtime, runtime_state
 from .guardrails import AbortController, await_with_guardrails, remaining_seconds
 
 if TYPE_CHECKING:
@@ -72,38 +73,11 @@ logger = logging.getLogger(__name__)
 # Kept in sync with parallel.py (single source would create an import cycle).
 ERROR_MESSAGE_MAX_LENGTH = 200
 ERROR_MESSAGE_DETAILED_LENGTH = 500
-_ADMISSION_WAIT_STATE_KEY = "_abl_admission_wait_seconds"
 _ADMISSION_WAIT_EXCEPTION_KEY = "_abl_admission_wait_seconds"
 _TIMING_EXCEPTION_KEY = "_abl_work_item_timing"
-_LAST_ADMISSION_KEY = "_abl_last_admission_wait_seconds"
-_LAST_STARTUP_RAMP_KEY = "_abl_last_startup_ramp_wait_seconds"
-_LAST_EXECUTION_KEY = "_abl_last_execution_seconds"
-_LAST_PROVIDER_KEY = "_abl_last_provider_seconds"
-_LAST_COOLDOWN_KEY = "_abl_last_cooldown_wait_seconds"
-_LAST_QUOTA_WAIT_KEY = "_abl_last_quota_wait_seconds"
-_LAST_ESTIMATED_INPUT_KEY = "_abl_last_estimated_input_tokens"
-_LAST_ESTIMATED_OUTPUT_KEY = "_abl_last_estimated_output_tokens"
-_LAST_RESERVED_TOKENS_KEY = "_abl_last_reserved_tokens"
-_LAST_REPORTED_TOKENS_KEY = "_abl_last_reported_tokens"
-_LAST_RECONCILIATION_DELTA_KEY = "_abl_last_reconciliation_delta_tokens"
-_LAST_QUOTA_SCOPE_KEY = "_abl_last_quota_scope_id"
-_PHYSICAL_TRY_KEY = "_abl_physical_try_number"
-_LAST_TIMEOUT_KEY = "_abl_last_timeout_category"
-_LAST_ERROR_CATEGORY_KEY = "_abl_last_error_category"
-_TOTAL_DEADLINE_KEY = "_abl_total_item_deadline"
 _ERROR_INFO_EXCEPTION_KEY = "_abl_error_info"
 
 _E = TypeVar("_E", bound=BaseException)
-
-
-def _state_float(state: RetryState, key: str) -> float:
-    value = state.get(key, 0.0)
-    return float(value) if isinstance(value, (int, float)) else 0.0
-
-
-def _state_optional_int(state: RetryState, key: str) -> int | None:
-    value = state.get(key)
-    return value if not isinstance(value, bool) and isinstance(value, int) else None
 
 
 def _is_async_callable(callback: object) -> bool:
@@ -122,29 +96,14 @@ def _attempt_timing(
     error_type: str | None = None,
     error_category: str | None = None,
 ) -> AttemptTiming:
-    provider_value = state.get(_LAST_PROVIDER_KEY)
-    provider_seconds = float(provider_value) if isinstance(provider_value, (int, float)) else None
-    timeout_value = state.get(_LAST_TIMEOUT_KEY)
-    return AttemptTiming(
+    current = runtime_state(state).current_attempt
+    return current.snapshot(
         attempt=attempt,
         try_number=try_number,
         total_seconds=total_seconds,
-        admission_wait_seconds=_state_float(state, _LAST_ADMISSION_KEY),
-        startup_ramp_wait_seconds=_state_float(state, _LAST_STARTUP_RAMP_KEY),
-        execution_seconds=_state_float(state, _LAST_EXECUTION_KEY),
-        provider_seconds=provider_seconds,
-        cooldown_wait_seconds=_state_float(state, _LAST_COOLDOWN_KEY),
-        quota_wait_seconds=_state_float(state, _LAST_QUOTA_WAIT_KEY),
-        estimated_input_tokens=_state_optional_int(state, _LAST_ESTIMATED_INPUT_KEY),
-        estimated_output_tokens=_state_optional_int(state, _LAST_ESTIMATED_OUTPUT_KEY),
-        reserved_tokens=_state_optional_int(state, _LAST_RESERVED_TOKENS_KEY) or 0,
-        reported_tokens=_state_optional_int(state, _LAST_REPORTED_TOKENS_KEY),
-        reconciliation_delta_tokens=_state_optional_int(state, _LAST_RECONCILIATION_DELTA_KEY),
-        quota_scope_id=_state_optional_int(state, _LAST_QUOTA_SCOPE_KEY),
         success=success,
         error_type=error_type,
         error_category=error_category,
-        timeout_category=timeout_value if isinstance(timeout_value, str) else None,
     )
 
 
@@ -511,9 +470,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     "item_id": work_item.item_id,
                     "worker_id": worker_id,
                     "attempt": attempt_number,
-                    "try_number": (
-                        retry_state.get(_PHYSICAL_TRY_KEY) if retry_state is not None else None
-                    ),
+                    "try_number": current_try_number(retry_state),
                     "quota_scope_id": state.ordinal,
                     "wait_seconds": reservation.wait_seconds,
                     "request_reserved": int(reservation.request_reserved),
@@ -535,13 +492,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
     ) -> None:
         if retry_state is None:
             return
-        retry_state.set(_LAST_QUOTA_WAIT_KEY, reservation.wait_seconds)
-        retry_state.set(_LAST_QUOTA_SCOPE_KEY, scope_id)
-        retry_state.set(_LAST_RESERVED_TOKENS_KEY, reservation.reserved_tokens)
-        if reservation.estimated_input_tokens is not None:
-            retry_state.set(_LAST_ESTIMATED_INPUT_KEY, reservation.estimated_input_tokens)
-        if reservation.estimated_output_tokens is not None:
-            retry_state.set(_LAST_ESTIMATED_OUTPUT_KEY, reservation.estimated_output_tokens)
+        attempt = runtime_state(retry_state).current_attempt
+        attempt.quota_wait_seconds = reservation.wait_seconds
+        attempt.quota_scope_id = scope_id
+        attempt.reserved_tokens = reservation.reserved_tokens
+        attempt.estimated_input_tokens = reservation.estimated_input_tokens
+        attempt.estimated_output_tokens = reservation.estimated_output_tokens
 
     async def _record_quota_finalization(
         self,
@@ -563,9 +519,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             )
         if retry_state is not None:
             if finalization.provider_started and finalization.reported_tokens is not None:
-                retry_state.set(_LAST_REPORTED_TOKENS_KEY, finalization.reported_tokens)
-            if finalization.delta_tokens is not None:
-                retry_state.set(_LAST_RECONCILIATION_DELTA_KEY, finalization.delta_tokens)
+                runtime_state(
+                    retry_state
+                ).current_attempt.reported_tokens = finalization.reported_tokens
+            runtime_state(
+                retry_state
+            ).current_attempt.reconciliation_delta_tokens = finalization.delta_tokens
         if finalization.provider_started and self._events.observers:
             await self._emit_event(
                 ProcessingEvent.QUOTA_RECONCILED,
@@ -573,9 +532,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     "item_id": work_item.item_id,
                     "worker_id": worker_id,
                     "attempt": attempt_number,
-                    "try_number": (
-                        retry_state.get(_PHYSICAL_TRY_KEY) if retry_state is not None else None
-                    ),
+                    "try_number": current_try_number(retry_state),
                     "quota_scope_id": state.ordinal,
                     "reserved_tokens": reservation.reserved_tokens,
                     "reported_tokens": finalization.reported_tokens,
@@ -606,9 +563,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             abort_controller=self._abort_controller,
         )
         if retry_state is not None:
-            retry_state.set(
-                _LAST_COOLDOWN_KEY,
-                max(0.0, time.perf_counter() - cooldown_started),
+            runtime_state(retry_state).current_attempt.cooldown_wait_seconds = max(
+                0.0, time.perf_counter() - cooldown_started
             )
         delay = await await_with_guardrails(
             coordinator.apply_slow_start(),
@@ -625,9 +581,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 abort_controller=self._abort_controller,
             )
             if retry_state is not None:
-                retry_state.set(
-                    _LAST_STARTUP_RAMP_KEY,
-                    max(0.0, time.perf_counter() - ramp_started),
+                runtime_state(retry_state).current_attempt.startup_ramp_wait_seconds = max(
+                    0.0, time.perf_counter() - ramp_started
                 )
 
     async def execute(
@@ -761,7 +716,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         retry_state = RetryState()
         if deadline is None and self.config.guardrails.total_timeout_per_item is not None:
             deadline = time.perf_counter() + self.config.guardrails.total_timeout_per_item
-        retry_state.set(_TOTAL_DEADLINE_KEY, deadline)
+        item_runtime = runtime_state(retry_state)
+        item_runtime.total_deadline = deadline
 
         # Ensure strategy is prepared (framework ensures this is called only once per unique strategy instance)
         # (v0.4.0: cleanup now happens in __aexit__, not per-item)
@@ -801,24 +757,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 raise
             try_number += 1
             try_started = time.perf_counter()
-            for key in (
-                _LAST_ADMISSION_KEY,
-                _LAST_STARTUP_RAMP_KEY,
-                _LAST_EXECUTION_KEY,
-                _LAST_PROVIDER_KEY,
-                _LAST_COOLDOWN_KEY,
-                _LAST_QUOTA_WAIT_KEY,
-                _LAST_ESTIMATED_INPUT_KEY,
-                _LAST_ESTIMATED_OUTPUT_KEY,
-                _LAST_RESERVED_TOKENS_KEY,
-                _LAST_REPORTED_TOKENS_KEY,
-                _LAST_RECONCILIATION_DELTA_KEY,
-                _LAST_QUOTA_SCOPE_KEY,
-                _LAST_TIMEOUT_KEY,
-                _LAST_ERROR_CATEGORY_KEY,
-            ):
-                retry_state.delete(key)
-            retry_state.set(_PHYSICAL_TRY_KEY, try_number)
+            reset_attempt_runtime(retry_state, try_number)
             try:
                 # Through the host so a processor subclass override takes effect.
                 result = await self._host._process_item(
@@ -835,7 +774,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 # rate-limit retries) so users see the true cost of a failure.
                 attempt_tokens = self._host._extract_token_usage(e)
                 self._token_extractor.accumulate(cumulative_failed_tokens, attempt_tokens)
-                admission_wait_seconds = float(retry_state.get(_ADMISSION_WAIT_STATE_KEY, 0.0))
+                admission_wait_seconds = item_runtime.cumulative_admission_wait_seconds
                 if hasattr(e, "__dict__"):
                     e.__dict__[_ADMISSION_WAIT_EXCEPTION_KEY] = admission_wait_seconds
 
@@ -984,12 +923,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 # attempt (see README "aggregated across retries").
                 self._merge_failed_tokens(result, cumulative_failed_tokens)
                 result.admission_wait_seconds = float(
-                    retry_state.get(_ADMISSION_WAIT_STATE_KEY, 0.0)
+                    item_runtime.cumulative_admission_wait_seconds
                 )
                 final_error_type: str | None = None
                 if not result.success and result.error:
                     final_error_type = result.error.split(":", 1)[0]
-                category_value = retry_state.get(_LAST_ERROR_CATEGORY_KEY)
+                category_value = item_runtime.current_attempt.error_category
                 if (
                     not result.success
                     and result.error_category is None
@@ -1062,8 +1001,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
     ) -> WorkItemResult[TOutput, TContext]:
         """Process a single work item using the provided strategy."""
         start_time = time.time()
-        deadline_value = retry_state.get(_TOTAL_DEADLINE_KEY) if retry_state is not None else None
-        deadline = float(deadline_value) if isinstance(deadline_value, (int, float)) else None
+        item_runtime = runtime_state(retry_state) if retry_state is not None else None
+        deadline = item_runtime.total_deadline if item_runtime is not None else None
 
         # Store original item_id before middleware might return None
         original_item_id = work_item.item_id
@@ -1144,10 +1083,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         abort_controller=self._abort_controller,
                     )
                 finally:
-                    if retry_state is not None:
-                        retry_state.set(
-                            _LAST_EXECUTION_KEY,
-                            max(0.0, time.perf_counter() - execution_started),
+                    if item_runtime is not None:
+                        item_runtime.current_attempt.execution_seconds = max(
+                            0.0, time.perf_counter() - execution_started
                         )
                 response_metadata = None
             else:
@@ -1193,12 +1131,11 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                 pass
                             else:
                                 unseen_reservation.finalize()
-                        if retry_state is not None:
-                            retry_state.set(
-                                _LAST_QUOTA_WAIT_KEY,
-                                max(0.0, time.perf_counter() - quota_wait_started),
+                        if item_runtime is not None:
+                            item_runtime.current_attempt.quota_wait_seconds = max(
+                                0.0, time.perf_counter() - quota_wait_started
                             )
-                            retry_state.set(_LAST_QUOTA_SCOPE_KEY, admission_state.ordinal)
+                            item_runtime.current_attempt.quota_scope_id = admission_state.ordinal
                         raise
                 else:
                     # Disabled mode is an allocation-light synchronous fast
@@ -1226,18 +1163,18 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         item_id=work_item.item_id,
                     ) as admission:
                         previous_wait = (
-                            float(retry_state.get(_ADMISSION_WAIT_STATE_KEY, 0.0))
-                            if retry_state is not None
+                            item_runtime.cumulative_admission_wait_seconds
+                            if item_runtime is not None
                             else 0.0
                         )
                         total_admission_wait = previous_wait + admission.wait_seconds
-                        if retry_state is not None:
-                            retry_state.set(_ADMISSION_WAIT_STATE_KEY, total_admission_wait)
-                            retry_state.set(_LAST_ADMISSION_KEY, admission.wait_seconds)
-                            retry_state.set(
-                                _LAST_STARTUP_RAMP_KEY,
-                                _state_float(retry_state, _LAST_STARTUP_RAMP_KEY)
-                                + admission.startup_ramp_wait_seconds,
+                        if item_runtime is not None:
+                            item_runtime.cumulative_admission_wait_seconds = total_admission_wait
+                            item_runtime.current_attempt.admission_wait_seconds = (
+                                admission.wait_seconds
+                            )
+                            item_runtime.current_attempt.startup_ramp_wait_seconds += (
+                                admission.startup_ramp_wait_seconds
                             )
                         if self._events.observers:
                             await self._emit_event(
@@ -1279,18 +1216,18 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                     on_start=reservation.mark_provider_started,
                                 )
                             except ItemDeadlineExceeded:
-                                if retry_state is not None:
-                                    retry_state.set(
-                                        _LAST_TIMEOUT_KEY, "framework_total_item_timeout"
+                                if item_runtime is not None:
+                                    item_runtime.current_attempt.timeout_category = (
+                                        "framework_total_item_timeout"
                                     )
                                 raise
                             except (BatchDeadlineExceeded, BatchAbortedError):
                                 raise
                             except (TimeoutError, asyncio.TimeoutError) as timeout_exc:
                                 elapsed = time.time() - llm_start_time
-                                if retry_state is not None:
-                                    retry_state.set(
-                                        _LAST_TIMEOUT_KEY, "framework_execution_timeout"
+                                if item_runtime is not None:
+                                    item_runtime.current_attempt.timeout_category = (
+                                        "framework_execution_timeout"
                                     )
                                 logger.error(
                                     f"⏱ FRAMEWORK TIMEOUT for {work_item.item_id} "
@@ -1378,10 +1315,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                     retry_state=retry_state,
                                 )
                         finally:
-                            if retry_state is not None:
-                                retry_state.set(
-                                    _LAST_EXECUTION_KEY,
-                                    max(0.0, time.perf_counter() - execution_started),
+                            if item_runtime is not None:
+                                item_runtime.current_attempt.execution_seconds = max(
+                                    0.0, time.perf_counter() - execution_started
                                 )
                 finally:
                     if not reservation.finalized:
@@ -1440,9 +1376,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             # Run after middlewares
             work_result = await self._run_middlewares_after(work_result)
             work_result.admission_wait_seconds = (
-                float(retry_state.get(_ADMISSION_WAIT_STATE_KEY, 0.0))
-                if retry_state is not None
-                else 0.0
+                item_runtime.cumulative_admission_wait_seconds if item_runtime is not None else 0.0
             )
 
             # Skip the duration calc + payload dict when nobody is observing.
@@ -1518,14 +1452,14 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             if admission_state is None:
                 admission_state = self._admission_registry.resolve(effective_strategy)
             error_info = _classify_error(e, classifier)
-            if retry_state is not None:
-                retry_state.set(_LAST_ERROR_CATEGORY_KEY, error_info.error_category)
+            if item_runtime is not None:
+                item_runtime.current_attempt.error_category = error_info.error_category
             if (
-                retry_state is not None
+                item_runtime is not None
                 and not isinstance(e, FrameworkTimeoutError)
                 and "timeout" in type(e).__name__.lower()
             ):
-                retry_state.set(_LAST_TIMEOUT_KEY, "provider_or_transport_timeout")
+                item_runtime.current_attempt.timeout_category = "provider_or_transport_timeout"
             cooldown_started = time.perf_counter()
             try:
                 return await await_with_guardrails(
@@ -1540,11 +1474,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     guard_exc.__dict__["_failed_token_usage"] = failed_tokens
                 raise
             finally:
-                if retry_state is not None and error_info.is_rate_limit:
-                    retry_state.set(
-                        _LAST_COOLDOWN_KEY,
-                        _state_float(retry_state, _LAST_COOLDOWN_KEY)
-                        + max(0.0, time.perf_counter() - cooldown_started),
+                if item_runtime is not None and error_info.is_rate_limit:
+                    item_runtime.current_attempt.cooldown_wait_seconds += max(
+                        0.0, time.perf_counter() - cooldown_started
                     )
 
     async def _handle_execution_error(

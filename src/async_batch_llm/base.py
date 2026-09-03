@@ -112,6 +112,27 @@ class RetryState:
         """Clear all state data."""
         self.data.clear()
 
+    def __copy__(self) -> "RetryState":
+        """Copy application data without sharing framework runtime state."""
+        return type(self)(self.data.copy())
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "RetryState":
+        """Deep-copy application data without copying framework runtime state."""
+        import copy
+
+        duplicate = type(self)()
+        memo[id(self)] = duplicate
+        duplicate.data = copy.deepcopy(self.data, memo)
+        return duplicate
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Persist only the public application-owned mapping."""
+        return {"data": self.data}
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore the public mapping; framework state is rebuilt lazily."""
+        self.data = state["data"]
+
     def __contains__(self, key: str) -> bool:
         """Check if key exists in state."""
         return key in self.data
