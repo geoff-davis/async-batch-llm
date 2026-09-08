@@ -319,6 +319,10 @@ Streaming finalization performs this teardown before `results()` ends;
 cleanup failures propagate there, and only a later explicit close retries
 failed steps.
 
+If another task shuts down the processor before the batch drains,
+`process_all()` raises `BatchInterruptedError` (a `RuntimeError` subclass).
+Cancellation of the calling task itself still raises `asyncio.CancelledError`.
+
 ```python
 result = await processor.process_all()
 ```
@@ -507,7 +511,9 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
 2. For each attempt (including retries):
    - `execute()` is called (or `dry_run()` if `config.dry_run=True`)
    - If `execute()` raises an exception, `on_error()` is called before retry logic
-3. `cleanup()` - Called once after all attempts complete
+3. `cleanup()` - Runs during resource teardown after attempts finish. Successful
+   cleanup is never repeated; failed or interrupted cleanup is retried by a
+   later explicit close. Implementations must be idempotent.
 
 **Methods:**
 
@@ -836,8 +842,9 @@ class GeminiCachedModel:
 
 - `prepare()`: Finds or creates the Gemini cache (once per shared instance)
 - `generate()`: Uses the cache and auto-renews when enabled
-- `cleanup()`: Runs once when the processor exits; by default caches are left alive so
-  future batches can reuse them (call `delete_cache()` to remove immediately)
+- `cleanup()`: Runs during processor teardown, with failed or interrupted calls
+  retried by a later explicit close. By default caches are left alive so future
+  batches can reuse them (call `delete_cache()` to remove immediately).
 
 **Requires:** `pip install 'async-batch-llm[gemini]'`
 

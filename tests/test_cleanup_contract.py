@@ -33,6 +33,7 @@ from async_batch_llm import (
     ArtifactIdentity,
     ArtifactIOError,
     BaseObserver,
+    BatchInterruptedError,
     CleanupInterruptedError,
     JsonlArtifactStore,
     LLMGateway,
@@ -334,7 +335,7 @@ async def test_c3_cancelled_cooldown_releases_admitted_work(
     while cooldown is None:
         await asyncio.sleep(0)
         for state in registry.states:
-            cooldown = state.cooldown._cooldown_task
+            cooldown = next(iter(state.cooldown._owned_cooldowns), None)
             if cooldown is not None:
                 break
     if not before_start:
@@ -361,7 +362,7 @@ async def test_c1_close_joins_recovery_registered_by_a_settled_cooldown() -> Non
     coordinator = host._rate_limit_coord
     waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
     await asyncio.sleep(0)
-    owned = coordinator._cooldown_task
+    owned = next(iter(coordinator._owned_cooldowns), None)
     assert owned is not None
     owned.cancel()
     await asyncio.sleep(0)
@@ -1288,6 +1289,99 @@ async def test_c5_worker_crash_raises_original_exception_never_clean_eos() -> No
     await processor.shutdown()
 
 
+@pytest.mark.parametrize("failure_kind", ["worker", "artifact"])
+@pytest.mark.parametrize("readers", [1, 2])
+async def test_c5_busy_result_queue_cannot_postpone_worker_failure(
+    failure_kind: str, readers: int
+) -> None:
+    error = (
+        ArtifactIOError("append failed") if failure_kind == "artifact" else RuntimeError("crash")
+    )
+    calls = 0
+
+    class CountingStrategy(_Strategy):
+        async def execute(self, *args: Any, **kwargs: Any) -> tuple[str, TokenUsage]:
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0)
+            return "result", _TOKENS
+
+    store = (
+        _Store(append_error=error, append_error_for={"0"}) if failure_kind == "artifact" else None
+    )
+    processor = _processor(
+        config=ProcessorConfig(max_workers=2, max_result_queue_size=10), artifact_store=store
+    )
+    if failure_kind == "worker":
+        original_worker = processor._worker
+
+        async def worker(worker_id: int) -> None:
+            if worker_id == 0:
+                raise error
+            await original_worker(worker_id)
+
+        processor._worker = worker  # type: ignore[method-assign]
+    processor.start()
+    strategy = CountingStrategy()
+    for i in range(200):
+        await processor.add_work(LLMWorkItem(str(i), strategy, str(i)))
+    await processor.finish()
+    while processor._stream_terminal is None or processor._current_queued_results < 10:
+        await asyncio.sleep(0)
+    calls_at_failure = calls
+
+    async def consume() -> int:
+        seen = 0
+        with pytest.raises(type(error)) as observed:
+            async for _ in processor.results():
+                seen += 1
+                # Give the surviving worker time to refill every released slot.
+                while processor._current_queued_results < 10 and calls < 200:
+                    await asyncio.sleep(0)
+        assert observed.value is error
+        assert seen <= 20, "new results kept moving the terminal behind the consumer"
+        return seen
+
+    try:
+        seen = await asyncio.gather(*(consume() for _ in range(readers)))
+        assert sum(seen) == 10, "concurrent readers extended the shared terminal tail"
+        assert calls - calls_at_failure <= 12
+        assert processor._current_queued_results > 0
+        late_reader = processor.results()
+        with pytest.raises(type(error)):
+            await late_reader.__anext__()
+    finally:
+        await processor.shutdown()
+    with pytest.raises(type(error)):
+        await _collect(processor)
+    assert processor._current_queued_results == 0
+
+
+@pytest.mark.parametrize("workers", [1, 3])
+async def test_c6_concurrent_shutdown_interrupts_batch_without_cancelling_caller(
+    workers: int,
+) -> None:
+    entered = asyncio.Event()
+
+    class WaitingStrategy(_Strategy):
+        async def execute(self, *args: Any, **kwargs: Any) -> tuple[str, TokenUsage]:
+            entered.set()
+            await asyncio.Event().wait()
+            return "unreachable", _TOKENS
+
+    strategy = WaitingStrategy()
+    processor = _processor(config=ProcessorConfig(max_workers=workers))
+    await processor.add_work(LLMWorkItem("one", strategy, "prompt"))
+    running = asyncio.create_task(processor.process_all())
+    await entered.wait()
+    await processor.shutdown()
+    with pytest.raises(BatchInterruptedError):
+        await running
+    assert not running.cancelled()
+    assert strategy.cleanup_calls == 1
+    await processor.shutdown()
+
+
 async def test_c5_consumer_receives_queued_results_then_the_failure() -> None:
     error = ArtifactIOError("append failed")
     store = _Store(append_error=error, append_error_for={"two"})
@@ -1402,7 +1496,8 @@ _PROCESS_CONTROL_SCRIPT = textwrap.dedent(
     """
     import asyncio, sys
     from async_batch_llm import (
-        BaseObserver, LLMWorkItem, ParallelBatchProcessor, ProcessingEvent, ProcessorConfig,
+        BaseObserver,
+    BatchInterruptedError, LLMWorkItem, ParallelBatchProcessor, ProcessingEvent, ProcessorConfig,
     )
     from async_batch_llm.llm_strategies import LLMCallStrategy
 
@@ -1811,7 +1906,7 @@ async def test_c4_cooldown_task_cancelled_before_start_is_still_finalized() -> N
     coordinator = host._rate_limit_coord
     waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
     await asyncio.sleep(0)  # the cooldown task exists but has not run yet
-    assert coordinator._cooldown_task is not None
+    assert next(iter(coordinator._owned_cooldowns), None) is not None
     assert coordinator._in_cooldown
 
     try:
@@ -1995,7 +2090,7 @@ async def test_c3_third_party_cancel_of_cooldown_releases_workers_and_is_reporte
     coordinator = host._rate_limit_coord
     waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
     await asyncio.sleep(0.01)
-    owned = coordinator._cooldown_task
+    owned = next(iter(coordinator._owned_cooldowns), None)
     assert owned is not None
     owned.cancel()  # not shutdown's cancellation
     await asyncio.wait([owned], timeout=1)
@@ -2040,7 +2135,7 @@ async def test_c4_interrupted_cooldown_finalization_is_not_retried_within_one_cl
     monkeypatch.setattr(coordinator, "_finalize_cooldown", gated_finalize)
     waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
     await asyncio.sleep(0.01)
-    owned = coordinator._cooldown_task
+    owned = next(iter(coordinator._owned_cooldowns), None)
     assert owned is not None
 
     closing = asyncio.create_task(coordinator.shutdown())
@@ -2127,7 +2222,7 @@ async def test_c3_pending_third_party_cancel_of_cooldown_task_is_not_relabelled(
     coordinator = host._rate_limit_coord
     waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
     await asyncio.sleep(0.01)
-    owned = coordinator._cooldown_task
+    owned = next(iter(coordinator._owned_cooldowns), None)
     assert owned is not None
     owned.cancel()  # pending: not yet delivered when shutdown() begins
 

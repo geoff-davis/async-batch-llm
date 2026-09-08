@@ -23,6 +23,7 @@ from ._internal.cleanup import (
     CleanupStep,
     CloseState,
     SharedCloser,
+    first_failure,
     wait_all_detached,
     wait_detached,
 )
@@ -1185,6 +1186,15 @@ def _percentile(samples: list[float], percentile: int) -> float:
     return ordered[index]
 
 
+class BatchInterruptedError(RuntimeError):
+    """A batch worker was cancelled before all accepted work drained.
+
+    Raised by ``process_all()`` when another task shuts down the processor or
+    cancels a worker. The caller itself was not cancelled; its own
+    cancellation still propagates as ``asyncio.CancelledError``.
+    """
+
+
 class StreamFinalizationError(RuntimeError):
     """The result stream could not finish normally.
 
@@ -1204,10 +1214,13 @@ class StreamFinalizationError(RuntimeError):
 class _StreamTerminal:
     """The stream's single, durable success-or-failure decision."""
 
-    __slots__ = ("exception",)
+    __slots__ = ("exception", "remaining_results")
 
     def __init__(self, exception: BaseException | None) -> None:
         self.exception = exception
+        # Set once when the first consumer reaches the terminal wake. Shared
+        # by every reader so concurrent consumers cannot extend delivery.
+        self.remaining_results: int | None = None
 
 
 class _TerminalWake:
@@ -1460,12 +1473,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             try:
                 task.result()
             except asyncio.CancelledError as cancellation:
-                self._publish_terminal(
-                    StreamFinalizationError(
-                        "Stream finalization was cancelled before it started",
-                        cause=cancellation,
-                    )
-                )
+                self._publish_terminal(cancellation)
 
     async def _stop_workers(self) -> None:
         if not self._workers:
@@ -1737,9 +1745,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 raise self._finalization_primary_exception
             report.raise_first(preserve_completed_result=self._preserve_completed_result)
         except asyncio.CancelledError as exc:
-            self._publish_terminal(
-                StreamFinalizationError("Stream finalization was cancelled", cause=exc)
-            )
+            self._publish_terminal(exc)
             raise
         except (KeyboardInterrupt, SystemExit) as exc:
             # Record the failure for any consumer, then let the process-control
@@ -1763,6 +1769,10 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         """Decide the stream terminal exactly once; later decisions are ignored."""
         if self._result_stream is None or self._stream_terminal is not None:
             return
+        if isinstance(exception, asyncio.CancelledError):
+            exception = StreamFinalizationError(
+                "Stream finalization was cancelled", cause=exception
+            )
         self._stream_terminal = _StreamTerminal(exception)
         # The mixed queue is unbounded, so this cannot block.
         self._result_stream.put_nowait(_TERMINAL_WAKE)
@@ -1810,6 +1820,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         # The terminal decision survives draining so a later consumer still
         # observes it instead of blocking forever.
         if self._stream_terminal is not None:
+            self._stream_terminal.remaining_results = 0
             self._result_stream.put_nowait(_TERMINAL_WAKE)
 
     async def results(self) -> AsyncIterator[WorkItemResult[TOutput, TContext]]:
@@ -1817,7 +1828,9 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
 
         Results arrive in the order items *finish* (not the order added).
         Results published before the stream's terminal decision are always
-        delivered first. The stream then ends normally, or raises: the
+        delivered first. The first terminal wake fixes the remaining queued
+        delivery count for all readers; later publications cannot extend it.
+        The stream then ends normally, or raises: the
         original exception for a worker crash or finalization failure, or
         :class:`StreamFinalizationError` when finalization was cancelled. The
         decision is durable, so repeated and concurrent ``results()`` calls
@@ -1827,30 +1840,33 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             raise RuntimeError("results() requires streaming mode (call start() first).")
         stream = self._result_stream
         while True:
+            terminal = self._stream_terminal
+            if terminal is not None and terminal.remaining_results == 0:
+                break
             item = await stream.get()
+            terminal = self._stream_terminal
             if isinstance(item, _TerminalWake):
-                # Put it back for concurrent and later readers, then deliver
-                # any result that was published after the decision.
                 stream.put_nowait(item)
-                if stream.qsize() > 1:
-                    continue
-                terminal = self._stream_terminal
-                if terminal is None:  # pragma: no cover - publish order invariant
-                    continue
-                if terminal.exception is None:
-                    return
-                raise self._terminal_exception(terminal.exception)
+                assert terminal is not None
+                if terminal.remaining_results is None:
+                    # A single snapshot permits already-queued late results,
+                    # without letting replenishing workers defer failure.
+                    terminal.remaining_results = self._current_queued_results
+                continue
+            if terminal is not None and terminal.remaining_results is not None:
+                if terminal.remaining_results == 0:
+                    # Another reader finished the tail while this get waited.
+                    stream.put_nowait(item)
+                    break
+                terminal.remaining_results -= 1
             # A result being handled by application code is outside the
             # configured queue bound. Release before yielding it.
             self._current_queued_results -= 1
             self._release_result_slot()
             yield item
-
-    @staticmethod
-    def _terminal_exception(exception: BaseException) -> BaseException:
-        if isinstance(exception, asyncio.CancelledError):
-            return StreamFinalizationError("Stream finalization was cancelled", cause=exception)
-        return exception
+        assert terminal is not None
+        if terminal.exception is not None:
+            raise terminal.exception
 
     def _on_worker_done(self, task: "asyncio.Task[Any]") -> None:
         """Done-callback: surface an unexpected worker death to the consumer.
@@ -1917,7 +1933,9 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             for worker in done:
                 if worker.cancelled():
                     # Never fabricate a cancellation of the caller.
-                    raise RuntimeError("Batch worker was cancelled before the queue drained")
+                    raise BatchInterruptedError(
+                        "Batch worker was cancelled before the queue drained"
+                    )
                 exception = worker.exception()
                 if exception is not None:
                     raise exception
@@ -2006,19 +2024,20 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         if self._post_processor_tasks:
             await asyncio.gather(*self._post_processor_tasks, return_exceptions=True)
         # A live progress callback or callback thread is an ordering barrier
-        # before the artifact store closes and BATCH_COMPLETED is emitted.
+        # before BATCH_COMPLETED and the batch result. Resource teardown,
+        # including artifact-store close, follows at context exit or close.
         await self._wait_progress_callbacks()
         await self._shutdown_callback_threads()
 
         await self._on_batch_completed()
 
-        if late_failures:
-            # A worker that died after draining the queue is a framework bug.
-            # Every accepted result was finalized above; surface the failure
-            # with its original type rather than hide it.
-            for extra in late_failures[1:]:
-                logger.error("Batch worker failed after the queue drained", exc_info=extra)
-            raise late_failures[0]
+        failure = first_failure(
+            late_failures, logger=logger, message="Batch worker failed after the queue drained"
+        )
+        if failure is not None:
+            # Every accepted result was finalized above; retain the worker
+            # failure's original type rather than fabricate a cancellation.
+            raise failure
 
         # Snapshot results before returning so callers receive an independent list.
         results_snapshot = list(self._results)

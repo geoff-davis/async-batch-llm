@@ -360,3 +360,40 @@ async def test_refunds_cap_at_burst_capacity_and_repeated_cancel_does_not_leak()
     assert gate.request_available == pytest.approx(1)
     assert gate.token_available == pytest.approx(100)
     await gate.shutdown()
+
+
+@pytest.mark.parametrize("dimension", ["rpm", "tpm", "both"])
+async def test_clock_read_jitter_does_not_reschedule_the_same_quota_deadline(
+    dimension: str,
+) -> None:
+    class JitterClock(_ManualClock):
+        reads = 0
+
+        def __call__(self) -> float:
+            self.reads += 1
+            # A monotonic clock whose read intervals vary by a few microseconds.
+            self.now += 0.000001 * (7 - self.reads % 7)
+            return self.now
+
+    clock = JitterClock()
+    gate = QuotaGate(
+        1 if dimension != "tpm" else None,
+        100 if dimension != "rpm" else None,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    estimate = TokenEstimate(input_tokens=100, output_tokens=0) if dimension != "rpm" else None
+    first = await gate.reserve(estimate)
+    first.mark_provider_started()
+    first.finalize()
+    pending = []
+    try:
+        for _ in range(30):
+            pending.append(asyncio.create_task(gate.reserve(estimate)))
+            await _settle()
+        assert len(clock.sleepers) == 1, "clock jitter replaced an unchanged quota wake"
+    finally:
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        await gate.shutdown()

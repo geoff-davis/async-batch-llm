@@ -27,6 +27,7 @@ from ..observers import ProcessingEvent
 from ..strategies import RateLimitStrategy
 from .cleanup import (
     CleanupInterruptedError,
+    release_successful_task,
     sleep_unless_stopped,
     stop_owned_tasks,
 )
@@ -76,11 +77,10 @@ class RateLimitCoordinator:
         # cancelling the caller that reported the rate limit (gateway
         # submit_timeout, item deadline) must cancel only that caller, never
         # finish the shared pause early. shutdown() signals its stop event.
-        self._cooldown_task: asyncio.Task[None] | None = None
         # Every live owned cooldown task with the stop event shutdown() sets
         # to end it early. A task that has finished delivering COOLDOWN_ENDED
         # removes itself; workers are released before that delivery, so a
-        # newer generation can start (and replace ``_cooldown_task``) while
+        # newer generation can start while
         # an older task is still live. Owned tasks are never cancelled by
         # this coordinator, so a cancelled state on one is always a third
         # party's doing (see shutdown()).
@@ -201,10 +201,9 @@ class RateLimitCoordinator:
                     )
                 )
                 self._owned_cooldowns[task] = stop
-                self._cooldown_task = task
                 task.add_done_callback(
                     functools.partial(
-                        self._recover_unstarted_cooldown,
+                        self._cooldown_done,
                         generation,
                         self._cooldown_context[0],
                         strategy_type,
@@ -243,27 +242,23 @@ class RateLimitCoordinator:
             await self._finalize_cooldown(pause_started_at, None, strategy_type)
             raise
         await self._finalize_cooldown(pause_started_at, cooldown_error, strategy_type)
-        current = asyncio.current_task()
-        if current is not None:
-            self._owned_cooldowns.pop(current, None)
 
-    def _recover_unstarted_cooldown(
+    def _cooldown_done(
         self,
         generation: int,
         started_at: float,
         strategy_type: str | None,
         task: asyncio.Task[None],
     ) -> None:
+        release_successful_task(self._owned_cooldowns, task)
         if not task.cancelled() or self._started_cooldown_generation >= generation:
             return
         self._started_cooldown_generation = generation
         recovery = asyncio.create_task(self._finalize_cooldown(started_at, None, strategy_type))
         self._owned_cooldowns[recovery] = asyncio.Event()
-        recovery.add_done_callback(self._release_recovered_cooldown)
-
-    def _release_recovered_cooldown(self, task: asyncio.Task[None]) -> None:
-        if not task.cancelled() and task.exception() is None:
-            self._owned_cooldowns.pop(task, None)
+        recovery.add_done_callback(
+            functools.partial(release_successful_task, self._owned_cooldowns)
+        )
 
     async def _wait_cooldown(
         self,
@@ -379,8 +374,6 @@ class RateLimitCoordinator:
         next explicit call finalizes it from here.
         """
         failure = await stop_owned_tasks(self._owned_cooldowns, name="cooldown", logger=logger)
-        if self._cooldown_task is not None and self._cooldown_task.done():
-            self._cooldown_task = None
         if failure is not None:
             raise failure
 

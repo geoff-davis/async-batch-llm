@@ -175,6 +175,23 @@ def owned_task_failure(
     return CleanupInterruptedError(name)
 
 
+def first_failure(
+    failures: Sequence[BaseException], *, logger: logging.Logger, message: str
+) -> BaseException | None:
+    """Log secondary failures with tracebacks and return the primary, if any."""
+    for extra in failures[1:]:
+        logger.error(message, exc_info=extra)
+    return failures[0] if failures else None
+
+
+def release_successful_task(
+    tasks: dict[asyncio.Task[None], asyncio.Event], task: asyncio.Task[None]
+) -> None:
+    """Release successful owned work; keep failed outcomes for shutdown."""
+    if not task.cancelled() and task.exception() is None:
+        tasks.pop(task, None)
+
+
 async def stop_owned_tasks(
     tasks: dict[asyncio.Task[None], asyncio.Event], *, name: str, logger: logging.Logger
 ) -> BaseException | None:
@@ -202,9 +219,9 @@ async def stop_owned_tasks(
         failure = owned_task_failure(task, name=name, cancel_sent=False)
         if failure is not None:
             failures.append(failure)
-    for extra in failures[1:]:
-        logger.error("Additional owned %s task failed during shutdown", name, exc_info=extra)
-    return failures[0] if failures else None
+    return first_failure(
+        failures, logger=logger, message=f"Additional owned {name} task failed during shutdown"
+    )
 
 
 async def sleep_unless_stopped(sleep: Awaitable[None], stop: asyncio.Event, *, name: str) -> None:
@@ -551,6 +568,8 @@ __all__ = [
     "SharedCloser",
     "owned_task_failure",
     "stop_owned_tasks",
+    "first_failure",
+    "release_successful_task",
     "sleep_unless_stopped",
     "run_cleanup_steps",
     "wait_all_detached",

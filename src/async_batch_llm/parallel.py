@@ -4,15 +4,12 @@ import asyncio
 import contextlib
 import logging
 import time
-from typing import TYPE_CHECKING, Generic, cast
-
-if TYPE_CHECKING:
-    from types import TracebackType
+from typing import Generic, cast
 
 from ._internal.admission import AdmissionRegistry
 from ._internal.capacity import CapacityLimiter, warn_if_worker_capacity_exceeded
 from ._internal.classifier_resolver import StrategyClassifierResolver
-from ._internal.cleanup import CleanupAction, CleanupPhase, CleanupStep
+from ._internal.cleanup import CleanupAction, CleanupStep
 from ._internal.event_dispatcher import EventDispatcher
 from ._internal.guardrails import (
     AbortCause,
@@ -346,28 +343,6 @@ class ParallelBatchProcessor(
         """Delegate to StrategyLifecycle.ensure_prepared."""
         await self._strategy_lifecycle.ensure_prepared(strategy)
 
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: "TracebackType | None",
-    ) -> bool:
-        """Context manager exit - releases every owned resource.
-
-        Runs the same ordered close as :meth:`shutdown`: runtime tasks and
-        callbacks, then admission resources, then prepared strategies, then
-        the artifact store. A body exception stays primary and cleanup
-        failures are logged; otherwise the first cleanup failure is raised
-        after every step has been attempted.
-
-        Returns:
-            False to indicate exceptions should not be suppressed
-        """
-        report = await self._close_after_run(primary_exception=exc_val)
-        if exc_val is None:
-            report.raise_first()
-        return False  # Don't suppress exceptions
-
     def _start_guardrail_run(self) -> None:
         if self._guardrails_started:
             return
@@ -430,20 +405,16 @@ class ParallelBatchProcessor(
         steps: list[CleanupAction] = [
             CleanupStep("batch timeout", self._cancel_batch_timeout),
             *super()._cleanup_steps(),
-            CleanupPhase("admission and strategies", self._resource_cleanup_steps),
+            self._strategy_lifecycle.resource_cleanup_phase(
+                self._admission_registry,
+                self._compatibility_rate_limit_coord,
+                self._clear_classifier_cache,
+            ),
         ]
         if self.artifact_store is not None and not self._artifact_store_closed:
             steps.append(CleanupStep("artifact store", self._close_artifact_store))
         steps.extend(self._extra_cleanup_steps)
         return steps
-
-    def _resource_cleanup_steps(self) -> list[CleanupAction]:
-        self._strategy_lifecycle.mark_closing()
-        return [
-            *self._admission_registry.cleanup_steps(self._compatibility_rate_limit_coord),
-            CleanupPhase("prepared strategies", self._strategy_lifecycle.cleanup_steps),
-            CleanupStep("classifier resolver", self._clear_classifier_cache),
-        ]
 
     async def _clear_classifier_cache(self) -> None:
         self._classifier_resolver.clear()
@@ -936,5 +907,4 @@ class ParallelBatchProcessor(
         never repeated and a failed one is retried by the next call. Raises
         the first cleanup failure after every step has been attempted.
         """
-        report = await self._close_explicitly()
-        report.raise_first()
+        await self.cleanup()

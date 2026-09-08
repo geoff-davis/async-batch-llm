@@ -107,9 +107,12 @@ Cancellation of the task that is closing a resource is counted explicitly.
   success. The first decision wins.
 - The terminal is durable: it survives `cleanup()`, later results that were
   published after the decision, repeated `results()` calls, and concurrent
-  consumers. A consumer may receive already-queued results first but always
-  ends by raising the original failure and never observes clean completion
-  after a failure.
+  consumers. Results queued before the decision are delivered first. When
+  the first consumer reaches the terminal wake, the count of remaining queued
+  results fixes one shared delivery limit, including results published after
+  the decision. New results cannot extend that limit. Every reader then raises
+  the original failure; a busy queue never postpones failure indefinitely and
+  no reader observes clean completion after a failure.
 - An ordinary failure is re-raised as the original exception instance. A
   cancelled finalization is raised as `StreamFinalizationError` whose
   `__cause__` is the cancellation, because the consumer itself was not
@@ -122,6 +125,10 @@ Cancellation of the task that is closing a resource is counted explicitly.
 
 ## 6. Precedence and changelog
 
+- A batch whose workers are cancelled before its queue drains, including by
+  concurrent shutdown, raises `BatchInterruptedError` from `process_all()`.
+  It is an ordinary `RuntimeError` subclass; cancellation of the calling task
+  itself remains `asyncio.CancelledError`.
 - When a close call has no pre-existing exception, the first ordinary cleanup
   failure is raised after every step has been attempted; later failures are
   logged with tracebacks.

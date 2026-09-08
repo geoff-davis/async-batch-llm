@@ -87,6 +87,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Worker crashes and artifact-write failures now reach streaming consumers
+  after a fixed number of queued results. Concurrent readers share the limit,
+  so surviving workers cannot keep postponing failure by refilling the queue.
+- **BREAKING**: `process_all()` raises the new `BatchInterruptedError`
+  (`RuntimeError`) when workers are cancelled before the batch drains, including
+  by concurrent processor shutdown. It no longer fabricates caller cancellation;
+  cancelling the calling task itself still raises `asyncio.CancelledError`.
+- Quota wake deadlines use the quota refill timestamp. Clock-read jitter no
+  longer replaces an unchanged deadline with another wake task.
+
 - `RetryState.clear()` can no longer disable the total-item deadline or erase
   framework accounting: executor deadlines, try counters, quota values, and
   timing now live in a private sidecar that is absent from `RetryState.data`,

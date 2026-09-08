@@ -118,18 +118,18 @@ async def test_two_waiters_survive_reporter_cancellation():
 
 
 @pytest.mark.asyncio
-async def test_shutdown_cancels_cooldown_and_wakes_waiters():
-    """Host teardown cancels the owned task without leaking it; waiters wake."""
+async def test_shutdown_stops_cooldown_and_wakes_waiters():
+    """Host teardown stops the owned task without leaking it; waiters wake."""
     coord = _make_coordinator(cooldown=30.0)
 
     reporter = asyncio.create_task(coord.handle_rate_limit(worker_id=0, observed_generation=0))
     await asyncio.sleep(0.05)
-    task = coord._cooldown_task
+    task = next(iter(coord._owned_cooldowns), None)
     assert task is not None and not task.done()
 
     await asyncio.wait_for(coord.shutdown(), timeout=1.0)
     assert task.done()
-    assert coord._cooldown_task is None
+    assert next(iter(coord._owned_cooldowns), None) is None
     # Waiters (including the reporter) are woken by teardown finalization.
     await asyncio.wait_for(reporter, timeout=1.0)
     assert coord._rate_limit_event.is_set()
@@ -141,4 +141,4 @@ async def test_shutdown_cancels_cooldown_and_wakes_waiters():
 async def test_shutdown_without_cooldown_is_noop():
     coord = _make_coordinator(cooldown=1.0)
     await coord.shutdown()
-    assert coord._cooldown_task is None
+    assert next(iter(coord._owned_cooldowns), None) is None

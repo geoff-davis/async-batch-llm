@@ -74,6 +74,7 @@ from .artifacts import (
 # Core classes
 from .base import (
     AttemptTiming,
+    BatchInterruptedError,
     BatchProcessor,
     BatchResult,
     BatchTermination,
@@ -221,6 +222,7 @@ Example:
 
 __all__ = [
     # Core
+    "BatchInterruptedError",
     "BatchProcessor",
     "AttemptTiming",
     "BatchResult",

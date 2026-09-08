@@ -16,12 +16,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import weakref
+from collections.abc import Awaitable, Callable
 from functools import partial
-from typing import Any, Generic, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Generic, Protocol, runtime_checkable
 
 from ..base import TOutput
 from ..llm_strategies import LLMCallStrategy
-from .cleanup import CleanupStep, run_cleanup_steps
+from .cleanup import CleanupAction, CleanupPhase, CleanupStep, run_cleanup_steps
+
+if TYPE_CHECKING:
+    from .admission import AdmissionRegistry
+    from .rate_limit_coordinator import RateLimitCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +101,24 @@ class StrategyLifecycle(Generic[TOutput]):
             logger.debug(
                 f"Strategy {strategy.__class__.__name__} prepared successfully (id={strategy_id})"
             )
+
+    def resource_cleanup_phase(
+        self,
+        admission: AdmissionRegistry,
+        compatibility_coordinator: RateLimitCoordinator | None,
+        clear_classifiers: Callable[[], Awaitable[None]],
+    ) -> CleanupPhase:
+        """Discover shared resource teardown only after preceding runtime barriers."""
+
+        def build_steps() -> list[CleanupAction]:
+            self.mark_closing()
+            return [
+                *admission.cleanup_steps(compatibility_coordinator),
+                CleanupPhase("prepared strategies", self.cleanup_steps),
+                CleanupStep("classifier resolver", clear_classifiers),
+            ]
+
+        return CleanupPhase("admission and strategies", build_steps)
 
     def cleanup_steps(self) -> list[CleanupStep]:
         """One ordered step per prepared strategy whose cleanup has not succeeded."""

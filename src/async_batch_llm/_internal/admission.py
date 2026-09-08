@@ -14,7 +14,13 @@ from typing import Any
 from ..llm_strategies import LLMCallStrategy
 from ..strategies import RateLimitStrategy, TokenEstimateExceedsLimit
 from ..token_estimation import TokenEstimate
-from .cleanup import CleanupStep, sleep_unless_stopped, stop_owned_tasks
+from .cleanup import (
+    CleanupStep,
+    first_failure,
+    release_successful_task,
+    sleep_unless_stopped,
+    stop_owned_tasks,
+)
 from .event_dispatcher import EventDispatcher
 from .rate_limit_coordinator import RateLimitCoordinator
 
@@ -429,7 +435,9 @@ class QuotaGate:
             assert self._token_refill_per_second is not None
             token_deficit = max(0.0, estimate.total_tokens - self._token_available)
             delay = max(delay, token_deficit / self._token_refill_per_second)
-        deadline = self._clock() + delay
+        # Available quota was computed at _last_refill. A fresh clock read
+        # shifts the deadline by read latency and needlessly replaces wakes.
+        deadline = self._last_refill + delay
         if self._wake_task is not None and not self._wake_task.done():
             if (
                 self._wake_deadline is not None
@@ -440,6 +448,7 @@ class QuotaGate:
         self._wake_deadline = deadline
         stop = asyncio.Event()
         self._wake_stop = stop
+        delay = max(0.0, deadline - self._clock())
         self._wake_task = asyncio.create_task(self._wake_after(delay, stop))
         self._owned_wakes[self._wake_task] = stop
         self._wake_task.add_done_callback(self._wake_done)
@@ -460,8 +469,7 @@ class QuotaGate:
         # A done callback also runs when cancellation precedes the coroutine's
         # first instruction. Every lost wake must hand off to a replacement.
         stop = self._owned_wakes.get(task)
-        if not task.cancelled() and task.exception() is None:
-            self._owned_wakes.pop(task, None)
+        release_successful_task(self._owned_wakes, task)
         if self._wake_task is task:
             self._wake_task = None
             self._wake_deadline = None
@@ -642,9 +650,11 @@ class AdmissionRegistry:
         if not errors:
             self._strategy_entries.clear()
             return
-        for extra in errors[1:]:
-            logger.error("Additional admission cleanup failed", exc_info=extra)
-        raise errors[0]
+        failure = first_failure(
+            errors, logger=logger, message="Additional admission cleanup failed"
+        )
+        assert failure is not None
+        raise failure
 
 
 __all__ = [

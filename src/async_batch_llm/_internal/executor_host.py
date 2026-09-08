@@ -37,7 +37,7 @@ from ..token_extractor import TokenExtractor
 from .admission import AdmissionRegistry
 from .capacity import CapacityLimiter
 from .classifier_resolver import StrategyClassifierResolver
-from .cleanup import CleanupAction, CleanupPhase, CleanupReport, CleanupStep, SharedCloser
+from .cleanup import CleanupAction, CleanupReport, SharedCloser
 from .event_dispatcher import EventDispatcher
 from .guardrails import AbortController
 from .item_executor import ItemExecutor
@@ -155,16 +155,12 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
 
     def _cleanup_steps(self) -> list[CleanupAction]:
         """Ordered teardown: admission resources, then strategies, then caches."""
-        return [CleanupPhase("admission and strategies", self._resource_cleanup_steps)]
-
-    def _resource_cleanup_steps(self) -> list[CleanupAction]:
-        self._strategy_lifecycle.mark_closing()
         return [
-            *self._admission_registry.cleanup_steps(
-                self._rate_limit_coord if self._owns_compatibility_coordinator else None
-            ),
-            CleanupPhase("prepared strategies", self._strategy_lifecycle.cleanup_steps),
-            CleanupStep("classifier resolver", self._clear_classifiers),
+            self._strategy_lifecycle.resource_cleanup_phase(
+                self._admission_registry,
+                self._rate_limit_coord if self._owns_compatibility_coordinator else None,
+                self._clear_classifiers,
+            )
         ]
 
     async def _clear_classifiers(self) -> None:

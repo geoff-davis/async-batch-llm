@@ -240,7 +240,8 @@ async def example_custom_strategy():
         This demonstrates the strategy lifecycle:
         - prepare() called once before any retries
         - execute() called for each attempt
-        - cleanup() called once after all attempts
+        - cleanup() runs during teardown after all attempts; success is checkpointed
+        - failed/interrupted cleanup is retried by a later explicit close, so it is idempotent
         """
 
         def __init__(self):
