@@ -1660,3 +1660,134 @@ async def test_c4_gate_failure_is_not_retained_after_the_call_that_raised_it() -
     assert failed
     gc.collect()
     assert held[0]() is None, "the failure is retained after the call that raised it"
+
+
+# --------------------------------------------------------------------------- #
+# Round 6 — overlapping cooldown generations and the stop-aware sleep's children
+# --------------------------------------------------------------------------- #
+
+
+async def test_c1_older_cooldown_task_still_delivering_events_is_waited_for_and_reported() -> None:
+    """Workers are released before COOLDOWN_ENDED observers finish, so an
+    immediately retried item can start a newer generation while the older
+    owned task is still delivering. Shutdown must wait for every live owned
+    task, not only the newest handle, and report the older task's failure."""
+    release = asyncio.Event()
+    ended = 0
+
+    class _BlockThenCancelFirstEnd(BaseObserver):
+        async def on_event(self, event: ProcessingEvent, data: dict[str, Any]) -> None:
+            nonlocal ended
+            if event is ProcessingEvent.COOLDOWN_ENDED:
+                ended += 1
+                if ended == 1:
+                    await release.wait()
+                    raise asyncio.CancelledError()
+
+    class _RateLimitTwice(_Strategy):
+        calls = 0
+
+        async def execute(
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+        ) -> tuple[str, TokenUsage]:
+            self.calls += 1
+            if self.calls <= 2:
+                raise RuntimeError("429 throttled")
+            return prompt, _TOKENS
+
+    processor = _processor(
+        config=ProcessorConfig(
+            max_workers=1,
+            retry=RetryConfig(max_attempts=1, max_rate_limit_retries=2, initial_wait=0.01),
+            rate_limit=RateLimitConfig(
+                cooldown_seconds=0, max_cooldown_seconds=0, slow_start_items=0
+            ),
+        ),
+        observers=[_BlockThenCancelFirstEnd()],
+    )
+    await processor.add_work(LLMWorkItem("one", _RateLimitTwice(), "prompt"))
+    result = await processor.process_all()
+    assert result.succeeded == 1
+    assert ended == 2, "the second generation should have finalized while the first blocked"
+
+    closing = asyncio.create_task(processor.shutdown())
+    await asyncio.sleep(0.05)
+    assert not closing.done(), "shutdown returned while an owned cooldown task was still live"
+    release.set()
+    with pytest.raises(CleanupInterruptedError):
+        await closing
+    await processor.shutdown()  # reported once
+
+
+async def test_c3_third_party_cancel_of_the_sleep_child_is_an_interruption() -> None:
+    """The stop-aware sleep must not treat a sleep it did not cancel as
+    stopped: with the stop unset, a cancelled sleep is an interruption."""
+
+    async def self_cancelling_sleep(delay: float) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        task.cancel()  # a third party cancels the private sleep child
+        await asyncio.sleep(delay)
+
+    stop = asyncio.Event()
+    with pytest.raises(CleanupInterruptedError):
+        await cleanup_module.sleep_unless_stopped(self_cancelling_sleep(1), stop, name="sleep")
+    assert not stop.is_set()
+
+
+async def test_c3_third_party_cancel_of_the_stop_watcher_is_an_interruption() -> None:
+    """A cancelled stop watcher must not be mistaken for a requested stop."""
+
+    class _SabotagedEvent(asyncio.Event):
+        async def wait(self) -> bool:
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()  # a third party cancels the private stop watcher
+            return await super().wait()
+
+    slept = False
+
+    async def sleep(delay: float) -> None:
+        nonlocal slept
+        await asyncio.sleep(delay)
+        slept = True
+
+    stop = _SabotagedEvent()
+    with pytest.raises(CleanupInterruptedError):
+        await cleanup_module.sleep_unless_stopped(sleep(1), stop, name="sleep")
+    assert not slept and not stop.is_set()
+
+
+async def test_c3_interrupted_cooldown_sleep_does_not_resume_workers_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interruption of the cooldown sleep is not an ordinary sleep error:
+    the generation stays paused, shutdown reports the interruption, and the
+    next explicit close finalizes."""
+    import async_batch_llm._internal.rate_limit_coordinator as coordinator_module
+
+    async def interrupted_sleep(sleep: Any, *args: Any, **kwargs: Any) -> None:
+        sleep.close()  # the coroutine the coordinator hands over is never run here
+        raise CleanupInterruptedError("cooldown sleep")
+
+    monkeypatch.setattr(coordinator_module, "sleep_unless_stopped", interrupted_sleep)
+    host = _cooldown_host()
+    coordinator = host._rate_limit_coord
+    waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
+    await asyncio.sleep(0.05)
+
+    try:
+        assert coordinator._in_cooldown, "the interrupted sleep resumed workers early"
+        assert not waiter.done()
+        with pytest.raises(CleanupInterruptedError):
+            await coordinator.shutdown()
+        assert coordinator._in_cooldown
+        await coordinator.shutdown()
+        assert not coordinator._in_cooldown
+        await asyncio.wait([waiter], timeout=1)
+        assert waiter.done()
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await host.aclose()

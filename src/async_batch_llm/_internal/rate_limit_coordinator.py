@@ -24,7 +24,12 @@ from typing import Any
 
 from ..observers import ProcessingEvent
 from ..strategies import RateLimitStrategy
-from .cleanup import owned_task_failure, sleep_unless_stopped, wait_detached
+from .cleanup import (
+    CleanupInterruptedError,
+    owned_task_failure,
+    sleep_unless_stopped,
+    wait_detached,
+)
 from .event_dispatcher import EventDispatcher
 
 logger = logging.getLogger(__name__)
@@ -75,10 +80,14 @@ class RateLimitCoordinator:
         # started by the task's cancellation handler, the context needed to
         # finalize from shutdown() itself when that handler never ran, and
         # whether shutdown() already sent its one cancellation.
-        # Set by shutdown() to end the owned cooldown early. The owned task is
-        # never cancelled by this coordinator, so a cancelled state on it is
-        # always a third party's doing (see shutdown()).
-        self._cooldown_stop: asyncio.Event | None = None
+        # Every live owned cooldown task with the stop event shutdown() sets
+        # to end it early. A task that has finished delivering COOLDOWN_ENDED
+        # removes itself; workers are released before that delivery, so a
+        # newer generation can start (and replace ``_cooldown_task``) while
+        # an older task is still live. Owned tasks are never cancelled by
+        # this coordinator, so a cancelled state on one is always a third
+        # party's doing (see shutdown()).
+        self._owned_cooldowns: dict[asyncio.Task[None], asyncio.Event] = {}
         self._cooldown_context: tuple[float, str | None] | None = None
 
         self._lock = asyncio.Lock()
@@ -185,8 +194,7 @@ class RateLimitCoordinator:
                 # is the intended teardown behavior).
                 self._cooldown_context = (time.time(), strategy_type)
                 stop = asyncio.Event()
-                self._cooldown_stop = stop
-                self._cooldown_task = asyncio.create_task(
+                task = asyncio.create_task(
                     self._run_cooldown(
                         worker_id,
                         generation,
@@ -196,6 +204,11 @@ class RateLimitCoordinator:
                         stop,
                     )
                 )
+                self._owned_cooldowns[task] = stop
+                self._cooldown_task = task
+                # This caller pauses below; its frame must not keep the
+                # settled task (and a failure's traceback) alive.
+                del task, stop
 
         # Coordinator and waiters alike wait for the generation to complete;
         # each caller's cancellation affects only itself.
@@ -296,7 +309,10 @@ class RateLimitCoordinator:
         try:
             if cooldown > 0 and not stop.is_set():
                 await sleep_unless_stopped(asyncio.sleep(cooldown), stop, name="cooldown sleep")
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, CleanupInterruptedError):
+            # A third party interfered with this task or its sleep: the
+            # generation stays paused for shutdown() to report and the next
+            # explicit close to finalize, never resumed early.
             raise
         except Exception as exc:
             logger.warning(
@@ -307,37 +323,58 @@ class RateLimitCoordinator:
             cooldown_error = cooldown_error or exc
 
         await self._finalize_cooldown(pause_started_at, cooldown_error, strategy_type)
+        # Complete, with nothing to report: release the handle. A task that
+        # fails stays registered until shutdown() has reported it.
+        current = asyncio.current_task()
+        if current is not None:
+            self._owned_cooldowns.pop(current, None)
 
     async def shutdown(self) -> None:
         """End an in-flight cooldown and finalize its generation.
 
         Safe to call repeatedly, and a cancelled or failed call is retryable.
-        The owned task is signalled to stop (never cancelled: a cancelled
-        state on it is therefore always a third party's) and waited for
-        through a detached future, so this caller's own cancellation is never
-        mistaken for the task's. A failure of the owned task — its own
-        exception, or a third-party cancellation reported as
+        Every live owned task (an older generation may still be delivering
+        COOLDOWN_ENDED when a newer one starts) is signalled to stop (never
+        cancelled: a cancelled state on one is therefore always a third
+        party's) and waited for through a detached future, so this caller's
+        own cancellation is never mistaken for a task's. A failure of an owned
+        task — its own exception, or a third-party cancellation reported as
         :class:`CleanupInterruptedError` — is raised by the call that
-        observes it, with no second finalization attempt in that call; the
-        settled task is released with it so nothing about the failure is
-        retained. The paused generation is tracked by state, not by the task
-        handle: the next explicit call finalizes it from here.
+        observes it (further failures are logged with their tracebacks),
+        with no second finalization attempt in that call; the settled tasks
+        are released with it so nothing about a failure is retained. The
+        paused generation is tracked by state, not by a task handle: the
+        next explicit call finalizes it from here.
         """
-        task = self._cooldown_task
-        if task is not None:
-            stop = self._cooldown_stop
-            if stop is not None:
+        owned = dict(self._owned_cooldowns)
+        if owned:
+            for stop in owned.values():
                 stop.set()
             # Detached: the caller's own cancellation propagates instead of
-            # being mistaken for the owned task's, and never touches the task.
-            await wait_detached(task)
-            if self._cooldown_task is task:
-                self._cooldown_task = None
-                self._cooldown_stop = None
-            failure = owned_task_failure(task, name="cooldown", cancel_sent=False)
-            del task
-            if failure is not None:
-                raise failure
+            # being mistaken for an owned task's, and never touches the task.
+            # Handles stay registered until every task has settled, so a
+            # retry after a cancelled call re-joins all of them.
+            for task in owned:
+                await wait_detached(task)
+            failures: list[BaseException] = []
+            for task in owned:
+                self._owned_cooldowns.pop(task, None)
+                if self._cooldown_task is task:
+                    self._cooldown_task = None
+                failure = owned_task_failure(task, name="cooldown", cancel_sent=False)
+                if failure is not None:
+                    failures.append(failure)
+            del owned, task
+            if failures:
+                primary, *secondary = failures
+                del failures
+                for extra in secondary:
+                    logger.error(
+                        "[ERROR]Additional owned cooldown task failed during shutdown",
+                        exc_info=extra,
+                    )
+                del secondary
+                raise primary
 
         if self._in_cooldown:
             # The owned task did not finalize the generation (it failed, or a

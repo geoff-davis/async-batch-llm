@@ -92,6 +92,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   report, so a failure and its traceback are not retained after the call
   that raised them. The coordinator tracks a paused generation by state: the
   next explicit close finalizes it, and `COOLDOWN_ENDED` is delivered once.
+  Every live owned cooldown task is tracked, not only the newest: workers are
+  released before `COOLDOWN_ENDED` observers finish, so an immediately
+  retried item can start a newer generation while the older task is still
+  delivering, and shutdown now waits for that older task and reports its
+  failure too (further failures are logged with tracebacks). The stop-aware
+  sleep classifies its private children: a sleep or stop watcher cancelled
+  by a third party is reported as an interruption instead of ending the
+  cooldown early, and the coordinator keeps the generation paused on such an
+  interruption rather than resuming workers.
 
 ## [0.23.0] - 2026-08-27
 

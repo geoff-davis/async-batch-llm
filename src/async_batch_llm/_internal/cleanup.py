@@ -162,22 +162,46 @@ async def sleep_unless_stopped(sleep: Awaitable[None], stop: asyncio.Event, *, n
     """Run an owned ``sleep`` in a sub-task until it finishes or ``stop`` is set.
 
     Lets an owned task be ended early without anyone cancelling *it*: only
-    the sleep sub-task is cancelled here, by this function, so a
-    ``CancelledError`` reaching the caller is always the caller's own. A
-    failure of the sleep (an injected sleep raising on cancellation, say) is
-    raised so the owner surfaces it.
+    the sleep sub-task is cancelled here, by this function, and only once
+    ``stop`` is set, so a ``CancelledError`` reaching the caller is always
+    the caller's own. Each private child is classified by outcome: a sleep
+    that ended cancelled while no stop was requested, or a stop watcher that
+    ended without the stop being set, was cancelled by a third party and is
+    reported as :class:`CleanupInterruptedError` rather than treated as a
+    completed or stopped sleep. A failure raised by the sleep (an injected
+    sleep raising on cancellation, say) is raised so the owner surfaces it.
     """
     sleeper = asyncio.ensure_future(sleep)
     stopper = asyncio.ensure_future(stop.wait())
     try:
         await asyncio.wait({sleeper, stopper}, return_when=asyncio.FIRST_COMPLETED)
-    finally:
+    except BaseException:
+        # The caller's own cancellation (or a process-control exception):
+        # tear the private children down, then let it propagate.
         stopper.cancel()
         if not sleeper.done():
             sleeper.cancel()
             await wait_detached(sleeper)
-    failure = owned_task_failure(sleeper, name=name, cancel_sent=True)
+        raise
+    # Event.wait() only returns once the event is set: a settled watcher with
+    # the stop unset was cancelled by a third party.
+    watcher_interrupted = stopper.done() and not stop.is_set()
+    stopper.cancel()
+    sleeper_cancel_sent = False
+    if not sleeper.done():
+        sleeper_cancel_sent = True
+        sleeper.cancel()
+        await wait_detached(sleeper)
+    failure = owned_task_failure(
+        sleeper, name=name, cancel_sent=sleeper_cancel_sent or stop.is_set()
+    )
     del sleeper
+    if failure is None and watcher_interrupted:
+        try:
+            stopper.exception()  # raises the watcher's CancelledError
+        except asyncio.CancelledError as exc:
+            failure = CleanupInterruptedError(f"{name} stop watcher", cause=exc)
+    del stopper
     if failure is not None:
         raise failure
 
