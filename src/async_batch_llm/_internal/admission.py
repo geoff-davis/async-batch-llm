@@ -13,7 +13,7 @@ from typing import Any
 from ..llm_strategies import LLMCallStrategy
 from ..strategies import RateLimitStrategy, TokenEstimateExceedsLimit
 from ..token_estimation import TokenEstimate
-from .cleanup import owned_task_error, wait_detached
+from .cleanup import owned_task_failure, wait_detached
 from .event_dispatcher import EventDispatcher
 from .rate_limit_coordinator import RateLimitCoordinator
 
@@ -486,7 +486,9 @@ class QuotaGate:
             if not waiter.future.done():
                 waiter.future.set_exception(AdmissionGateClosed("Quota gate was shut down"))
         if task is not None and task is not asyncio.current_task():
-            error = owned_task_error(task)
+            error = owned_task_failure(
+                task, name="quota gate wake", cancel_sent=self._wake_cancel_sent
+            )
             if error is not None:
                 raise error
 

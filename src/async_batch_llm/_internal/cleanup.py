@@ -134,17 +134,28 @@ async def wait_detached(future: asyncio.Future[Any]) -> None:
         future.remove_done_callback(_wake)
 
 
-def owned_task_error(task: asyncio.Future[Any]) -> BaseException | None:
-    """Outcome of a settled owned task after :func:`wait_detached`.
+def owned_task_failure(
+    task: asyncio.Future[Any], *, name: str, cancel_sent: bool
+) -> BaseException | None:
+    """Failure of a settled owned task after :func:`wait_detached`, or ``None``.
 
-    Expected cancellation (the owner cancelled it) yields ``None``; any other
-    exception is returned so the owner can surface it instead of silently
-    treating the teardown as successful. Reading it also marks the exception
-    retrieved.
+    The task's own exception is returned as-is. A cancellation the owner sent
+    itself (``cancel_sent``) is a successful teardown. A cancellation it did
+    not send — a ``CancelledError`` raised inside the task, or a third party
+    cancelling it — is an interruption and is returned as
+    :class:`CleanupInterruptedError` with the cancellation as its cause, so
+    the owner reports it instead of accepting the task as finished. Reading
+    the outcome also marks the exception retrieved.
     """
-    if task.cancelled():
+    if not task.cancelled():
+        return task.exception()
+    if cancel_sent:
         return None
-    return task.exception()
+    try:
+        task.exception()  # raises the task's CancelledError (with its message)
+    except asyncio.CancelledError as exc:
+        return CleanupInterruptedError(name, cause=exc)
+    return CleanupInterruptedError(name)
 
 
 async def wait_all_detached(
@@ -411,7 +422,7 @@ __all__ = [
     "CleanupStep",
     "CloseState",
     "SharedCloser",
-    "owned_task_error",
+    "owned_task_failure",
     "run_cleanup_steps",
     "wait_all_detached",
     "wait_detached",

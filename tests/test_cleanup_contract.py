@@ -40,6 +40,7 @@ from async_batch_llm import (
     ProcessingEvent,
     ProcessorConfig,
     RateLimitConfig,
+    RetryConfig,
     RetryState,
     SqliteArtifactStore,
     StreamFinalizationError,
@@ -1369,3 +1370,179 @@ async def test_c1_owned_wake_task_failure_is_surfaced_by_gate_shutdown() -> None
     gate, _ = await _pending_wake_gate(failing_sleep)
     with pytest.raises(RuntimeError, match="wake teardown failed"):
         await gate.shutdown()
+
+
+# --------------------------------------------------------------------------- #
+# Round 4 — cancellation the coordinator did not send, and retained failures
+# --------------------------------------------------------------------------- #
+
+
+async def test_c3_observer_cancellation_during_cooldown_end_is_an_interruption() -> None:
+    """A ``CancelledError`` raised by an observer while COOLDOWN_ENDED is being
+    delivered was not sent by shutdown(): the owned task must not finalize the
+    generation a second time (which would deliver COOLDOWN_ENDED twice), and
+    shutdown() must report the interruption instead of accepting it as a
+    successful teardown. The next explicit close is clean."""
+    ended = 0
+
+    class _CancelOnEnd(BaseObserver):
+        async def on_event(self, event: ProcessingEvent, data: dict[str, Any]) -> None:
+            nonlocal ended
+            if event is ProcessingEvent.COOLDOWN_ENDED:
+                ended += 1
+                if ended == 1:
+                    raise asyncio.CancelledError()
+
+    class _RateLimitOnce(_Strategy):
+        calls = 0
+
+        async def execute(
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+        ) -> tuple[str, TokenUsage]:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("429 throttled")
+            return prompt, _TOKENS
+
+    processor = _processor(
+        config=ProcessorConfig(
+            max_workers=1,
+            retry=RetryConfig(max_attempts=1, max_rate_limit_retries=1, initial_wait=0.01),
+            rate_limit=RateLimitConfig(
+                cooldown_seconds=0, max_cooldown_seconds=0, slow_start_items=0
+            ),
+        ),
+        observers=[_CancelOnEnd()],
+    )
+    with pytest.raises(CleanupInterruptedError):
+        async with processor:
+            await processor.add_work(LLMWorkItem("one", _RateLimitOnce(), "prompt"))
+            result = await processor.process_all()
+            assert result.succeeded == 1
+    assert ended == 1, "the interrupted generation was finalized a second time"
+    await processor.shutdown()  # the interruption was reported once; nothing is left to redo
+
+
+async def test_c3_third_party_cancel_of_cooldown_task_is_surfaced_then_finalized_later() -> None:
+    """An owned cooldown task cancelled by someone other than shutdown() is an
+    interruption: the first close reports it without finalizing on the task's
+    behalf inside the same call, and the next explicit close finalizes."""
+    host = _cooldown_host()
+    coordinator = host._rate_limit_coord
+    waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
+    await asyncio.sleep(0.01)
+    owned = coordinator._cooldown_task
+    assert owned is not None
+    owned.cancel()  # not shutdown's cancellation
+    await asyncio.wait([owned], timeout=1)
+    assert owned.cancelled()
+
+    try:
+        with pytest.raises(CleanupInterruptedError):
+            await coordinator.shutdown()
+        assert coordinator._in_cooldown, "an interrupted step must not be finalized in-call"
+        assert not waiter.done()
+
+        await coordinator.shutdown()  # the later explicit close retries
+        assert not coordinator._in_cooldown
+        await asyncio.wait([waiter], timeout=1)
+        assert waiter.done(), "the reporting worker was never released"
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await host.aclose()
+
+
+async def test_c4_interrupted_cooldown_finalization_is_not_retried_within_one_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The owned finalization started by shutdown's cancellation can itself be
+    cancelled before it transitions the generation. That is an interruption:
+    the same close must report it rather than run a second finalization, and
+    the next explicit close finalizes."""
+    host = _cooldown_host()
+    coordinator = host._rate_limit_coord
+    original_finalize = coordinator._finalize_cooldown
+    release = asyncio.Event()
+    attempts = 0
+
+    async def gated_finalize(*args: Any, **kwargs: Any) -> None:
+        nonlocal attempts
+        attempts += 1
+        await release.wait()
+        await original_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator, "_finalize_cooldown", gated_finalize)
+    waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
+    await asyncio.sleep(0.01)
+
+    closing = asyncio.create_task(coordinator.shutdown())
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if coordinator._cooldown_finalization is not None and attempts == 1:
+            break
+    finalization = coordinator._cooldown_finalization
+    assert finalization is not None and attempts == 1
+    finalization.cancel()  # a third party interrupts the owned finalization
+
+    try:
+        with pytest.raises(CleanupInterruptedError):
+            await closing
+        assert attempts == 1, "the interrupted finalization was retried within one close"
+        assert coordinator._in_cooldown
+
+        release.set()
+        await coordinator.shutdown()  # the later explicit close retries
+        assert attempts == 2
+        assert not coordinator._in_cooldown
+        await asyncio.wait([waiter], timeout=1)
+        assert waiter.done(), "the reporting worker was never released"
+    finally:
+        release.set()
+        if not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await host.aclose()
+
+
+async def test_c4_surfaced_cooldown_failure_is_not_retained_after_successful_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.CRITICAL, logger="async_batch_llm")
+    host = _cooldown_host()
+    coordinator = host._rate_limit_coord
+    original_finalize = coordinator._finalize_cooldown
+    held: list[weakref.ref[Any]] = []
+
+    class _Sentinel:
+        pass
+
+    async def flaky_finalize(*args: Any, **kwargs: Any) -> None:
+        if not held:
+            sentinel = _Sentinel()  # reachable only through the failure's traceback
+            held.append(weakref.ref(sentinel))
+            raise RuntimeError("finalization failed")
+        await original_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator, "_finalize_cooldown", flaky_finalize)
+    waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
+    await asyncio.sleep(0.01)
+
+    try:
+        failed = False
+        try:
+            await coordinator.shutdown()
+        except RuntimeError:
+            failed = True
+        assert failed
+        await coordinator.shutdown()  # the successful retry
+        assert not coordinator._in_cooldown
+        gc.collect()
+        assert held[0]() is None, "the reported failure's traceback is still retained"
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await host.aclose()

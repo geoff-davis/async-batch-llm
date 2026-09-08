@@ -84,8 +84,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   complete, so a retry after a cancelled shutdown re-joins it instead of
   cutting its cancellation handling short. The coordinator checkpoints only
   once its generation is finalized: if the owned task was cancelled before it
-  ran, shutdown finalizes the generation itself; if the owned finalization
-  failed, that failure is raised and the next explicit close finalizes.
+  ran, shutdown finalizes the generation itself; if the owned task or its
+  finalization failed, that failure is raised once and the next explicit
+  close finalizes. A cancellation the coordinator did not send (an observer
+  raising `CancelledError` during a cooldown event, or a third party
+  cancelling the owned task) is reported as `CleanupInterruptedError` rather
+  than accepted as a successful teardown, and the owned task no longer
+  finalizes the generation a second time on such a cancellation (which
+  delivered `COOLDOWN_ENDED` twice). Reported failures are not retained after
+  the call that raised them.
 
 ## [0.23.0] - 2026-08-27
 
