@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from benchmarks.scale_soak import monitor as monitor_module
+from benchmarks.scale_soak import scenarios as scenarios_module
 from benchmarks.scale_soak.cli import build_parser, config_from_args, run_config
 from benchmarks.scale_soak.config import (
     PROFILES,
@@ -224,6 +226,26 @@ async def test_each_scenario_reduced_form_passes(scenario: str, tmp_path: Path) 
     result = await SCENARIO_RUNNERS[scenario](settings)
     failed = [check.to_json() for check in result.assertions if not check.passed]
     assert result.status == "passed", failed
+
+
+@pytest.mark.parametrize("has_table", [True, False])
+def test_sqlite_row_count_closes_connection_on_success_and_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, has_table: bool
+) -> None:
+    path = tmp_path / "counts.sqlite"
+    connection = sqlite3.connect(path)
+    if has_table:
+        connection.execute("CREATE TABLE item_records (item_id TEXT)")
+        connection.execute("INSERT INTO item_records VALUES ('one')")
+        connection.commit()
+    # Keep the actual connection alive: cleanup must not depend on GC timing.
+    monkeypatch.setattr(scenarios_module.sqlite3, "connect", lambda _: connection)
+    try:
+        assert scenarios_module._sqlite_row_count(path) == (1 if has_table else None)
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+    finally:
+        connection.close()
 
 
 async def test_reduced_jsonl_store_scenarios_pass(tmp_path: Path) -> None:
