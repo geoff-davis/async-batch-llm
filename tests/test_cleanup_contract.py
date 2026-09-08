@@ -1457,10 +1457,10 @@ async def test_c3_third_party_cancel_of_cooldown_task_is_surfaced_then_finalized
 async def test_c4_interrupted_cooldown_finalization_is_not_retried_within_one_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The owned finalization started by shutdown's cancellation can itself be
-    cancelled before it transitions the generation. That is an interruption:
-    the same close must report it rather than run a second finalization, and
-    the next explicit close finalizes."""
+    """The owned task can be cancelled by a third party while it is finalizing
+    the generation, before the state transition. That is an interruption: the
+    same close must report it rather than run a second finalization, and the
+    next explicit close finalizes."""
     host = _cooldown_host()
     coordinator = host._rate_limit_coord
     original_finalize = coordinator._finalize_cooldown
@@ -1476,15 +1476,16 @@ async def test_c4_interrupted_cooldown_finalization_is_not_retried_within_one_cl
     monkeypatch.setattr(coordinator, "_finalize_cooldown", gated_finalize)
     waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
     await asyncio.sleep(0.01)
+    owned = coordinator._cooldown_task
+    assert owned is not None
 
     closing = asyncio.create_task(coordinator.shutdown())
     for _ in range(20):
         await asyncio.sleep(0)
-        if coordinator._cooldown_finalization is not None and attempts == 1:
+        if attempts == 1:
             break
-    finalization = coordinator._cooldown_finalization
-    assert finalization is not None and attempts == 1
-    finalization.cancel()  # a third party interrupts the owned finalization
+    assert attempts == 1
+    owned.cancel()  # a third party interrupts the owned finalization
 
     try:
         with pytest.raises(CleanupInterruptedError):
@@ -1537,12 +1538,125 @@ async def test_c4_surfaced_cooldown_failure_is_not_retained_after_successful_ret
         except RuntimeError:
             failed = True
         assert failed
+        gc.collect()
+        assert held[0]() is None, "the failure is retained after the call that raised it"
+        assert coordinator._in_cooldown
         await coordinator.shutdown()  # the successful retry
         assert not coordinator._in_cooldown
-        gc.collect()
-        assert held[0]() is None, "the reported failure's traceback is still retained"
     finally:
         if not waiter.done():
             waiter.cancel()
         await asyncio.gather(waiter, return_exceptions=True)
         await host.aclose()
+
+
+# --------------------------------------------------------------------------- #
+# Round 5 — pending third-party cancellations and delayed retries
+# --------------------------------------------------------------------------- #
+
+
+async def test_c3_pending_third_party_cancel_of_cooldown_task_is_not_relabelled() -> None:
+    """A third-party cancellation that is already pending when shutdown()
+    starts must still be classified as an interruption. Shutdown may not send
+    a cancellation of its own that makes the outcome look expected."""
+    host = _cooldown_host()
+    coordinator = host._rate_limit_coord
+    waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
+    await asyncio.sleep(0.01)
+    owned = coordinator._cooldown_task
+    assert owned is not None
+    owned.cancel()  # pending: not yet delivered when shutdown() begins
+
+    try:
+        with pytest.raises(CleanupInterruptedError):
+            await coordinator.shutdown()
+        assert coordinator._in_cooldown
+        await coordinator.shutdown()
+        assert not coordinator._in_cooldown
+        await asyncio.wait([waiter], timeout=1)
+        assert waiter.done(), "the reporting worker was never released"
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await host.aclose()
+
+
+async def test_c3_pending_third_party_cancel_of_wake_task_is_not_relabelled() -> None:
+    gate, owned = await _pending_wake_gate(asyncio.sleep)
+    owned.cancel()  # pending: not yet delivered when shutdown() begins
+    with pytest.raises(CleanupInterruptedError):
+        await gate.shutdown()
+    await gate.shutdown()  # reported once
+
+
+async def test_c1_wake_task_outcome_survives_a_delayed_retry() -> None:
+    """If a shutdown call is cancelled and the wake task settles before the
+    retry, the retry must still observe the task's outcome."""
+
+    async def failing_sleep(delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            raise RuntimeError("wake teardown failed") from None
+
+    gate, owned = await _pending_wake_gate(failing_sleep)
+    closing = asyncio.create_task(gate.shutdown())
+    await asyncio.sleep(0)
+    closing.cancel()
+    await asyncio.wait([closing], timeout=1)
+    assert closing.cancelled()
+    await asyncio.wait([owned], timeout=1)
+    assert owned.done()
+
+    with pytest.raises(RuntimeError, match="wake teardown failed"):
+        await gate.shutdown()  # the delayed retry
+    await gate.shutdown()  # reported once
+
+
+async def test_c1_settled_third_party_cancel_of_wake_task_survives_a_delayed_retry() -> None:
+    async def lingering_sleep(delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)
+            raise
+
+    gate, owned = await _pending_wake_gate(lingering_sleep)
+    closing = asyncio.create_task(gate.shutdown())
+    await asyncio.sleep(0)
+    closing.cancel()
+    await asyncio.wait([closing], timeout=1)
+    assert closing.cancelled()
+    owned.cancel()  # a third party, after shutdown has started
+    await asyncio.wait([owned], timeout=1)
+    assert owned.cancelled()
+
+    with pytest.raises(CleanupInterruptedError):
+        await gate.shutdown()  # the delayed retry
+    await gate.shutdown()  # reported once
+
+
+async def test_c4_gate_failure_is_not_retained_after_the_call_that_raised_it() -> None:
+    held: list[weakref.ref[Any]] = []
+
+    class _Sentinel:
+        pass
+
+    async def failing_sleep(delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            sentinel = _Sentinel()  # reachable only through the failure's traceback
+            held.append(weakref.ref(sentinel))
+            raise RuntimeError("wake teardown failed") from None
+
+    gate = (await _pending_wake_gate(failing_sleep))[0]  # hold no reference to the task
+    failed = False
+    try:
+        await gate.shutdown()
+    except RuntimeError:
+        failed = True
+    assert failed
+    gc.collect()
+    assert held[0]() is None, "the failure is retained after the call that raised it"

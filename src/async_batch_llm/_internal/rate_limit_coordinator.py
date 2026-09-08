@@ -24,7 +24,7 @@ from typing import Any
 
 from ..observers import ProcessingEvent
 from ..strategies import RateLimitStrategy
-from .cleanup import owned_task_failure, wait_detached
+from .cleanup import owned_task_failure, sleep_unless_stopped, wait_detached
 from .event_dispatcher import EventDispatcher
 
 logger = logging.getLogger(__name__)
@@ -75,10 +75,11 @@ class RateLimitCoordinator:
         # started by the task's cancellation handler, the context needed to
         # finalize from shutdown() itself when that handler never ran, and
         # whether shutdown() already sent its one cancellation.
-        self._cooldown_finalization: asyncio.Future[None] | None = None
+        # Set by shutdown() to end the owned cooldown early. The owned task is
+        # never cancelled by this coordinator, so a cancelled state on it is
+        # always a third party's doing (see shutdown()).
+        self._cooldown_stop: asyncio.Event | None = None
         self._cooldown_context: tuple[float, str | None] | None = None
-        self._cooldown_cancel_sent = False
-        self._cooldown_failure_surfaced = False
 
         self._lock = asyncio.Lock()
 
@@ -183,9 +184,8 @@ class RateLimitCoordinator:
                 # shutdown() cancels the owned task (and then waking waiters
                 # is the intended teardown behavior).
                 self._cooldown_context = (time.time(), strategy_type)
-                self._cooldown_finalization = None
-                self._cooldown_cancel_sent = False
-                self._cooldown_failure_surfaced = False
+                stop = asyncio.Event()
+                self._cooldown_stop = stop
                 self._cooldown_task = asyncio.create_task(
                     self._run_cooldown(
                         worker_id,
@@ -193,6 +193,7 @@ class RateLimitCoordinator:
                         self._consecutive_rate_limits,
                         suggested_wait,
                         strategy_type,
+                        stop,
                     )
                 )
 
@@ -208,176 +209,144 @@ class RateLimitCoordinator:
         consecutive: int,
         suggested_wait: float | None,
         strategy_type: str | None,
+        stop: asyncio.Event,
     ) -> None:
-        """Owned cooldown cycle: compute the wait, sleep, finalize."""
+        """Owned cooldown cycle: compute the wait, sleep, finalize.
+
+        ``stop`` (set by :meth:`shutdown`) ends the sleep early; the cycle
+        then finalizes the generation itself so waiting workers are released.
+        This task is never cancelled by the coordinator, so a
+        ``CancelledError`` here is a third party's and simply propagates:
+        nothing is finalized on shutdown's behalf, and shutdown() reports the
+        interruption and finalizes on the explicit close after it.
+        """
         pause_started_at = time.time()
         cooldown_error: Exception | None = None
 
         try:
-            try:
-                cooldown = await self._strategy.on_rate_limit(worker_id, consecutive)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                cooldown_error = exc
-                cooldown = 0.0
-                logger.warning(
-                    "[WARN]Rate limit strategy failed to determine cooldown: %s. "
-                    "Resuming workers immediately.",
-                    exc,
-                )
-
-            # Respect a server-suggested wait (e.g. Retry-After) as a floor:
-            # the backoff strategy may ask for longer, but we never undershoot
-            # the server's request. Only applied when the strategy itself
-            # didn't error.
-            if cooldown_error is None and suggested_wait is not None and suggested_wait > cooldown:
-                logger.info(
-                    "[RATE-LIMIT]Raising cooldown from %.1fs to server-suggested %.1fs.",
-                    cooldown,
-                    suggested_wait,
-                )
-                cooldown = suggested_wait
-
-            payload: dict[str, Any] = {
-                "worker_id": worker_id,
-                "duration": cooldown,
-                "consecutive": consecutive,
-            }
-            if self._quota_scope_id is not None:
-                payload["quota_scope_id"] = self._quota_scope_id
-            if strategy_type is not None:
-                payload["strategy_type"] = strategy_type
-            await self._events.emit(ProcessingEvent.COOLDOWN_STARTED, payload)
-
-            scope_log = f" scope={self._quota_scope_id}" if self._quota_scope_id is not None else ""
-            strategy_log = f" strategy={strategy_type}" if strategy_type is not None else ""
-
-            if cooldown_error is not None:
-                logger.warning(
-                    "[RATE-LIMIT]Rate limit detected by worker %s (gen %d%s%s). "
-                    "Skipping cooldown due to prior error.",
-                    worker_id,
-                    generation,
-                    scope_log,
-                    strategy_log,
-                )
-            elif cooldown > 0:
-                logger.warning(
-                    "[RATE-LIMIT]Rate limit detected by worker %s (gen %d%s%s). "
-                    "Pausing all workers for %.1fs...",
-                    worker_id,
-                    generation,
-                    scope_log,
-                    strategy_log,
-                    cooldown,
-                )
-            else:
-                # A strategy can legitimately return 0.0 (no cooldown wanted);
-                # don't mislabel that as an error.
-                logger.warning(
-                    "[RATE-LIMIT]Rate limit detected by worker %s (gen %d%s%s). "
-                    "Strategy requested no cooldown; resuming immediately.",
-                    worker_id,
-                    generation,
-                    scope_log,
-                    strategy_log,
-                )
-
-            try:
-                if cooldown > 0:
-                    await asyncio.sleep(cooldown)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "[WARN]Cooldown sleep interrupted for worker %s: %s. Resuming immediately.",
-                    worker_id,
-                    exc,
-                )
-                cooldown_error = cooldown_error or exc
-
-            await self._finalize_cooldown(pause_started_at, cooldown_error, strategy_type)
+            cooldown = await self._strategy.on_rate_limit(worker_id, consecutive)
         except asyncio.CancelledError:
-            if not self._cooldown_cancel_sent:
-                # Not shutdown's cancellation: an observer raised
-                # CancelledError while an event was being delivered, or a
-                # third party cancelled this task. Nothing may finalize the
-                # generation on shutdown's behalf here (after the state
-                # transition that would deliver COOLDOWN_ENDED a second
-                # time); shutdown() classifies this as an interruption and
-                # the explicit close after it finalizes.
-                raise
-            # shutdown() cancelled this task: wake the waiters so host
-            # teardown never hangs on the pause, then propagate. The
-            # finalization is shielded and its handle is kept so shutdown()
-            # can wait for *it*, not merely for this wrapper task.
-            finalization = asyncio.ensure_future(
-                self._finalize_cooldown(pause_started_at, None, strategy_type)
-            )
-            self._cooldown_finalization = finalization
-            await asyncio.shield(finalization)
             raise
+        except Exception as exc:
+            cooldown_error = exc
+            cooldown = 0.0
+            logger.warning(
+                "[WARN]Rate limit strategy failed to determine cooldown: %s. "
+                "Resuming workers immediately.",
+                exc,
+            )
+
+        # Respect a server-suggested wait (e.g. Retry-After) as a floor:
+        # the backoff strategy may ask for longer, but we never undershoot
+        # the server's request. Only applied when the strategy itself
+        # didn't error.
+        if cooldown_error is None and suggested_wait is not None and suggested_wait > cooldown:
+            logger.info(
+                "[RATE-LIMIT]Raising cooldown from %.1fs to server-suggested %.1fs.",
+                cooldown,
+                suggested_wait,
+            )
+            cooldown = suggested_wait
+
+        payload: dict[str, Any] = {
+            "worker_id": worker_id,
+            "duration": cooldown,
+            "consecutive": consecutive,
+        }
+        if self._quota_scope_id is not None:
+            payload["quota_scope_id"] = self._quota_scope_id
+        if strategy_type is not None:
+            payload["strategy_type"] = strategy_type
+        await self._events.emit(ProcessingEvent.COOLDOWN_STARTED, payload)
+
+        scope_log = f" scope={self._quota_scope_id}" if self._quota_scope_id is not None else ""
+        strategy_log = f" strategy={strategy_type}" if strategy_type is not None else ""
+
+        if cooldown_error is not None:
+            logger.warning(
+                "[RATE-LIMIT]Rate limit detected by worker %s (gen %d%s%s). "
+                "Skipping cooldown due to prior error.",
+                worker_id,
+                generation,
+                scope_log,
+                strategy_log,
+            )
+        elif cooldown > 0:
+            logger.warning(
+                "[RATE-LIMIT]Rate limit detected by worker %s (gen %d%s%s). "
+                "Pausing all workers for %.1fs...",
+                worker_id,
+                generation,
+                scope_log,
+                strategy_log,
+                cooldown,
+            )
+        else:
+            # A strategy can legitimately return 0.0 (no cooldown wanted);
+            # don't mislabel that as an error.
+            logger.warning(
+                "[RATE-LIMIT]Rate limit detected by worker %s (gen %d%s%s). "
+                "Strategy requested no cooldown; resuming immediately.",
+                worker_id,
+                generation,
+                scope_log,
+                strategy_log,
+            )
+
+        try:
+            if cooldown > 0 and not stop.is_set():
+                await sleep_unless_stopped(asyncio.sleep(cooldown), stop, name="cooldown sleep")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "[WARN]Cooldown sleep interrupted for worker %s: %s. Resuming immediately.",
+                worker_id,
+                exc,
+            )
+            cooldown_error = cooldown_error or exc
+
+        await self._finalize_cooldown(pause_started_at, cooldown_error, strategy_type)
 
     async def shutdown(self) -> None:
-        """Cancel an in-flight cooldown and finalize its generation.
+        """End an in-flight cooldown and finalize its generation.
 
-        Safe to call repeatedly, and a cancelled or failed call is retryable:
-        the owned task handle is kept until the generation is demonstrably
-        finalized (``_in_cooldown`` is false) and the task is cancelled at most
-        once. A failure of the owned task or of its finalization — including a
-        cancellation this coordinator did not send, reported as
-        :class:`CleanupInterruptedError` — is raised by the first call that
-        observes it, without a second finalization attempt in that call; the
-        next explicit call finalizes the generation from here. The generation
-        is also finalized from here when the task's own cancellation handler
-        never ran (cancelled before its first instruction). Nothing about a
-        reported failure is retained once it has been raised.
+        Safe to call repeatedly, and a cancelled or failed call is retryable.
+        The owned task is signalled to stop (never cancelled: a cancelled
+        state on it is therefore always a third party's) and waited for
+        through a detached future, so this caller's own cancellation is never
+        mistaken for the task's. A failure of the owned task — its own
+        exception, or a third-party cancellation reported as
+        :class:`CleanupInterruptedError` — is raised by the call that
+        observes it, with no second finalization attempt in that call; the
+        settled task is released with it so nothing about the failure is
+        retained. The paused generation is tracked by state, not by the task
+        handle: the next explicit call finalizes it from here.
         """
         task = self._cooldown_task
-        if task is None:
-            return
-        if not task.done() and not self._cooldown_cancel_sent:
-            self._cooldown_cancel_sent = True
-            task.cancel()
-        # Detached: the caller's own cancellation propagates instead of being
-        # mistaken for the owned task's, and never cancels the owned work.
-        await wait_detached(task)
-        finalization = self._cooldown_finalization
-        if finalization is not None:
-            await wait_detached(finalization)
-
-        if not self._cooldown_failure_surfaced:
-            failure = owned_task_failure(
-                task, name="cooldown", cancel_sent=self._cooldown_cancel_sent
-            )
-            if failure is None and finalization is not None:
-                # The finalization is never cancelled by this coordinator.
-                failure = owned_task_failure(
-                    finalization, name="cooldown finalization", cancel_sent=False
-                )
+        if task is not None:
+            stop = self._cooldown_stop
+            if stop is not None:
+                stop.set()
+            # Detached: the caller's own cancellation propagates instead of
+            # being mistaken for the owned task's, and never touches the task.
+            await wait_detached(task)
+            if self._cooldown_task is task:
+                self._cooldown_task = None
+                self._cooldown_stop = None
+            failure = owned_task_failure(task, name="cooldown", cancel_sent=False)
+            del task
             if failure is not None:
-                # Report once, without retrying in this call (clause 4). The
-                # settled handles stay so the next call resumes here; only
-                # the flag is kept, never the exception.
-                self._cooldown_failure_surfaced = True
-                self._cooldown_finalization = None
                 raise failure
 
         if self._in_cooldown:
-            # Nothing owned is still working on the generation: the task's
-            # handler never ran (cancelled before its first instruction), or
-            # a failure was reported by an earlier call and this later call
-            # retries. A failure here keeps the handle and paused state.
-            started_at, strategy_type = self._cooldown_context or (time.time(), None)
+            # The owned task did not finalize the generation (it failed, or a
+            # third party cancelled it, reported by an earlier call): finalize
+            # from here. A failure keeps the paused state for a later call.
+            context = self._cooldown_context
+            started_at, strategy_type = context if context is not None else (time.time(), None)
             await self._finalize_cooldown(started_at, None, strategy_type)
-
-        # Generation demonstrably finalized: checkpoint.
-        if self._cooldown_task is task:
-            self._cooldown_task = None
-            self._cooldown_finalization = None
-            self._cooldown_context = None
-            self._cooldown_failure_surfaced = False
+        self._cooldown_context = None
 
     async def _finalize_cooldown(
         self,

@@ -13,7 +13,7 @@ from typing import Any
 from ..llm_strategies import LLMCallStrategy
 from ..strategies import RateLimitStrategy, TokenEstimateExceedsLimit
 from ..token_estimation import TokenEstimate
-from .cleanup import owned_task_failure, wait_detached
+from .cleanup import owned_task_failure, sleep_unless_stopped, wait_detached
 from .event_dispatcher import EventDispatcher
 from .rate_limit_coordinator import RateLimitCoordinator
 
@@ -213,7 +213,7 @@ class QuotaGate:
         self._waiters: deque[_Waiter] = deque()
         self._wake_task: asyncio.Task[None] | None = None
         self._wake_deadline: float | None = None
-        self._wake_cancel_sent = False
+        self._wake_stop: asyncio.Event | None = None
         self._closed = False
 
     @property
@@ -411,7 +411,7 @@ class QuotaGate:
                 limited_by=limited_by,
             )
             waiter.future.set_result(reservation)
-        self._cancel_wake_task()
+        self._stop_wake_task()
 
     def _schedule_wake(self, estimate: TokenEstimate | None) -> None:
         delay = 0.0
@@ -433,64 +433,72 @@ class QuotaGate:
                 and self._wake_deadline <= deadline + _FLOAT_TOLERANCE
             ):
                 return
-            self._cancel_wake_task()
+            self._stop_wake_task()
         self._wake_deadline = deadline
-        self._wake_cancel_sent = False
-        self._wake_task = asyncio.create_task(self._wake_after(delay))
+        stop = asyncio.Event()
+        self._wake_stop = stop
+        self._wake_task = asyncio.create_task(self._wake_after(delay, stop))
 
-    async def _wake_after(self, delay: float) -> None:
+    async def _wake_after(self, delay: float, stop: asyncio.Event) -> None:
+        """Owned wake: sleep, then admit waiters.
+
+        ``stop`` (set by :meth:`shutdown` or a reschedule) ends the sleep
+        early and skips admission. Only the sleep sub-task is ever cancelled
+        by the gate, so a ``CancelledError`` reaching this task is a third
+        party's and simply propagates. While a shutdown is in progress the
+        handle is left for shutdown() to clear, so a delayed retry still
+        observes this task's outcome.
+        """
         try:
-            await self._sleep(delay)
-        except asyncio.CancelledError:
-            raise
+            await sleep_unless_stopped(self._sleep(delay), stop, name="quota gate sleep")
         finally:
-            if self._wake_task is asyncio.current_task():
+            if self._wake_task is asyncio.current_task() and not stop.is_set():
                 self._wake_task = None
                 self._wake_deadline = None
-        if not self._closed:
+        if not self._closed and not stop.is_set():
             self._process_waiters()
 
-    def _cancel_wake_task(self) -> asyncio.Task[None] | None:
-        task = self._wake_task
+    def _stop_wake_task(self) -> None:
+        """Drop the scheduled wake; it ends its sleep early and admits nothing."""
         self._wake_task = None
         self._wake_deadline = None
-        if task is not None and task is not asyncio.current_task() and not task.done():
-            task.cancel()
-        return task
+        stop = self._wake_stop
+        self._wake_stop = None
+        if stop is not None:
+            stop.set()
 
     async def shutdown(self) -> None:
         """Close the gate; idempotent, and a cancelled or failed call is retryable.
 
         ``_closed`` is set before the first await so new reservations are
-        rejected immediately. A retry after a cancelled call re-joins the
-        still-live wake task rather than returning early.
+        rejected immediately. The owned wake task is signalled to stop (never
+        cancelled, so a cancelled state on it is always a third party's) and
+        waited for through a detached future; its handle is kept until it has
+        settled, so a retry after a cancelled call re-joins it. Its failure —
+        its own exception, or a third-party cancellation reported as
+        :class:`CleanupInterruptedError` — is raised by the call that
+        observes it and the settled task is released with it.
         """
         self._closed = True
         task = self._wake_task
+        failure: BaseException | None = None
         if task is not None and task is not asyncio.current_task():
-            if not task.done() and not self._wake_cancel_sent:
-                # Cancel at most once: a retry re-joins the task instead of
-                # cutting its cancellation handling short.
-                self._wake_cancel_sent = True
-                task.cancel()
-            # Detached: the caller's own cancellation propagates instead of
-            # being mistaken for the wake task's. The handle is kept until the
-            # task has settled so a retry after a cancelled shutdown still
-            # waits for it.
+            stop = self._wake_stop
+            if stop is not None:
+                stop.set()
             await wait_detached(task)
             if self._wake_task is task:
                 self._wake_task = None
                 self._wake_deadline = None
+                self._wake_stop = None
+            failure = owned_task_failure(task, name="quota gate wake", cancel_sent=False)
+            del task
         while self._waiters:
             waiter = self._waiters.popleft()
             if not waiter.future.done():
                 waiter.future.set_exception(AdmissionGateClosed("Quota gate was shut down"))
-        if task is not None and task is not asyncio.current_task():
-            error = owned_task_failure(
-                task, name="quota gate wake", cancel_sent=self._wake_cancel_sent
-            )
-            if error is not None:
-                raise error
+        if failure is not None:
+            raise failure
 
     def _validate_estimate(self, estimate: TokenEstimate | None) -> None:
         if not self.tpm_enabled:

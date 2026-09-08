@@ -79,20 +79,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancellation.
 - A failed `AdmissionRegistry.shutdown()` is retryable: both components of a
   quota scope are attempted, and the scope is released only after both
-  closed. The rate-limit coordinator and quota gate cancel their owned task
-  at most once and keep its handle until the work it owns is demonstrably
-  complete, so a retry after a cancelled shutdown re-joins it instead of
-  cutting its cancellation handling short. The coordinator checkpoints only
-  once its generation is finalized: if the owned task was cancelled before it
-  ran, shutdown finalizes the generation itself; if the owned task or its
-  finalization failed, that failure is raised once and the next explicit
-  close finalizes. A cancellation the coordinator did not send (an observer
-  raising `CancelledError` during a cooldown event, or a third party
-  cancelling the owned task) is reported as `CleanupInterruptedError` rather
-  than accepted as a successful teardown, and the owned task no longer
-  finalizes the generation a second time on such a cancellation (which
-  delivered `COOLDOWN_ENDED` twice). Reported failures are not retained after
-  the call that raised them.
+  closed. The rate-limit coordinator and quota gate never cancel their owned
+  cooldown or wake task: shutdown signals it to stop, its sleep ends early,
+  and it is waited for through a detached future, so a retry after a
+  cancelled shutdown re-joins it and any cancelled state on the task is by
+  construction a third party's (including a cancellation already pending
+  when shutdown began). Such a cancellation, an observer raising
+  `CancelledError` during a cooldown event, and a failure raised by the task
+  are reported once by the close that observes them, as
+  `CleanupInterruptedError` or the task's own exception, with no second
+  finalization attempt in that call. The settled task is released with the
+  report, so a failure and its traceback are not retained after the call
+  that raised them. The coordinator tracks a paused generation by state: the
+  next explicit close finalizes it, and `COOLDOWN_ENDED` is delivered once.
 
 ## [0.23.0] - 2026-08-27
 

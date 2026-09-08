@@ -158,6 +158,30 @@ def owned_task_failure(
     return CleanupInterruptedError(name)
 
 
+async def sleep_unless_stopped(sleep: Awaitable[None], stop: asyncio.Event, *, name: str) -> None:
+    """Run an owned ``sleep`` in a sub-task until it finishes or ``stop`` is set.
+
+    Lets an owned task be ended early without anyone cancelling *it*: only
+    the sleep sub-task is cancelled here, by this function, so a
+    ``CancelledError`` reaching the caller is always the caller's own. A
+    failure of the sleep (an injected sleep raising on cancellation, say) is
+    raised so the owner surfaces it.
+    """
+    sleeper = asyncio.ensure_future(sleep)
+    stopper = asyncio.ensure_future(stop.wait())
+    try:
+        await asyncio.wait({sleeper, stopper}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        stopper.cancel()
+        if not sleeper.done():
+            sleeper.cancel()
+            await wait_detached(sleeper)
+    failure = owned_task_failure(sleeper, name=name, cancel_sent=True)
+    del sleeper
+    if failure is not None:
+        raise failure
+
+
 async def wait_all_detached(
     tasks: Iterable[asyncio.Future[Any]],
     *,
@@ -423,6 +447,7 @@ __all__ = [
     "CloseState",
     "SharedCloser",
     "owned_task_failure",
+    "sleep_unless_stopped",
     "run_cleanup_steps",
     "wait_all_detached",
     "wait_detached",
