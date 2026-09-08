@@ -285,14 +285,15 @@ async def test_tpm_rejects_zero_missing_and_impossible_estimates_immediately() -
 
 @pytest.mark.asyncio
 async def test_prestart_finalization_refunds_request_and_tokens_once() -> None:
-    gate = QuotaGate(1.0, 100)
+    clock = _ManualClock()
+    gate = QuotaGate(1.0, 100, clock=clock, sleep=clock.sleep)
     reservation = await gate.reserve(TokenEstimate(75))
-    assert gate.request_available == pytest.approx(0, abs=1e-5)
-    assert gate.token_available == pytest.approx(25, abs=1e-3)
+    assert gate.request_available == 0
+    assert gate.token_available == 25
     final = reservation.finalize_before_start()
     assert final is not None and final.disposition == "refunded_before_start"
-    assert gate.request_available == pytest.approx(1)
-    assert gate.token_available == pytest.approx(100)
+    assert gate.request_available == 1
+    assert gate.token_available == 100
     assert reservation.finalize_before_start() is None
     await gate.shutdown()
 
