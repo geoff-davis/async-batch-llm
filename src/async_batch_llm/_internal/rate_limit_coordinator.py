@@ -71,6 +71,14 @@ class RateLimitCoordinator:
         # submit_timeout, item deadline) must cancel only that caller, never
         # finish the shared pause early. shutdown() cancels this task.
         self._cooldown_task: asyncio.Task[None] | None = None
+        # Owned-cooldown bookkeeping for shutdown(): the shielded finalization
+        # started by the task's cancellation handler, the context needed to
+        # finalize from shutdown() itself when that handler never ran, and
+        # whether shutdown() already sent its one cancellation.
+        self._cooldown_finalization: asyncio.Future[None] | None = None
+        self._cooldown_context: tuple[float, str | None] | None = None
+        self._cooldown_cancel_sent = False
+        self._cooldown_surfaced_error: BaseException | None = None
 
         self._lock = asyncio.Lock()
 
@@ -174,6 +182,10 @@ class RateLimitCoordinator:
                 # the shared cooldown and wake every waiter early. Only
                 # shutdown() cancels the owned task (and then waking waiters
                 # is the intended teardown behavior).
+                self._cooldown_context = (time.time(), strategy_type)
+                self._cooldown_finalization = None
+                self._cooldown_cancel_sent = False
+                self._cooldown_surfaced_error = None
                 self._cooldown_task = asyncio.create_task(
                     self._run_cooldown(
                         worker_id,
@@ -288,33 +300,64 @@ class RateLimitCoordinator:
             await self._finalize_cooldown(pause_started_at, cooldown_error, strategy_type)
         except asyncio.CancelledError:
             # Only shutdown() cancels this owned task — wake the waiters so
-            # host teardown never hangs on the pause, then propagate.
-            await asyncio.shield(self._finalize_cooldown(pause_started_at, None, strategy_type))
+            # host teardown never hangs on the pause, then propagate. The
+            # finalization is shielded and its handle is kept so shutdown()
+            # can wait for *it*, not merely for this wrapper task.
+            finalization = asyncio.ensure_future(
+                self._finalize_cooldown(pause_started_at, None, strategy_type)
+            )
+            self._cooldown_finalization = finalization
+            await asyncio.shield(finalization)
             raise
 
     async def shutdown(self) -> None:
-        """Cancel an in-flight cooldown task during host teardown.
+        """Cancel an in-flight cooldown and finalize its generation.
 
-        The cancelled task finalizes the generation (waking any remaining
-        waiters) before propagating, so shutdown never hangs on a pause and
-        the task is never leaked. Safe to call multiple times or with no
-        cooldown active.
+        Safe to call repeatedly, and a cancelled or failed call is retryable:
+        the owned task handle is kept until the generation is demonstrably
+        finalized (``_in_cooldown`` is false), the task is cancelled at most
+        once, and if the task's own cancellation handler never ran (cancelled
+        before its first instruction) or its finalization failed, the
+        generation is finalized from here so no waiting worker stays blocked.
+        A failure raised by the owned task or by finalization is surfaced.
         """
         task = self._cooldown_task
         if task is None:
             return
-        if not task.done():
+        if not task.done() and not self._cooldown_cancel_sent:
+            self._cooldown_cancel_sent = True
             task.cancel()
         # Detached: the caller's own cancellation propagates instead of being
-        # mistaken for the cooldown task's. The handle is kept until the task
-        # has settled so a retry after a cancelled shutdown still waits for
-        # it; the owned task is a barrier for dependent cleanup.
+        # mistaken for the owned task's, and never cancels the owned work.
         await wait_detached(task)
+        finalization = self._cooldown_finalization
+        if finalization is not None:
+            await wait_detached(finalization)
+        wrapper_error = owned_task_error(task)
+        finalization_error = owned_task_error(finalization) if finalization is not None else None
+
+        if self._in_cooldown:
+            if finalization_error is not None:
+                # The owned finalization ran and failed. Surface it without a
+                # second attempt in this call; the next explicit call
+                # finalizes from here (the handle and paused state are kept).
+                self._cooldown_finalization = None
+                self._cooldown_surfaced_error = finalization_error
+                raise finalization_error
+            # The task's handler never ran (cancelled before its first
+            # instruction) or a previous failure was already surfaced:
+            # finalize here. A failure keeps the handle and paused state.
+            started_at, strategy_type = self._cooldown_context or (time.time(), None)
+            await self._finalize_cooldown(started_at, None, strategy_type)
+
+        # Generation demonstrably finalized: checkpoint.
         if self._cooldown_task is task:
             self._cooldown_task = None
-        error = owned_task_error(task)
-        if error is not None:
-            raise error
+            self._cooldown_finalization = None
+            self._cooldown_context = None
+        if wrapper_error is not None and wrapper_error is not self._cooldown_surfaced_error:
+            self._cooldown_surfaced_error = wrapper_error
+            raise wrapper_error
 
     async def _finalize_cooldown(
         self,

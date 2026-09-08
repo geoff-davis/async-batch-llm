@@ -1195,37 +1195,99 @@ def _cooldown_host() -> ExecutorHost[Any, str, Any]:
     )
 
 
-async def test_c4_cancelled_coordinator_shutdown_keeps_task_for_retry(
+async def test_c4_cancelled_coordinator_shutdown_rejoins_finalization_on_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A retry after a cancelled shutdown must still wait for the owned
-    cooldown task to settle; it is a barrier for dependent cleanup."""
+    """A retry after a cancelled shutdown must wait for the owned *finalization*
+    to complete (not merely for the cancelled wrapper task to settle) and must
+    not re-cancel the wrapper, which would cut the shielded finalizer loose."""
     host = _cooldown_host()
     coordinator = host._rate_limit_coord
     original_finalize = coordinator._finalize_cooldown
+    finalization_finished = False
 
     async def slow_finalize(*args: Any, **kwargs: Any) -> None:
+        nonlocal finalization_finished
         await asyncio.sleep(0.3)
         await original_finalize(*args, **kwargs)
+        finalization_finished = True
 
     monkeypatch.setattr(coordinator, "_finalize_cooldown", slow_finalize)
     waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
     await asyncio.sleep(0.01)
-    owned = coordinator._cooldown_task
-    assert owned is not None
 
     closing = asyncio.create_task(coordinator.shutdown())
     await asyncio.sleep(0)
     closing.cancel()
     await asyncio.wait([closing], timeout=1)
     assert closing.cancelled()
-    assert not owned.done()
+    assert not finalization_finished
 
     try:
         await coordinator.shutdown()  # the retry
-        assert owned.done(), "retry returned while the owned cooldown task was still live"
-    finally:
+        assert finalization_finished, "retry returned before the finalization completed"
+        assert not coordinator._in_cooldown
         await asyncio.wait([waiter], timeout=1)
+        assert waiter.done(), "the reporting worker was never released"
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await host.aclose()
+
+
+async def test_c4_cooldown_task_cancelled_before_start_is_still_finalized() -> None:
+    """Cancelling the owned task before its first instruction means its own
+    cancellation handler never runs; shutdown() must finalize the generation
+    itself so the paused worker is released."""
+    host = _cooldown_host()
+    coordinator = host._rate_limit_coord
+    waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
+    await asyncio.sleep(0)  # the cooldown task exists but has not run yet
+    assert coordinator._cooldown_task is not None
+    assert coordinator._in_cooldown
+
+    try:
+        await coordinator.shutdown()
+        assert not coordinator._in_cooldown
+        await asyncio.wait([waiter], timeout=1)
+        assert waiter.done(), "the reporting worker was never released"
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await host.aclose()
+
+
+async def test_c4_failed_cooldown_finalization_stays_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host = _cooldown_host()
+    coordinator = host._rate_limit_coord
+    original_finalize = coordinator._finalize_cooldown
+    attempts = 0
+
+    async def flaky_finalize(*args: Any, **kwargs: Any) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("finalization failed")
+        await original_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator, "_finalize_cooldown", flaky_finalize)
+    waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
+    await asyncio.sleep(0.01)
+
+    try:
+        with pytest.raises(RuntimeError, match="finalization failed"):
+            await coordinator.shutdown()
+        assert coordinator._in_cooldown, "a failed finalization must not be checkpointed"
+
+        await coordinator.shutdown()  # the retry re-runs finalization
+        assert not coordinator._in_cooldown
+        await asyncio.wait([waiter], timeout=1)
+        assert waiter.done(), "the reporting worker was never released"
+    finally:
         if not waiter.done():
             waiter.cancel()
         await asyncio.gather(waiter, return_exceptions=True)
@@ -1238,6 +1300,8 @@ async def test_c1_owned_cooldown_task_failure_is_surfaced_by_shutdown(
     host = _cooldown_host()
     coordinator = host._rate_limit_coord
 
+    original_finalize = coordinator._finalize_cooldown
+
     async def failing_finalize(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("cooldown teardown failed")
 
@@ -1248,10 +1312,17 @@ async def test_c1_owned_cooldown_task_failure_is_surfaced_by_shutdown(
     try:
         with pytest.raises(RuntimeError, match="cooldown teardown failed"):
             await coordinator.shutdown()
+        assert coordinator._in_cooldown, "a failed finalization must not be checkpointed"
     finally:
-        waiter.cancel()
-        await asyncio.gather(waiter, return_exceptions=True)
+        # The failure is retryable: with a working finalizer the host close
+        # finalizes the generation and releases the waiter.
+        monkeypatch.setattr(coordinator, "_finalize_cooldown", original_finalize)
         await host.aclose()
+        await asyncio.wait([waiter], timeout=1)
+        if not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+    assert not coordinator._in_cooldown
 
 
 async def _pending_wake_gate(sleep: Any) -> tuple[QuotaGate, asyncio.Task[None]]:
@@ -1263,12 +1334,16 @@ async def _pending_wake_gate(sleep: Any) -> tuple[QuotaGate, asyncio.Task[None]]
     return gate, gate._wake_task
 
 
-async def test_c4_cancelled_gate_shutdown_keeps_wake_task_for_retry() -> None:
+async def test_c4_cancelled_gate_shutdown_rejoins_wake_task_on_retry() -> None:
+    cleanup_finished = False
+
     async def lingering_sleep(delay: float) -> None:
+        nonlocal cleanup_finished
         try:
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.3)  # a second cancel would cut this short
+            cleanup_finished = True
             raise
 
     gate, owned = await _pending_wake_gate(lingering_sleep)
@@ -1279,8 +1354,9 @@ async def test_c4_cancelled_gate_shutdown_keeps_wake_task_for_retry() -> None:
     assert closing.cancelled()
     assert not owned.done()
 
-    await gate.shutdown()  # the retry
-    assert owned.done(), "retry returned while the owned wake task was still live"
+    await gate.shutdown()  # the retry re-joins; it must not re-cancel
+    assert owned.done()
+    assert cleanup_finished, "retry re-cancelled the wake task instead of re-joining it"
 
 
 async def test_c1_owned_wake_task_failure_is_surfaced_by_gate_shutdown() -> None:

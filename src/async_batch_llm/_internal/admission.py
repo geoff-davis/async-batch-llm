@@ -213,6 +213,7 @@ class QuotaGate:
         self._waiters: deque[_Waiter] = deque()
         self._wake_task: asyncio.Task[None] | None = None
         self._wake_deadline: float | None = None
+        self._wake_cancel_sent = False
         self._closed = False
 
     @property
@@ -434,6 +435,7 @@ class QuotaGate:
                 return
             self._cancel_wake_task()
         self._wake_deadline = deadline
+        self._wake_cancel_sent = False
         self._wake_task = asyncio.create_task(self._wake_after(delay))
 
     async def _wake_after(self, delay: float) -> None:
@@ -466,7 +468,10 @@ class QuotaGate:
         self._closed = True
         task = self._wake_task
         if task is not None and task is not asyncio.current_task():
-            if not task.done():
+            if not task.done() and not self._wake_cancel_sent:
+                # Cancel at most once: a retry re-joins the task instead of
+                # cutting its cancellation handling short.
+                self._wake_cancel_sent = True
                 task.cancel()
             # Detached: the caller's own cancellation propagates instead of
             # being mistaken for the wake task's. The handle is kept until the

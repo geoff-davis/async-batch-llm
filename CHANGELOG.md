@@ -79,10 +79,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancellation.
 - A failed `AdmissionRegistry.shutdown()` is retryable: both components of a
   quota scope are attempted, and the scope is released only after both
-  closed. The rate-limit coordinator and quota gate keep their owned task
-  handle until that task has settled, so a retry after a cancelled shutdown
-  still waits for it, and a non-cancellation failure inside the owned task
-  is raised instead of being discarded.
+  closed. The rate-limit coordinator and quota gate cancel their owned task
+  at most once and keep its handle until the work it owns is demonstrably
+  complete, so a retry after a cancelled shutdown re-joins it instead of
+  cutting its cancellation handling short. The coordinator checkpoints only
+  once its generation is finalized: if the owned task was cancelled before it
+  ran, shutdown finalizes the generation itself; if the owned finalization
+  failed, that failure is raised and the next explicit close finalizes.
 
 ## [0.23.0] - 2026-08-27
 
