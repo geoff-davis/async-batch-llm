@@ -13,6 +13,7 @@ from typing import Any
 from ..llm_strategies import LLMCallStrategy
 from ..strategies import RateLimitStrategy, TokenEstimateExceedsLimit
 from ..token_estimation import TokenEstimate
+from .cleanup import wait_detached
 from .event_dispatcher import EventDispatcher
 from .rate_limit_coordinator import RateLimitCoordinator
 
@@ -461,8 +462,9 @@ class QuotaGate:
         self._closed = True
         task = self._cancel_wake_task()
         if task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            # Detached: the caller's own cancellation propagates instead of
+            # being mistaken for the wake task's.
+            await wait_detached(task)
         while self._waiters:
             waiter = self._waiters.popleft()
             if not waiter.future.done():
@@ -579,11 +581,14 @@ class AdmissionRegistry:
         self._closed = True
         errors: list[Exception] = []
         for key, state in tuple(self._scope_entries.items()):
-            try:
-                await state.cooldown.shutdown()
-                await state.quota_gate.shutdown()
-            except Exception as exc:  # close every scope before surfacing one error
-                errors.append(exc)
+            scope_errors: list[Exception] = []
+            for component in (state.cooldown, state.quota_gate):
+                try:
+                    await component.shutdown()
+                except Exception as exc:  # attempt the sibling before surfacing
+                    scope_errors.append(exc)
+            if scope_errors:
+                errors.extend(scope_errors)
                 continue
             self._scope_entries.pop(key, None)
         if not errors:

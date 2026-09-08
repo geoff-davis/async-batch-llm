@@ -25,6 +25,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Iterable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
+from ._internal.cleanup import CleanupStep
 from ._internal.guardrails import BatchAdmissionStopped
 from .artifacts import ArtifactStore, ResumePolicy
 from .base import BatchResult, BatchTermination, LLMWorkItem, WorkItemResult
@@ -299,6 +300,20 @@ async def _process_stream_impl(
         **processor_kwargs,
     )
     feed_error: list[BaseException] = []
+    if reporter is not None:
+        bundled_reporter = reporter
+
+        async def _close_reporter() -> None:
+            # Idempotent: the reporter closes exactly once. Runs as the last
+            # ordered cleanup step so its failure follows the same precedence
+            # policy as every other cleanup failure instead of replacing the
+            # primary error.
+            await bundled_reporter.aclose(
+                completed=processor._stats.processed,
+                total=processor._stats.total,
+            )
+
+        processor._extra_cleanup_steps.append(CleanupStep("progress reporter", _close_reporter))
 
     async def _feed() -> None:
         try:
@@ -348,14 +363,7 @@ async def _process_stream_impl(
         # exit, producer failure, cancellation). A body exception or the
         # consumer's cancellation stays primary; cleanup failures are logged
         # and, with no body exception, applied by the policy below.
-        try:
-            report = await processor._closer.close(primary_exception=body_error)
-        finally:
-            if reporter is not None:
-                await reporter.aclose(
-                    completed=processor._stats.processed,
-                    total=processor._stats.total,
-                )
+        report = await processor._closer.close(primary_exception=body_error)
 
     if termination_out is not None:
         termination_out.append(processor.termination)

@@ -1414,6 +1414,12 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             task.cancel()
         await wait_detached(task)
         self._consume_task_outcome(task)
+        # A finalizer cancelled before its coroutine ran never reached the
+        # code that decides a terminal; decide the failure here so a consumer
+        # does not block forever. (No-op once a decision exists.)
+        self._publish_terminal(
+            StreamFinalizationError("Stream finalization was cancelled before it started")
+        )
 
     async def _stop_workers(self) -> None:
         if not self._workers:
@@ -1479,10 +1485,16 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         executor = self._callback_executor
         if executor is None:
             return
-        self._callback_executor = None
+        # Keep the handle until the join has actually completed: if this wait
+        # is cancelled, a later close must still find the pool and wait for
+        # its threads instead of closing dependent resources under them.
+        # ThreadPoolExecutor.shutdown(wait=True) is idempotent, so a retry
+        # simply joins again.
         await asyncio.get_running_loop().run_in_executor(
             None, functools.partial(executor.shutdown, wait=True)
         )
+        if self._callback_executor is executor:
+            self._callback_executor = None
 
     def _callback_thread(self, func: Any, *args: Any) -> "asyncio.Future[Any]":
         """Run a synchronous callback in the processor-owned thread pool."""

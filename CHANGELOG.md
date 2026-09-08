@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   concurrent `results()` calls observe the same outcome.
 - A batch worker that fails after the queue drained now raises its original
   exception after finalization instead of a fabricated `CancelledError`.
+- The bundled `progress=True` reporter now closes as the last ordered cleanup
+  step, so a bar-close failure is logged and follows the same precedence as
+  every other cleanup failure instead of replacing a producer error or the
+  consumer's cancellation.
 
 ### Added
 

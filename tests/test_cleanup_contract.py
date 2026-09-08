@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 
 import async_batch_llm.base as base_module
+import async_batch_llm.streaming as streaming_module
 from async_batch_llm import (
     ArtifactIdentity,
     ArtifactIOError,
@@ -38,6 +39,7 @@ from async_batch_llm import (
     ParallelBatchProcessor,
     ProcessingEvent,
     ProcessorConfig,
+    RateLimitConfig,
     RetryState,
     SqliteArtifactStore,
     StreamFinalizationError,
@@ -46,6 +48,7 @@ from async_batch_llm import (
     process_stream,
 )
 from async_batch_llm._internal import cleanup as cleanup_module
+from async_batch_llm._internal.executor_host import ExecutorHost
 from async_batch_llm.base import TokenUsage
 from async_batch_llm.llm_strategies import LLMCallStrategy
 
@@ -1038,3 +1041,139 @@ async def test_batch_worker_late_failure_is_raised_after_finalization(
         await processor.process_all()
     assert observer.completed
     assert store.closed
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1 on this branch: paths the clause tests did not cover
+# --------------------------------------------------------------------------- #
+
+
+async def test_c1_cancelled_batch_keeps_callback_thread_barrier_for_later_shutdown() -> None:
+    """Cancelling process_all() while it waits for a callback thread must not
+    drop the thread pool: a later shutdown() still waits for the thread before
+    closing the artifact store."""
+    log: list[str] = []
+    store = _Store(log)
+
+    def progress(completed: int, total: int, item_id: str) -> None:
+        log.append("progress:start")
+        time.sleep(0.3)
+        log.append("progress:done")
+
+    processor = _processor(
+        config=ProcessorConfig(max_workers=1, attempt_timeout=5.0, progress_callback_timeout=0.01),
+        artifact_store=store,
+        progress_callback=progress,
+    )
+    await processor.add_work(LLMWorkItem("one", _Strategy(), "prompt"))
+    run = asyncio.create_task(processor.process_all())
+    await asyncio.sleep(0.1)  # item done; process_all() is waiting on the callback thread
+    run.cancel()
+    await asyncio.wait([run], timeout=2)
+    assert run.cancelled()
+
+    await processor.shutdown()
+
+    assert "progress:done" in log
+    assert log.index("progress:done") < log.index("store:close:start")
+
+
+async def test_c5_finalizer_cancelled_before_start_still_decides_failure() -> None:
+    """A finalizer task cancelled before its coroutine ran never reached the
+    code that publishes a terminal; the stop path must decide one so a
+    consumer does not block forever. (White-box trigger: only a cancel-all
+    sweep reaches this ordering through public calls.)"""
+    processor = _processor()
+    processor.start()
+    await processor.add_work(LLMWorkItem("one", _Strategy(), "prompt"))
+    await processor.finish()
+    assert processor._finalize_task is not None
+    processor._finalize_task.cancel()
+
+    await processor.shutdown()
+
+    with pytest.raises(StreamFinalizationError):
+        await asyncio.wait_for(_collect(processor), timeout=1)
+
+
+async def test_c1_failed_cooldown_shutdown_does_not_skip_same_scope_quota_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processor = _processor(config=ProcessorConfig(max_workers=1, max_requests_per_minute=1000))
+    strategy = _Strategy()
+    await _run_one(processor, strategy)
+    registry = processor._admission_registry
+    state = registry.resolve(strategy)
+    calls: list[str] = []
+    original_cooldown = state.cooldown.shutdown
+    original_gate = state.quota_gate.shutdown
+
+    async def failing_cooldown() -> None:
+        calls.append("cooldown")
+        raise ValueError("cooldown boom")
+
+    async def recording_gate() -> None:
+        calls.append("gate")
+        await original_gate()
+
+    monkeypatch.setattr(state.cooldown, "shutdown", failing_cooldown)
+    monkeypatch.setattr(state.quota_gate, "shutdown", recording_gate)
+
+    with pytest.raises(ValueError, match="cooldown boom"):
+        await processor.shutdown()
+    assert calls == ["cooldown", "gate"]
+    assert registry._scope_entries  # the failed scope stays for retry
+
+    monkeypatch.setattr(state.cooldown, "shutdown", original_cooldown)
+    await processor.shutdown()
+    assert not registry._scope_entries
+
+
+async def test_c3_coordinator_shutdown_does_not_swallow_caller_cancellation() -> None:
+    host: ExecutorHost[Any, str, Any] = ExecutorHost(
+        ProcessorConfig(
+            max_workers=1,
+            rate_limit=RateLimitConfig(cooldown_seconds=5.0, slow_start_items=0),
+        )
+    )
+    coordinator = host._rate_limit_coord
+    waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
+    await asyncio.sleep(0.01)  # the owned cooldown task is now pending
+
+    closing = asyncio.create_task(coordinator.shutdown())
+    await asyncio.sleep(0)  # closing is awaiting the cancelled cooldown task
+    closing.cancel()
+    await asyncio.wait([closing], timeout=1)
+
+    try:
+        assert closing.cancelled(), "the caller's own cancellation was swallowed"
+    finally:
+        await asyncio.wait([waiter], timeout=1)
+        if not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await host.aclose()
+
+
+async def test_process_stream_input_error_is_primary_over_reporter_close_failure(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.ERROR)
+
+    async def failing_aclose(self: Any, **kwargs: Any) -> None:
+        raise RuntimeError("bar close failed")
+
+    monkeypatch.setattr(streaming_module._ProgressReporter, "aclose", failing_aclose)
+
+    async def prompts() -> Any:
+        yield "a"
+        raise LookupError("input failed")
+
+    with pytest.raises(LookupError, match="input failed"):
+        async for _ in process_stream(_Strategy(), prompts(), progress=True):
+            pass
+    assert _warnings(caplog, "bar close failed")
+
+    # With no other error the reporter failure is a runtime failure and raises.
+    with pytest.raises(RuntimeError, match="bar close failed"):
+        await process_prompts(_Strategy(), ["a"], progress=True)

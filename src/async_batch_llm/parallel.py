@@ -215,6 +215,9 @@ class ParallelBatchProcessor(
         self.config = config
         self.artifact_store = artifact_store
         self._artifact_store_closed = False
+        # Steps an owning surface (e.g. the streaming API's progress reporter)
+        # appends so they run inside the same ordered close, last.
+        self._extra_cleanup_steps: list[CleanupStep] = []
         self.resume = ResumePolicy(resume)
         self._abort_controller: AbortController | None = AbortController(
             config.guardrails.abort_mode
@@ -438,6 +441,7 @@ class ParallelBatchProcessor(
         ]
         if self.artifact_store is not None and not self._artifact_store_closed:
             steps.append(CleanupStep("artifact store", self._close_artifact_store))
+        steps.extend(self._extra_cleanup_steps)
         return steps
 
     async def _clear_classifier_cache(self) -> None:

@@ -18,13 +18,13 @@ Behavior is preserved 1:1, including log message prefixes.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from typing import Any
 
 from ..observers import ProcessingEvent
 from ..strategies import RateLimitStrategy
+from .cleanup import wait_detached
 from .event_dispatcher import EventDispatcher
 
 logger = logging.getLogger(__name__)
@@ -304,8 +304,9 @@ class RateLimitCoordinator:
         self._cooldown_task = None
         if task is not None and not task.done():
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            # Detached: the caller's own cancellation propagates instead of
+            # being mistaken for the cooldown task's.
+            await wait_detached(task)
 
     async def _finalize_cooldown(
         self,
