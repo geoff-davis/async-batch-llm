@@ -48,6 +48,7 @@ from async_batch_llm import (
     process_stream,
 )
 from async_batch_llm._internal import cleanup as cleanup_module
+from async_batch_llm._internal.admission import QuotaGate
 from async_batch_llm._internal.executor_host import ExecutorHost
 from async_batch_llm.base import TokenUsage
 from async_batch_llm.llm_strategies import LLMCallStrategy
@@ -1092,8 +1093,9 @@ async def test_c5_finalizer_cancelled_before_start_still_decides_failure() -> No
 
     await processor.shutdown()
 
-    with pytest.raises(StreamFinalizationError):
+    with pytest.raises(StreamFinalizationError) as info:
         await asyncio.wait_for(_collect(processor), timeout=1)
+    assert isinstance(info.value.__cause__, asyncio.CancelledError)
 
 
 async def test_c1_failed_cooldown_shutdown_does_not_skip_same_scope_quota_gate(
@@ -1177,3 +1179,117 @@ async def test_process_stream_input_error_is_primary_over_reporter_close_failure
     # With no other error the reporter failure is a runtime failure and raises.
     with pytest.raises(RuntimeError, match="bar close failed"):
         await process_prompts(_Strategy(), ["a"], progress=True)
+
+
+# --------------------------------------------------------------------------- #
+# Review round 2 on this branch: owned-task handles and outcomes
+# --------------------------------------------------------------------------- #
+
+
+def _cooldown_host() -> ExecutorHost[Any, str, Any]:
+    return ExecutorHost(
+        ProcessorConfig(
+            max_workers=1,
+            rate_limit=RateLimitConfig(cooldown_seconds=5.0, slow_start_items=0),
+        )
+    )
+
+
+async def test_c4_cancelled_coordinator_shutdown_keeps_task_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry after a cancelled shutdown must still wait for the owned
+    cooldown task to settle; it is a barrier for dependent cleanup."""
+    host = _cooldown_host()
+    coordinator = host._rate_limit_coord
+    original_finalize = coordinator._finalize_cooldown
+
+    async def slow_finalize(*args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(0.3)
+        await original_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator, "_finalize_cooldown", slow_finalize)
+    waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
+    await asyncio.sleep(0.01)
+    owned = coordinator._cooldown_task
+    assert owned is not None
+
+    closing = asyncio.create_task(coordinator.shutdown())
+    await asyncio.sleep(0)
+    closing.cancel()
+    await asyncio.wait([closing], timeout=1)
+    assert closing.cancelled()
+    assert not owned.done()
+
+    try:
+        await coordinator.shutdown()  # the retry
+        assert owned.done(), "retry returned while the owned cooldown task was still live"
+    finally:
+        await asyncio.wait([waiter], timeout=1)
+        if not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await host.aclose()
+
+
+async def test_c1_owned_cooldown_task_failure_is_surfaced_by_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host = _cooldown_host()
+    coordinator = host._rate_limit_coord
+
+    async def failing_finalize(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("cooldown teardown failed")
+
+    monkeypatch.setattr(coordinator, "_finalize_cooldown", failing_finalize)
+    waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
+    await asyncio.sleep(0.01)
+
+    try:
+        with pytest.raises(RuntimeError, match="cooldown teardown failed"):
+            await coordinator.shutdown()
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await host.aclose()
+
+
+async def _pending_wake_gate(sleep: Any) -> tuple[QuotaGate, asyncio.Task[None]]:
+    gate = QuotaGate(max_requests_per_minute=1, sleep=sleep)
+    gate._request_available = 0.0  # a full deficit: the wake sleeps ~60s
+    gate._schedule_wake(None)
+    assert gate._wake_task is not None
+    await asyncio.sleep(0)  # let the wake task enter its sleep
+    return gate, gate._wake_task
+
+
+async def test_c4_cancelled_gate_shutdown_keeps_wake_task_for_retry() -> None:
+    async def lingering_sleep(delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.3)
+            raise
+
+    gate, owned = await _pending_wake_gate(lingering_sleep)
+    closing = asyncio.create_task(gate.shutdown())
+    await asyncio.sleep(0)
+    closing.cancel()
+    await asyncio.wait([closing], timeout=1)
+    assert closing.cancelled()
+    assert not owned.done()
+
+    await gate.shutdown()  # the retry
+    assert owned.done(), "retry returned while the owned wake task was still live"
+
+
+async def test_c1_owned_wake_task_failure_is_surfaced_by_gate_shutdown() -> None:
+    async def failing_sleep(delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            raise RuntimeError("wake teardown failed") from None
+
+    gate, _ = await _pending_wake_gate(failing_sleep)
+    with pytest.raises(RuntimeError, match="wake teardown failed"):
+        await gate.shutdown()

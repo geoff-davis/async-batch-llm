@@ -13,7 +13,7 @@ from typing import Any
 from ..llm_strategies import LLMCallStrategy
 from ..strategies import RateLimitStrategy, TokenEstimateExceedsLimit
 from ..token_estimation import TokenEstimate
-from .cleanup import wait_detached
+from .cleanup import owned_task_error, wait_detached
 from .event_dispatcher import EventDispatcher
 from .rate_limit_coordinator import RateLimitCoordinator
 
@@ -457,18 +457,33 @@ class QuotaGate:
         return task
 
     async def shutdown(self) -> None:
-        if self._closed:
-            return
+        """Close the gate; idempotent, and a cancelled or failed call is retryable.
+
+        ``_closed`` is set before the first await so new reservations are
+        rejected immediately. A retry after a cancelled call re-joins the
+        still-live wake task rather than returning early.
+        """
         self._closed = True
-        task = self._cancel_wake_task()
-        if task is not None:
+        task = self._wake_task
+        if task is not None and task is not asyncio.current_task():
+            if not task.done():
+                task.cancel()
             # Detached: the caller's own cancellation propagates instead of
-            # being mistaken for the wake task's.
+            # being mistaken for the wake task's. The handle is kept until the
+            # task has settled so a retry after a cancelled shutdown still
+            # waits for it.
             await wait_detached(task)
+            if self._wake_task is task:
+                self._wake_task = None
+                self._wake_deadline = None
         while self._waiters:
             waiter = self._waiters.popleft()
             if not waiter.future.done():
                 waiter.future.set_exception(AdmissionGateClosed("Quota gate was shut down"))
+        if task is not None and task is not asyncio.current_task():
+            error = owned_task_error(task)
+            if error is not None:
+                raise error
 
     def _validate_estimate(self, estimate: TokenEstimate | None) -> None:
         if not self.tpm_enabled:

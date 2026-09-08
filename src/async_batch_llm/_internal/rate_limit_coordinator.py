@@ -24,7 +24,7 @@ from typing import Any
 
 from ..observers import ProcessingEvent
 from ..strategies import RateLimitStrategy
-from .cleanup import wait_detached
+from .cleanup import owned_task_error, wait_detached
 from .event_dispatcher import EventDispatcher
 
 logger = logging.getLogger(__name__)
@@ -301,12 +301,20 @@ class RateLimitCoordinator:
         cooldown active.
         """
         task = self._cooldown_task
-        self._cooldown_task = None
-        if task is not None and not task.done():
+        if task is None:
+            return
+        if not task.done():
             task.cancel()
-            # Detached: the caller's own cancellation propagates instead of
-            # being mistaken for the cooldown task's.
-            await wait_detached(task)
+        # Detached: the caller's own cancellation propagates instead of being
+        # mistaken for the cooldown task's. The handle is kept until the task
+        # has settled so a retry after a cancelled shutdown still waits for
+        # it; the owned task is a barrier for dependent cleanup.
+        await wait_detached(task)
+        if self._cooldown_task is task:
+            self._cooldown_task = None
+        error = owned_task_error(task)
+        if error is not None:
+            raise error
 
     async def _finalize_cooldown(
         self,

@@ -1417,9 +1417,16 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         # A finalizer cancelled before its coroutine ran never reached the
         # code that decides a terminal; decide the failure here so a consumer
         # does not block forever. (No-op once a decision exists.)
-        self._publish_terminal(
-            StreamFinalizationError("Stream finalization was cancelled before it started")
-        )
+        if task.cancelled() and self._stream_terminal is None:
+            try:
+                task.result()
+            except asyncio.CancelledError as cancellation:
+                self._publish_terminal(
+                    StreamFinalizationError(
+                        "Stream finalization was cancelled before it started",
+                        cause=cancellation,
+                    )
+                )
 
     async def _stop_workers(self) -> None:
         if not self._workers:

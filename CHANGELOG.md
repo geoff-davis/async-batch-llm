@@ -77,8 +77,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   finalization keep their type; they are never converted into item failures
   or a clean end of stream, and they take precedence over a deferred
   cancellation.
-- A failed `AdmissionRegistry.shutdown()` is retryable: each quota scope is
-  released only after both of its components closed.
+- A failed `AdmissionRegistry.shutdown()` is retryable: both components of a
+  quota scope are attempted, and the scope is released only after both
+  closed. The rate-limit coordinator and quota gate keep their owned task
+  handle until that task has settled, so a retry after a cancelled shutdown
+  still waits for it, and a non-cancellation failure inside the owned task
+  is raised instead of being discarded.
 
 ## [0.23.0] - 2026-08-27
 
