@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 from ._internal.admission import AdmissionRegistry
 from ._internal.capacity import CapacityLimiter, warn_if_worker_capacity_exceeded
 from ._internal.classifier_resolver import StrategyClassifierResolver
-from ._internal.cleanup import CleanupStep
+from ._internal.cleanup import CleanupAction, CleanupPhase, CleanupStep
 from ._internal.event_dispatcher import EventDispatcher
 from ._internal.guardrails import (
     AbortCause,
@@ -363,7 +363,7 @@ class ParallelBatchProcessor(
         Returns:
             False to indicate exceptions should not be suppressed
         """
-        report = await self._closer.close(primary_exception=exc_val)
+        report = await self._close_after_run(primary_exception=exc_val)
         if exc_val is None:
             report.raise_first()
         return False  # Don't suppress exceptions
@@ -425,24 +425,25 @@ class ParallelBatchProcessor(
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-    def _cleanup_steps(self) -> list[CleanupStep]:
+    def _cleanup_steps(self) -> list[CleanupAction]:
         """Runtime tasks, then admission resources, then strategies, then the store."""
-        self._strategy_lifecycle.mark_closing()
-        steps = [
+        steps: list[CleanupAction] = [
             CleanupStep("batch timeout", self._cancel_batch_timeout),
             *super()._cleanup_steps(),
-            CleanupStep("admission registry", self._admission_registry.shutdown),
-            CleanupStep(
-                "compatibility rate-limit coordinator",
-                self._compatibility_rate_limit_coord.shutdown,
-            ),
-            CleanupStep("classifier resolver", self._clear_classifier_cache),
-            *self._strategy_lifecycle.cleanup_steps(),
+            CleanupPhase("admission and strategies", self._resource_cleanup_steps),
         ]
         if self.artifact_store is not None and not self._artifact_store_closed:
             steps.append(CleanupStep("artifact store", self._close_artifact_store))
         steps.extend(self._extra_cleanup_steps)
         return steps
+
+    def _resource_cleanup_steps(self) -> list[CleanupAction]:
+        self._strategy_lifecycle.mark_closing()
+        return [
+            *self._admission_registry.cleanup_steps(self._compatibility_rate_limit_coord),
+            CleanupPhase("prepared strategies", self._strategy_lifecycle.cleanup_steps),
+            CleanupStep("classifier resolver", self._clear_classifier_cache),
+        ]
 
     async def _clear_classifier_cache(self) -> None:
         self._classifier_resolver.clear()
@@ -612,8 +613,6 @@ class ParallelBatchProcessor(
                 "duration": duration,
             },
         )
-        if self.artifact_store is not None and not self._artifact_store_closed:
-            await self._close_artifact_store()
 
     async def _emit_event(self, event: ProcessingEvent, data: dict | None = None) -> None:
         """Delegate to EventDispatcher (see _internal/event_dispatcher.py)."""
@@ -937,5 +936,5 @@ class ParallelBatchProcessor(
         never repeated and a failed one is retried by the next call. Raises
         the first cleanup failure after every step has been attempted.
         """
-        report = await self._closer.close()
+        report = await self._close_explicitly()
         report.raise_first()

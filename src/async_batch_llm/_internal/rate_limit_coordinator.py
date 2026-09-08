@@ -18,6 +18,7 @@ Behavior is preserved 1:1, including log message prefixes.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
 from typing import Any
@@ -26,9 +27,8 @@ from ..observers import ProcessingEvent
 from ..strategies import RateLimitStrategy
 from .cleanup import (
     CleanupInterruptedError,
-    owned_task_failure,
     sleep_unless_stopped,
-    wait_detached,
+    stop_owned_tasks,
 )
 from .event_dispatcher import EventDispatcher
 
@@ -62,6 +62,7 @@ class RateLimitCoordinator:
         # whether the cooldown they observed has already been handled.
         self._cooldown_generation = 0
         self._cooldown_complete_generation = 0
+        self._started_cooldown_generation = 0
         # Per-generation event so late workers can wait for the exact cycle.
         self._current_generation_event: asyncio.Event = asyncio.Event()
         self._current_generation_event.set()
@@ -74,12 +75,8 @@ class RateLimitCoordinator:
         # The cooldown sleep runs in a coordinator-OWNED task (issue #88):
         # cancelling the caller that reported the rate limit (gateway
         # submit_timeout, item deadline) must cancel only that caller, never
-        # finish the shared pause early. shutdown() cancels this task.
+        # finish the shared pause early. shutdown() signals its stop event.
         self._cooldown_task: asyncio.Task[None] | None = None
-        # Owned-cooldown bookkeeping for shutdown(): the shielded finalization
-        # started by the task's cancellation handler, the context needed to
-        # finalize from shutdown() itself when that handler never ran, and
-        # whether shutdown() already sent its one cancellation.
         # Every live owned cooldown task with the stop event shutdown() sets
         # to end it early. A task that has finished delivering COOLDOWN_ENDED
         # removes itself; workers are released before that delivery, so a
@@ -188,10 +185,9 @@ class RateLimitCoordinator:
                 # The cooldown runs in a coordinator-owned task, NOT in this
                 # caller's task (issue #88): a gateway submit timeout or item
                 # deadline cancelling the reporting caller must cancel only
-                # that caller — a caller cancellation used to success-finalize
-                # the shared cooldown and wake every waiter early. Only
-                # shutdown() cancels the owned task (and then waking waiters
-                # is the intended teardown behavior).
+                # that caller. Shutdown signals the stop event; external
+                # cancellation of the owned task releases waiting workers
+                # and remains an interruption reported at close.
                 self._cooldown_context = (time.time(), strategy_type)
                 stop = asyncio.Event()
                 task = asyncio.create_task(
@@ -206,6 +202,14 @@ class RateLimitCoordinator:
                 )
                 self._owned_cooldowns[task] = stop
                 self._cooldown_task = task
+                task.add_done_callback(
+                    functools.partial(
+                        self._recover_unstarted_cooldown,
+                        generation,
+                        self._cooldown_context[0],
+                        strategy_type,
+                    )
+                )
                 # This caller pauses below; its frame must not keep the
                 # settled task (and a failure's traceback) alive.
                 del task, stop
@@ -224,16 +228,52 @@ class RateLimitCoordinator:
         strategy_type: str | None,
         stop: asyncio.Event,
     ) -> None:
-        """Owned cooldown cycle: compute the wait, sleep, finalize.
+        """Release workers after the wait, preserving any external interruption.
 
-        ``stop`` (set by :meth:`shutdown`) ends the sleep early; the cycle
-        then finalizes the generation itself so waiting workers are released.
-        This task is never cancelled by the coordinator, so a
-        ``CancelledError`` here is a third party's and simply propagates:
-        nothing is finalized on shutdown's behalf, and shutdown() reports the
-        interruption and finalizes on the explicit close after it.
+        Recovery covers cancellation before finalization starts. A cancelled
+        finalization itself is never retried here or in the reporting close.
         """
+        self._started_cooldown_generation = generation
         pause_started_at = time.time()
+        try:
+            cooldown_error = await self._wait_cooldown(
+                worker_id, generation, consecutive, suggested_wait, strategy_type, stop
+            )
+        except (asyncio.CancelledError, CleanupInterruptedError):
+            await self._finalize_cooldown(pause_started_at, None, strategy_type)
+            raise
+        await self._finalize_cooldown(pause_started_at, cooldown_error, strategy_type)
+        current = asyncio.current_task()
+        if current is not None:
+            self._owned_cooldowns.pop(current, None)
+
+    def _recover_unstarted_cooldown(
+        self,
+        generation: int,
+        started_at: float,
+        strategy_type: str | None,
+        task: asyncio.Task[None],
+    ) -> None:
+        if not task.cancelled() or self._started_cooldown_generation >= generation:
+            return
+        self._started_cooldown_generation = generation
+        recovery = asyncio.create_task(self._finalize_cooldown(started_at, None, strategy_type))
+        self._owned_cooldowns[recovery] = asyncio.Event()
+        recovery.add_done_callback(self._release_recovered_cooldown)
+
+    def _release_recovered_cooldown(self, task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and task.exception() is None:
+            self._owned_cooldowns.pop(task, None)
+
+    async def _wait_cooldown(
+        self,
+        worker_id: int,
+        generation: int,
+        consecutive: int,
+        suggested_wait: float | None,
+        strategy_type: str | None,
+        stop: asyncio.Event,
+    ) -> Exception | None:
         cooldown_error: Exception | None = None
 
         try:
@@ -310,9 +350,6 @@ class RateLimitCoordinator:
             if cooldown > 0 and not stop.is_set():
                 await sleep_unless_stopped(asyncio.sleep(cooldown), stop, name="cooldown sleep")
         except (asyncio.CancelledError, CleanupInterruptedError):
-            # A third party interfered with this task or its sleep: the
-            # generation stays paused for shutdown() to report and the next
-            # explicit close to finalize, never resumed early.
             raise
         except Exception as exc:
             logger.warning(
@@ -322,12 +359,7 @@ class RateLimitCoordinator:
             )
             cooldown_error = cooldown_error or exc
 
-        await self._finalize_cooldown(pause_started_at, cooldown_error, strategy_type)
-        # Complete, with nothing to report: release the handle. A task that
-        # fails stays registered until shutdown() has reported it.
-        current = asyncio.current_task()
-        if current is not None:
-            self._owned_cooldowns.pop(current, None)
+        return cooldown_error
 
     async def shutdown(self) -> None:
         """End an in-flight cooldown and finalize its generation.
@@ -346,35 +378,11 @@ class RateLimitCoordinator:
         paused generation is tracked by state, not by a task handle: the
         next explicit call finalizes it from here.
         """
-        owned = dict(self._owned_cooldowns)
-        if owned:
-            for stop in owned.values():
-                stop.set()
-            # Detached: the caller's own cancellation propagates instead of
-            # being mistaken for an owned task's, and never touches the task.
-            # Handles stay registered until every task has settled, so a
-            # retry after a cancelled call re-joins all of them.
-            for task in owned:
-                await wait_detached(task)
-            failures: list[BaseException] = []
-            for task in owned:
-                self._owned_cooldowns.pop(task, None)
-                if self._cooldown_task is task:
-                    self._cooldown_task = None
-                failure = owned_task_failure(task, name="cooldown", cancel_sent=False)
-                if failure is not None:
-                    failures.append(failure)
-            del owned, task
-            if failures:
-                primary, *secondary = failures
-                del failures
-                for extra in secondary:
-                    logger.error(
-                        "[ERROR]Additional owned cooldown task failed during shutdown",
-                        exc_info=extra,
-                    )
-                del secondary
-                raise primary
+        failure = await stop_owned_tasks(self._owned_cooldowns, name="cooldown", logger=logger)
+        if self._cooldown_task is not None and self._cooldown_task.done():
+            self._cooldown_task = None
+        if failure is not None:
+            raise failure
 
         if self._in_cooldown:
             # The owned task did not finalize the generation (it failed, or a

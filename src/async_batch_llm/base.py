@@ -18,7 +18,10 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, TypedDict, cast, overlo
 from typing_extensions import TypeVar  # PEP 696 defaults on Python < 3.13
 
 from ._internal.cleanup import (
+    CleanupAction,
+    CleanupReport,
     CleanupStep,
+    CloseState,
     SharedCloser,
     wait_all_detached,
     wait_detached,
@@ -1344,11 +1347,18 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._stream_terminal: _StreamTerminal | None = None
         self._finalize_task: asyncio.Task[None] | None = None
         self.termination = BatchTermination()
-        # Synchronous progress/post-processor callbacks run in a pool this
-        # processor owns, so teardown can wait for their threads to finish.
-        self._callback_executor: concurrent.futures.ThreadPoolExecutor | None = None
+        # Progress must not occupy the threads needed for post-processing.
+        # Both pools are owned and joined before dependent resources close.
+        self._callback_executors: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
         # One ordered close shared by cleanup(), shutdown() and __aexit__.
         self._closer = SharedCloser(self._cleanup_steps, name=type(self).__name__, logger=logger)
+        self._normal_stream_close = False
+        self._finalization_close_finished = False
+        self._finalization_report: CleanupReport | None = None
+        self._finalization_report_observed = False
+        self._finalization_primary_exception: BaseException | None = None
+        self._preserve_completed_result = False
+        self._batch_completion_delivered = False
 
     async def __aenter__(self):
         """Context manager entry - returns self for use in async with."""
@@ -1361,7 +1371,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         no body exception, the first cleanup failure is raised after every
         step has been attempted.
         """
-        report = await self._closer.close(primary_exception=exc_val)
+        report = await self._close_after_run(primary_exception=exc_val)
         if exc_val is None:
             report.raise_first()
         return False  # Don't suppress exceptions
@@ -1381,19 +1391,48 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         cleanup finishes, then re-raises it. Cancelling it a second time
         force-aborts the current step, skips the rest, and propagates.
         """
-        report = await self._closer.close()
+        report = await self._close_explicitly()
         report.raise_first()
 
-    def _cleanup_steps(self) -> list[CleanupStep]:
+    async def _close_explicitly(self) -> CleanupReport:
+        self._finalization_report_observed = True
+        self._finalization_report = None
+        return await self._closer.close()
+
+    async def _close_after_run(
+        self, *, primary_exception: BaseException | None = None
+    ) -> CleanupReport:
+        """Apply finalization's attempt at exit without automatically retrying it."""
+        self._finalization_report_observed = True
+        report = self._finalization_report
+        self._finalization_report = None
+        if self._finalization_close_finished:
+            return report if report is not None else CleanupReport()
+        return await self._closer.close(
+            primary_exception=primary_exception, retry=not self._normal_stream_close
+        )
+
+    def _cleanup_steps(self) -> list[CleanupAction]:
         """Ordered teardown steps; subclasses append their own resources."""
-        return [
-            CleanupStep("stream finalizer", self._stop_stream_finalizer),
-            CleanupStep("workers", self._stop_workers),
-            CleanupStep("queued work and results", self._drain_abandoned_work),
-            CleanupStep("progress callbacks", self._wait_progress_callbacks),
-            CleanupStep("post-processors", self._stop_post_processors),
-            CleanupStep("callback threads", self._shutdown_callback_threads),
-        ]
+        steps: list[CleanupAction] = []
+        if not self._normal_stream_close:
+            steps.append(CleanupStep("stream finalizer", self._stop_stream_finalizer, barrier=True))
+        steps.append(CleanupStep("workers", self._stop_workers, barrier=True))
+        steps.append(CleanupStep("queued work and results", self._drain_abandoned_work))
+        steps.extend(
+            [
+                CleanupStep("progress callbacks", self._wait_progress_callbacks, barrier=True),
+                CleanupStep("post-processors", self._stop_post_processors, barrier=True),
+                CleanupStep("callback threads", self._shutdown_callback_threads, barrier=True),
+            ]
+        )
+        if self._normal_stream_close and not self._batch_completion_delivered:
+            steps.append(CleanupStep("batch completion", self._complete_batch))
+        return steps
+
+    async def _complete_batch(self) -> None:
+        await self._on_batch_completed()
+        self._batch_completion_delivered = True
 
     async def _stop_stream_finalizer(self) -> None:
         task = self._finalize_task
@@ -1450,7 +1489,8 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
     async def _drain_abandoned_work(self) -> None:
         # Results abandoned by an early consumer own one permit each. Release
         # those permits after publishers are stopped; the terminal owns none.
-        self._drain_result_stream()
+        if not self._normal_stream_close:
+            self._drain_result_stream()
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
@@ -1489,29 +1529,22 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
 
     async def _shutdown_callback_threads(self) -> None:
         """Wait for every synchronous callback thread; an ordering barrier."""
-        executor = self._callback_executor
-        if executor is None:
-            return
-        # Keep the handle until the join has actually completed: if this wait
-        # is cancelled, a later close must still find the pool and wait for
-        # its threads instead of closing dependent resources under them.
-        # ThreadPoolExecutor.shutdown(wait=True) is idempotent, so a retry
-        # simply joins again.
-        await asyncio.get_running_loop().run_in_executor(
-            None, functools.partial(executor.shutdown, wait=True)
-        )
-        if self._callback_executor is executor:
-            self._callback_executor = None
-
-    def _callback_thread(self, func: Any, *args: Any) -> "asyncio.Future[Any]":
-        """Run a synchronous callback in the processor-owned thread pool."""
-        if self._callback_executor is None:
-            self._callback_executor = concurrent.futures.ThreadPoolExecutor(
-                max_workers=max(1, self.max_workers), thread_name_prefix="abl-callback"
+        for kind, executor in list(self._callback_executors.items()):
+            # Retain each handle until its join completes so interrupted waits
+            # remain barriers on retry. shutdown(wait=True) is idempotent.
+            await asyncio.get_running_loop().run_in_executor(
+                None, functools.partial(executor.shutdown, wait=True)
             )
-        return asyncio.get_running_loop().run_in_executor(
-            self._callback_executor, functools.partial(func, *args)
-        )
+            self._callback_executors.pop(kind, None)
+
+    def _callback_thread(self, kind: str, func: Any, *args: Any) -> "asyncio.Future[Any]":
+        """Run a callback in its dedicated, processor-owned pool."""
+        executor = self._callback_executors.get(kind)
+        if executor is None:
+            executor = self._callback_executors[kind] = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, self.max_workers), thread_name_prefix=f"abl-callback-{kind}"
+            )
+        return asyncio.get_running_loop().run_in_executor(executor, functools.partial(func, *args))
 
     @staticmethod
     def _consume_task_outcome(task: "asyncio.Task[Any]") -> None:
@@ -1687,7 +1720,22 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             )
             await self._wait_progress_callbacks()
             await self._shutdown_callback_threads()
-            await self._on_batch_completed()
+            if self._closer.state is not CloseState.OPEN:
+                raise StreamFinalizationError("Stream shut down during finalization")
+            # Use the same owner as explicit shutdown, but preserve queued
+            # results and never wait for this finalizer from its own owner.
+            self._normal_stream_close = True
+            try:
+                report = await self._closer.close(
+                    primary_exception=self._finalization_primary_exception
+                )
+            finally:
+                self._finalization_close_finished = True
+            if not self._finalization_report_observed:
+                self._finalization_report = report
+            if self._finalization_primary_exception is not None:
+                raise self._finalization_primary_exception
+            report.raise_first(preserve_completed_result=self._preserve_completed_result)
         except asyncio.CancelledError as exc:
             self._publish_terminal(
                 StreamFinalizationError("Stream finalization was cancelled", cause=exc)
@@ -2064,7 +2112,9 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 # A synchronous callback may perform blocking DB/file I/O. Keep
                 # it off the event loop in the processor-owned pool so teardown
                 # can wait for the thread even after a timeout cancels this task.
-                callback_result = await self._callback_thread(post_processor, result)
+                callback_result = await self._callback_thread(
+                    "post-processors", post_processor, result
+                )
             # Also support callable adapters that return an awaitable without
             # being declared with ``async def``.
             if inspect.isawaitable(callback_result):
@@ -2108,7 +2158,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             callback_awaitable = self.progress_callback(completed, total, current_item)
         else:
             thread_future = self._callback_thread(
-                self.progress_callback, completed, total, current_item
+                "progress", self.progress_callback, completed, total, current_item
             )
 
             async def _await_thread() -> None:

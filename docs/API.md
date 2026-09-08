@@ -312,6 +312,13 @@ by blocking until space is available.
 
 Process all work items in the queue.
 
+Batch completion leaves strategies and the artifact store open. Use the
+processor as an async context manager or call `await processor.shutdown()`
+to close admission resources, strategies, and then the store in order.
+Streaming finalization performs this teardown before `results()` ends;
+cleanup failures propagate there, and only a later explicit close retries
+failed steps.
+
 ```python
 result = await processor.process_all()
 ```

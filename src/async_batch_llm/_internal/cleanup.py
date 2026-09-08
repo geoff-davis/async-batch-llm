@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -64,11 +65,27 @@ class CleanupStep:
     closed resource) so that a later close can omit it.
     ``preserves_completed_result`` marks user-strategy cleanup, whose ordinary
     failure the high-level convenience APIs log instead of raise.
+    ``barrier`` means cancelling this private wait may leave its resource
+    alive: stop before dependents, without retrying the wait in this attempt.
+    An ordinary failure reported after an owned task settles is not a live
+    barrier, including an owned task's ``CleanupInterruptedError``.
     """
 
     name: str
     run: Callable[[], Awaitable[None]]
     preserves_completed_result: bool = False
+    barrier: bool = False
+
+
+@dataclass(frozen=True)
+class CleanupPhase:
+    """Discover a phase's resources only after preceding barriers have settled."""
+
+    name: str
+    build_steps: Callable[[], Sequence[CleanupAction]]
+
+
+CleanupAction = CleanupStep | CleanupPhase
 
 
 @dataclass(frozen=True)
@@ -158,49 +175,85 @@ def owned_task_failure(
     return CleanupInterruptedError(name)
 
 
+async def stop_owned_tasks(
+    tasks: dict[asyncio.Task[None], asyncio.Event], *, name: str, logger: logging.Logger
+) -> BaseException | None:
+    """Signal and join every owned task, then release their reported outcomes.
+
+    Owners never cancel these tasks, so every cancelled outcome is external.
+    A completion callback may register recovery work before a join returns;
+    include it in the barrier. On caller interruption, retain all handles for
+    the next explicit close. Return failures so the raising frame retains no
+    task snapshot through its traceback.
+    """
+    joined: dict[asyncio.Task[None], asyncio.Event] = {}
+    while pending := {task: stop for task, stop in tasks.items() if task not in joined}:
+        for stop in pending.values():
+            stop.set()
+        for task in pending:
+            await wait_detached(task)
+        # Even already-settled tasks may have done callbacks queued. Let
+        # those callbacks register recovery before discovering new work.
+        await asyncio.sleep(0)
+        joined.update(pending)
+    failures: list[BaseException] = []
+    for task in joined:
+        tasks.pop(task, None)
+        failure = owned_task_failure(task, name=name, cancel_sent=False)
+        if failure is not None:
+            failures.append(failure)
+    for extra in failures[1:]:
+        logger.error("Additional owned %s task failed during shutdown", name, exc_info=extra)
+    return failures[0] if failures else None
+
+
 async def sleep_unless_stopped(sleep: Awaitable[None], stop: asyncio.Event, *, name: str) -> None:
     """Run an owned ``sleep`` in a sub-task until it finishes or ``stop`` is set.
 
     Lets an owned task be ended early without anyone cancelling *it*: only
-    the sleep sub-task is cancelled here, by this function, and only once
-    ``stop`` is set, so a ``CancelledError`` reaching the caller is always
-    the caller's own. Each private child is classified by outcome: a sleep
-    that ended cancelled while no stop was requested, or a stop watcher that
-    ended without the stop being set, was cancelled by a third party and is
-    reported as :class:`CleanupInterruptedError` rather than treated as a
-    completed or stopped sleep. A failure raised by the sleep (an injected
-    sleep raising on cancellation, say) is raised so the owner surfaces it.
+    the private children are cancelled here, by this function, so a
+    ``CancelledError`` reaching the caller is always the caller's own.
+    Each private child is classified by outcome: a child that was already
+    cancelled before this helper stopped it was interrupted by a third party,
+    even if the stop event was set concurrently. A failure raised by the
+    sleep (an injected sleep raising on cancellation, say) is raised so the
+    owner surfaces it.
     """
     sleeper = asyncio.ensure_future(sleep)
     stopper = asyncio.ensure_future(stop.wait())
+    watcher_cancel_sent = False
+    sleeper_cancel_sent = False
     try:
         await asyncio.wait({sleeper, stopper}, return_when=asyncio.FIRST_COMPLETED)
-    except BaseException:
-        # The caller's own cancellation (or a process-control exception):
-        # tear the private children down, then let it propagate.
-        stopper.cancel()
+        # A stop flag is not evidence that we cancelled an already-settled child.
+        if not stopper.done():
+            watcher_cancel_sent = True
+            stopper.cancel()
         if not sleeper.done():
+            sleeper_cancel_sent = True
             sleeper.cancel()
-            await wait_detached(sleeper)
-        raise
-    # Event.wait() only returns once the event is set: a settled watcher with
-    # the stop unset was cancelled by a third party.
-    watcher_interrupted = stopper.done() and not stop.is_set()
-    stopper.cancel()
-    sleeper_cancel_sent = False
-    if not sleeper.done():
-        sleeper_cancel_sent = True
-        sleeper.cancel()
         await wait_detached(sleeper)
-    failure = owned_task_failure(
-        sleeper, name=name, cancel_sent=sleeper_cancel_sent or stop.is_set()
+        await wait_detached(stopper)
+    except BaseException:
+        # Also covers cancellation while an already-stopped child is still
+        # unwinding. Do not cancel it twice or abandon that live child.
+        if not stopper.done() and not watcher_cancel_sent:
+            stopper.cancel()
+        if not sleeper.done() and not sleeper_cancel_sent:
+            sleeper.cancel()
+        await wait_detached(sleeper)
+        await wait_detached(stopper)
+        for child in (sleeper, stopper):
+            if not child.cancelled():
+                child.exception()  # retrieve failures; the caller's exception stays primary
+        raise
+    watcher_failure = owned_task_failure(
+        stopper, name=f"{name} stop watcher", cancel_sent=watcher_cancel_sent
     )
+    failure = owned_task_failure(sleeper, name=name, cancel_sent=sleeper_cancel_sent)
     del sleeper
-    if failure is None and watcher_interrupted:
-        try:
-            stopper.exception()  # raises the watcher's CancelledError
-        except asyncio.CancelledError as exc:
-            failure = CleanupInterruptedError(f"{name} stop watcher", cause=exc)
+    if failure is None:
+        failure = watcher_failure
     del stopper
     if failure is not None:
         raise failure
@@ -261,7 +314,7 @@ class _Abort:
 
 
 async def _run_owner(
-    steps: Sequence[CleanupStep],
+    steps: Sequence[CleanupAction],
     *,
     name: str,
     logger: logging.Logger,
@@ -271,7 +324,13 @@ async def _run_owner(
     absorbed_direct_cancel = False
     loop = asyncio.get_running_loop()
 
-    for index, step in enumerate(steps):
+    pending = deque(steps)
+    while pending:
+        action = pending.popleft()
+        if isinstance(action, CleanupPhase):
+            pending.extendleft(reversed(action.build_steps()))
+            continue
+        step = action
         task = asyncio.create_task(_invoke(step), name=f"cleanup:{name}:{step.name}")
         slow = loop.call_later(
             CLEANUP_SLOW_WARNING_SECONDS,
@@ -293,7 +352,7 @@ async def _run_owner(
                     # cancellation, so one direct cancel is absorbed here to
                     # let the durability-critical work finish.
                     if abort.requested or absorbed_direct_cancel:
-                        skipped = [later.name for later in steps[index + 1 :]]
+                        skipped = [later.name for later in pending]
                         logger.warning(
                             "Cleanup of %s forced to abort while step %r was running; "
                             "abandoned it and skipped steps: %s",
@@ -313,11 +372,14 @@ async def _run_owner(
                 "Cleanup step %r of %s was cancelled before it completed", step.name, name
             )
             report.issues.append(CleanupIssue(step.name, error, step.preserves_completed_result))
-            continue
-        outcome = task.result()
+            outcome = _StepOutcome(error)
+        else:
+            outcome = task.result()
         if outcome.error is None:
             continue
-        if isinstance(outcome.error, asyncio.CancelledError):
+        if task.cancelled():
+            pass  # already classified and reported above
+        elif isinstance(outcome.error, asyncio.CancelledError):
             error = CleanupInterruptedError(step.name, cause=outcome.error)
             logger.warning(
                 "Cleanup step %r of %s raised CancelledError internally; "
@@ -346,6 +408,15 @@ async def _run_owner(
             report.issues.append(
                 CleanupIssue(step.name, outcome.error, step.preserves_completed_result)
             )
+        if step.barrier and (task.cancelled() or isinstance(outcome.error, asyncio.CancelledError)):
+            report.aborted = True
+            logger.warning(
+                "Cleanup barrier %r of %s was interrupted; skipped dependent steps: %s",
+                step.name,
+                name,
+                ", ".join(later.name for later in pending) or "none",
+            )
+            break
     return report
 
 
@@ -393,7 +464,7 @@ async def _await_owner(
 
 
 async def run_cleanup_steps(
-    steps: Sequence[CleanupStep],
+    steps: Sequence[CleanupAction],
     *,
     name: str,
     logger: logging.Logger,
@@ -423,7 +494,7 @@ class SharedCloser:
 
     def __init__(
         self,
-        build_steps: Callable[[], Sequence[CleanupStep]],
+        build_steps: Callable[[], Sequence[CleanupAction]],
         *,
         name: str,
         logger: logging.Logger,
@@ -435,13 +506,19 @@ class SharedCloser:
         self._owner: asyncio.Task[CleanupReport] | None = None
         self._abort = _Abort()
 
-    async def close(self, *, primary_exception: BaseException | None = None) -> CleanupReport:
-        """Run (or join) the close attempt. See :func:`run_cleanup_steps` for raises."""
+    async def close(
+        self, *, primary_exception: BaseException | None = None, retry: bool = True
+    ) -> CleanupReport:
+        """Run or join a close attempt. See :func:`run_cleanup_steps` for raises.
+
+        Automatic exit uses ``retry=False`` to join even a settled attempt
+        whose finalizer has not yet resumed to publish its report.
+        """
         if self.state is CloseState.CLOSED:
             return CleanupReport()
         self.state = CloseState.CLOSING
         owner = self._owner
-        if owner is None or owner.done():
+        if owner is None or (retry and owner.done()):
             self._abort = _Abort()
             steps = list(self._build_steps())
             owner = self._owner = asyncio.create_task(
@@ -465,12 +542,15 @@ class SharedCloser:
 __all__ = [
     "CLEANUP_SLOW_WARNING_SECONDS",
     "CleanupInterruptedError",
+    "CleanupAction",
+    "CleanupPhase",
     "CleanupIssue",
     "CleanupReport",
     "CleanupStep",
     "CloseState",
     "SharedCloser",
     "owned_task_failure",
+    "stop_owned_tasks",
     "sleep_unless_stopped",
     "run_cleanup_steps",
     "wait_all_detached",

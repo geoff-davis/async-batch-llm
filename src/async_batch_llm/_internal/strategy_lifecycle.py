@@ -42,7 +42,8 @@ class StrategyLifecycle(Generic[TOutput]):
 
     Holds weak references so that short-lived strategies (e.g. those
     created per request) don't keep Python objects alive longer than the
-    caller intended, and so no per-strategy bookkeeping outlives them.
+    caller intended. Once closing starts, unfinished strategies are held
+    strongly until cleanup succeeds, including across lazy phase discovery.
     """
 
     def __init__(self) -> None:
@@ -50,6 +51,10 @@ class StrategyLifecycle(Generic[TOutput]):
         self._cleaned: weakref.WeakSet[LLMCallStrategy[Any]] = weakref.WeakSet()
         self._lock = asyncio.Lock()
         self._closing = False
+        # Admission teardown releases its strategy references before the lazy
+        # strategy phase runs. Keep unfinished preparations alive across that
+        # boundary, including a prepare() already in flight when close starts.
+        self._closing_strategies: set[LLMCallStrategy[Any]] = set()
 
     @property
     def closing(self) -> bool:
@@ -58,6 +63,11 @@ class StrategyLifecycle(Generic[TOutput]):
     def mark_closing(self) -> None:
         """Reject new preparation from now on. One-way."""
         self._closing = True
+        self._closing_strategies.update(
+            strategy
+            for strategy in self._prepared
+            if strategy not in self._cleaned and _has_cleanup(strategy)
+        )
 
     async def ensure_prepared(self, strategy: LLMCallStrategy[TOutput]) -> None:
         """Call ``strategy.prepare()`` if it hasn't been prepared yet.
@@ -81,6 +91,8 @@ class StrategyLifecycle(Generic[TOutput]):
             logger.debug(f"Preparing strategy {strategy.__class__.__name__} (id={strategy_id})")
             await strategy.prepare()
             self._prepared.add(strategy)
+            if self._closing and _has_cleanup(strategy):
+                self._closing_strategies.add(strategy)
             logger.debug(
                 f"Strategy {strategy.__class__.__name__} prepared successfully (id={strategy_id})"
             )
@@ -104,6 +116,7 @@ class StrategyLifecycle(Generic[TOutput]):
         logger.debug(f"Cleaning up strategy {strategy.__class__.__name__} (id={id(strategy)})")
         await strategy.cleanup()
         self._cleaned.add(strategy)
+        self._closing_strategies.discard(strategy)
 
     async def cleanup_all(self) -> None:
         """Close every prepared strategy not yet closed; raise the first ordinary failure.
@@ -111,7 +124,7 @@ class StrategyLifecycle(Generic[TOutput]):
         Siblings are always attempted. A failed or interrupted strategy stays
         retryable by a later call; a successful one is never repeated.
         """
-        self._closing = True
+        self.mark_closing()
         report = await run_cleanup_steps(
             self.cleanup_steps(), name="strategy lifecycle", logger=logger
         )

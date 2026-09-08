@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING**: Batch `process_all()` now leaves the artifact store open until
+  context exit or explicit `shutdown()` / `cleanup()`, so strategy teardown
+  always precedes store close. Stream finalization runs the ordered close
+  before publishing its terminal; cleanup failures can therefore surface from
+  `results()`. Convenience APIs still preserve completed results for failures
+  confined to user strategy cleanup. Automatic exit does not retry a failed
+  stream-finalization close; it applies the finalization report even when the
+  stream terminal was not consumed. A later explicit close retries failures.
+- Cleanup discovers resource phases after preceding barriers finish, so a
+  admitted request can still prepare its strategy during gateway draining,
+  and that strategy is included in teardown. Interrupting a
+  private barrier wait skips dependent teardown until a later close.
+- Quota gates retain every owned wake across rescheduling and unsolicited
+  failures until shutdown observes its outcome. Failed or cancelled wakes
+  schedule replacements so reservations continue. Stop-aware sleeps classify
+  settled children independently of concurrent stop signals and join children
+  already stopping if the helper is cancelled. Secondary admission failures
+  are logged with tracebacks.
 - **BREAKING: Cleanup failures now raise instead of only logging.** `async with`
   exit, `shutdown()`, `cleanup()`, `LLMCallPool.aclose()`, and
   `process_stream()` now attempt every cleanup step and then raise the first
@@ -24,9 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   callback thread cannot be cancelled, so batch and stream finalization
   (artifact-store close, `BATCH_COMPLETED`, end of stream) wait for the
   thread to finish instead of closing resources underneath it. Callbacks run
-  in a processor-owned thread pool.
-- **BREAKING: Once a close has started, preparing a new strategy raises
-  `RuntimeError`.** Lifecycle state is one-way (open, closing, closed); a
+  in separate processor-owned pools for progress and post-processing, so slow
+  progress callbacks cannot leave post-processors queued until timeout.
+- **BREAKING: Once strategy teardown has started, preparing a new strategy
+  raises `RuntimeError`.** Admitted requests may still prepare during draining.
+  Lifecycle state is one-way (open, closing, closed); a
   failed close stays closing and the next explicit close retries only the
   steps that did not complete.
 - Manual `shutdown()` now runs the same ordered close as `async with` exit:
@@ -99,8 +119,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failure too (further failures are logged with tracebacks). The stop-aware
   sleep classifies its private children: a sleep or stop watcher cancelled
   by a third party is reported as an interruption instead of ending the
-  cooldown early, and the coordinator keeps the generation paused on such an
-  interruption rather than resuming workers.
+  cooldown silently. If cancellation occurs before finalization starts, the
+  coordinator finalizes the generation to release workers and still reports
+  the interruption at close. This also covers cancellation before the owned
+  task starts. Interrupted finalization remains retryable only by a later
+  explicit close.
 
 ## [0.23.0] - 2026-08-27
 

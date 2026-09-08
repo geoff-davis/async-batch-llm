@@ -19,6 +19,7 @@ import logging
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 import weakref
 from pathlib import Path
@@ -190,6 +191,564 @@ async def _collect(processor: ParallelBatchProcessor[Any, str, Any]) -> list[Any
     return [r async for r in processor.results()]
 
 
+@pytest.mark.parametrize("consume_one", [False, True])
+async def test_c6_exit_reports_unconsumed_finalization_cleanup_error(consume_one: bool) -> None:
+    failure = ValueError("strategy close failed")
+    strategy = _Strategy(cleanup_error=failure)
+    processor = _processor()
+    with pytest.raises(ValueError) as observed:
+        async with processor:
+            processor.start()
+            await processor.add_work(LLMWorkItem("one", strategy, "prompt"))
+            await processor.finish()
+            if consume_one:
+                reader = processor.results()
+                await reader.__anext__()
+                await reader.aclose()
+            assert processor._finalize_task is not None
+            await processor._finalize_task
+    assert observed.value is failure
+    assert strategy.cleanup_calls == 1
+    assert processor._finalization_report is None
+
+
+async def test_c4_exit_joins_settled_attempt_before_finalizer_publishes_report() -> None:
+    failure = ValueError("strategy close failed")
+    strategy = _Strategy(cleanup_error=failure)
+    processor = _processor()
+    processor.start()
+    await processor.add_work(LLMWorkItem("one", strategy, "prompt"))
+    await processor.finish()
+    while processor._closer._owner is None:
+        await asyncio.sleep(0)
+    attempt = processor._closer._owner
+    while not attempt.done():
+        await asyncio.sleep(0)
+    assert not processor._finalization_close_finished
+    with pytest.raises(ValueError) as observed:
+        await processor.__aexit__(None, None, None)
+    assert observed.value is failure
+    assert strategy.cleanup_calls == 1, "automatic exit retried the settled finalization attempt"
+    assert processor._finalize_task is not None
+    await processor._finalize_task
+    assert processor._finalization_report is None
+
+
+async def test_c6_body_error_wins_over_pending_finalization_report() -> None:
+    strategy = _Strategy(cleanup_error=ValueError("cleanup failure"))
+    processor = _processor()
+    with pytest.raises(LookupError, match="body failure"):
+        async with processor:
+            processor.start()
+            await processor.add_work(LLMWorkItem("one", strategy, "prompt"))
+            await processor.finish()
+            assert processor._finalize_task is not None
+            await processor._finalize_task
+            raise LookupError("body failure")
+    assert processor._finalization_report is None
+
+
+async def test_c1_sync_progress_cannot_starve_sync_post_processors() -> None:
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    written = asyncio.Event()
+    writes: list[str] = []
+
+    def progress(completed: int, total: int, item_id: str) -> None:
+        release.wait(5)
+
+    def post(result: Any) -> None:
+        writes.append(result.item_id)
+        if len(writes) == 3:
+            loop.call_soon_threadsafe(written.set)
+
+    processor = _processor(
+        config=ProcessorConfig(
+            max_workers=1, progress_callback_timeout=0.01, post_processor_timeout=0.1
+        ),
+        progress_callback=progress,
+        post_processor=post,
+    )
+    strategy = _Strategy()
+    for i in range(3):
+        await processor.add_work(LLMWorkItem(str(i), strategy, "prompt"))
+    running = asyncio.create_task(processor.process_all())
+    try:
+        await asyncio.wait_for(written.wait(), timeout=2)
+        assert writes == ["0", "1", "2"]
+    finally:
+        release.set()
+        await running
+        await processor.shutdown()
+
+
+async def test_c4_gateway_admitted_request_can_prepare_after_close_starts() -> None:
+    strategy = _Strategy()
+    gateway = LLMGateway(strategy, config=ProcessorConfig(max_workers=1))
+    await gateway._sem.acquire()
+    request = asyncio.create_task(gateway.submit("prompt"))
+    await asyncio.sleep(0)
+    assert gateway._inflight == 1
+    closing = asyncio.create_task(gateway.aclose())
+    await asyncio.sleep(0)
+    gateway._sem.release()
+    try:
+        assert await request == "prompt"
+    finally:
+        await closing
+    assert strategy.cleanup_calls == 1
+
+
+@pytest.mark.parametrize("surface", ["batch", "gateway"])
+@pytest.mark.parametrize("before_start", [False, True])
+async def test_c3_cancelled_cooldown_releases_admitted_work(
+    surface: str, before_start: bool
+) -> None:
+    class RateLimitedStrategy(_Strategy):
+        calls = 0
+
+        async def execute(self, *args: Any, **kwargs: Any) -> tuple[str, TokenUsage]:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("429 throttled")
+            return "prompt", _TOKENS
+
+    strategy = RateLimitedStrategy()
+    config = ProcessorConfig(
+        max_workers=1,
+        retry=RetryConfig(max_attempts=1, max_rate_limit_retries=1),
+        rate_limit=RateLimitConfig(cooldown_seconds=60, slow_start_items=0),
+    )
+    if surface == "batch":
+        owner = _processor(config=config)
+        await owner.add_work(LLMWorkItem("one", strategy, "prompt"))
+        running = asyncio.create_task(owner.process_all())
+        registry = owner._admission_registry
+        close = owner.shutdown
+    else:
+        owner = LLMGateway(strategy, config=config)
+        running = asyncio.create_task(owner.submit("prompt"))
+        registry = owner._host._admission_registry
+        close = owner.aclose
+    cooldown = None
+    while cooldown is None:
+        await asyncio.sleep(0)
+        for state in registry.states:
+            cooldown = state.cooldown._cooldown_task
+            if cooldown is not None:
+                break
+    if not before_start:
+        await asyncio.sleep(0.01)
+    cooldown.cancel("external cancellation")
+    try:
+        done, _ = await asyncio.wait([running], timeout=2)
+        assert running in done, "admitted work remained stuck in the cancelled cooldown"
+        assert not running.cancelled()
+        assert running.exception() is None
+        with pytest.raises(CleanupInterruptedError):
+            await close()
+        await close()
+    finally:
+        if not running.done():
+            running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        with contextlib.suppress(CleanupInterruptedError):
+            await close()
+
+
+async def test_c1_close_joins_recovery_registered_by_a_settled_cooldown() -> None:
+    host = _cooldown_host()
+    coordinator = host._rate_limit_coord
+    waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
+    await asyncio.sleep(0)
+    owned = coordinator._cooldown_task
+    assert owned is not None
+    owned.cancel()
+    await asyncio.sleep(0)
+    assert owned.cancelled()
+    # The task settled, but its done callback has not registered recovery yet.
+    assert coordinator._started_cooldown_generation == 0
+    try:
+        with pytest.raises(CleanupInterruptedError):
+            await coordinator.shutdown()
+        assert not coordinator._in_cooldown, "shutdown skipped the queued recovery callback"
+    finally:
+        await asyncio.sleep(0)
+        await coordinator.shutdown()
+        await waiter
+        await host.aclose()
+
+
+@pytest.mark.parametrize("failure", ["error", "cancel", "cancel_before_start"])
+async def test_c1_failed_quota_wake_reschedules_waiters(failure: str) -> None:
+    now = 0.0
+    calls = 0
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def sleep(delay: float) -> None:
+        nonlocal now, calls
+        calls += 1
+        if calls == 1 and failure != "cancel_before_start":
+            entered.set()
+            await release.wait()
+            raise RuntimeError("wake failed")
+        now += delay
+
+    gate = QuotaGate(1, clock=lambda: now, sleep=sleep)
+    first = await gate.reserve()
+    first.mark_provider_started()
+    first.finalize()
+    waiting = asyncio.create_task(gate.reserve())
+    await asyncio.sleep(0)
+    task = gate._wake_task
+    assert task is not None
+    if failure == "cancel_before_start":
+        task.cancel()
+    else:
+        await entered.wait()
+        if failure == "cancel":
+            task.cancel()
+        else:
+            release.set()
+    try:
+        done, _ = await asyncio.wait([waiting], timeout=2)
+        assert waiting in done, "the failed wake stranded its reservation waiter"
+        waiting.result().finalize()
+        expected = RuntimeError if failure == "error" else CleanupInterruptedError
+        with pytest.raises(expected):
+            await gate.shutdown()
+        await gate.shutdown()
+    finally:
+        if not waiting.done():
+            waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
+        with contextlib.suppress(RuntimeError):
+            await gate.shutdown()
+
+
+async def test_c4_gateway_closes_strategy_prepared_during_drain() -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class PreparingStrategy(_Strategy):
+        async def prepare(self) -> None:
+            entered.set()
+            await release.wait()
+
+    strategy = PreparingStrategy()
+    gateway = LLMGateway(strategy, config=ProcessorConfig(max_workers=1))
+    request = asyncio.create_task(gateway.submit("prompt"))
+    await entered.wait()
+    closing = asyncio.create_task(gateway.aclose())
+    await asyncio.sleep(0)
+    release.set()
+    assert await request == "prompt"
+    await closing
+    await gateway.aclose()
+    assert strategy.cleanup_calls == 1
+
+
+async def test_c1_interrupted_gateway_drain_keeps_strategy_open() -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class ExecutingStrategy(_Strategy):
+        async def execute(self, *args: Any, **kwargs: Any) -> tuple[str, TokenUsage]:
+            entered.set()
+            await release.wait()
+            return "prompt", _TOKENS
+
+    strategy = ExecutingStrategy()
+    gateway = LLMGateway(strategy, config=ProcessorConfig(max_workers=1))
+    request = asyncio.create_task(gateway.submit("prompt"))
+    await entered.wait()
+    closing = asyncio.create_task(gateway.aclose())
+    try:
+        while True:
+            step = next(
+                (
+                    t
+                    for t in asyncio.all_tasks()
+                    if t.get_name() == "cleanup:LLMGateway:gateway in-flight drain"
+                ),
+                None,
+            )
+            if step is not None:
+                break
+            await asyncio.sleep(0)
+        step.cancel()
+        with pytest.raises(CleanupInterruptedError):
+            await closing
+        assert not strategy.cleaned
+        assert not request.done()
+    finally:
+        release.set()
+        await request
+        await gateway.aclose()
+    assert strategy.cleanup_calls == 1
+
+
+@pytest.mark.parametrize("child", ["sleep", "watcher"])
+async def test_c3_child_cancellation_is_not_hidden_by_concurrent_stop(child: str) -> None:
+    entered = asyncio.Event()
+    children: dict[str, asyncio.Task[Any]] = {}
+
+    class WatchedEvent(asyncio.Event):
+        async def wait(self) -> bool:
+            children["watcher"] = asyncio.current_task()  # type: ignore[assignment]
+            entered.set()
+            return await super().wait()
+
+    async def sleep() -> None:
+        children["sleep"] = asyncio.current_task()  # type: ignore[assignment]
+        await asyncio.Event().wait()
+
+    stop = WatchedEvent()
+    helper = asyncio.create_task(cleanup_module.sleep_unless_stopped(sleep(), stop, name="sleep"))
+    await entered.wait()
+    children[child].cancel("third party")
+    stop.set()
+    with pytest.raises(CleanupInterruptedError):
+        await helper
+
+
+@pytest.mark.parametrize("failure", ["cancel", "error"])
+async def test_c4_gate_keeps_unsolicited_failure_until_shutdown(failure: str) -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def sleep(delay: float) -> None:
+        entered.set()
+        await release.wait()
+        raise RuntimeError("unsolicited wake failure")
+
+    gate, task = await _pending_wake_gate(sleep)
+    await entered.wait()
+    if failure == "cancel":
+        task.cancel()
+    else:
+        release.set()
+    await cleanup_module.wait_detached(task)
+    expected = CleanupInterruptedError if failure == "cancel" else RuntimeError
+    with pytest.raises(expected):
+        await gate.shutdown()
+    await gate.shutdown()
+
+
+async def test_c1_admission_secondary_failures_have_tracebacks(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    strategy = _Strategy()
+    host = ExecutorHost(ProcessorConfig(max_workers=1), strategy=strategy)
+    state = host._admission_registry.resolve(strategy)
+
+    async def first() -> None:
+        raise ValueError("first admission failure")
+
+    async def second() -> None:
+        raise RuntimeError("second admission failure")
+
+    state.cooldown.shutdown = first  # type: ignore[method-assign]
+    state.quota_gate.shutdown = second  # type: ignore[method-assign]
+    with pytest.raises(ValueError):
+        await host.aclose()
+    assert any(
+        record.exc_info and str(record.exc_info[1]) == "second admission failure"
+        for record in caplog.records
+    )
+
+
+async def test_c1_batch_store_stays_open_until_ordered_close() -> None:
+    log: list[str] = []
+    strategy, store = _Strategy(log=log), _Store(log)
+    processor = _processor(artifact_store=store)
+    await _run_one(processor, strategy)
+    assert not store.closed
+    await processor.shutdown()
+    assert log.index("s:cleanup:done") < log.index("store:close:start")
+
+
+async def test_c4_replaced_wake_stays_owned_until_its_failure_is_reported() -> None:
+    stopping, release = asyncio.Event(), asyncio.Event()
+
+    async def sleep(delay: float) -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            stopping.set()
+            await release.wait()
+            raise RuntimeError("old wake failed") from None
+
+    gate, old = await _pending_wake_gate(sleep)
+    await asyncio.sleep(0)  # start the private sleep
+    gate._stop_wake_task()
+    await stopping.wait()
+    gate._schedule_wake(None)
+    closing = asyncio.create_task(gate.shutdown())
+    try:
+        await asyncio.sleep(0.01)
+        assert not closing.done()
+    finally:
+        release.set()
+    with pytest.raises(RuntimeError, match="old wake failed"):
+        await closing
+    assert old.done()
+    await gate.shutdown()
+
+
+async def test_c1_cancelled_sleep_helper_rejoins_child_already_stopping() -> None:
+    entered, stopping, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def sleep() -> None:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            stopping.set()
+            await release.wait()
+
+    stop = asyncio.Event()
+    helper = asyncio.create_task(cleanup_module.sleep_unless_stopped(sleep(), stop, name="sleep"))
+    await entered.wait()
+    stop.set()
+    await stopping.wait()
+    helper.cancel()
+    try:
+        await asyncio.sleep(0.01)
+        assert not helper.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await helper
+
+
+async def test_c4_stream_failure_is_retried_only_by_explicit_close() -> None:
+    completed = 0
+
+    class Observer(BaseObserver):
+        async def on_event(self, event: ProcessingEvent, data: dict[str, Any]) -> None:
+            nonlocal completed
+            if event is ProcessingEvent.BATCH_COMPLETED:
+                completed += 1
+
+    strategy = _Strategy()
+    failure = ArtifactIOError("close failed")
+    store = _Store(close_error=failure)
+    processor = _processor(artifact_store=store, observers=[Observer()])
+    with pytest.raises(ArtifactIOError) as observed:
+        async with processor:
+            processor.start()
+            await processor.add_work(LLMWorkItem("one", strategy, "prompt"))
+            await processor.finish()
+            await _collect(processor)
+    assert observed.value is failure
+    assert store.close_calls == 1
+    store.close_error = None
+    await processor.shutdown()
+    assert store.close_calls == 2
+    assert strategy.cleanup_calls == 1
+    assert completed == 1
+    with pytest.raises(ArtifactIOError) as repeated:
+        await _collect(processor)
+    assert repeated.value is failure
+
+
+async def test_c4_lazy_strategy_phase_retains_short_lived_preparations() -> None:
+    log: list[str] = []
+    processor = _processor()
+    processor.start()
+    await processor.add_work(LLMWorkItem("one", _Strategy(log=log), "prompt"))
+    await processor.finish()
+    await _collect(processor)
+    assert log == ["s:cleanup:start", "s:cleanup:done"]
+
+
+async def test_c2_cancelled_stream_finalizer_does_not_interrupt_store_close() -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Store(_Store):
+        async def close(self) -> None:
+            entered.set()
+            await release.wait()
+            await super().close()
+
+    store = Store()
+    processor = _processor(artifact_store=store)
+    processor.start()
+    await processor.add_work(LLMWorkItem("one", _Strategy(), "prompt"))
+    await processor.finish()
+    await entered.wait()
+    finalizer = processor._finalize_task
+    assert finalizer is not None
+    finalizer.cancel("first delivery")
+    try:
+        await asyncio.sleep(0.01)
+        assert not finalizer.done()
+    finally:
+        release.set()
+    with pytest.raises(StreamFinalizationError):
+        await _collect(processor)
+    await processor.shutdown()
+    assert store.close_calls == 1
+
+
+@pytest.mark.parametrize("fail_observer", [False, True])
+async def test_c5_stream_terminal_waits_for_admission_callbacks(fail_observer: bool) -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+    log: list[str] = []
+
+    class Observer(BaseObserver):
+        async def on_event(self, event: ProcessingEvent, data: dict[str, Any]) -> None:
+            if event is ProcessingEvent.COOLDOWN_ENDED:
+                entered.set()
+                await release.wait()
+                log.append("observer:done")
+                if fail_observer:
+                    raise asyncio.CancelledError("observer interrupted")
+
+    class RateLimitedStrategy(_Strategy):
+        calls = 0
+
+        async def execute(self, *args: Any, **kwargs: Any) -> tuple[str, TokenUsage]:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("429 throttled")
+            return "prompt", _TOKENS
+
+    strategy, store = RateLimitedStrategy(log=log), _Store(log)
+    processor = _processor(
+        config=ProcessorConfig(
+            max_workers=1,
+            retry=RetryConfig(max_attempts=1, max_rate_limit_retries=1),
+            rate_limit=RateLimitConfig(
+                cooldown_seconds=0, max_cooldown_seconds=0, slow_start_items=0
+            ),
+        ),
+        observers=[Observer()],
+        artifact_store=store,
+    )
+    processor.start()
+    await processor.add_work(LLMWorkItem("one", strategy, "prompt"))
+    await processor.finish()
+    consumer = asyncio.create_task(_collect(processor))
+    await entered.wait()
+    try:
+        await asyncio.sleep(0.05)
+        assert not consumer.done()
+        assert not store.closed
+        release.set()
+        if fail_observer:
+            with pytest.raises(CleanupInterruptedError):
+                await consumer
+            with pytest.raises(CleanupInterruptedError):
+                await _collect(processor)
+        else:
+            assert len(await consumer) == 1
+            assert log.index("observer:done") < log.index("s:cleanup:done")
+            assert log.index("s:cleanup:done") < log.index("store:close:start")
+    finally:
+        release.set()
+        await asyncio.gather(consumer, return_exceptions=True)
+        await processor.shutdown()
+
+
 # --------------------------------------------------------------------------- #
 # Clause 1 — timing and ordering
 # --------------------------------------------------------------------------- #
@@ -315,6 +874,8 @@ async def test_c1_live_async_progress_callback_is_a_barrier_in_batch_mode() -> N
         progress_callback=progress,
     )
     await _run_one(processor, _Strategy())
+    assert "progress:done" in log
+    await processor.shutdown()
 
     assert log.index("progress:done") < log.index("store:close:start")
 
@@ -358,6 +919,8 @@ async def test_c1_synchronous_progress_thread_is_a_barrier() -> None:
         progress_callback=progress,
     )
     await _run_one(processor, _Strategy())
+    assert "progress:done" in log
+    await processor.shutdown()
 
     assert log.index("progress:done") < log.index("store:close:start")
 
@@ -377,6 +940,8 @@ async def test_c1_synchronous_post_processor_thread_is_a_barrier() -> None:
         post_processor=post,
     )
     await _run_one(processor, _Strategy())
+    assert "post:done" in log
+    await processor.shutdown()
 
     assert log.index("post:done") < log.index("store:close:start")
 
@@ -1042,6 +1607,7 @@ async def test_batch_worker_late_failure_is_raised_after_finalization(
     with pytest.raises(RuntimeError, match="worker died"):
         await processor.process_all()
     assert observer.completed
+    await processor.shutdown()
     assert store.closed
 
 
@@ -1423,10 +1989,8 @@ async def test_c3_observer_cancellation_during_cooldown_end_is_an_interruption()
     await processor.shutdown()  # the interruption was reported once; nothing is left to redo
 
 
-async def test_c3_third_party_cancel_of_cooldown_task_is_surfaced_then_finalized_later() -> None:
-    """An owned cooldown task cancelled by someone other than shutdown() is an
-    interruption: the first close reports it without finalizing on the task's
-    behalf inside the same call, and the next explicit close finalizes."""
+async def test_c3_third_party_cancel_of_cooldown_releases_workers_and_is_reported() -> None:
+    """External cancellation restores liveness and remains reportable at close."""
     host = _cooldown_host()
     coordinator = host._rate_limit_coord
     waiter = asyncio.create_task(coordinator.handle_rate_limit(worker_id=0))
@@ -1440,10 +2004,10 @@ async def test_c3_third_party_cancel_of_cooldown_task_is_surfaced_then_finalized
     try:
         with pytest.raises(CleanupInterruptedError):
             await coordinator.shutdown()
-        assert coordinator._in_cooldown, "an interrupted step must not be finalized in-call"
-        assert not waiter.done()
+        assert not coordinator._in_cooldown
+        assert waiter.done()
 
-        await coordinator.shutdown()  # the later explicit close retries
+        await coordinator.shutdown()  # the interruption was already reported
         assert not coordinator._in_cooldown
         await asyncio.wait([waiter], timeout=1)
         assert waiter.done(), "the reporting worker was never released"
@@ -1570,7 +2134,7 @@ async def test_c3_pending_third_party_cancel_of_cooldown_task_is_not_relabelled(
     try:
         with pytest.raises(CleanupInterruptedError):
             await coordinator.shutdown()
-        assert coordinator._in_cooldown
+        assert not coordinator._in_cooldown
         await coordinator.shutdown()
         assert not coordinator._in_cooldown
         await asyncio.wait([waiter], timeout=1)
@@ -1758,12 +2322,10 @@ async def test_c3_third_party_cancel_of_the_stop_watcher_is_an_interruption() ->
     assert not slept and not stop.is_set()
 
 
-async def test_c3_interrupted_cooldown_sleep_does_not_resume_workers_early(
+async def test_c3_interrupted_cooldown_sleep_releases_workers_and_is_reported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An interruption of the cooldown sleep is not an ordinary sleep error:
-    the generation stays paused, shutdown reports the interruption, and the
-    next explicit close finalizes."""
+    """A failed private sleep releases workers without hiding its interruption."""
     import async_batch_llm._internal.rate_limit_coordinator as coordinator_module
 
     async def interrupted_sleep(sleep: Any, *args: Any, **kwargs: Any) -> None:
@@ -1777,11 +2339,11 @@ async def test_c3_interrupted_cooldown_sleep_does_not_resume_workers_early(
     await asyncio.sleep(0.05)
 
     try:
-        assert coordinator._in_cooldown, "the interrupted sleep resumed workers early"
-        assert not waiter.done()
+        assert not coordinator._in_cooldown
+        assert waiter.done()
         with pytest.raises(CleanupInterruptedError):
             await coordinator.shutdown()
-        assert coordinator._in_cooldown
+        assert not coordinator._in_cooldown
         await coordinator.shutdown()
         assert not coordinator._in_cooldown
         await asyncio.wait([waiter], timeout=1)

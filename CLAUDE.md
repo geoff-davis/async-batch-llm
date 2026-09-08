@@ -463,7 +463,10 @@ src/async_batch_llm/
 │   └── metrics.py        # MetricsObserver
 ├── middleware/
 │   └── base.py           # Middleware protocol
-├── _internal/            # ParallelBatchProcessor collaborators (v0.7.0)
+├── _internal/            # Shared orchestration collaborators
+│   ├── admission.py      # quota scopes and FIFO admission
+│   ├── cleanup.py        # ordered teardown and detached cancellation waits
+│   ├── execution_state.py # private per-item accounting
 │   ├── event_dispatcher.py
 │   ├── executor_host.py  # pool-less host for single.py / gateway.py
 │   ├── item_executor.py  # per-item retry/classification engine

@@ -37,7 +37,7 @@ from ..token_extractor import TokenExtractor
 from .admission import AdmissionRegistry
 from .capacity import CapacityLimiter
 from .classifier_resolver import StrategyClassifierResolver
-from .cleanup import CleanupReport, CleanupStep, SharedCloser
+from .cleanup import CleanupAction, CleanupPhase, CleanupReport, CleanupStep, SharedCloser
 from .event_dispatcher import EventDispatcher
 from .guardrails import AbortController
 from .item_executor import ItemExecutor
@@ -153,17 +153,19 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
             exception, work_item, worker_id, attempt_number
         )
 
-    def _cleanup_steps(self) -> list[CleanupStep]:
+    def _cleanup_steps(self) -> list[CleanupAction]:
         """Ordered teardown: admission resources, then strategies, then caches."""
+        return [CleanupPhase("admission and strategies", self._resource_cleanup_steps)]
+
+    def _resource_cleanup_steps(self) -> list[CleanupAction]:
         self._strategy_lifecycle.mark_closing()
-        steps = [CleanupStep("admission registry", self._admission_registry.shutdown)]
-        if self._owns_compatibility_coordinator:
-            steps.append(
-                CleanupStep("compatibility rate-limit coordinator", self._rate_limit_coord.shutdown)
-            )
-        steps.extend(self._strategy_lifecycle.cleanup_steps())
-        steps.append(CleanupStep("classifier resolver", self._clear_classifiers))
-        return steps
+        return [
+            *self._admission_registry.cleanup_steps(
+                self._rate_limit_coord if self._owns_compatibility_coordinator else None
+            ),
+            CleanupPhase("prepared strategies", self._strategy_lifecycle.cleanup_steps),
+            CleanupStep("classifier resolver", self._clear_classifiers),
+        ]
 
     async def _clear_classifiers(self) -> None:
         self._classifier_resolver.clear()

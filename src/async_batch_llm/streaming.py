@@ -299,7 +299,7 @@ async def _process_stream_impl(
         resume=resume,
         **processor_kwargs,
     )
-    feed_error: list[BaseException] = []
+    processor._preserve_completed_result = True
     if reporter is not None:
         bundled_reporter = reporter
 
@@ -327,7 +327,7 @@ async def _process_stream_impl(
         except BatchAdmissionStopped:
             pass  # controlled batch timeout/fail-fast stopped source admission
         except BaseException as exc:  # noqa: BLE001 - surfaced to the consumer below
-            feed_error.append(exc)
+            processor._finalization_primary_exception = exc
         finally:
             # Normal completion, controlled abort, or producer error: close the
             # accepted stream so every queued item receives a terminal result.
@@ -363,16 +363,13 @@ async def _process_stream_impl(
         # exit, producer failure, cancellation). A body exception or the
         # consumer's cancellation stays primary; cleanup failures are logged
         # and, with no body exception, applied by the policy below.
-        report = await processor._closer.close(primary_exception=body_error)
+        report = await processor._close_after_run(primary_exception=body_error)
 
     if termination_out is not None:
         termination_out.append(processor.termination)
 
-    # Reached only when results() ended normally. A producer error is primary
-    # over cleanup issues; otherwise only a user strategy's own cleanup()
-    # failure is logged rather than raised, so completed results survive.
-    if feed_error:
-        raise feed_error[0]
+    # Reached only when results() ended normally. Only user strategy cleanup
+    # failures are logged rather than raised, so completed results survive.
     report.raise_first(preserve_completed_result=True)
 
 

@@ -36,7 +36,7 @@ import logging
 from typing import Any, Generic, TypeVar, cast
 
 from ._internal.capacity import warn_if_worker_capacity_exceeded
-from ._internal.cleanup import CleanupStep, SharedCloser
+from ._internal.cleanup import CleanupAction, CleanupPhase, CleanupStep, SharedCloser
 from ._internal.executor_host import ExecutorHost
 from .base import LLMWorkItem, WorkItemResult
 from .core import ProcessorConfig
@@ -217,10 +217,10 @@ class LLMGateway(Generic[TOutput]):
         report = await self._closer.close()
         report.raise_first()
 
-    def _cleanup_steps(self) -> list[CleanupStep]:
+    def _cleanup_steps(self) -> list[CleanupAction]:
         return [
-            CleanupStep("gateway in-flight drain", self._drain_inflight),
-            *self._host._cleanup_steps(),
+            CleanupStep("gateway in-flight drain", self._drain_inflight, barrier=True),
+            CleanupPhase("host resources", self._host._cleanup_steps),
         ]
 
     async def _drain_inflight(self) -> None:

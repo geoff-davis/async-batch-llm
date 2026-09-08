@@ -18,7 +18,16 @@ The implementation lives in `src/async_batch_llm/_internal/cleanup.py`.
   from being attempted.
 - A still-running resource is an ordering barrier. A dependent resource is
   never closed while the resource it depends on is still running.
+- Resource phases are discovered after preceding barriers finish, including
+  strategies whose preparation started or completed during the gateway drain.
+  If a private barrier wait is interrupted, dependent steps wait for the next
+  explicit close; an ordinary failure reported by an already-settled owned
+  task does not itself leave a live barrier.
 - The gateway in-flight drain and the artifact-store close run to completion.
+- Batch `process_all()` leaves resource teardown, including artifact-store
+  close, to context exit or an explicit close. Streaming finalization runs
+  the ordered close before deciding its terminal, including waiting for
+  admission callbacks and closing strategies before the store.
 - `WORKER_CANCELLATION_TIMEOUT` and `PROGRESS_TASK_CANCELLATION_TIMEOUT`
   (two seconds each) are diagnostic thresholds only: one warning is logged
   when they elapse, the wait continues, and no strategy or store cleanup and
@@ -56,6 +65,14 @@ Cancellation of the task that is closing a resource is counted explicitly.
   checkpointed, and a later explicit close retries it.
 - `Task.cancelling()`, `Task.uncancel()`, and exception attributes are not
   used. Behavior is identical on every supported Python version.
+- Owned quota wakes remain tracked across rescheduling and unsolicited
+  failures until shutdown observes their outcomes. A concurrently set stop
+  event never relabels an already-cancelled private child as owner-cancelled.
+  A lost quota wake schedules a replacement so reservations continue. An
+  externally cancelled cooldown releases waiting workers if finalization has
+  not yet started, including cancellation before the owned task starts;
+  shutdown still reports the interruption. An interrupted finalization is
+  retried only by a later explicit close.
 
 ## 4. Retry and idempotency
 
@@ -63,6 +80,11 @@ Cancellation of the task that is closing a resource is counted explicitly.
   repeated by a later close.
 - A failed or interrupted step is retried only by a later explicit close
   call, never repeatedly within one call.
+- Automatic context or convenience-API exit does not retry a close already
+  attempted by stream finalization. It applies that attempt's report even if
+  the consumer never read the terminal, then releases the pending report.
+  The reported stream terminal remains unchanged if a later explicit close
+  successfully retries failed steps.
 - Concurrent close calls on one owner share the same in-flight attempt.
 - User-defined `cleanup()` methods must be idempotent and safe to call after
   a partially completed earlier attempt, because the framework cannot
@@ -71,7 +93,9 @@ Cancellation of the task that is closing a resource is counted explicitly.
   that reported them returns.
 - Lifecycle state is one-way: open, then closing, then closed. A failed or
   aborted close stays closing; a later close resumes the unfinished steps.
-  Once closing has started, new strategy preparation is rejected.
+  Strategy closing starts after admitted runtime work drains; preparation
+  needed by that work is allowed during draining. Once the strategy phase is
+  closing, new strategy preparation is rejected.
 
 ## 5. Stream finalization
 
@@ -93,7 +117,8 @@ Cancellation of the task that is closing a resource is counted explicitly.
   terminal records the failure for any consumer and the finalizer re-raises
   them so they retain their type.
 - A live worker, post-processor, progress callback, or callback thread
-  prevents successful finalization.
+  prevents successful finalization. Synchronous progress and post-processing
+  use separate owned pools so slow progress callbacks cannot starve writes.
 
 ## 6. Precedence and changelog
 
