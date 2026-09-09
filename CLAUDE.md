@@ -386,8 +386,9 @@ the project's release-prep flow.
 ### Review protocol
 
 This repo is often worked by two sessions: one implements, one reviews.
-The v0.23.1 lifecycle work took ten review rounds, and most repeat
-findings traced to missing evidence rather than missing skill.
+The v0.24.0 lifecycle work, originally planned as v0.23.1, took ten review
+rounds, and most repeat findings traced to missing evidence rather than
+missing skill. The v0.23.1 working version was never published.
 
 **Handing work to a review.**
 
@@ -412,7 +413,7 @@ findings traced to missing evidence rather than missing skill.
   implementing side already runs `make ci`. Reserve the 3.10/3.13 pair
   for cancellation and asyncio-semantics changes, where they diverge.
 
-**Changing a shared policy.** Most round-N fixes in the v0.23.1 work
+**Changing a shared policy.** Most round-N fixes in that lifecycle work
 introduced a round-N+1 defect in a sibling path. When a change touches a
 category list, a swallow-or-re-raise rule, or a replay predicate,
 enumerate every member and every caller and say what each one does now.

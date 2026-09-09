@@ -1,4 +1,6 @@
-"""Regression coverage for framework runtime state isolation (v0.23.1, Session A).
+"""Regression coverage for framework runtime state isolation (v0.24.0).
+
+Originally planned as v0.23.1, Session A; that working version was never published.
 
 ``RetryState.data`` belongs to application strategies. Framework deadlines,
 try counters, quota accounting and timing live in a private sidecar that no

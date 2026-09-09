@@ -8,7 +8,10 @@ Prune this file at each release: it describes decisions in flight, not
 permanent architecture. Anything that outlives the release belongs in
 `CLAUDE.md`, `CHANGELOG.md`, or `docs/`.
 
-## Settled for v0.23.1 — do not re-litigate
+## Settled for v0.24.0 — do not re-litigate
+
+This work was originally planned as v0.23.1; the release version is v0.24.0.
+The v0.23.1 working version was never published.
 
 Each of these was raised, examined, and deliberately kept. Report a *new*
 consequence if you find one; don't re-report the decision itself.
@@ -54,10 +57,14 @@ consequence if you find one; don't re-report the decision itself.
   location before spawning the producer; module registries are created only
   when issuing a warning, preserving standard filtering and deduplication.
 
-## Current review handoff
+## Historical review handoffs
 
-See `reports/v0.23.1_review_handoff.md` for the frozen review target, base
-revision, finding-to-test mapping, policy matrix, and validation evidence.
+See `reports/v0.23.1_review_handoff.md` for the historical frozen review
+target, base revision, finding-to-test mapping, policy matrix, and validation
+evidence. Its filename preserves the original working version, not a shipped
+release. `reports/cancellation_ci_handoff.md` records the later CI test fixes.
+For the release-preparation target and validation, see PR #158 and the
+v0.24.0 changelog section; do not treat the older archive as the release tip.
 The later fixes were layered on uncommitted work without saved pre-fix
 snapshots; the handoff explicitly distinguishes passing regressions from
 unavailable fail-first evidence. Do not stash the live workspace to review it.
