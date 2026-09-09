@@ -12,7 +12,7 @@ here.
 **strategy pattern** — provider-agnostic at the framework level, with
 first-class support for several providers built in.
 
-**Current version:** v0.23.0 (see `CHANGELOG.md`; `pyproject.toml` is bumped
+**Current version:** v0.23.1 (see `CHANGELOG.md`; `pyproject.toml` is bumped
 by the release-prep flow, so it may briefly lag `main` between releases).
 
 **Key features:**
@@ -667,6 +667,12 @@ assert result.total_items == result.succeeded + result.failed
 
 Most recent first. See `CHANGELOG.md` for full per-release detail.
 
+- **v0.23.1** — isolated retry runtime state, ordered and retryable cleanup,
+  durable stream failures, and middleware-before-replay behavior on both stores.
+  Cleanup failures and callback barriers change compatibility; batch stores stay
+  open until explicit close or context exit. Guardrail audit records never replay.
+  See `docs/cleanup-lifecycle-contract.md` and `CHANGELOG.md` before upgrading.
+- **v0.23.0** — DeepSeek Responses API strict structured output.
 - **v0.22.0** — scoped, token-aware admission coordinates per-strategy
   cooldown, RPM, and TPM through one atomic FIFO gate. Public estimation APIs,
   exactly-once reservation reconciliation, refunds, underestimation debt,

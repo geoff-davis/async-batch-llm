@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-09-09
+
 ### Changed
 
 - Run `before_process` once per logical item, inside its total deadline and before
@@ -38,8 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Capacity warnings retain the submitting caller's source location, module, and
   warning registry for filtering and deduplication. Module-based suppression must
   match the attributed caller's module rather than the library; message-based
-  filters also work. Configuration
-  entries verify strategy identity and are released during cleanup. Restore the
+  filters also work. Configuration entries verify strategy identity and are
+  released during cleanup. Restore the
   processor's `_run_middlewares_before` override and avoid rerunning work-item
   subclass construction hooks during copying or middleware validation, while
   honoring subclass `_validate_fields()` overrides. Streaming captures warning
@@ -54,7 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   confined to user strategy cleanup. Automatic exit does not retry a failed
   stream-finalization close; it applies the finalization report even when the
   stream terminal was not consumed. A later explicit close retries failures.
-- Cleanup discovers resource phases after preceding barriers finish, so a
+- Cleanup discovers resource phases after preceding barriers finish, so an
   admitted request can still prepare its strategy during gateway draining,
   and that strategy is included in teardown. Interrupting a
   private barrier wait skips dependent teardown until a later close.
@@ -171,6 +173,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the interruption at close. This also covers cancellation before the owned
   task starts. Interrupted finalization remains retryable only by a later
   explicit close.
+
+### Documentation
+
+- Refresh the provider benchmark comparison and lead the benchmark guide with
+  the latest measured results. Historical measurements retain their original
+  package version and environment metadata.
 
 ## [0.23.0] - 2026-08-27
 
