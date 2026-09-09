@@ -18,6 +18,8 @@ import asyncio
 import inspect
 import logging
 import time
+from contextvars import ContextVar
+from dataclasses import replace
 from typing import TYPE_CHECKING, Generic, Protocol, TypeVar, cast
 
 from ..base import (
@@ -40,6 +42,7 @@ from ..strategies import (
     ErrorInfo,
     FrameworkTimeoutError,
     ItemDeadlineExceeded,
+    MiddlewareContractError,
     RateLimitRetriesExceeded,
     TokenEstimateExceedsLimit,
     TokenEstimationError,
@@ -58,6 +61,7 @@ from .classifier_resolver import StrategyClassifierResolver
 from .error_logging import log_retryable_error, log_validation_error
 from .execution_state import current_try_number, reset_attempt_runtime, runtime_state
 from .guardrails import AbortController, await_with_guardrails, remaining_seconds
+from .logical_item import PreparedLogicalItem
 
 if TYPE_CHECKING:
     from ..base import ProcessingStats
@@ -145,7 +149,7 @@ def _classify_error(exception: Exception, classifier: ErrorClassifier) -> ErrorI
     cached = getattr(exception, "__dict__", {}).get(_ERROR_INFO_EXCEPTION_KEY)
     if isinstance(cached, ErrorInfo):
         return cached
-    if isinstance(exception, TokenEstimationError):
+    if isinstance(exception, (TokenEstimationError, MiddlewareContractError)):
         error_info = ErrorInfo(
             is_retryable=False,
             is_rate_limit=False,
@@ -223,6 +227,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
     def __init__(self, host: ExecutorHostProtocol[TInput, TOutput, TContext]) -> None:
         self._host = host
+        # Preserve the host's existing three-argument retry override seam while
+        # sharing this explicit envelope with the default retry implementation.
+        # Per-context storage isolates concurrent and nested calls on one host.
+        self._prepared_item: ContextVar[PreparedLogicalItem[TInput, TOutput, TContext] | None] = (
+            ContextVar("abl_prepared_logical_item", default=None)
+        )
 
     # ── Dependencies (read live from host) ───────────────────────
     @property
@@ -585,24 +595,103 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     0.0, time.perf_counter() - ramp_started
                 )
 
+    async def prepare_logical_item(
+        self,
+        work_item: LLMWorkItem[TInput, TOutput, TContext],
+        worker_id: int = 0,
+        deadline: float | None = None,
+    ) -> PreparedLogicalItem[TInput, TOutput, TContext]:
+        """Run current policy once, before artifact identity or strategy preparation."""
+        started = time.perf_counter()
+        timeout = self.config.guardrails.total_timeout_per_item
+        if deadline is None and timeout is not None:
+            deadline = started + timeout
+        prepared = PreparedLogicalItem(
+            original_item=replace(work_item),
+            effective_item=work_item,
+            deadline=deadline,
+            started=started,
+        )
+        prepared.runtime_state.total_deadline = deadline
+        work_item._artifact_key = None
+        try:
+            if self._events.observers:
+                await await_with_guardrails(
+                    self._emit_event(
+                        ProcessingEvent.ITEM_STARTED,
+                        {"item_id": work_item.item_id, "worker_id": worker_id},
+                    ),
+                    item_deadline=deadline,
+                    item_id=work_item.item_id,
+                    abort_controller=self._abort_controller,
+                )
+            effective = await await_with_guardrails(
+                self._events.run_before(work_item, prepared=prepared),
+                item_deadline=deadline,
+                item_id=work_item.item_id,
+                abort_controller=self._abort_controller,
+            )
+            self.check_prepared(prepared)
+            if effective is None:
+                prepared.terminal_result = WorkItemResult[TOutput, TContext](
+                    item_id=prepared.original_item.item_id,
+                    success=False,
+                    error="Skipped by middleware",
+                    error_category="middleware_filtered",
+                    context=prepared.effective_item.context,
+                    submission_index=prepared.original_item.submission_index,
+                )
+        except Exception as exc:
+            failure_item = (
+                prepared.original_item
+                if isinstance(exc, MiddlewareContractError)
+                else replace(prepared.original_item, context=prepared.effective_item.context)
+            )
+            prepared.terminal_result = await self.build_failure_result(failure_item, exc, worker_id)
+            prepared.terminal_result.submission_index = prepared.original_item.submission_index
+        finally:
+            # Interrupted middleware may not reach normal return validation.
+            # Accepted identity survives mutations even on timeout/cancellation.
+            for item in (work_item, prepared.effective_item):
+                item.item_id = prepared.original_item.item_id
+                item.submission_index = prepared.original_item.submission_index
+        return prepared
+
+    def check_prepared(self, prepared: PreparedLogicalItem[TInput, TOutput, TContext]) -> None:
+        """Recheck guards after preprocessing or artifact I/O has yielded."""
+        remaining_seconds(prepared.deadline, item_id=prepared.original_item.item_id)
+        if self._abort_controller is not None:
+            self._abort_controller.raise_if_aborted(prepared.original_item.item_id)
+
     async def execute(
         self, work_item: LLMWorkItem[TInput, TOutput, TContext], worker_id: int = 0
     ) -> WorkItemResult[TOutput, TContext]:
-        """Run one item end-to-end, always returning a WorkItemResult.
+        """Prepare and execute one item on the same path used by batch replay."""
+        prepared = await self.prepare_logical_item(work_item, worker_id)
+        return await self.execute_prepared(prepared, worker_id)
 
-        Waits out any active cooldown, runs the retry pipeline, and converts an
-        exhausted/unhandled failure into a failed result (never raises for
-        business errors; CancelledError still propagates).
-        """
-        timeout = self.config.guardrails.total_timeout_per_item
-        deadline = time.perf_counter() + timeout if timeout is not None else None
+    async def execute_prepared(
+        self,
+        prepared: PreparedLogicalItem[TInput, TOutput, TContext],
+        worker_id: int = 0,
+    ) -> WorkItemResult[TOutput, TContext]:
+        """Execute retries without re-running item preprocessing."""
+        if prepared.terminal_result is not None:
+            return prepared.terminal_result
+        work_item = prepared.effective_item
+        token = self._prepared_item.set(prepared)
         try:
-            result = await self._host._process_item_with_retries(work_item, worker_id, deadline)
+            self.check_prepared(prepared)
+            result = await self._host._process_item_with_retries(
+                work_item, worker_id, prepared.deadline
+            )
         except asyncio.CancelledError:
             raise
         except Exception as e:
             result = await self.build_failure_result(work_item, e, worker_id)
-        result.submission_index = work_item.submission_index
+        finally:
+            self._prepared_item.reset(token)
+        result.submission_index = prepared.original_item.submission_index
         return result
 
     async def build_failure_result(
@@ -646,7 +735,15 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         # outcome. Do not let a recovery hook delay or rewrite it.
         middleware_result = (
             None
-            if isinstance(e, (ItemDeadlineExceeded, BatchDeadlineExceeded, BatchAbortedError))
+            if isinstance(
+                e,
+                (
+                    ItemDeadlineExceeded,
+                    BatchDeadlineExceeded,
+                    BatchAbortedError,
+                    MiddlewareContractError,
+                ),
+            )
             else await self._run_middlewares_on_error(work_item, e)
         )
         result: WorkItemResult[TOutput, TContext]
@@ -696,7 +793,19 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         deadline: float | None = None,
     ) -> WorkItemResult[TOutput, TContext]:
         """Wrapper that applies retry logic and strategy lifecycle."""
-        item_started = time.perf_counter()
+        prepared = self._prepared_item.get()
+        if prepared is None or prepared.effective_item is not work_item:
+            prepared = await self.prepare_logical_item(work_item, worker_id, deadline)
+        if prepared.terminal_result is not None:
+            return prepared.terminal_result
+        # Existing host overrides may tighten the deadline when delegating.
+        # They cannot extend or remove the original total-item budget.
+        if deadline is not None and (prepared.deadline is None or deadline < prepared.deadline):
+            prepared.deadline = deadline
+            prepared.runtime_state.total_deadline = deadline
+        work_item = prepared.effective_item
+        deadline = prepared.deadline
+        item_started = prepared.started
         attempt_timings: list[AttemptTiming] = []
         try_number = 0
         # Track cumulative token usage across all failed attempts
@@ -711,13 +820,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         strategy = self._get_strategy(work_item)
         classifier = self._classifier_resolver.resolve(strategy)
 
-        # Create retry state for this work item (v0.3.0)
-        # This state persists across all retry attempts for multi-stage strategies
-        retry_state = RetryState()
-        if deadline is None and self.config.guardrails.total_timeout_per_item is not None:
-            deadline = time.perf_counter() + self.config.guardrails.total_timeout_per_item
-        item_runtime = runtime_state(retry_state)
-        item_runtime.total_deadline = deadline
+        retry_state = prepared.retry_state
+        item_runtime = prepared.runtime_state
 
         # Ensure strategy is prepared (framework ensures this is called only once per unique strategy instance)
         # (v0.4.0: cleanup now happens in __aexit__, not per-item)
@@ -1004,37 +1108,11 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         item_runtime = runtime_state(retry_state) if retry_state is not None else None
         deadline = item_runtime.total_deadline if item_runtime is not None else None
 
-        # Store original item_id before middleware might return None
-        original_item_id = work_item.item_id
         classifier: ErrorClassifier | None = None
         admission_state: ScopeAdmissionState | None = None
         known_provider_token_usage: TokenUsage | None = None
 
-        # Skip building the event payload entirely when nobody is listening.
-        if self._events.observers:
-            await self._emit_event(
-                ProcessingEvent.ITEM_STARTED,
-                {"item_id": original_item_id, "worker_id": worker_id},
-            )
-
         try:
-            # Run before middlewares
-            processed_item = await await_with_guardrails(
-                self._run_middlewares_before(work_item),
-                item_deadline=deadline,
-                item_id=work_item.item_id,
-                abort_controller=self._abort_controller,
-            )
-            if processed_item is None:
-                logger.debug("Skipping %s (filtered by middleware)", original_item_id)
-                return WorkItemResult(
-                    item_id=original_item_id,
-                    success=False,
-                    error="Skipped by middleware",
-                    context=work_item.context,
-                )
-            work_item = processed_item
-
             # Middleware may replace a work item's strategy. Admission and
             # classification always follow the effective strategy identity.
             effective_strategy = work_item.strategy

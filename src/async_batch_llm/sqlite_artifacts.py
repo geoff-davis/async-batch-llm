@@ -25,6 +25,7 @@ from ._internal.artifact_codec import (
     decode_stored_result,
     fingerprint_identity,
     fingerprint_work_item,
+    is_middleware_filtered_record,
     restore_replayed_result,
 )
 from .artifacts import (
@@ -318,7 +319,7 @@ class SqliteArtifactStore:
             identity_fingerprint,
             policy,
         )
-        if row is None:
+        if row is None or is_middleware_filtered_record(row):
             return None
         try:
             return restore_replayed_result(

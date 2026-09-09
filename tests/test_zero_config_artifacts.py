@@ -422,22 +422,21 @@ async def test_stale_row_cannot_be_admitted_for_a_mismatched_strategy(tmp_path, 
 
     pinned = CountingStrategy("model-a")
     mismatched = CountingStrategy("model-b")
-    async with ParallelBatchProcessor(
-        config=ProcessorConfig(max_workers=1),
-        artifact_store=store_type(path),
-        resume=ResumePolicy.REUSE_SUCCESSES,
-    ) as processor:
-        await processor.add_work(LLMWorkItem(item_id="pin", strategy=pinned, prompt="pin"))
-        with pytest.raises(ArtifactError, match="Automatic artifact identity changed"):
+    with pytest.raises(ArtifactError, match="Automatic artifact identity changed"):
+        async with ParallelBatchProcessor(
+            config=ProcessorConfig(max_workers=1),
+            artifact_store=store_type(path),
+            resume=ResumePolicy.REUSE_SUCCESSES,
+        ) as processor:
+            await processor.add_work(LLMWorkItem(item_id="pin", strategy=pinned, prompt="pin"))
             await processor.add_work(
-                LLMWorkItem(
-                    item_id="shared",
-                    strategy=mismatched,
-                    prompt="prompt",
-                )
+                LLMWorkItem(item_id="shared", strategy=mismatched, prompt="prompt")
             )
+            # Identity is resolved after current-run preprocessing, when a
+            # worker reaches the item, rather than during queue acceptance.
+            await processor.process_all()
 
-    assert pinned.calls == 0
+    assert pinned.calls == 1
     assert mismatched.calls == 0
 
 

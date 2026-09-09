@@ -89,6 +89,38 @@ of prompts, outputs, context, and metadata.
 Unsupported values, malformed input, and future schema versions raise
 `ResultSerializationError`; values are never silently replaced with `repr()`.
 
+## Middleware and replay
+
+For each accepted item, the processor establishes its total deadline and runs
+`before_process` once before preparing artifact identity or looking up an old
+result. Retries use this effective request without repeating preprocessing.
+Current filtering therefore always wins over historical success.
+
+A replacement may change prompt, context, and strategy, but cannot change the
+accepted item ID. Submission indexes are preserved. Fingerprints, inferred
+provider/model identity, strategy class, lookup, and audit fields describe the
+effective item; append uses the exact fingerprint prepared before execution.
+Explicit `ArtifactIdentity` values still override inferred identity. Automatic
+stores still require one consistent inferred identity per run, regardless of
+worker preparation order. Identity errors now surface during processing, after
+middleware, rather than during `add_work()`.
+
+Replay retains historical output, usage, and timing, binds current effective
+context and the current submission index, and neither prepares a strategy nor
+appends a duplicate record. `after_process` runs once for a newly executed success,
+before append, and does not rerun on replay. Changes to `after_process` that leave
+effective inputs unchanged require an `application_version` or `parser_version`
+bump in `ArtifactIdentity`. Middleware functions are not automatically hashed.
+
+Filtered items produce a current-run `middleware_filtered` result. Preprocessing
+filtering, errors, deadlines, and aborts do not open the store or append records
+when no artifact key has been prepared. A filter record explicitly appended via
+the store API has `replay_eligible=False`, including under `REUSE_ALL`. Both JSONL
+and SQLite also reject legacy filter records bearing the exact historical
+`Skipped by middleware` error, even when those records were marked replayable.
+Both retain the existing version-1 schema. Newly executed
+results are still checkpointed before publication or post-processing callbacks.
+
 ## Resumable JSONL artifacts
 
 An artifact begins with a version-1 manifest followed by versioned item records.

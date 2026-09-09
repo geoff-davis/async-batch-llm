@@ -28,6 +28,7 @@ from ._internal.artifact_codec import (
     decode_stored_result,
     fingerprint_identity,
     fingerprint_work_item,
+    is_middleware_filtered_record,
     record_is_compatible,
     record_replay_key,
     replay_key,
@@ -554,7 +555,11 @@ class JsonlArtifactStore:
                 fingerprint.legacy_input_fingerprint,
             )
             record = records.get(legacy_key)
-        if record is None or not self._compatible(record, work_item, fingerprint):
+        if (
+            record is None
+            or is_middleware_filtered_record(record)
+            or not self._compatible(record, work_item, fingerprint)
+        ):
             return None
         try:
             result = restore_replayed_result(

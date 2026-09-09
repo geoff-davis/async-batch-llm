@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Run `before_process` once per logical item, inside its total deadline and before
+  artifact lookup or strategy preparation. Retries reuse the effective request;
+  `ITEM_STARTED` is emitted once, including for replay and filtering. Replacement
+  items retain accepted IDs and submission indexes; invalid replacements fail
+  with exported `MiddlewareContractError`. Artifact identity errors now surface
+  during processing instead of `add_work()`.
+- Fingerprint and checkpoint middleware-transformed requests consistently on JSONL
+  and SQLite. Current filtering bypasses replay; explicitly stored filter results
+  are not replay eligible. Legacy filter records are excluded on read as well.
+  Preprocessing-only terminals do not open the store.
+  Replay preserves current effective context and historical post-`after_process`
+  output without rerunning that hook. Version hook changes through artifact
+  application/parser identity. Artifact schemas remain unchanged.
+
 - **BREAKING**: Batch `process_all()` now leaves the artifact store open until
   context exit or explicit `shutdown()` / `cleanup()`, so strategy teardown
   always precedes store close. Stream finalization runs the ordered close

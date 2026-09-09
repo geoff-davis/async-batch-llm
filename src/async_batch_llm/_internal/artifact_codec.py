@@ -244,7 +244,8 @@ def build_item_record(
         "token_usage": serialized_result["token_usage"],
         "timing": serialized_result["timing"],
         "calculated_cost": cost,
-        "replay_eligible": (not result.success) or include_output,
+        "replay_eligible": result.error_category != "middleware_filtered"
+        and ((not result.success) or include_output),
         "raw_prompt": raw_prompt,
         "raw_context": raw_context,
         "result": serialized_result,
@@ -282,6 +283,18 @@ def record_replay_key(record: Mapping[str, Any]) -> ReplayKey | None:
     ):
         return None
     return identity, item_id, prompt, context, combined
+
+
+def is_middleware_filtered_record(record: Mapping[str, Any]) -> bool:
+    """Reject current and pre-category filter records without changing the schema."""
+    result = record.get("result")
+    if not isinstance(result, Mapping):
+        return False
+    return (
+        record.get("error_category") == "middleware_filtered"
+        or result.get("error_category") == "middleware_filtered"
+        or (result.get("success") is False and result.get("error") == "Skipped by middleware")
+    )
 
 
 def record_is_compatible(

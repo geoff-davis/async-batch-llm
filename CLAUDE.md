@@ -470,6 +470,7 @@ src/async_batch_llm/
 │   ├── event_dispatcher.py
 │   ├── executor_host.py  # pool-less host for single.py / gateway.py
 │   ├── item_executor.py  # per-item retry/classification engine
+│   ├── logical_item.py   # effective request shared by preprocessing/replay/retries
 │   ├── rate_limit_coordinator.py
 │   ├── strategy_lifecycle.py
 │   └── error_logging.py

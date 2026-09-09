@@ -1347,12 +1347,32 @@ class Middleware(ABC):
 
 **Methods:**
 
-- `before_process()`: Modify work item before processing. Return `None` to skip
-  the item (it is recorded as failed).
-- `after_process()`: Modify the result after processing (takes only the result).
-- `on_error()`: Handle errors. Return a `WorkItemResult` to substitute it for the
-  error (the first middleware returning non-None wins), or `None` for default
-  error handling.
+- `before_process()`: Runs once per accepted logical item per run, in registration
+  order, after submission-index assignment and inside the total-item deadline.
+  It precedes artifact fingerprinting/lookup, strategy preparation, admission,
+  and provider execution. Retries reuse its effective item. Return `None` to
+  produce a failed `middleware_filtered` result without replay or provider work.
+- A replacement may change prompt, context, and strategy, but must retain the
+  accepted `item_id` and satisfy normal `LLMWorkItem` validation. Invalid returns
+  fail with non-retryable `MiddlewareContractError` (`middleware_contract_error`).
+  The framework preserves the accepted submission index and clears stale artifact
+  keys. The effective strategy controls classification, quota, and concurrency.
+- `after_process()`: Runs once on a newly executed success in reverse registration
+  order. Artifacts store its final result. It does not run on replay, filtering,
+  or a result supplied by `on_error`. If this hook changes without changing the
+  effective request, bump `ArtifactIdentity.application_version` or `parser_version`
+  to invalidate old processed outputs; middleware code is not hashed automatically.
+- Middleware `on_error()`: Runs for a terminal execution/preparation failure,
+  after retry exhaustion or a non-retryable failure, rather than for each attempt.
+  The first non-`None` result wins. Filtering, replacement-contract errors,
+  controlled deadlines, and batch aborts bypass it. Strategy `on_error()` remains
+  the separate attempt-level hook.
+
+Ordinary callback exceptions are logged and skipped (fail-open); return `None`
+to filter deliberately. Validation of a returned work item happens outside that
+fail-open handling. Cancellation, `KeyboardInterrupt`, and `SystemExit` propagate.
+`ITEM_STARTED` is emitted once when logical preprocessing begins, including items
+that subsequently replay or filter, rather than once per retry attempt.
 
 All three are abstract — subclass `BaseMiddleware` for no-op defaults so you
 only override the hooks you need.
