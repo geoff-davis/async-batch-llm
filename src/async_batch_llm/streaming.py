@@ -25,6 +25,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Iterable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
+from ._internal.capacity import capture_capacity_warning_source
 from ._internal.cleanup import CleanupStep
 from ._internal.guardrails import BatchAdmissionStopped
 from .artifacts import ArtifactStore, ResumePolicy
@@ -300,6 +301,7 @@ async def _process_stream_impl(
         **processor_kwargs,
     )
     processor._preserve_completed_result = True
+    processor._capacity_warning_source = capture_capacity_warning_source()
     if reporter is not None:
         bundled_reporter = reporter
 

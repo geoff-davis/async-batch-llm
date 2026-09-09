@@ -19,9 +19,10 @@ import inspect
 import logging
 import time
 from contextvars import ContextVar
-from dataclasses import replace
-from typing import TYPE_CHECKING, Generic, Protocol, TypeVar, cast
+from copy import copy
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, cast
 
+from ..artifacts import ArtifactIdentityError, ArtifactSerializationError
 from ..base import (
     AttemptTiming,
     LLMWorkItem,
@@ -80,6 +81,9 @@ ERROR_MESSAGE_DETAILED_LENGTH = 500
 _ADMISSION_WAIT_EXCEPTION_KEY = "_abl_admission_wait_seconds"
 _TIMING_EXCEPTION_KEY = "_abl_work_item_timing"
 _ERROR_INFO_EXCEPTION_KEY = "_abl_error_info"
+_prepared_item: ContextVar[tuple[object, PreparedLogicalItem[Any, Any, Any]] | None] = ContextVar(
+    "abl_prepared_logical_item", default=None
+)
 
 _E = TypeVar("_E", bound=BaseException)
 
@@ -149,7 +153,14 @@ def _classify_error(exception: Exception, classifier: ErrorClassifier) -> ErrorI
     cached = getattr(exception, "__dict__", {}).get(_ERROR_INFO_EXCEPTION_KEY)
     if isinstance(cached, ErrorInfo):
         return cached
-    if isinstance(exception, (TokenEstimationError, MiddlewareContractError)):
+    if isinstance(exception, (ArtifactIdentityError, ArtifactSerializationError)):
+        error_info = ErrorInfo(
+            is_retryable=False,
+            is_rate_limit=False,
+            is_timeout=False,
+            error_category="artifact_preparation_error",
+        )
+    elif isinstance(exception, (TokenEstimationError, MiddlewareContractError)):
         error_info = ErrorInfo(
             is_retryable=False,
             is_rate_limit=False,
@@ -194,6 +205,10 @@ class ExecutorHostProtocol(Protocol[TInput, TOutput, TContext]):
 
     def _extract_token_usage(self, exception: Exception) -> dict[str, int]: ...
 
+    async def _run_middlewares_before(
+        self, work_item: LLMWorkItem[TInput, TOutput, TContext]
+    ) -> LLMWorkItem[TInput, TOutput, TContext] | None: ...
+
     async def _process_item(
         self,
         work_item: LLMWorkItem[TInput, TOutput, TContext],
@@ -227,12 +242,10 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
     def __init__(self, host: ExecutorHostProtocol[TInput, TOutput, TContext]) -> None:
         self._host = host
-        # Preserve the host's existing three-argument retry override seam while
-        # sharing this explicit envelope with the default retry implementation.
-        # Per-context storage isolates concurrent and nested calls on one host.
-        self._prepared_item: ContextVar[PreparedLogicalItem[TInput, TOutput, TContext] | None] = (
-            ContextVar("abl_prepared_logical_item", default=None)
-        )
+
+    def _current_prepared(self) -> PreparedLogicalItem[TInput, TOutput, TContext] | None:
+        active = _prepared_item.get()
+        return active[1] if active is not None and active[0] is self else None
 
     # ── Dependencies (read live from host) ───────────────────────
     @property
@@ -290,7 +303,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
     async def _run_middlewares_before(
         self, work_item: LLMWorkItem[TInput, TOutput, TContext]
     ) -> LLMWorkItem[TInput, TOutput, TContext] | None:
-        return await self._events.run_before(work_item)
+        return await self._events.run_before(work_item, prepared=self._current_prepared())
 
     async def _run_middlewares_after(
         self, result: WorkItemResult[TOutput, TContext]
@@ -607,13 +620,14 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         if deadline is None and timeout is not None:
             deadline = started + timeout
         prepared = PreparedLogicalItem(
-            original_item=replace(work_item),
+            original_item=copy(work_item),
             effective_item=work_item,
             deadline=deadline,
             started=started,
         )
         prepared.runtime_state.total_deadline = deadline
         work_item._artifact_key = None
+        token = _prepared_item.set((self, prepared))
         try:
             if self._events.observers:
                 await await_with_guardrails(
@@ -626,11 +640,27 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     abort_controller=self._abort_controller,
                 )
             effective = await await_with_guardrails(
-                self._events.run_before(work_item, prepared=prepared),
+                self._host._run_middlewares_before(work_item),
                 item_deadline=deadline,
                 item_id=work_item.item_id,
                 abort_controller=self._abort_controller,
             )
+            if effective is not None:
+                if not isinstance(effective, LLMWorkItem):
+                    raise MiddlewareContractError("before_process must return LLMWorkItem or None")
+                if effective.item_id != prepared.original_item.item_id:
+                    raise MiddlewareContractError(
+                        "before_process cannot change the accepted item_id"
+                    )
+                try:
+                    type(effective)._validate_fields(effective)
+                except (TypeError, ValueError) as exc:
+                    raise MiddlewareContractError(
+                        f"Invalid before_process work item: {exc}"
+                    ) from exc
+                effective._artifact_key = None
+                effective._capacity_warning_source = prepared.original_item._capacity_warning_source
+                prepared.effective_item = effective
             self.check_prepared(prepared)
             if effective is None:
                 prepared.terminal_result = WorkItemResult[TOutput, TContext](
@@ -642,14 +672,13 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     submission_index=prepared.original_item.submission_index,
                 )
         except Exception as exc:
-            failure_item = (
-                prepared.original_item
-                if isinstance(exc, MiddlewareContractError)
-                else replace(prepared.original_item, context=prepared.effective_item.context)
-            )
+            failure_item = copy(prepared.original_item)
+            if not isinstance(exc, MiddlewareContractError):
+                failure_item.context = prepared.effective_item.context
             prepared.terminal_result = await self.build_failure_result(failure_item, exc, worker_id)
             prepared.terminal_result.submission_index = prepared.original_item.submission_index
         finally:
+            _prepared_item.reset(token)
             # Interrupted middleware may not reach normal return validation.
             # Accepted identity survives mutations even on timeout/cancellation.
             for item in (work_item, prepared.effective_item):
@@ -679,7 +708,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         if prepared.terminal_result is not None:
             return prepared.terminal_result
         work_item = prepared.effective_item
-        token = self._prepared_item.set(prepared)
+        token = _prepared_item.set((self, prepared))
         try:
             self.check_prepared(prepared)
             result = await self._host._process_item_with_retries(
@@ -690,7 +719,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         except Exception as e:
             result = await self.build_failure_result(work_item, e, worker_id)
         finally:
-            self._prepared_item.reset(token)
+            _prepared_item.reset(token)
         result.submission_index = prepared.original_item.submission_index
         return result
 
@@ -742,6 +771,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     BatchDeadlineExceeded,
                     BatchAbortedError,
                     MiddlewareContractError,
+                    ArtifactIdentityError,
+                    ArtifactSerializationError,
                 ),
             )
             else await self._run_middlewares_on_error(work_item, e)
@@ -793,7 +824,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         deadline: float | None = None,
     ) -> WorkItemResult[TOutput, TContext]:
         """Wrapper that applies retry logic and strategy lifecycle."""
-        prepared = self._prepared_item.get()
+        prepared = self._current_prepared()
         if prepared is None or prepared.effective_item is not work_item:
             prepared = await self.prepare_logical_item(work_item, worker_id, deadline)
         if prepared.terminal_result is not None:

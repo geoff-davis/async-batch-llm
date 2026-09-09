@@ -4,10 +4,16 @@ import asyncio
 import contextlib
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Generic, cast
 
 from ._internal.admission import AdmissionRegistry
-from ._internal.capacity import CapacityLimiter, warn_if_worker_capacity_exceeded
+from ._internal.artifact_codec import BEST_EFFORT_AUDIT_CATEGORIES, GUARDRAIL_AUDIT_CATEGORIES
+from ._internal.capacity import (
+    CapacityLimiter,
+    capture_capacity_warning_source,
+    warn_if_worker_capacity_exceeded,
+)
 from ._internal.classifier_resolver import StrategyClassifierResolver
 from ._internal.cleanup import CleanupAction, CleanupStep
 from ._internal.event_dispatcher import EventDispatcher
@@ -20,7 +26,13 @@ from ._internal.guardrails import (
 from ._internal.item_executor import ItemExecutor
 from ._internal.rate_limit_coordinator import RateLimitCoordinator
 from ._internal.strategy_lifecycle import StrategyLifecycle
-from .artifacts import ArtifactError, ArtifactStore, ResumePolicy
+from .artifacts import (
+    ArtifactError,
+    ArtifactIdentityError,
+    ArtifactSerializationError,
+    ArtifactStore,
+    ResumePolicy,
+)
 from .base import (
     BatchProcessor,
     BatchTermination,
@@ -48,6 +60,14 @@ from .strategies import (
 from .token_extractor import TokenExtractor
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _StrategyConfiguration:
+    strategy: LLMCallStrategy
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    configured: bool = False
+
 
 # Maximum length for error messages in logs / result payloads.
 # Longer errors get truncated to keep logs readable.
@@ -233,7 +253,8 @@ class ParallelBatchProcessor(
         # host-wide attribute only as a compatibility/debug alias.
         self._classifier_resolver = StrategyClassifierResolver(error_classifier)
         self.error_classifier: ErrorClassifier = self._classifier_resolver.compatibility_classifier
-        self._capacity_checked_strategy_ids: set[int] = set()
+        self._strategy_configurations: dict[int, _StrategyConfiguration] = {}
+        self._capacity_warning_source: tuple[str, int, str] | None = None
         self.rate_limit_strategy = rate_limit_strategy or ExponentialBackoffStrategy(
             initial_cooldown=config.rate_limit.cooldown_seconds,
             max_cooldown=config.rate_limit.max_cooldown_seconds,
@@ -422,6 +443,7 @@ class ParallelBatchProcessor(
 
     async def _clear_classifier_cache(self) -> None:
         self._classifier_resolver.clear()
+        self._strategy_configurations.clear()
 
     async def _close_artifact_store(self) -> None:
         """Close the store once; a failed close stays retryable by a later close."""
@@ -456,7 +478,16 @@ class ParallelBatchProcessor(
         assert self._abort_controller is not None
         if self._abort_controller.aborted:
             raise BatchAdmissionStopped("Batch is no longer accepting work")
-        if not self._events.middlewares:
+        has_preprocessing = bool(self._events.middlewares) or (
+            type(self)._run_middlewares_before is not ParallelBatchProcessor._run_middlewares_before
+        )
+        # Capture before a worker can replace the strategy. Direct configuration
+        # retains the caller's stack already; streaming captures once before its
+        # producer task is spawned. Neither path creates a warning registry here.
+        work_item._capacity_warning_source = self._capacity_warning_source
+        if has_preprocessing and work_item._capacity_warning_source is None:
+            work_item._capacity_warning_source = capture_capacity_warning_source()
+        if not has_preprocessing:
             await self._configure_item_strategy(work_item)
         if self._streaming and self._guardrails_started:
             acceptance = asyncio.create_task(super().add_work(work_item))
@@ -480,12 +511,26 @@ class ParallelBatchProcessor(
         else:
             await super().add_work(work_item)
 
+    def _configuration_for(self, strategy: LLMCallStrategy) -> _StrategyConfiguration:
+        entry = self._strategy_configurations.get(id(strategy))
+        if entry is None or entry.strategy is not strategy:
+            entry = _StrategyConfiguration(strategy)
+            self._strategy_configurations[id(strategy)] = entry
+        return entry
+
     async def _configure_item_strategy(
         self, work_item: LLMWorkItem[TInput, TOutput, TContext]
     ) -> None:
         """Configure capacity and compatibility aliases for the effective strategy."""
-        strategy_id = id(work_item.strategy)
-        if strategy_id not in self._capacity_checked_strategy_ids:
+        entry = self._configuration_for(work_item.strategy)
+        async with entry.lock:
+            await self._configure_item_strategy_locked(work_item)
+
+    async def _configure_item_strategy_locked(
+        self, work_item: LLMWorkItem[TInput, TOutput, TContext]
+    ) -> None:
+        entry = self._configuration_for(work_item.strategy)
+        if not entry.configured:
             if self.config.concurrency is not None:
                 # Let built-in models right-size
                 # their connection pools before the first request. Runs before
@@ -508,9 +553,10 @@ class ParallelBatchProcessor(
                 strategy=work_item.strategy,
                 max_workers=cast(int, self.config.max_workers),
                 surface="ParallelBatchProcessor",
-                stacklevel=3,
+                stacklevel=5,
+                source=work_item._capacity_warning_source,
             )
-            self._capacity_checked_strategy_ids.add(strategy_id)
+            entry.configured = True
         admission_state = self._admission_registry.resolve(work_item.strategy)
         if not self._compatibility_scope_bound:
             self._rate_limit_coord = admission_state.cooldown
@@ -600,7 +646,7 @@ class ParallelBatchProcessor(
     async def _run_middlewares_before(
         self, work_item: LLMWorkItem[TInput, TOutput, TContext]
     ) -> LLMWorkItem[TInput, TOutput, TContext] | None:
-        return await self._events.run_before(work_item)
+        return await self._executor._run_middlewares_before(work_item)
 
     async def _run_middlewares_after(
         self, result: WorkItemResult[TOutput, TContext]
@@ -657,6 +703,7 @@ class ParallelBatchProcessor(
         result: WorkItemResult[TOutput, TContext] | None = None
         artifact_key: object | None = None
         artifact_prepared = False
+        artifact_prepare_attempted = False
         accepted_index = work_item.submission_index
         generated_from_abort = False
         controller = self._abort_controller
@@ -673,7 +720,15 @@ class ParallelBatchProcessor(
             work_item = prepared.effective_item
             if result is None:
                 try:
+                    if not self._configuration_for(work_item.strategy).configured:
+                        await await_with_guardrails(
+                            self._configure_item_strategy(work_item),
+                            item_deadline=prepared.deadline,
+                            item_id=work_item.item_id,
+                            abort_controller=controller,
+                        )
                     if self.artifact_store is not None:
+                        artifact_prepare_attempted = True
                         artifact_key = await await_with_guardrails(
                             self.artifact_store.prepare_item(work_item),
                             item_deadline=prepared.deadline,
@@ -688,32 +743,48 @@ class ParallelBatchProcessor(
                             item_id=work_item.item_id,
                             abort_controller=controller,
                         )
-                        self._executor.check_prepared(prepared)
                         result = cast(WorkItemResult[TOutput, TContext] | None, replayed)
+                    # A completed replay wins a simultaneous guardrail signal.
                     if result is None:
-                        if self._events.middlewares:
-                            await await_with_guardrails(
-                                self._configure_item_strategy(work_item),
-                                item_deadline=prepared.deadline,
-                                item_id=work_item.item_id,
-                                abort_controller=controller,
-                            )
                         result = await self._executor.execute_prepared(prepared, worker_id)
+                except (ArtifactIdentityError, ArtifactSerializationError) as exc:
+                    # Invalid input is local to this accepted item. Persistence
+                    # and format failures still terminate the batch below.
+                    if artifact_prepared:
+                        raise
+                    result = await self._executor.build_failure_result(work_item, exc, worker_id)
                 except (ItemDeadlineExceeded, BatchDeadlineExceeded, BatchAbortedError) as exc:
                     result = await self._executor.build_failure_result(work_item, exc, worker_id)
 
         assert result is not None
         result.submission_index = accepted_index
+        audit_only = result.error_category in GUARDRAIL_AUDIT_CATEGORIES
+        best_effort_audit = result.error_category in BEST_EFFORT_AUDIT_CATEGORIES
+
+        # Retain guardrail terminals for audit, including queued collateral
+        # aborts. These records never participate in replay. Do not restart an
+        # artifact preparation that was already interrupted by a deadline.
+        if self.artifact_store is not None and not artifact_prepare_attempted and audit_only:
+            try:
+                artifact_key = await self.artifact_store.prepare_item(work_item)
+                artifact_prepared = True
+            except ArtifactError as exc:
+                if not best_effort_audit:
+                    raise
+                logger.warning("Cannot checkpoint terminal item %s: %s", work_item.item_id, exc)
 
         # Checkpoint with the exact pre-execution key before publication.
-        # Preprocessing-only terminals never open an artifact or enter its
-        # replay index; no request was prepared for execution in that case.
         if (
             self.artifact_store is not None
             and artifact_prepared
             and not result.replayed_from_artifact
         ):
-            await self.artifact_store.append(work_item, artifact_key, result)
+            try:
+                await self.artifact_store.append(work_item, artifact_key, result)
+            except ArtifactError as exc:
+                if not best_effort_audit:
+                    raise
+                logger.warning("Cannot checkpoint terminal item %s: %s", work_item.item_id, exc)
 
         # Fail-fast is triggered only by a terminal failure and only after its
         # checkpoint is complete. The controller retains the first cause.

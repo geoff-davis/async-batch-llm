@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+import sys
+import time
+import warnings
+from dataclasses import InitVar, dataclass, replace
 from types import SimpleNamespace
 
 import pytest
 
 from async_batch_llm import (
+    ArtifactError,
+    ArtifactFormatError,
+    ArtifactIOError,
     GuardrailConfig,
     JsonlArtifactStore,
     LLMCallStrategy,
@@ -20,6 +26,8 @@ from async_batch_llm import (
     RetryConfig,
     SqliteArtifactStore,
     WorkItemResult,
+    process_prompts,
+    process_stream,
 )
 from async_batch_llm.artifacts import infer_artifact_identity
 from async_batch_llm.middleware import BaseMiddleware
@@ -63,6 +71,475 @@ class Transform(BaseMiddleware):
 
     async def on_error(self, item, error):
         self.errors += 1
+
+
+@pytest.mark.parametrize("middleware", [False, True])
+@pytest.mark.asyncio
+async def test_work_item_initvar_and_side_effects_are_not_repeated(middleware):
+    constructed = []
+
+    @dataclass
+    class Item(LLMWorkItem):
+        label: InitVar[str] = "initial"
+
+        def __post_init__(self, label):
+            super().__post_init__()
+            constructed.append(label)
+
+    strategy = Strategy()
+    item = Item("item", strategy, "prompt", label="original")
+    replacement = Item("item", strategy, "changed", label="replacement")
+    results = await run(
+        None, strategy, Transform(lambda _: replacement) if middleware else [], items=[item]
+    )
+    assert results[0].success
+    assert strategy.calls == ["changed" if middleware else "prompt"]
+    assert constructed == ["original", "replacement"]
+
+
+@pytest.mark.parametrize("hook", ["middleware", "processor"])
+@pytest.mark.asyncio
+async def test_preprocessing_preserves_subclass_validation(hook):
+    class Item(LLMWorkItem):
+        def _validate_fields(self):
+            super()._validate_fields()
+            if self.prompt != "valid":
+                raise ValueError("subclass requires valid prompt")
+
+    strategy = Strategy()
+    with pytest.raises(ValueError, match="subclass requires"):
+        Item("item", strategy, "invalid")
+
+    def invalidate(item):
+        item.prompt = "invalid"
+        return item
+
+    class Processor(ParallelBatchProcessor):
+        async def _run_middlewares_before(self, item):
+            return invalidate(item)
+
+    processor_type = Processor if hook == "processor" else ParallelBatchProcessor
+    async with processor_type(
+        config=ProcessorConfig(max_workers=1),
+        middlewares=[Transform(invalidate)] if hook == "middleware" else [],
+    ) as processor:
+        await processor.add_work(Item("item", strategy, "valid"))
+        result = (await processor.process_all()).results[0]
+    assert result.error_category == "middleware_contract_error"
+    assert "subclass requires" in result.error
+    assert strategy.calls == []
+
+
+@pytest.mark.parametrize("stored_result", [None, {}, [], 1, "invalid"])
+def test_top_level_exclusion_category_wins_over_result_shape(stored_result):
+    from async_batch_llm._internal.artifact_codec import is_non_replayable_record
+
+    assert is_non_replayable_record({"error_category": "batch_aborted", "result": stored_result})
+    assert not is_non_replayable_record({"result": stored_result})
+
+
+@pytest.mark.asyncio
+async def test_strategy_configuration_runs_once_with_concurrent_workers():
+    setup_started = asyncio.Event()
+    release_setup = asyncio.Event()
+    preprocessed = 0
+
+    class ConfiguredStrategy(Strategy):
+        configurations = 0
+
+        async def request_concurrency(self, concurrency):
+            self.configurations += 1
+            setup_started.set()
+            await release_setup.wait()
+
+    class Middleware(BaseMiddleware):
+        async def before_process(self, item):
+            nonlocal preprocessed
+            preprocessed += 1
+            return item
+
+    strategy = ConfiguredStrategy()
+    async with ParallelBatchProcessor(
+        config=ProcessorConfig(concurrency=4), middlewares=[Middleware()]
+    ) as processor:
+        for index in range(8):
+            await processor.add_work(LLMWorkItem(str(index), strategy, "prompt"))
+        task = asyncio.create_task(processor.process_all())
+        try:
+            await setup_started.wait()
+            while preprocessed < 4:
+                await asyncio.sleep(0)
+            # Let every worker reach configuration while the first hook waits.
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert strategy.configurations == 1
+        finally:
+            release_setup.set()
+        batch = await task
+    assert len(batch.results) == 8 and all(result.success for result in batch.results)
+    assert strategy.configurations == 1
+
+
+@pytest.mark.parametrize("bad_input", ["identity", "context"])
+@pytest.mark.asyncio
+async def test_invalid_artifact_input_fails_only_its_item(store_factory, bad_input):
+    strategy = Strategy()
+    other = Strategy("different")
+    middleware = Transform()
+    results = await run(
+        store_factory(),
+        strategy,
+        middleware,
+        items=[
+            LLMWorkItem("first", strategy, "first"),
+            LLMWorkItem(
+                "bad",
+                other if bad_input == "identity" else strategy,
+                "bad",
+                object() if bad_input == "context" else None,
+            ),
+            LLMWorkItem("last", strategy, "last"),
+        ],
+    )
+    assert [result.success for result in results] == [True, False, True]
+    assert results[1].error_category == "artifact_preparation_error"
+    assert strategy.calls == ["first", "last"] and other.calls == []
+    assert middleware.errors == 0
+
+
+@pytest.mark.parametrize("guard", ["item", "abort", "batch"])
+@pytest.mark.asyncio
+async def test_completed_lookup_wins_guardrail_and_preserves_stored_success(store_factory, guard):
+    from async_batch_llm._internal.guardrails import AbortCause
+
+    class ReplayStrategy(Strategy):
+        configurations = 0
+
+        async def request_concurrency(self, concurrency):
+            self.configurations += 1
+
+    await run(store_factory(), Strategy(), Transform())
+    store = store_factory()
+    lookup = store.lookup
+    strategy = ReplayStrategy()
+    async with ParallelBatchProcessor(
+        config=ProcessorConfig(
+            concurrency=1,
+            guardrails=GuardrailConfig(total_timeout_per_item=0.2 if guard == "item" else None),
+        ),
+        artifact_store=store,
+        resume=ResumePolicy.REUSE_ALL,
+        middlewares=[Transform()],
+    ) as processor:
+
+        async def lookup_and_trip(item, key, policy):
+            result = await lookup(item, key, policy)
+            assert result is not None and result.success
+            if guard == "item":
+                # Finish the lookup in the same event-loop turn as expiry.
+                time.sleep(0.21)
+            else:
+                await processor._abort_controller.trip(
+                    AbortCause(
+                        kind="batch_timeout" if guard == "batch" else "fail_fast", reason="test"
+                    )
+                )
+            return result
+
+        store.lookup = lookup_and_trip
+        await processor.add_work(LLMWorkItem("item", strategy, "prompt"))
+        result = (await processor.process_all()).results[0]
+        assert result.success and result.replayed_from_artifact
+        assert (
+            processor._rate_limit_coord is processor._admission_registry.resolve(strategy).cooldown
+        )
+    assert strategy.calls == [] and strategy.configurations == 1
+    reader = store_factory()
+    try:
+        assert len([result async for result in reader.iter_results()]) == 1
+    finally:
+        await reader.close()
+    resumed = (await run(store_factory(), strategy, Transform()))[0]
+    assert resumed.success and resumed.replayed_from_artifact and strategy.calls == []
+
+
+@pytest.mark.parametrize(
+    "category", ["batch_aborted", "batch_deadline_exceeded", "framework_total_item_timeout"]
+)
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.asyncio
+async def test_guardrail_audit_records_do_not_mask_success(
+    store_factory, category, legacy, monkeypatch
+):
+    from async_batch_llm._internal import artifact_codec
+
+    strategy = Strategy()
+    await run(store_factory(), strategy, Transform())
+    store = store_factory()
+    item = LLMWorkItem("item", strategy, "prompt")
+    try:
+        key = await store.prepare_item(item)
+        with monkeypatch.context() as patch:
+            if legacy:
+                patch.setattr(artifact_codec, "NON_REPLAYABLE_CATEGORIES", ())
+            await store.append(
+                item,
+                key,
+                WorkItemResult("item", success=False, error="stopped", error_category=category),
+            )
+    finally:
+        await store.close()
+    resumed = (await run(store_factory(), strategy, Transform()))[0]
+    assert resumed.success and resumed.replayed_from_artifact
+    assert strategy.calls == ["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_before_override_controls_effective_request_without_registered_middleware():
+    original = Strategy()
+    effective = Strategy()
+
+    class Processor(ParallelBatchProcessor):
+        before_calls = 0
+
+        async def _run_middlewares_before(self, item):
+            self.before_calls += 1
+            return replace(
+                await super()._run_middlewares_before(item), strategy=effective, prompt="new"
+            )
+
+    async with Processor(config=ProcessorConfig(max_workers=1)) as processor:
+        await processor.add_work(LLMWorkItem("item", original, "old"))
+        result = (await processor.process_all()).results[0]
+        assert processor.before_calls == 1 and result.output == "NEW"
+    assert effective.calls == ["new"] and original.calls == []
+
+
+@pytest.mark.parametrize("middleware", [False, True])
+@pytest.mark.asyncio
+async def test_capacity_warning_points_to_submission(middleware):
+    class SmallStrategy(Strategy):
+        @property
+        def max_concurrency(self):
+            return 1
+
+    strategy = SmallStrategy()
+    with pytest.warns(UserWarning, match="max_workers=2 exceeds") as warnings:
+        async with ParallelBatchProcessor(
+            config=ProcessorConfig(max_workers=2),
+            middlewares=[Transform()] if middleware else [],
+        ) as processor:
+            await processor.add_work(LLMWorkItem("item", strategy, "prompt"))
+            await processor.process_all()
+    assert warnings[0].filename == __file__
+
+
+@pytest.mark.parametrize("middleware", [False, True])
+@pytest.mark.parametrize("filter_action", ["default", "ignore"])
+@pytest.mark.asyncio
+async def test_capacity_warnings_preserve_registry_and_module_filters(middleware, filter_action):
+    class SmallStrategy(Strategy):
+        @property
+        def max_concurrency(self):
+            return 1
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("default", UserWarning)
+        if filter_action == "ignore":
+            warnings.filterwarnings("ignore", category=UserWarning, module=rf"^{__name__}$")
+        async with ParallelBatchProcessor(
+            config=ProcessorConfig(max_workers=2),
+            middlewares=[Transform()] if middleware else [],
+        ) as processor:
+            for index in range(6):
+                await processor.add_work(LLMWorkItem(str(index), SmallStrategy(), "prompt"))
+            await processor.process_all()
+    assert len(caught) == (1 if filter_action == "default" else 0)
+
+
+@pytest.mark.parametrize("surface", ["prompts", "stream"])
+@pytest.mark.parametrize("ignore", [False, True])
+@pytest.mark.asyncio
+async def test_streaming_capacity_warning_uses_consumer_module(surface, ignore):
+    class SmallStrategy(Strategy):
+        @property
+        def max_concurrency(self):
+            return 1
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("default", UserWarning)
+        if ignore:
+            warnings.filterwarnings("ignore", category=UserWarning, module=rf"^{__name__}$")
+        for _ in range(2):
+            kwargs = {"config": ProcessorConfig(max_workers=2), "middlewares": [Transform()]}
+            if surface == "prompts":
+                await process_prompts(SmallStrategy(), ["prompt"], **kwargs)
+            else:
+                async for _ in process_stream(SmallStrategy(), ["prompt"], **kwargs):
+                    pass
+    assert len(caught) == (0 if ignore else 1)
+    if caught:
+        assert caught[0].filename == __file__
+
+
+@pytest.mark.parametrize("surface", ["batch", "stream"])
+@pytest.mark.asyncio
+async def test_submission_without_warning_does_not_create_registry(surface, monkeypatch):
+    from async_batch_llm import streaming
+
+    monkeypatch.delattr(sys.modules[__name__], "__warningregistry__", raising=False)
+    monkeypatch.delattr(asyncio.base_events, "__warningregistry__", raising=False)
+
+    def unexpected_capture():
+        raise AssertionError("unnecessary per-item frame walk")
+
+    if surface == "batch":
+        monkeypatch.setattr(
+            "async_batch_llm.parallel.capture_capacity_warning_source", unexpected_capture
+        )
+        await run(None, Strategy(), [])
+    else:
+        captures = []
+        capture = streaming.capture_capacity_warning_source
+
+        def capture_once():
+            captures.append(True)
+            return capture()
+
+        monkeypatch.setattr(streaming, "capture_capacity_warning_source", capture_once)
+        await process_prompts(Strategy(), ["prompt"] * 3)
+        assert len(captures) == 1
+    assert not hasattr(sys.modules[__name__], "__warningregistry__")
+    assert not hasattr(asyncio.base_events, "__warningregistry__")
+
+
+@pytest.mark.parametrize("phase", ["prepare", "append"])
+@pytest.mark.parametrize("error_type", [ArtifactIOError, ArtifactFormatError])
+@pytest.mark.asyncio
+async def test_item_timeout_checkpoint_failure_still_propagates(store_factory, phase, error_type):
+    class HangingStrategy(Strategy):
+        async def execute(self, *args, **kwargs):
+            await asyncio.Event().wait()
+
+    class HangingMiddleware(BaseMiddleware):
+        async def before_process(self, item):
+            await asyncio.Event().wait()
+
+    store = store_factory()
+
+    async def fail(*args):
+        raise error_type("timeout checkpoint failed")
+
+    if phase == "prepare":
+        store.prepare_item = fail
+    else:
+        store.append = fail
+    with pytest.raises(error_type, match="timeout checkpoint failed"):
+        await run(
+            store,
+            HangingStrategy(),
+            HangingMiddleware() if phase == "prepare" else [],
+            config=ProcessorConfig(
+                max_workers=1, guardrails=GuardrailConfig(total_timeout_per_item=0.05)
+            ),
+        )
+
+
+@pytest.mark.parametrize("phase", ["prepare", "append"])
+@pytest.mark.parametrize("error_type", [ArtifactError, ArtifactIOError, ArtifactFormatError])
+@pytest.mark.parametrize("abort_kind", ["fail_fast", "batch_timeout"])
+@pytest.mark.asyncio
+async def test_audit_artifact_failure_preserves_controlled_stop(
+    store_factory, phase, error_type, abort_kind, caplog
+):
+    from async_batch_llm._internal.guardrails import AbortCause
+
+    strategy = Strategy()
+    store = store_factory()
+    prepare = store.prepare_item
+    append = store.append
+    async with ParallelBatchProcessor(
+        config=ProcessorConfig(max_workers=1), artifact_store=store
+    ) as processor:
+
+        async def prepare_or_fail(item):
+            if phase == "prepare" and processor._abort_controller.aborted:
+                raise error_type("audit failed")
+            return await prepare(item)
+
+        async def append_or_fail(item, key, result):
+            if phase == "append" and processor._abort_controller.aborted:
+                raise error_type("audit failed")
+            await append(item, key, result)
+            if item.item_id == "1":
+                await processor._trip_abort(AbortCause(kind=abort_kind, reason="test"))
+
+        store.prepare_item = prepare_or_fail
+        store.append = append_or_fail
+        for index in range(5):
+            await processor.add_work(LLMWorkItem(str(index), strategy, "prompt"))
+        batch = await processor.process_all()
+        assert processor._queue._unfinished_tasks == 0
+    assert [result.success for result in batch.results] == [True, True, False, False, False]
+    category = "batch_aborted" if abort_kind == "fail_fast" else "batch_deadline_exceeded"
+    assert all(result.error_category == category for result in batch.results[2:])
+    assert batch.termination.kind == abort_kind
+    assert len(strategy.calls) == 2
+    assert (
+        sum("Cannot checkpoint terminal item" in record.message for record in caplog.records) == 3
+    )
+
+
+@pytest.mark.asyncio
+async def test_configuration_rechecks_strategy_identity_and_releases_entries():
+    class ConfiguredStrategy(Strategy):
+        configurations = 0
+
+        async def request_concurrency(self, concurrency):
+            self.configurations += 1
+
+    first, second = ConfiguredStrategy(), ConfiguredStrategy()
+    async with ParallelBatchProcessor(config=ProcessorConfig(concurrency=1)) as processor:
+        await processor.add_work(LLMWorkItem("first", first, "prompt"))
+        # Deterministically simulate a stale entry under a reused object ID.
+        processor._strategy_configurations[id(second)] = processor._strategy_configurations[
+            id(first)
+        ]
+        await processor.add_work(LLMWorkItem("second", second, "prompt"))
+        await processor.process_all()
+        assert first.configurations == second.configurations == 1
+    assert processor._strategy_configurations == {}
+
+
+@pytest.mark.asyncio
+async def test_queued_aborts_are_audited_and_run_on_resume(store_factory):
+    from async_batch_llm._internal.guardrails import AbortCause
+
+    strategy = Strategy()
+    store = store_factory()
+    async with ParallelBatchProcessor(
+        config=ProcessorConfig(max_workers=1), artifact_store=store
+    ) as processor:
+        for index in range(3):
+            await processor.add_work(LLMWorkItem(str(index), strategy, "prompt"))
+        await processor._trip_abort(AbortCause(kind="fail_fast", reason="test"))
+        batch = await processor.process_all()
+    assert len(batch.results) == 3
+    assert all(result.error_category == "batch_aborted" for result in batch.results)
+    assert strategy.calls == []
+    reader = store_factory()
+    try:
+        assert len([result async for result in reader.iter_results()]) == 3
+    finally:
+        await reader.close()
+    resumed = await run(
+        store_factory(),
+        strategy,
+        [],
+        items=[LLMWorkItem(str(index), strategy, "prompt") for index in range(3)],
+    )
+    assert all(result.success and not result.replayed_from_artifact for result in resumed)
+    assert len(strategy.calls) == 3
 
 
 @pytest.fixture(params=[JsonlArtifactStore, SqliteArtifactStore], ids=["jsonl", "sqlite"])
@@ -295,7 +772,7 @@ async def test_filter_after_replacement_keeps_effective_context():
 
 @pytest.mark.parametrize("guard", ["item", "batch"])
 @pytest.mark.asyncio
-async def test_preprocessing_deadline_or_abort_never_opens_store(store_factory, guard):
+async def test_preprocessing_deadline_or_abort_is_audit_only(store_factory, guard):
     cancelled = asyncio.Event()
 
     class Hanging(BaseMiddleware):
@@ -319,7 +796,14 @@ async def test_preprocessing_deadline_or_abort_never_opens_store(store_factory, 
         "framework_total_item_timeout" if guard == "item" else "batch_deadline_exceeded"
     )
     assert cancelled.is_set() and strategy.calls == [] and strategy.preparations == 0
-    assert store.identity is None
+    reader = store_factory()
+    try:
+        records = [entry async for entry in reader.iter_results()]
+        assert len(records) == 1 and records[0].error_category == result.error_category
+    finally:
+        await reader.close()
+    resumed = (await run(store_factory(), strategy, Transform()))[0]
+    assert resumed.success and not resumed.replayed_from_artifact
 
 
 @pytest.mark.asyncio
@@ -612,12 +1096,17 @@ async def test_retry_override_can_tighten_prepared_deadline():
 
 
 @pytest.mark.asyncio
-async def test_legacy_filter_artifact_cannot_replay_after_policy_allows(store_factory):
+@pytest.mark.parametrize("earlier_success", [False, True])
+async def test_legacy_filter_artifact_cannot_replay_after_policy_allows(
+    store_factory, earlier_success
+):
     strategy = Strategy()
     item = LLMWorkItem("item", strategy, "prompt")
     store = store_factory()
     try:
         key = await store.prepare_item(item)
+        if earlier_success:
+            await store.append(item, key, WorkItemResult("item", success=True, output="stored"))
         # v0.23.0 filter records had no category and were marked replayable.
         await store.append(
             item,
@@ -631,5 +1120,7 @@ async def test_legacy_filter_artifact_cannot_replay_after_policy_allows(store_fa
     finally:
         await store.close()
     result = (await run(store_factory(), strategy, Transform()))[0]
-    assert result.success and not result.replayed_from_artifact
-    assert strategy.calls == ["prompt"]
+    assert result.success
+    assert result.replayed_from_artifact is earlier_success
+    assert result.output == ("stored" if earlier_success else "PROMPT!")
+    assert strategy.calls == ([] if earlier_success else ["prompt"])

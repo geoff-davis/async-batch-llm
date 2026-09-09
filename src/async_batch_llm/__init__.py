@@ -64,6 +64,7 @@ from .artifacts import (
     ArtifactError,
     ArtifactFormatError,
     ArtifactIdentity,
+    ArtifactIdentityError,
     ArtifactIOError,
     ArtifactSerializationError,
     ArtifactStore,
@@ -247,6 +248,7 @@ __all__ = [
     "CallableStrategy",
     # Audit/checkpoint artifacts
     "ArtifactError",
+    "ArtifactIdentityError",
     "ArtifactFormatError",
     "ArtifactIOError",
     "ArtifactIdentity",

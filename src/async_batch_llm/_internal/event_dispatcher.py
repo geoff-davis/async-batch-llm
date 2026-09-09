@@ -109,7 +109,7 @@ class EventDispatcher(Generic[TInput, TOutput, TContext]):
                 candidate.submission_index = submission_index
                 raise MiddlewareContractError("before_process cannot change the accepted item_id")
             try:
-                candidate.__post_init__()
+                type(candidate)._validate_fields(candidate)
             except (TypeError, ValueError) as exc:
                 raise MiddlewareContractError(f"Invalid before_process work item: {exc}") from exc
             candidate.submission_index = submission_index

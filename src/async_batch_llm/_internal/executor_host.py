@@ -122,6 +122,11 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
     def _extract_token_usage(self, exception: Exception) -> dict[str, int]:
         return self._token_extractor.extract_from_exception(exception)
 
+    async def _run_middlewares_before(
+        self, work_item: LLMWorkItem[TInput, TOutput, TContext]
+    ) -> LLMWorkItem[TInput, TOutput, TContext] | None:
+        return await self.executor._run_middlewares_before(work_item)
+
     async def _process_item(
         self,
         work_item: LLMWorkItem[TInput, TOutput, TContext],

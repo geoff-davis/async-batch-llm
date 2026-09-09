@@ -245,9 +245,16 @@ class LLMWorkItem(Generic[TInput, TOutput, TContext]):
     # the work item so duplicate item IDs remain independently orderable.
     submission_index: int | None = field(default=None, compare=False)
     _artifact_key: Any = field(default=None, repr=False, compare=False)
+    _capacity_warning_source: tuple[str, int, str] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self):
         """Validate work item fields."""
+        self._validate_fields()
+
+    def _validate_fields(self) -> None:
+        """Validate the framework contract without invoking construction hooks."""
         if not self.item_id or not isinstance(self.item_id, str):
             raise ValueError(
                 f"item_id must be a non-empty string (got {type(self.item_id).__name__}: {repr(self.item_id)}). "

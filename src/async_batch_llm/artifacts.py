@@ -28,7 +28,7 @@ from ._internal.artifact_codec import (
     decode_stored_result,
     fingerprint_identity,
     fingerprint_work_item,
-    is_middleware_filtered_record,
+    is_non_replayable_record,
     record_is_compatible,
     record_replay_key,
     replay_key,
@@ -49,6 +49,10 @@ _ReplayKey: TypeAlias = ReplayKey
 
 class ArtifactError(RuntimeError):
     """Base class for artifact preparation, format, and persistence failures."""
+
+
+class ArtifactIdentityError(ArtifactError):
+    """One item's strategy cannot satisfy the store's identity contract."""
 
 
 class ArtifactSerializationError(ArtifactError):
@@ -108,13 +112,13 @@ def infer_artifact_identity(strategy: Any) -> ArtifactIdentity:
     explicit_hook = getattr(strategy, "artifact_identity", _NO_IDENTITY_HOOK)
     if explicit_hook is not _NO_IDENTITY_HOOK:
         if explicit_hook is None:
-            raise ArtifactError(
+            raise ArtifactIdentityError(
                 f"{type(strategy).__name__} cannot safely infer artifact identity. "
                 "Pass identity=ArtifactIdentity(...) to CallableStrategy or "
                 "JsonlArtifactStore."
             )
         if not isinstance(explicit_hook, ArtifactIdentity):
-            raise ArtifactError(
+            raise ArtifactIdentityError(
                 f"{type(strategy).__name__}.artifact_identity must be an ArtifactIdentity or None"
             )
         return explicit_hook
@@ -182,7 +186,7 @@ def _resolve_artifact_identity(
         pinned_identity_value != inferred_value
         or pinned_identity_fingerprint != inferred_fingerprint
     ):
-        raise ArtifactError(
+        raise ArtifactIdentityError(
             "Automatic artifact identity changed within one store instance. "
             "Zero-configuration identity supports one inferred execution identity per run. "
             "Use separate stores or pass an explicit ArtifactIdentity describing the "
@@ -557,7 +561,7 @@ class JsonlArtifactStore:
             record = records.get(legacy_key)
         if (
             record is None
-            or is_middleware_filtered_record(record)
+            or is_non_replayable_record(record)
             or not self._compatible(record, work_item, fingerprint)
         ):
             return None
@@ -590,7 +594,7 @@ class JsonlArtifactStore:
         return record_replay_key(record)
 
     def _index_record(self, record: dict[str, Any]) -> None:
-        if not record.get("replay_eligible", False):
+        if not record.get("replay_eligible", False) or is_non_replayable_record(record):
             return
         key = self._record_replay_key(record)
         if key is None:
@@ -894,6 +898,7 @@ class JsonlArtifactStore:
 __all__ = [
     "ARTIFACT_SCHEMA_VERSION",
     "ArtifactError",
+    "ArtifactIdentityError",
     "ArtifactFormatError",
     "ArtifactIOError",
     "ArtifactIdentity",

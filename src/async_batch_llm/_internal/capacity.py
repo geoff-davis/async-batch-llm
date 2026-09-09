@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import sys
 import time
 import warnings
 from collections.abc import AsyncIterator
@@ -213,24 +214,55 @@ class CapacityLimiter:
             await gate.release()
 
 
+def capture_capacity_warning_source() -> tuple[str, int, str]:
+    """Save caller attribution before spawning work, without retaining globals."""
+    frame = sys._getframe(1)
+    try:
+        while frame.f_back is not None and str(frame.f_globals.get("__name__", "")).startswith(
+            "async_batch_llm."
+        ):
+            frame = frame.f_back
+        return (
+            frame.f_code.co_filename,
+            frame.f_lineno,
+            str(frame.f_globals.get("__name__", "<unknown>")),
+        )
+    finally:
+        del frame
+
+
 def warn_if_worker_capacity_exceeded(
     *,
     strategy: Any,
     max_workers: int,
     surface: str,
     stacklevel: int = 2,
+    source: tuple[str, int, str] | None = None,
 ) -> None:
     """Warn when framework concurrency exceeds a known provider-client capacity."""
     capacity = strategy_max_concurrency(strategy)
     if capacity is None or max_workers <= capacity:
         return
 
-    warnings.warn(
+    message = (
         f"{surface} max_workers={max_workers} exceeds "
         f"{type(strategy).__name__}.max_concurrency={capacity}. Excess attempts will wait "
         "in ABL admission before attempt_timeout starts. Set max_workers <= "
         f"{capacity}, or rebuild the model with max_connections >= {max_workers}. "
-        f"See {_CAPACITY_DOCS_URL}",
-        UserWarning,
-        stacklevel=stacklevel,
+        f"See {_CAPACITY_DOCS_URL}"
     )
+    if source is not None:
+        module = sys.modules.get(source[2])
+        registry = (
+            vars(module).setdefault("__warningregistry__", {}) if module is not None else None
+        )
+        warnings.warn_explicit(
+            message,
+            UserWarning,
+            filename=source[0],
+            lineno=source[1],
+            module=source[2],
+            registry=registry,
+        )
+    else:
+        warnings.warn(message, UserWarning, stacklevel=stacklevel)

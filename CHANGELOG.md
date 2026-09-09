@@ -13,15 +13,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   artifact lookup or strategy preparation. Retries reuse the effective request;
   `ITEM_STARTED` is emitted once, including for replay and filtering. Replacement
   items retain accepted IDs and submission indexes; invalid replacements fail
-  with exported `MiddlewareContractError`. Artifact identity errors now surface
-  during processing instead of `add_work()`.
+  with exported `MiddlewareContractError`. Artifact identity and input
+  serialization errors now become per-item `artifact_preparation_error` results
+  during processing instead of aborting the batch. Store I/O, format, and
+  checkpoint-write failures still propagate for ordinary execution checkpoints.
 - Fingerprint and checkpoint middleware-transformed requests consistently on JSONL
   and SQLite. Current filtering bypasses replay; explicitly stored filter results
   are not replay eligible. Legacy filter records are excluded on read as well.
-  Preprocessing-only terminals do not open the store.
+  Filtered and invalid middleware requests do not open the store.
   Replay preserves current effective context and historical post-`after_process`
   output without rerunning that hook. Version hook changes through artifact
   application/parser identity. Artifact schemas remain unchanged.
+- Preserve completed artifact replays when a deadline or abort arrives during
+  lookup. Aborts and total-item/batch deadline failures are checkpointed for audit
+  when an artifact key can be prepared, but are never replay eligible, including
+  under `REUSE_ALL`. Legacy records in those categories are also excluded during
+  lookup so they cannot mask an older success. Interrupted artifact preparation
+  is not restarted solely for audit; unrepresentable inputs cannot be checkpointed.
+  Artifact errors during batch-abort or batch-deadline audit preparation or append
+  are logged without replacing the controlled stop. Per-item deadline checkpoint
+  failures still raise, just like ordinary execution checkpoint failures.
+- Configure effective strategies once across concurrent workers, including on
+  replay-only runs, and bind the compatibility cooldown to their admission scope.
+  Capacity warnings retain the submitting caller's source location, module, and
+  warning registry for filtering and deduplication. Module-based suppression must
+  match the attributed caller's module rather than the library; message-based
+  filters also work. Configuration
+  entries verify strategy identity and are released during cleanup. Restore the
+  processor's `_run_middlewares_before` override and avoid rerunning work-item
+  subclass construction hooks during copying or middleware validation, while
+  honoring subclass `_validate_fields()` overrides. Streaming captures warning
+  attribution before starting its producer task; warning registries are created
+  only when a warning is issued.
 
 - **BREAKING**: Batch `process_all()` now leaves the artifact store open until
   context exit or explicit `shutdown()` / `cleanup()`, so strategy teardown

@@ -383,6 +383,51 @@ the project's release-prep flow.
 - `docs.yml` — MkDocs build & GitHub Pages deploy on push to `main`.
 - `publish.yml` — release publishing.
 
+### Review protocol
+
+This repo is often worked by two sessions: one implements, one reviews.
+The v0.23.1 lifecycle work took ten review rounds, and most repeat
+findings traced to missing evidence rather than missing skill.
+
+**Handing work to a review.**
+
+- Commit first, or name the base revision. A reviewer comparing against
+  the parent otherwise has to stash an uncommitted tree, which is
+  destructive if the implementing session is still editing.
+- Map each finding to its change and to its regression test.
+- Show that test failing on the parent commit. "`make ci` passes" is not
+  evidence that a fix changed behavior.
+- State deliberate omissions and disagreements; don't leave them silent.
+
+**Reviewing.**
+
+- Verify by reproduction against the parent commit. A green suite says
+  nothing about a path no test covers.
+- Before calling something a regression, run the same probe on both
+  trees — much of what looks new is pre-existing.
+- Exercise both artifact backends whenever replay, record eligibility,
+  or lookup changes; `JsonlArtifactStore` and `SqliteArtifactStore` have
+  drifted apart more than once.
+- Don't re-run the full suite on both interpreters by routine; the
+  implementing side already runs `make ci`. Reserve the 3.10/3.13 pair
+  for cancellation and asyncio-semantics changes, where they diverge.
+
+**Changing a shared policy.** Most round-N fixes in the v0.23.1 work
+introduced a round-N+1 defect in a sibling path. When a change touches a
+category list, a swallow-or-re-raise rule, or a replay predicate,
+enumerate every member and every caller and say what each one does now.
+Dropping the abort-time append lost the audit trail; adding caller
+attribution to capacity warnings broke warning deduplication; folding
+the per-item timeout into the abort audit categories silently swallowed
+store write errors.
+
+**Background review agents.** `/code-review` finds real defects a
+foreground pass misses, but it has no memory across rounds: paste the
+settled decisions and out-of-scope list from `.claude/review-context.md`
+into its prompt, or it re-reports accepted trade-offs. Prefer letting it
+do discovery and verifying its candidates yourself over running two full
+parallel passes. Keep `.claude/review-context.md` pruned at each release.
+
 ---
 
 ## Testing strategy
