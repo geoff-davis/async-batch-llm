@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Generic, Protocol, TypeAlias, TypeVar, cast
 
+from ._internal.execution_state import record_provider_seconds
 from .artifacts import ArtifactIdentity
 from .base import RetryState, TokenUsage
 from .llm_strategies import LLMCallStrategy
@@ -27,7 +28,6 @@ RequestConcurrencyCallback: TypeAlias = Callable[[int], bool | Awaitable[bool]]
 _TOKEN_USAGE_KEYS = frozenset(
     {"input_tokens", "output_tokens", "total_tokens", "cached_input_tokens"}
 )
-_LAST_PROVIDER_SECONDS_KEY = "_abl_last_provider_seconds"
 
 
 @dataclass(frozen=True)
@@ -259,11 +259,7 @@ class CallableStrategy(LLMCallStrategy[TOutput]):
                 )
             outcome = await pending
         finally:
-            if state is not None:
-                state.set(
-                    _LAST_PROVIDER_SECONDS_KEY,
-                    max(0.0, time.perf_counter() - provider_started),
-                )
+            record_provider_seconds(state, time.perf_counter() - provider_started)
 
         output, usage, metadata = _normalize_outcome(outcome)
         return cast(TOutput, output), usage, metadata

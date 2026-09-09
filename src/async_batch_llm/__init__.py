@@ -59,10 +59,12 @@ Type Aliases:
 
 from typing import TypeVar
 
+from ._internal.cleanup import CleanupInterruptedError
 from .artifacts import (
     ArtifactError,
     ArtifactFormatError,
     ArtifactIdentity,
+    ArtifactIdentityError,
     ArtifactIOError,
     ArtifactSerializationError,
     ArtifactStore,
@@ -73,6 +75,7 @@ from .artifacts import (
 # Core classes
 from .base import (
     AttemptTiming,
+    BatchInterruptedError,
     BatchProcessor,
     BatchResult,
     BatchTermination,
@@ -83,6 +86,7 @@ from .base import (
     ProcessingStats,
     ProgressCallbackFunc,
     RetryState,
+    StreamFinalizationError,
     TokenUsage,
     WorkItemResult,
     WorkItemTiming,
@@ -169,6 +173,7 @@ from .strategies import (
     FixedDelayStrategy,
     FrameworkTimeoutError,
     ItemDeadlineExceeded,
+    MiddlewareContractError,
     ProviderResponseError,
     RateLimitRetriesExceeded,
     RateLimitStrategy,
@@ -219,6 +224,7 @@ Example:
 
 __all__ = [
     # Core
+    "BatchInterruptedError",
     "BatchProcessor",
     "AttemptTiming",
     "BatchResult",
@@ -229,6 +235,7 @@ __all__ = [
     "ProcessingStats",
     "ProgressCallbackFunc",
     "RetryState",
+    "StreamFinalizationError",
     "TokenUsage",
     "TokenEstimate",
     "TokenEstimator",
@@ -237,9 +244,11 @@ __all__ = [
     "WorkItemTiming",
     "ResultSerializationError",
     "CallOutcome",
+    "CleanupInterruptedError",
     "CallableStrategy",
     # Audit/checkpoint artifacts
     "ArtifactError",
+    "ArtifactIdentityError",
     "ArtifactFormatError",
     "ArtifactIOError",
     "ArtifactIdentity",
@@ -299,6 +308,7 @@ __all__ = [
     "EmptyResponseError",
     "FrameworkTimeoutError",
     "ItemDeadlineExceeded",
+    "MiddlewareContractError",
     "BatchDeadlineExceeded",
     "BatchAbortedError",
     "ProviderResponseError",

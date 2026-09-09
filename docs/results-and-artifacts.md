@@ -89,6 +89,62 @@ of prompts, outputs, context, and metadata.
 Unsupported values, malformed input, and future schema versions raise
 `ResultSerializationError`; values are never silently replaced with `repr()`.
 
+## Middleware and replay
+
+For each accepted item, the processor establishes its total deadline and runs
+`before_process` once before preparing artifact identity or looking up an old
+result. Retries use this effective request without repeating preprocessing.
+Current filtering therefore always wins over historical success.
+
+A replacement may change prompt, context, and strategy, but cannot change the
+accepted item ID. Submission indexes are preserved. Fingerprints, inferred
+provider/model identity, strategy class, lookup, and audit fields describe the
+effective item; append uses the exact fingerprint prepared before execution.
+Explicit `ArtifactIdentity` values still override inferred identity. Automatic
+stores still require one consistent inferred identity per run, regardless of
+worker preparation order. Identity and input serialization errors produce a
+failed `artifact_preparation_error` result for that item during processing, after
+middleware. Other accepted items continue; store I/O, format, and checkpoint-write
+failures still propagate for ordinary execution checkpoints. To stop immediately
+on identity or input errors, include `artifact_preparation_error` in
+`GuardrailConfig.abort_on_error_categories`; it remains opt-in so isolated bad
+inputs do not discard valid neighboring results.
+
+Replay retains historical output, usage, and timing, binds current effective
+context and the current submission index, and neither calls strategy `prepare()`
+nor appends a duplicate record. Capacity configuration and admission-scope binding
+still run once per effective strategy. A completed lookup is used even if a
+deadline or abort arrives concurrently. `after_process` runs once for a newly executed success,
+before append, and does not rerun on replay. Changes to `after_process` that leave
+effective inputs unchanged require an `application_version` or `parser_version`
+bump in `ArtifactIdentity`. Middleware functions are not automatically hashed.
+
+Filtered items produce a current-run `middleware_filtered` result. Preprocessing
+filtering and invalid middleware requests do not open the store or append records.
+Aborts and total-item/batch deadlines are checkpointed for audit when an artifact
+key can be prepared, with `replay_eligible=False`. Interrupted artifact preparation
+is not restarted solely for audit, and unrepresentable inputs cannot be checkpointed.
+Artifact errors during batch-abort or batch-deadline audit preparation or append
+are logged, preserving the controlled stop and its results even when that audit
+record cannot be persisted. A per-item deadline is an ordinary failed result in
+an otherwise running batch: its checkpoint errors still propagate, although its
+record remains ineligible for replay.
+
+An abort can append one audit row per accepted queued item before the run returns.
+These writes use the store's normal locking and persistence path, so large queues
+can add substantial abort-drain time. Audit preparation and append are not bounded
+by the expired guardrails; a store that blocks on open or write can delay draining
+indefinitely.
+
+Both backends exclude legacy abort/deadline records during replay as well, allowing
+an older compatible success to be reused. A filter record explicitly appended via
+the store API has `replay_eligible=False`, including under `REUSE_ALL`. Both JSONL
+and SQLite also reject legacy filter records bearing the exact historical
+`Skipped by middleware` error, even when those records were marked replayable.
+Both stores fall back to an older compatible result when a newer record is excluded.
+Both retain the existing version-1 schema. Newly executed
+results are still checkpointed before publication or post-processing callbacks.
+
 ## Resumable JSONL artifacts
 
 An artifact begins with a version-1 manifest followed by versioned item records.

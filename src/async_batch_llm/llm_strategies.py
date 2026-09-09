@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, cast, overload
 
+from ._internal.execution_state import record_provider_seconds
 from .base import LLMResponse, RetryState, TokenUsage
 from .core.protocols import ManagedLLMModel
 from .strategies.errors import TokenTrackingError
@@ -100,7 +101,8 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
     The framework calls:
     1. prepare() once per unique strategy instance before its first execution
     2. execute() for each attempt (including retries)
-    3. cleanup() once per prepared strategy when the processor exits or shuts down
+    3. cleanup() when the processor exits or shuts down; a later explicit
+       close retries an unsuccessful attempt
     """
 
     async def prepare(self) -> None:
@@ -163,7 +165,10 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
         """
         Clean up resources when the processor exits or shuts down.
 
-        Called once per prepared strategy instance, not once per work item.
+        Called per prepared strategy instance, not per work item. A successful
+        call is never repeated. If cleanup raises or is interrupted, a later
+        explicit close retries it. Implementations must therefore be
+        idempotent and safe to call after a partially completed attempt.
 
         **Use this for:**
         - Closing connections/sessions
@@ -477,11 +482,7 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
         try:
             llm_response = await self.model.generate(prompt, **gen_kwargs)
         finally:
-            if state is not None:
-                state.set(
-                    "_abl_last_provider_seconds",
-                    max(0.0, time.perf_counter() - provider_started),
-                )
+            record_provider_seconds(state, time.perf_counter() - provider_started)
 
         try:
             output = self.response_parser(llm_response)
@@ -691,11 +692,7 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
         try:
             result = await self.agent.run(prompt)
         finally:
-            if state is not None:
-                state.set(
-                    "_abl_last_provider_seconds",
-                    max(0.0, time.perf_counter() - provider_started),
-                )
+            record_provider_seconds(state, time.perf_counter() - provider_started)
 
         # Extract token usage FIRST (before accessing result.output which may fail validation).
         # pydantic-ai 1.x renamed request_tokens/response_tokens -> input_tokens/output_tokens

@@ -25,6 +25,8 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Iterable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
+from ._internal.capacity import capture_capacity_warning_source
+from ._internal.cleanup import CleanupStep
 from ._internal.guardrails import BatchAdmissionStopped
 from .artifacts import ArtifactStore, ResumePolicy
 from .base import BatchResult, BatchTermination, LLMWorkItem, WorkItemResult
@@ -298,7 +300,22 @@ async def _process_stream_impl(
         resume=resume,
         **processor_kwargs,
     )
-    feed_error: list[BaseException] = []
+    processor._preserve_completed_result = True
+    processor._capacity_warning_source = capture_capacity_warning_source()
+    if reporter is not None:
+        bundled_reporter = reporter
+
+        async def _close_reporter() -> None:
+            # Idempotent: the reporter closes exactly once. Runs as the last
+            # ordered cleanup step so its failure follows the same precedence
+            # policy as every other cleanup failure instead of replacing the
+            # primary error.
+            await bundled_reporter.aclose(
+                completed=processor._stats.processed,
+                total=processor._stats.total,
+            )
+
+        processor._extra_cleanup_steps.append(CleanupStep("progress reporter", _close_reporter))
 
     async def _feed() -> None:
         try:
@@ -312,48 +329,50 @@ async def _process_stream_impl(
         except BatchAdmissionStopped:
             pass  # controlled batch timeout/fail-fast stopped source admission
         except BaseException as exc:  # noqa: BLE001 - surfaced to the consumer below
-            feed_error.append(exc)
+            processor._finalization_primary_exception = exc
         finally:
             # Normal completion, controlled abort, or producer error: close the
             # accepted stream so every queued item receives a terminal result.
             if not processor._finished:
                 await processor.finish()
 
+    body_error: BaseException | None = None
     try:
-        async with processor:  # __aexit__ -> cleanup() cancels workers/finalize
-            processor.start()
-            producer = asyncio.create_task(_feed())
+        processor.start()
+        producer = asyncio.create_task(_feed())
 
-            async def _stop_producer_on_abort() -> None:
-                await processor.wait_for_abort()
-                if not producer.done():
-                    producer.cancel()
+        async def _stop_producer_on_abort() -> None:
+            await processor.wait_for_abort()
+            if not producer.done():
+                producer.cancel()
 
-            abort_watcher = asyncio.create_task(_stop_producer_on_abort())
-            try:
-                async for result in processor.results():
-                    yield result
-            finally:
-                abort_watcher.cancel()
-                if not producer.done():
-                    producer.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await producer
-                await asyncio.gather(abort_watcher, return_exceptions=True)
+        abort_watcher = asyncio.create_task(_stop_producer_on_abort())
+        try:
+            async for result in processor.results():
+                yield result
+        finally:
+            abort_watcher.cancel()
+            if not producer.done():
+                producer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await producer
+            await asyncio.gather(abort_watcher, return_exceptions=True)
+    except BaseException as exc:  # noqa: BLE001 - re-raised after cleanup below
+        body_error = exc
+        raise
     finally:
-        if reporter is not None:
-            await reporter.aclose(
-                completed=processor._stats.processed,
-                total=processor._stats.total,
-            )
+        # One ordered close for every exit path (normal end, early consumer
+        # exit, producer failure, cancellation). A body exception or the
+        # consumer's cancellation stays primary; cleanup failures are logged
+        # and, with no body exception, applied by the policy below.
+        report = await processor._close_after_run(primary_exception=body_error)
 
     if termination_out is not None:
         termination_out.append(processor.termination)
 
-    # Reached only when results() ended normally (end-of-stream). If the
-    # producer failed, surface its exception now (after draining results).
-    if feed_error:
-        raise feed_error[0]
+    # Reached only when results() ended normally. Only user strategy cleanup
+    # failures are logged rather than raised, so completed results survive.
+    report.raise_first(preserve_completed_result=True)
 
 
 async def process_stream(

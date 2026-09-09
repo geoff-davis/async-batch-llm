@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 
 from async_batch_llm import (
-    ArtifactError,
     ArtifactIdentity,
+    ArtifactIdentityError,
     CallableStrategy,
     CallOutcome,
     JsonlArtifactStore,
@@ -517,12 +517,15 @@ async def test_callable_artifact_requires_identity_before_invocation(tmp_path: A
         invoked = True
         return CallOutcome(prompt)
 
-    with pytest.raises(ArtifactError, match="ArtifactIdentity"):
-        await process_prompts(
-            CallableStrategy(invoke),
-            ["p"],
-            artifact_store=JsonlArtifactStore(tmp_path / "unsafe.jsonl"),
-        )
+    batch = await process_prompts(
+        CallableStrategy(invoke),
+        ["p"],
+        artifact_store=JsonlArtifactStore(tmp_path / "unsafe.jsonl"),
+    )
+    assert batch.failed == 1
+    assert batch.results[0].error_category == "artifact_preparation_error"
+    assert isinstance(batch.results[0].exception, ArtifactIdentityError)
+    assert "ArtifactIdentity" in batch.results[0].error
     assert not invoked
 
 

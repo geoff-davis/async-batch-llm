@@ -42,3 +42,30 @@ Commits follow a concise, imperative summary (e.g., `Add on_error retry callback
 changes and document breaking behavior in `CHANGELOG.md` when relevant. Pull requests should link any tracked issues,
 outline behavioral changes, list new commands or flags, and include screenshots for UI- or docs-heavy updates where
 clarity helps reviewers. Confirm `make ci` succeeds locally before requesting review to reduce turnarounds.
+
+## Review Fixes & Handoffs
+
+For bug fixes and shared-policy changes, provide evidence that lets another session verify the change without
+rebuilding the investigation. Scale the handoff to the change; documentation-only edits do not need regression tests.
+
+- Identify the base revision and the exact review target: a commit or an immutable patch/snapshot. If a regression
+  arose in uncommitted work, also identify the pre-fix snapshot; a test against `HEAD` alone cannot establish that
+  regression. Commit only when authorized. Use isolated checkouts or snapshots for comparisons; never stash, reset,
+  or otherwise alter another session's working tree to perform a review.
+- Map each finding to the changed behavior, implementation location, and exact regression test or probe command.
+  Show the same behavioral check failing before the fix and passing afterward, with revisions/snapshots and relevant
+  environment details. Import errors, missing dependencies, and missing new APIs are not fail-first proof. If a
+  before-run is unavailable or the finding is structural, state that limitation instead of claiming reproduction.
+- Before changing a category list, exception-swallowing rule, or replay predicate, enumerate its members and callers.
+  Check the resulting behavior in every affected path, including success, ordinary failure, per-item timeout, batch
+  abort/deadline, and persistence failure where applicable. Distinct policies may need distinct named sets; do not
+  equate replay eligibility with permission to swallow checkpoint errors. Include the policy sweep in the handoff.
+- Exercise both JSONL and SQLite for replay, lookup, or record-eligibility changes. Reuse reviewer-supplied probes
+  and existing fixtures, folding useful cases into the nearest regression suite rather than duplicating them.
+- State validation commands, results, interpreter versions, deliberate omissions, and accepted tradeoffs precisely.
+  A passing full suite does not replace finding-specific evidence. Reviewers should reuse that evidence and run
+  focused checks; repeat full suites when new changes or unresolved concerns warrant it. Verify Python 3.10 and a
+  current supported interpreter when cancellation or asyncio semantics may differ.
+- If review is delegated, include the exact target, settled decisions, known limitations, and out-of-scope items
+  so subsequent rounds do not rediscover accepted tradeoffs. Verify candidate findings before presenting them as
+  confirmed regressions.

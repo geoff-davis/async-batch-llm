@@ -9,6 +9,7 @@ import os
 import sqlite3
 from collections.abc import AsyncIterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import dataclass
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
@@ -25,6 +26,7 @@ from ._internal.artifact_codec import (
     decode_stored_result,
     fingerprint_identity,
     fingerprint_work_item,
+    is_non_replayable_record,
     restore_replayed_result,
 )
 from .artifacts import (
@@ -318,7 +320,7 @@ class SqliteArtifactStore:
             identity_fingerprint,
             policy,
         )
-        if row is None:
+        if row is None or is_non_replayable_record(row):
             return None
         try:
             return restore_replayed_result(
@@ -1199,7 +1201,7 @@ class SqliteArtifactStore:
         sql = f"""
             SELECT record_sequence, logical_schema_version, item_id,
                    prompt_fingerprint, context_fingerprint, input_fingerprint,
-                   identity_fingerprint, success, result_json
+                   identity_fingerprint, success, error_category, result_json
               FROM item_records
              WHERE identity_fingerprint = ?
                AND item_id = ?
@@ -1208,22 +1210,29 @@ class SqliteArtifactStore:
                AND input_fingerprint = ?
                AND replay_eligible = 1{success_clause}
              ORDER BY record_sequence DESC
-             LIMIT 1
         """
         try:
-            row = connection.execute(
-                sql,
-                (
-                    identity_fingerprint,
-                    item_id,
-                    prepared.prompt_fingerprint,
-                    prepared.context_fingerprint,
-                    prepared.input_fingerprint,
-                ),
-            ).fetchone()
+            # Stream indexed candidates newest first. The shared codec handles
+            # both category-based exclusions and pre-category legacy filters.
+            with closing(
+                connection.execute(
+                    sql,
+                    (
+                        identity_fingerprint,
+                        item_id,
+                        prepared.prompt_fingerprint,
+                        prepared.context_fingerprint,
+                        prepared.input_fingerprint,
+                    ),
+                )
+            ) as cursor:
+                for row in cursor:
+                    record = self._row_to_record(row)
+                    if not is_non_replayable_record(record):
+                        return record
         except sqlite3.DatabaseError as exc:
             raise ArtifactIOError(f"Could not query SQLite artifact {self.path}: {exc}") from exc
-        return None if row is None else self._row_to_record(row)
+        return None
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> dict[str, Any]:
@@ -1270,6 +1279,7 @@ class SqliteArtifactStore:
             "input_fingerprint": row["input_fingerprint"],
             "identity_fingerprint": row["identity_fingerprint"],
             "success": bool(row["success"]),
+            "error_category": row["error_category"],
             "raw_context": raw_context,
             "result": result,
         }
@@ -1321,7 +1331,7 @@ class SqliteArtifactStore:
                 f"""
                 SELECT record_sequence, logical_schema_version, item_id,
                        prompt_fingerprint, context_fingerprint, input_fingerprint,
-                       identity_fingerprint, success, raw_context_json, result_json
+                       identity_fingerprint, success, error_category, raw_context_json, result_json
                   FROM item_records
                  WHERE record_sequence > ? AND record_sequence <= ?{success_clause}
                  ORDER BY record_sequence

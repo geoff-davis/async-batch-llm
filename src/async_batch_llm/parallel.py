@@ -4,24 +4,35 @@ import asyncio
 import contextlib
 import logging
 import time
-from typing import TYPE_CHECKING, Generic, cast
-
-if TYPE_CHECKING:
-    from types import TracebackType
+from dataclasses import dataclass, field
+from typing import Generic, cast
 
 from ._internal.admission import AdmissionRegistry
-from ._internal.capacity import CapacityLimiter, warn_if_worker_capacity_exceeded
+from ._internal.artifact_codec import BEST_EFFORT_AUDIT_CATEGORIES, GUARDRAIL_AUDIT_CATEGORIES
+from ._internal.capacity import (
+    CapacityLimiter,
+    capture_capacity_warning_source,
+    warn_if_worker_capacity_exceeded,
+)
 from ._internal.classifier_resolver import StrategyClassifierResolver
+from ._internal.cleanup import CleanupAction, CleanupStep
 from ._internal.event_dispatcher import EventDispatcher
 from ._internal.guardrails import (
     AbortCause,
     AbortController,
     BatchAdmissionStopped,
+    await_with_guardrails,
 )
 from ._internal.item_executor import ItemExecutor
 from ._internal.rate_limit_coordinator import RateLimitCoordinator
 from ._internal.strategy_lifecycle import StrategyLifecycle
-from .artifacts import ArtifactError, ArtifactStore, ResumePolicy
+from .artifacts import (
+    ArtifactError,
+    ArtifactIdentityError,
+    ArtifactSerializationError,
+    ArtifactStore,
+    ResumePolicy,
+)
 from .base import (
     BatchProcessor,
     BatchTermination,
@@ -39,13 +50,24 @@ from .llm_strategies import LLMCallStrategy
 from .middleware import Middleware
 from .observers import ProcessingEvent, ProcessorObserver
 from .strategies import (
+    BatchAbortedError,
+    BatchDeadlineExceeded,
     ErrorClassifier,
     ExponentialBackoffStrategy,
+    ItemDeadlineExceeded,
     RateLimitStrategy,
 )
 from .token_extractor import TokenExtractor
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _StrategyConfiguration:
+    strategy: LLMCallStrategy
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    configured: bool = False
+
 
 # Maximum length for error messages in logs / result payloads.
 # Longer errors get truncated to keep logs readable.
@@ -213,6 +235,10 @@ class ParallelBatchProcessor(
         )
         self.config = config
         self.artifact_store = artifact_store
+        self._artifact_store_closed = False
+        # Steps an owning surface (e.g. the streaming API's progress reporter)
+        # appends so they run inside the same ordered close, last.
+        self._extra_cleanup_steps: list[CleanupStep] = []
         self.resume = ResumePolicy(resume)
         self._abort_controller: AbortController | None = AbortController(
             config.guardrails.abort_mode
@@ -227,7 +253,8 @@ class ParallelBatchProcessor(
         # host-wide attribute only as a compatibility/debug alias.
         self._classifier_resolver = StrategyClassifierResolver(error_classifier)
         self.error_classifier: ErrorClassifier = self._classifier_resolver.compatibility_classifier
-        self._capacity_checked_strategy_ids: set[int] = set()
+        self._strategy_configurations: dict[int, _StrategyConfiguration] = {}
+        self._capacity_warning_source: tuple[str, int, str] | None = None
         self.rate_limit_strategy = rate_limit_strategy or ExponentialBackoffStrategy(
             initial_cooldown=config.rate_limit.cooldown_seconds,
             max_cooldown=config.rate_limit.max_cooldown_seconds,
@@ -292,11 +319,7 @@ class ParallelBatchProcessor(
 
     @property
     def _strategies_cleaned_up(self) -> bool:
-        return self._strategy_lifecycle._cleaned_up
-
-    @_strategies_cleaned_up.setter
-    def _strategies_cleaned_up(self, value: bool) -> None:
-        self._strategy_lifecycle._cleaned_up = value
+        return self._strategy_lifecycle.cleanup_complete
 
     # Back-compat attribute accessors for tests and subclasses that read
     # the rate-limit coordinator's state directly.
@@ -344,42 +367,6 @@ class ParallelBatchProcessor(
     async def _ensure_strategy_prepared(self, strategy: LLMCallStrategy[TOutput]) -> None:
         """Delegate to StrategyLifecycle.ensure_prepared."""
         await self._strategy_lifecycle.ensure_prepared(strategy)
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: "TracebackType | None",
-    ) -> bool:
-        """
-        Context manager exit - ensures cleanup of strategies and resources.
-
-        Calls cleanup() on all prepared strategies, then delegates to parent cleanup.
-
-        Args:
-            exc_type: Exception type (if any exception occurred)
-            exc_val: Exception value (if any exception occurred)
-            exc_tb: Exception traceback (if any exception occurred)
-
-        Returns:
-            False to indicate exceptions should not be suppressed
-        """
-        # Stop workers before closing strategies or their artifact sink: a
-        # cancelled/early stream may still have an in-flight terminal write.
-        errors: list[BaseException] = []
-        for cleanup in (self.cleanup, self._cleanup_strategies):
-            try:
-                await cleanup()
-            except BaseException as error:
-                errors.append(error)
-        if self.artifact_store is not None:
-            try:
-                await self.artifact_store.close()
-            except BaseException as error:
-                errors.append(error)
-        if errors and exc_val is None:
-            raise errors[0]
-        return False  # Don't suppress exceptions
 
     def _start_guardrail_run(self) -> None:
         if self._guardrails_started:
@@ -438,22 +425,31 @@ class ParallelBatchProcessor(
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-    async def cleanup(self) -> None:
-        """Cancel workers, timers, and every quota-scoped admission resource."""
-        errors: list[BaseException] = []
-        for cleanup in (
-            self._cancel_batch_timeout,
-            super().cleanup,
-            self._admission_registry.shutdown,
-            self._compatibility_rate_limit_coord.shutdown,
-        ):
-            try:
-                await cleanup()
-            except BaseException as error:
-                errors.append(error)
+    def _cleanup_steps(self) -> list[CleanupAction]:
+        """Runtime tasks, then admission resources, then strategies, then the store."""
+        steps: list[CleanupAction] = [
+            CleanupStep("batch timeout", self._cancel_batch_timeout),
+            *super()._cleanup_steps(),
+            self._strategy_lifecycle.resource_cleanup_phase(
+                self._admission_registry,
+                self._compatibility_rate_limit_coord,
+                self._clear_classifier_cache,
+            ),
+        ]
+        if self.artifact_store is not None and not self._artifact_store_closed:
+            steps.append(CleanupStep("artifact store", self._close_artifact_store))
+        steps.extend(self._extra_cleanup_steps)
+        return steps
+
+    async def _clear_classifier_cache(self) -> None:
         self._classifier_resolver.clear()
-        if errors:
-            raise errors[0]
+        self._strategy_configurations.clear()
+
+    async def _close_artifact_store(self) -> None:
+        """Close the store once; a failed close stays retryable by a later close."""
+        assert self.artifact_store is not None
+        await self.artifact_store.close()
+        self._artifact_store_closed = True
 
     def start(self) -> None:
         """Start streaming workers and the batch deadline clock."""
@@ -479,11 +475,62 @@ class ParallelBatchProcessor(
 
     async def add_work(self, work_item: LLMWorkItem[TInput, TOutput, TContext]) -> None:
         """Queue a work item and register its identity-scoped admission state."""
-        if self.artifact_store is not None:
-            work_item._artifact_key = await self.artifact_store.prepare_item(work_item)
+        assert self._abort_controller is not None
+        if self._abort_controller.aborted:
+            raise BatchAdmissionStopped("Batch is no longer accepting work")
+        has_preprocessing = bool(self._events.middlewares) or (
+            type(self)._run_middlewares_before is not ParallelBatchProcessor._run_middlewares_before
+        )
+        # Capture before a worker can replace the strategy. Direct configuration
+        # retains the caller's stack already; streaming captures once before its
+        # producer task is spawned. Neither path creates a warning registry here.
+        work_item._capacity_warning_source = self._capacity_warning_source
+        if has_preprocessing and work_item._capacity_warning_source is None:
+            work_item._capacity_warning_source = capture_capacity_warning_source()
+        if not has_preprocessing:
+            await self._configure_item_strategy(work_item)
+        if self._streaming and self._guardrails_started:
+            acceptance = asyncio.create_task(super().add_work(work_item))
+            abort_wait = asyncio.create_task(self._abort_controller.event.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    {acceptance, abort_wait}, return_when=asyncio.FIRST_COMPLETED
+                )
+                # An acceptance that completed concurrently wins: the item is
+                # now owned by the queue and must receive a terminal result.
+                if acceptance in done:
+                    await acceptance
+                else:
+                    acceptance.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await acceptance
+                    raise BatchAdmissionStopped("Batch stopped accepting work")
+            finally:
+                abort_wait.cancel()
+                await asyncio.gather(abort_wait, return_exceptions=True)
+        else:
+            await super().add_work(work_item)
 
-        strategy_id = id(work_item.strategy)
-        if strategy_id not in self._capacity_checked_strategy_ids:
+    def _configuration_for(self, strategy: LLMCallStrategy) -> _StrategyConfiguration:
+        entry = self._strategy_configurations.get(id(strategy))
+        if entry is None or entry.strategy is not strategy:
+            entry = _StrategyConfiguration(strategy)
+            self._strategy_configurations[id(strategy)] = entry
+        return entry
+
+    async def _configure_item_strategy(
+        self, work_item: LLMWorkItem[TInput, TOutput, TContext]
+    ) -> None:
+        """Configure capacity and compatibility aliases for the effective strategy."""
+        entry = self._configuration_for(work_item.strategy)
+        async with entry.lock:
+            await self._configure_item_strategy_locked(work_item)
+
+    async def _configure_item_strategy_locked(
+        self, work_item: LLMWorkItem[TInput, TOutput, TContext]
+    ) -> None:
+        entry = self._configuration_for(work_item.strategy)
+        if not entry.configured:
             if self.config.concurrency is not None:
                 # Let built-in models right-size
                 # their connection pools before the first request. Runs before
@@ -506,37 +553,14 @@ class ParallelBatchProcessor(
                 strategy=work_item.strategy,
                 max_workers=cast(int, self.config.max_workers),
                 surface="ParallelBatchProcessor",
-                stacklevel=3,
+                stacklevel=5,
+                source=work_item._capacity_warning_source,
             )
-            self._capacity_checked_strategy_ids.add(strategy_id)
-        assert self._abort_controller is not None
-        if self._abort_controller.aborted:
-            raise BatchAdmissionStopped("Batch is no longer accepting work")
+            entry.configured = True
         admission_state = self._admission_registry.resolve(work_item.strategy)
         if not self._compatibility_scope_bound:
             self._rate_limit_coord = admission_state.cooldown
             self._compatibility_scope_bound = True
-        if self._streaming and self._guardrails_started:
-            acceptance = asyncio.create_task(super().add_work(work_item))
-            abort_wait = asyncio.create_task(self._abort_controller.event.wait())
-            try:
-                done, _ = await asyncio.wait(
-                    {acceptance, abort_wait}, return_when=asyncio.FIRST_COMPLETED
-                )
-                # An acceptance that completed concurrently wins: the item is
-                # now owned by the queue and must receive a terminal result.
-                if acceptance in done:
-                    await acceptance
-                else:
-                    acceptance.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await acceptance
-                    raise BatchAdmissionStopped("Batch stopped accepting work")
-            finally:
-                abort_wait.cancel()
-                await asyncio.gather(abort_wait, return_exceptions=True)
-        else:
-            await super().add_work(work_item)
 
     async def _on_batch_started(self) -> None:
         """Emit batch start event with initial stats snapshot."""
@@ -614,8 +638,6 @@ class ParallelBatchProcessor(
                 "duration": duration,
             },
         )
-        if self.artifact_store is not None:
-            await self.artifact_store.close()
 
     async def _emit_event(self, event: ProcessingEvent, data: dict | None = None) -> None:
         """Delegate to EventDispatcher (see _internal/event_dispatcher.py)."""
@@ -624,7 +646,7 @@ class ParallelBatchProcessor(
     async def _run_middlewares_before(
         self, work_item: LLMWorkItem[TInput, TOutput, TContext]
     ) -> LLMWorkItem[TInput, TOutput, TContext] | None:
-        return await self._events.run_before(work_item)
+        return await self._executor._run_middlewares_before(work_item)
 
     async def _run_middlewares_after(
         self, result: WorkItemResult[TOutput, TContext]
@@ -679,6 +701,10 @@ class ParallelBatchProcessor(
         """Resolve replay/execution, checkpoint, then publish one terminal result."""
         logger.debug("[Worker %s] Picked up %s from queue", worker_id, work_item.item_id)
         result: WorkItemResult[TOutput, TContext] | None = None
+        artifact_key: object | None = None
+        artifact_prepared = False
+        artifact_prepare_attempted = False
+        accepted_index = work_item.submission_index
         generated_from_abort = False
         controller = self._abort_controller
         assert controller is not None
@@ -688,23 +714,77 @@ class ParallelBatchProcessor(
                 controller.result_for(work_item),
             )
             generated_from_abort = True
-        elif self.artifact_store is not None:
-            replayed = await self.artifact_store.lookup(
-                work_item,
-                work_item._artifact_key,
-                self.resume,
-            )
-            result = cast(WorkItemResult[TOutput, TContext] | None, replayed)
+        else:
+            prepared = await self._executor.prepare_logical_item(work_item, worker_id)
+            result = prepared.terminal_result
+            work_item = prepared.effective_item
+            if result is None:
+                try:
+                    if not self._configuration_for(work_item.strategy).configured:
+                        await await_with_guardrails(
+                            self._configure_item_strategy(work_item),
+                            item_deadline=prepared.deadline,
+                            item_id=work_item.item_id,
+                            abort_controller=controller,
+                        )
+                    if self.artifact_store is not None:
+                        artifact_prepare_attempted = True
+                        artifact_key = await await_with_guardrails(
+                            self.artifact_store.prepare_item(work_item),
+                            item_deadline=prepared.deadline,
+                            item_id=work_item.item_id,
+                            abort_controller=controller,
+                        )
+                        artifact_prepared = True
+                        self._executor.check_prepared(prepared)
+                        replayed = await await_with_guardrails(
+                            self.artifact_store.lookup(work_item, artifact_key, self.resume),
+                            item_deadline=prepared.deadline,
+                            item_id=work_item.item_id,
+                            abort_controller=controller,
+                        )
+                        result = cast(WorkItemResult[TOutput, TContext] | None, replayed)
+                    # A completed replay wins a simultaneous guardrail signal.
+                    if result is None:
+                        result = await self._executor.execute_prepared(prepared, worker_id)
+                except (ArtifactIdentityError, ArtifactSerializationError) as exc:
+                    # Invalid input is local to this accepted item. Persistence
+                    # and format failures still terminate the batch below.
+                    if artifact_prepared:
+                        raise
+                    result = await self._executor.build_failure_result(work_item, exc, worker_id)
+                except (ItemDeadlineExceeded, BatchDeadlineExceeded, BatchAbortedError) as exc:
+                    result = await self._executor.build_failure_result(work_item, exc, worker_id)
 
-        if result is None:
-            result = await self._executor.execute(work_item, worker_id)
+        assert result is not None
+        result.submission_index = accepted_index
+        audit_only = result.error_category in GUARDRAIL_AUDIT_CATEGORIES
+        best_effort_audit = result.error_category in BEST_EFFORT_AUDIT_CATEGORIES
 
-        result.submission_index = work_item.submission_index
+        # Retain guardrail terminals for audit, including queued collateral
+        # aborts. These records never participate in replay. Do not restart an
+        # artifact preparation that was already interrupted by a deadline.
+        if self.artifact_store is not None and not artifact_prepare_attempted and audit_only:
+            try:
+                artifact_key = await self.artifact_store.prepare_item(work_item)
+                artifact_prepared = True
+            except ArtifactError as exc:
+                if not best_effort_audit:
+                    raise
+                logger.warning("Cannot checkpoint terminal item %s: %s", work_item.item_id, exc)
 
-        # Persist newly executed/aborted terminal state before it becomes
-        # visible. Replayed records are deliberately not duplicated.
-        if self.artifact_store is not None and not result.replayed_from_artifact:
-            await self.artifact_store.append(work_item, work_item._artifact_key, result)
+        # Checkpoint with the exact pre-execution key before publication.
+        if (
+            self.artifact_store is not None
+            and artifact_prepared
+            and not result.replayed_from_artifact
+        ):
+            try:
+                await self.artifact_store.append(work_item, artifact_key, result)
+            except ArtifactError as exc:
+                if not best_effort_audit:
+                    raise
+                logger.warning("Cannot checkpoint terminal item %s: %s", work_item.item_id, exc)
 
         # Fail-fast is triggered only by a terminal failure and only after its
         # checkpoint is complete. The controller retains the first cause.
@@ -930,12 +1010,13 @@ class ParallelBatchProcessor(
         )
 
     async def shutdown(self):
-        """Clean up resources: flush observers and cancel pending tasks."""
-        errors: list[BaseException] = []
-        for cleanup in (self.cleanup, self._cleanup_strategies):
-            try:
-                await cleanup()
-            except BaseException as error:
-                errors.append(error)
-        if errors:
-            raise errors[0]
+        """Release every owned resource; safe to call repeatedly.
+
+        Same ordered close as ``async with`` exit: runtime tasks and
+        callbacks, admission resources, prepared strategies, then the
+        artifact store (including after an early stream exit or a failed
+        run). Concurrent calls share one attempt; a step that succeeded is
+        never repeated and a failed one is retried by the next call. Raises
+        the first cleanup failure after every step has been attempted.
+        """
+        await self.cleanup()

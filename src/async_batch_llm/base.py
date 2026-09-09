@@ -1,7 +1,9 @@
 """Base classes and interfaces for batch LLM processing."""
 
 import asyncio
+import concurrent.futures
 import contextlib
+import functools
 import inspect
 import logging
 import math
@@ -15,6 +17,16 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, TypedDict, cast, overlo
 
 from typing_extensions import TypeVar  # PEP 696 defaults on Python < 3.13
 
+from ._internal.cleanup import (
+    CleanupAction,
+    CleanupReport,
+    CleanupStep,
+    CloseState,
+    SharedCloser,
+    first_failure,
+    wait_all_detached,
+    wait_detached,
+)
 from .provider_output import ProviderOutputViews
 
 # Conditional imports for type checking
@@ -111,6 +123,27 @@ class RetryState:
     def clear(self) -> None:
         """Clear all state data."""
         self.data.clear()
+
+    def __copy__(self) -> "RetryState":
+        """Copy application data without sharing framework runtime state."""
+        return type(self)(self.data.copy())
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "RetryState":
+        """Deep-copy application data without copying framework runtime state."""
+        import copy
+
+        duplicate = type(self)()
+        memo[id(self)] = duplicate
+        duplicate.data = copy.deepcopy(self.data, memo)
+        return duplicate
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Persist only the public application-owned mapping."""
+        return {"data": self.data}
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore the public mapping; framework state is rebuilt lazily."""
+        self.data = state["data"]
 
     def __contains__(self, key: str) -> bool:
         """Check if key exists in state."""
@@ -212,9 +245,16 @@ class LLMWorkItem(Generic[TInput, TOutput, TContext]):
     # the work item so duplicate item IDs remain independently orderable.
     submission_index: int | None = field(default=None, compare=False)
     _artifact_key: Any = field(default=None, repr=False, compare=False)
+    _capacity_warning_source: tuple[str, int, str] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self):
         """Validate work item fields."""
+        self._validate_fields()
+
+    def _validate_fields(self) -> None:
+        """Validate the framework contract without invoking construction hooks."""
         if not self.item_id or not isinstance(self.item_id, str):
             raise ValueError(
                 f"item_id must be a non-empty string (got {type(self.item_id).__name__}: {repr(self.item_id)}). "
@@ -1153,26 +1193,52 @@ def _percentile(samples: list[float], percentile: int) -> float:
     return ordered[index]
 
 
-class _EndOfStream:
-    """Sentinel pushed onto the result stream once all work is processed."""
+class BatchInterruptedError(RuntimeError):
+    """A batch worker was cancelled before all accepted work drained.
 
-
-class _WorkerCrashed:
-    """Sentinel carrying an unexpected worker exception for ``results()`` to re-raise.
-
-    A worker that finishes normally returns ``None``; one that dies from a
-    framework bug would otherwise hang the consumer forever, so a done-callback
-    wraps the exception in this sentinel and pushes it onto the result stream.
+    Raised by ``process_all()`` when another task shuts down the processor or
+    cancels a worker. The caller itself was not cancelled; its own
+    cancellation still propagates as ``asyncio.CancelledError``.
     """
 
-    __slots__ = ("exception",)
 
-    def __init__(self, exception: BaseException) -> None:
+class StreamFinalizationError(RuntimeError):
+    """The result stream could not finish normally.
+
+    Raised by :meth:`BatchProcessor.results` when finalization was cancelled
+    (for example by ``shutdown()`` before ``finish()`` completed) or when a
+    process-control exception interrupted it. Deliberately distinct from
+    :class:`asyncio.CancelledError`: the consumer itself was not cancelled.
+    The originating exception, when there is one, is ``__cause__``.
+    """
+
+    def __init__(self, message: str, *, cause: BaseException | None = None) -> None:
+        super().__init__(message)
+        if cause is not None:
+            self.__cause__ = cause
+
+
+class _StreamTerminal:
+    """The stream's single, durable success-or-failure decision."""
+
+    __slots__ = ("exception", "remaining_results")
+
+    def __init__(self, exception: BaseException | None) -> None:
         self.exception = exception
+        # Set once when the first consumer reaches the terminal wake. Shared
+        # by every reader so concurrent consumers cannot extend delivery.
+        self.remaining_results: int | None = None
 
 
-# Singleton end-of-stream marker.
-_END_OF_STREAM = _EndOfStream()
+class _TerminalWake:
+    """Queue sentinel meaning "the terminal has been decided".
+
+    Every reader puts it back after taking it, so it wakes concurrent
+    consumers and stays available to later ``results()`` calls.
+    """
+
+
+_TERMINAL_WAKE = _TerminalWake()
 
 
 class _TrackedWorkQueue(asyncio.Queue[Any]):
@@ -1291,61 +1357,155 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._streaming = False
         self._finished = False
         self._result_stream: (
-            asyncio.Queue[WorkItemResult[TOutput, TContext] | _EndOfStream | _WorkerCrashed] | None
+            asyncio.Queue[WorkItemResult[TOutput, TContext] | _TerminalWake] | None
         ) = None
         # The mixed queue stays unbounded so control-plane messages are always
         # deliverable. In streaming mode this optional semaphore bounds only
         # queued WorkItemResult objects.
         self._result_slots: asyncio.BoundedSemaphore | None = None
         self._current_queued_results = 0
-        self._reported_worker_crash_task_ids: set[int] = set()
+        self._stream_terminal: _StreamTerminal | None = None
         self._finalize_task: asyncio.Task[None] | None = None
         self.termination = BatchTermination()
+        # Progress must not occupy the threads needed for post-processing.
+        # Both pools are owned and joined before dependent resources close.
+        self._callback_executors: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
+        # One ordered close shared by cleanup(), shutdown() and __aexit__.
+        self._closer = SharedCloser(self._cleanup_steps, name=type(self).__name__, logger=logger)
+        self._normal_stream_close = False
+        self._finalization_close_finished = False
+        self._finalization_report: CleanupReport | None = None
+        self._finalization_report_observed = False
+        self._finalization_primary_exception: BaseException | None = None
+        self._preserve_completed_result = False
+        self._batch_completion_delivered = False
 
     async def __aenter__(self):
         """Context manager entry - returns self for use in async with."""
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - ensures cleanup of resources."""
-        await self.cleanup()
+        """Context manager exit - releases every owned resource (see :meth:`cleanup`).
+
+        A body exception stays primary and cleanup failures are logged. With
+        no body exception, the first cleanup failure is raised after every
+        step has been attempted.
+        """
+        report = await self._close_after_run(primary_exception=exc_val)
+        if exc_val is None:
+            report.raise_first()
         return False  # Don't suppress exceptions
 
     async def cleanup(self):
+        """Release every owned resource in dependency order.
+
+        Runtime tasks and callbacks stop first (stream finalizer, workers,
+        queued work, progress callbacks, post-processors, callback threads),
+        then subclass-owned resources. Concurrent calls share one attempt; a
+        step that succeeded is never repeated and a failed or interrupted one
+        is retried by the next call. ``async with`` exit and ``shutdown()``
+        use this same ordered path. The two-second worker/progress thresholds
+        only log a warning; the wait itself is unbounded.
+
+        Cancelling the calling task once defers that cancellation until
+        cleanup finishes, then re-raises it. Cancelling it a second time
+        force-aborts the current step, skips the rest, and propagates.
         """
-        Clean up resources: cancel pending workers and clear queue.
+        report = await self._close_explicitly()
+        report.raise_first()
 
-        This method should be called when you're done with the processor,
-        or use the processor as an async context manager.
-        """
-        # Cancel the streaming finalize task (may be blocked on queue.join()
-        # if a worker crashed) before tearing down the workers it awaits.
-        if self._finalize_task is not None and not self._finalize_task.done():
-            self._finalize_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._finalize_task
+    async def _close_explicitly(self) -> CleanupReport:
+        self._finalization_report_observed = True
+        self._finalization_report = None
+        return await self._closer.close()
 
-        # Cancel any running workers
-        if self._workers:
-            logger.debug(f"Cleaning up {len(self._workers)} workers")
-            for worker in self._workers:
-                if not worker.done():
-                    worker.cancel()
+    async def _close_after_run(
+        self, *, primary_exception: BaseException | None = None
+    ) -> CleanupReport:
+        """Apply finalization's attempt at exit without automatically retrying it."""
+        self._finalization_report_observed = True
+        report = self._finalization_report
+        self._finalization_report = None
+        if self._finalization_close_finished:
+            return report if report is not None else CleanupReport()
+        return await self._closer.close(
+            primary_exception=primary_exception, retry=not self._normal_stream_close
+        )
 
-            # Wait briefly for cancellations
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*self._workers, return_exceptions=True),
-                    timeout=WORKER_CANCELLATION_TIMEOUT,
+    def _cleanup_steps(self) -> list[CleanupAction]:
+        """Ordered teardown steps; subclasses append their own resources."""
+        steps: list[CleanupAction] = []
+        if not self._normal_stream_close:
+            steps.append(CleanupStep("stream finalizer", self._stop_stream_finalizer, barrier=True))
+        steps.append(CleanupStep("workers", self._stop_workers, barrier=True))
+        steps.append(CleanupStep("queued work and results", self._drain_abandoned_work))
+        steps.extend(
+            [
+                CleanupStep("progress callbacks", self._wait_progress_callbacks, barrier=True),
+                CleanupStep("post-processors", self._stop_post_processors, barrier=True),
+                CleanupStep("callback threads", self._shutdown_callback_threads, barrier=True),
+            ]
+        )
+        if self._normal_stream_close and not self._batch_completion_delivered:
+            steps.append(CleanupStep("batch completion", self._complete_batch))
+        return steps
+
+    async def _complete_batch(self) -> None:
+        await self._on_batch_completed()
+        self._batch_completion_delivered = True
+
+    async def _stop_stream_finalizer(self) -> None:
+        task = self._finalize_task
+        if task is None:
+            if self._streaming and self._result_stream is not None:
+                # start() without finish(): the stream can never complete
+                # normally, so decide its terminal now rather than leave a
+                # consumer waiting forever.
+                self._publish_terminal(
+                    StreamFinalizationError(
+                        "Streaming processor shut down before finish() completed finalization"
+                    )
                 )
-            except (TimeoutError, asyncio.TimeoutError):
-                logger.warning("Some workers did not cancel within timeout")
+            return
+        if task is asyncio.current_task():
+            return
+        if not task.done():
+            task.cancel()
+        await wait_detached(task)
+        self._consume_task_outcome(task)
+        # A finalizer cancelled before its coroutine ran never reached the
+        # code that decides a terminal; decide the failure here so a consumer
+        # does not block forever. (No-op once a decision exists.)
+        if task.cancelled() and self._stream_terminal is None:
+            try:
+                task.result()
+            except asyncio.CancelledError as cancellation:
+                self._publish_terminal(cancellation)
 
+    async def _stop_workers(self) -> None:
+        if not self._workers:
+            return
+        logger.debug(f"Cleaning up {len(self._workers)} workers")
+        for worker in self._workers:
+            if not worker.done():
+                worker.cancel()
+        await wait_all_detached(
+            self._workers,
+            warn_after=WORKER_CANCELLATION_TIMEOUT,
+            warn_message=(
+                f"Some workers are still stopping after {WORKER_CANCELLATION_TIMEOUT:.1f} "
+                "seconds; waiting before dependent cleanup"
+            ),
+            logger=logger,
+        )
+        for worker in self._workers:
+            self._consume_task_outcome(worker)
+
+    async def _drain_abandoned_work(self) -> None:
         # Results abandoned by an early consumer own one permit each. Release
-        # those permits after publishers are stopped; control messages own none.
-        self._drain_result_stream()
-
-        # Clear any remaining items in queue
+        # those permits after publishers are stopped; the terminal owns none.
+        if not self._normal_stream_close:
+            self._drain_result_stream()
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
@@ -1353,47 +1513,63 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             except asyncio.QueueEmpty:
                 break
 
-        # Drain pending progress callbacks. The final item's callback is
-        # dispatched just before its result is published, so a consumer that
-        # stops right after the last result routinely reaches cleanup while
-        # that callback is still running — give callbacks a bounded chance to
-        # finish (previously they were cancelled outright, which
-        # silently dropped the last progress update) and cancel only
-        # stragglers.
-        if self._progress_tasks:
-            pending = list(self._progress_tasks)
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*pending, return_exceptions=True),
-                    timeout=PROGRESS_TASK_CANCELLATION_TIMEOUT,
-                )
-            except (TimeoutError, asyncio.TimeoutError):
-                for task in pending:
-                    if not task.done():
-                        task.cancel()
-                try:
-                    await asyncio.wait_for(
-                        asyncio.gather(*pending, return_exceptions=True),
-                        timeout=PROGRESS_TASK_CANCELLATION_TIMEOUT,
-                    )
-                except (TimeoutError, asyncio.TimeoutError):
-                    logger.warning("[WARN]Some progress callbacks did not cancel in time")
-            finally:
-                self._progress_tasks.clear()
+    async def _wait_progress_callbacks(self) -> None:
+        # The threshold is diagnostic only; callbacks are never cancelled here.
+        await wait_all_detached(
+            list(self._progress_tasks),
+            warn_after=PROGRESS_TASK_CANCELLATION_TIMEOUT,
+            warn_message=(
+                "Progress callbacks are still running after "
+                f"{PROGRESS_TASK_CANCELLATION_TIMEOUT:.1f} seconds; waiting before dependent cleanup"
+            ),
+            logger=logger,
+        )
 
-        # Cancel any outstanding background post-processor tasks (concurrent mode)
-        if self._post_processor_tasks:
-            for task in list(self._post_processor_tasks):
-                task.cancel()
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*self._post_processor_tasks, return_exceptions=True),
-                    timeout=PROGRESS_TASK_CANCELLATION_TIMEOUT,
-                )
-            except asyncio.TimeoutError:
-                logger.warning("[WARN]Some post-processors did not cancel in time")
-            finally:
-                self._post_processor_tasks.clear()
+    async def _stop_post_processors(self) -> None:
+        # Background post-processors (concurrent mode) are stopped on an
+        # explicit close. A synchronous body keeps its thread until the
+        # callback-thread step below has waited for it.
+        pending = list(self._post_processor_tasks)
+        for task in pending:
+            task.cancel()
+        await wait_all_detached(
+            pending,
+            warn_after=PROGRESS_TASK_CANCELLATION_TIMEOUT,
+            warn_message=(
+                "Post-processors are still stopping after "
+                f"{PROGRESS_TASK_CANCELLATION_TIMEOUT:.1f} seconds; waiting before dependent cleanup"
+            ),
+            logger=logger,
+        )
+
+    async def _shutdown_callback_threads(self) -> None:
+        """Wait for every synchronous callback thread; an ordering barrier."""
+        for kind, executor in list(self._callback_executors.items()):
+            # Retain each handle until its join completes so interrupted waits
+            # remain barriers on retry. shutdown(wait=True) is idempotent.
+            await asyncio.get_running_loop().run_in_executor(
+                None, functools.partial(executor.shutdown, wait=True)
+            )
+            self._callback_executors.pop(kind, None)
+
+    def _callback_thread(self, kind: str, func: Any, *args: Any) -> "asyncio.Future[Any]":
+        """Run a callback in its dedicated, processor-owned pool."""
+        executor = self._callback_executors.get(kind)
+        if executor is None:
+            executor = self._callback_executors[kind] = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, self.max_workers), thread_name_prefix=f"abl-callback-{kind}"
+            )
+        return asyncio.get_running_loop().run_in_executor(executor, functools.partial(func, *args))
+
+    @staticmethod
+    def _consume_task_outcome(task: "asyncio.Task[Any]") -> None:
+        """Retrieve a finished task's outcome so it is never reported as unretrieved."""
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except BaseException:  # noqa: BLE001 - already surfaced via the terminal or logs
+            pass
 
     async def add_work(self, work_item: LLMWorkItem[TInput, TOutput, TContext]):
         """
@@ -1504,7 +1680,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             if self.max_result_queue_size > 0
             else None
         )
-        self._reported_worker_crash_task_ids = set()
+        self._stream_terminal = None
         # Count any work added before start(); add_work() increments thereafter.
         self._results = []
         self._stats = ProcessingStats(total=self._queue.qsize())
@@ -1534,33 +1710,79 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._finalize_task = asyncio.create_task(self._finalize_stream())
 
     async def _finalize_stream(self) -> None:
-        """Drain the queue, stop workers, then close the result stream."""
+        """Drain the queue, stop workers, then decide the stream's terminal state."""
         try:
             await self._queue.join()  # all queued items processed
             for _ in range(self.max_workers):  # release workers
                 await self._queue.put(None)
-            await asyncio.gather(*self._workers, return_exceptions=True)
-            # Do not rely solely on task done-callback scheduling: report any
-            # worker failure before end-of-stream is enqueued.
+            await wait_all_detached(
+                self._workers,
+                warn_after=WORKER_CANCELLATION_TIMEOUT,
+                warn_message=(
+                    f"Workers are still finishing after {WORKER_CANCELLATION_TIMEOUT:.1f} "
+                    "seconds; waiting before finalization"
+                ),
+                logger=logger,
+            )
+            # Do not rely solely on task done-callback scheduling: decide a
+            # worker failure before a success terminal could be published.
             for worker in self._workers:
                 self._report_worker_crash(worker)
-            # Let any concurrent (background) post-processors finish too.
-            if self._post_processor_tasks:
-                await asyncio.gather(*self._post_processor_tasks, return_exceptions=True)
-            await self._on_batch_completed()
-        except asyncio.CancelledError:
+            # A live post-processor, progress callback, or callback thread
+            # prevents successful finalization.
+            await wait_all_detached(
+                list(self._post_processor_tasks), warn_after=None, warn_message="", logger=logger
+            )
+            await self._wait_progress_callbacks()
+            await self._shutdown_callback_threads()
+            if self._closer.state is not CloseState.OPEN:
+                raise StreamFinalizationError("Stream shut down during finalization")
+            # Use the same owner as explicit shutdown, but preserve queued
+            # results and never wait for this finalizer from its own owner.
+            self._normal_stream_close = True
+            try:
+                report = await self._closer.close(
+                    primary_exception=self._finalization_primary_exception
+                )
+            finally:
+                self._finalization_close_finished = True
+            if not self._finalization_report_observed:
+                self._finalization_report = report
+            if self._finalization_primary_exception is not None:
+                raise self._finalization_primary_exception
+            report.raise_first(preserve_completed_result=self._preserve_completed_result)
+        except asyncio.CancelledError as exc:
+            self._publish_terminal(exc)
             raise
-        except BaseException as exc:
-            # Hook/finalization failures (including artifact close errors) must
-            # reach the stream consumer rather than becoming an unobserved task
-            # exception followed by an apparently normal end-of-stream.
-            if self._result_stream is not None:
-                self._publish_control(_WorkerCrashed(exc))
+        except (KeyboardInterrupt, SystemExit) as exc:
+            # Record the failure for any consumer, then let the process-control
+            # exception propagate with its type intact.
+            self._publish_terminal(
+                StreamFinalizationError(
+                    f"Stream finalization was interrupted by {type(exc).__name__}", cause=exc
+                )
+            )
+            raise
+        except BaseException as exc:  # noqa: BLE001 - delivered to the consumer
+            # Hook/finalization failures (including artifact close errors)
+            # reach the stream consumer as the original exception.
+            self._publish_terminal(exc)
+        else:
+            self._publish_terminal(None)
         finally:
-            # Always close the stream so results() terminates, even on error.
             self._is_processing = False
-            if self._result_stream is not None:
-                self._publish_control(_END_OF_STREAM)
+
+    def _publish_terminal(self, exception: BaseException | None) -> None:
+        """Decide the stream terminal exactly once; later decisions are ignored."""
+        if self._result_stream is None or self._stream_terminal is not None:
+            return
+        if isinstance(exception, asyncio.CancelledError):
+            exception = StreamFinalizationError(
+                "Stream finalization was cancelled", cause=exception
+            )
+        self._stream_terminal = _StreamTerminal(exception)
+        # The mixed queue is unbounded, so this cannot block.
+        self._result_stream.put_nowait(_TERMINAL_WAKE)
 
     async def _publish_stream_result(self, result: WorkItemResult[TOutput, TContext]) -> None:
         """Publish one result while preserving result-slot ownership."""
@@ -1585,11 +1807,6 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 slots.release()
             raise
 
-    def _publish_control(self, message: _EndOfStream | _WorkerCrashed) -> None:
-        """Publish a control-plane message without consuming result capacity."""
-        if self._result_stream is not None:
-            self._result_stream.put_nowait(message)
-
     def _release_result_slot(self) -> None:
         if self._result_slots is not None:
             # BoundedSemaphore detects accidental over-release in tests and in
@@ -1603,31 +1820,60 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             try:
                 item = self._result_stream.get_nowait()
             except asyncio.QueueEmpty:
-                return
+                break
             if isinstance(item, WorkItemResult):
                 self._current_queued_results -= 1
                 self._release_result_slot()
+        # The terminal decision survives draining so a later consumer still
+        # observes it instead of blocking forever.
+        if self._stream_terminal is not None:
+            self._stream_terminal.remaining_results = 0
+            self._result_stream.put_nowait(_TERMINAL_WAKE)
 
     async def results(self) -> AsyncIterator[WorkItemResult[TOutput, TContext]]:
         """Yield results in completion order until :meth:`finish` + queue drain.
 
-        Results arrive in the order items *finish* (not the order added). If a
-        worker dies unexpectedly, the exception is re-raised here.
+        Results arrive in the order items *finish* (not the order added).
+        Results published before the stream's terminal decision are always
+        delivered first. The first terminal wake fixes the remaining queued
+        delivery count for all readers; later publications cannot extend it.
+        The stream then ends normally, or raises: the
+        original exception for a worker crash or finalization failure, or
+        :class:`StreamFinalizationError` when finalization was cancelled. The
+        decision is durable, so repeated and concurrent ``results()`` calls
+        observe the same outcome.
         """
         if self._result_stream is None:
             raise RuntimeError("results() requires streaming mode (call start() first).")
+        stream = self._result_stream
         while True:
-            item = await self._result_stream.get()
-            if isinstance(item, WorkItemResult):
-                # A result being handled by application code is outside the
-                # configured queue bound. Release before yielding it.
-                self._current_queued_results -= 1
-                self._release_result_slot()
-            if isinstance(item, _EndOfStream):
-                return
-            if isinstance(item, _WorkerCrashed):
-                raise item.exception
+            terminal = self._stream_terminal
+            if terminal is not None and terminal.remaining_results == 0:
+                break
+            item = await stream.get()
+            terminal = self._stream_terminal
+            if isinstance(item, _TerminalWake):
+                stream.put_nowait(item)
+                assert terminal is not None
+                if terminal.remaining_results is None:
+                    # A single snapshot permits already-queued late results,
+                    # without letting replenishing workers defer failure.
+                    terminal.remaining_results = self._current_queued_results
+                continue
+            if terminal is not None and terminal.remaining_results is not None:
+                if terminal.remaining_results == 0:
+                    # Another reader finished the tail while this get waited.
+                    stream.put_nowait(item)
+                    break
+                terminal.remaining_results -= 1
+            # A result being handled by application code is outside the
+            # configured queue bound. Release before yielding it.
+            self._current_queued_results -= 1
+            self._release_result_slot()
             yield item
+        assert terminal is not None
+        if terminal.exception is not None:
+            raise terminal.exception
 
     def _on_worker_done(self, task: "asyncio.Task[Any]") -> None:
         """Done-callback: surface an unexpected worker death to the consumer.
@@ -1639,14 +1885,12 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._report_worker_crash(task)
 
     def _report_worker_crash(self, task: "asyncio.Task[Any]") -> None:
-        """Publish one crash signal per failed worker task."""
-        task_id = id(task)
-        if task_id in self._reported_worker_crash_task_ids or task.cancelled():
+        """Decide a failure terminal for a worker that died with an exception."""
+        if task.cancelled():
             return
         exc = task.exception()
-        if exc is not None and self._result_stream is not None:
-            self._reported_worker_crash_task_ids.add(task_id)
-            self._publish_control(_WorkerCrashed(exc))
+        if exc is not None:
+            self._publish_terminal(exc)
 
     async def _on_batch_started(self) -> None:
         """Hook for subclasses to run logic when a batch starts."""
@@ -1695,7 +1939,10 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             done, _ = await asyncio.wait(self._workers, return_when=asyncio.FIRST_EXCEPTION)
             for worker in done:
                 if worker.cancelled():
-                    raise asyncio.CancelledError
+                    # Never fabricate a cancellation of the caller.
+                    raise BatchInterruptedError(
+                        "Batch worker was cancelled before the queue drained"
+                    )
                 exception = worker.exception()
                 if exception is not None:
                     raise exception
@@ -1743,30 +1990,37 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
 
         logger.info("[OK]Queue processing complete, waiting for workers to finish...")
 
-        # Wait for workers to finish with timeout
+        # After queue.join() workers only consume sentinels, so a long wait
+        # here is a framework bug. Cancel them past the bound, then wait for
+        # them to actually stop: a live worker is an ordering barrier.
         try:
             await asyncio.wait_for(
-                asyncio.gather(*self._workers),
+                asyncio.gather(*self._workers, return_exceptions=True),
                 timeout=WORKER_SHUTDOWN_TIMEOUT,
             )
             logger.info(f"[OK]All {len(self._workers)} workers finished successfully")
         except (TimeoutError, asyncio.TimeoutError):
             logger.error(
                 f"[WARN]Workers did not finish within {WORKER_SHUTDOWN_TIMEOUT}s after queue.join(). "
-                "Cancelling workers and proceeding..."
+                "Cancelling workers and waiting for them to stop..."
             )
-            # Cancel any workers that are still running
             for worker in self._workers:
                 if not worker.done():
                     worker.cancel()
-            # Wait briefly for cancellations to complete
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*self._workers, return_exceptions=True),
-                    timeout=WORKER_CANCELLATION_TIMEOUT * 2.5,  # Allow more time during shutdown
-                )
-            except (TimeoutError, asyncio.TimeoutError):
-                logger.error("[WARN]Some workers could not be cancelled")
+            await wait_all_detached(
+                self._workers,
+                warn_after=WORKER_CANCELLATION_TIMEOUT,
+                warn_message=(
+                    f"Some workers are still stopping after {WORKER_CANCELLATION_TIMEOUT:.1f} "
+                    "seconds; waiting before finalization"
+                ),
+                logger=logger,
+            )
+        late_failures = [
+            exc
+            for worker in self._workers
+            if worker.done() and not worker.cancelled() and (exc := worker.exception()) is not None
+        ]
 
         self._is_processing = False
 
@@ -1776,8 +2030,21 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         # single failure can't break the await — they log their own errors).
         if self._post_processor_tasks:
             await asyncio.gather(*self._post_processor_tasks, return_exceptions=True)
+        # A live progress callback or callback thread is an ordering barrier
+        # before BATCH_COMPLETED and the batch result. Resource teardown,
+        # including artifact-store close, follows at context exit or close.
+        await self._wait_progress_callbacks()
+        await self._shutdown_callback_threads()
 
         await self._on_batch_completed()
+
+        failure = first_failure(
+            late_failures, logger=logger, message="Batch worker failed after the queue drained"
+        )
+        if failure is not None:
+            # Every accepted result was finalized above; retain the worker
+            # failure's original type rather than fabricate a cancellation.
+            raise failure
 
         # Snapshot results before returning so callers receive an independent list.
         results_snapshot = list(self._results)
@@ -1869,8 +2136,11 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 callback_result = post_processor(result)
             else:
                 # A synchronous callback may perform blocking DB/file I/O. Keep
-                # it off the event loop just as synchronous progress callbacks are.
-                callback_result = await asyncio.to_thread(post_processor, result)
+                # it off the event loop in the processor-owned pool so teardown
+                # can wait for the thread even after a timeout cancels this task.
+                callback_result = await self._callback_thread(
+                    "post-processors", post_processor, result
+                )
             # Also support callable adapters that return an awaitable without
             # being declared with ``async def``.
             if inspect.isawaitable(callback_result):
@@ -1913,13 +2183,14 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         if self._progress_callback_is_async:
             callback_awaitable = self.progress_callback(completed, total, current_item)
         else:
-            # Cast to sync callable since we know it's not async at this point
-            callback_awaitable = asyncio.to_thread(
-                self.progress_callback,  # type: ignore[arg-type]
-                completed,
-                total,
-                current_item,
+            thread_future = self._callback_thread(
+                "progress", self.progress_callback, completed, total, current_item
             )
+
+            async def _await_thread() -> None:
+                await thread_future
+
+            callback_awaitable = _await_thread()
 
         callback_task: asyncio.Task[None] = asyncio.create_task(callback_awaitable)  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
         self._track_progress_task(callback_task, log_exceptions=True)

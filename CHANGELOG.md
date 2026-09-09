@@ -7,6 +7,171 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Run `before_process` once per logical item, inside its total deadline and before
+  artifact lookup or strategy preparation. Retries reuse the effective request;
+  `ITEM_STARTED` is emitted once, including for replay and filtering. Replacement
+  items retain accepted IDs and submission indexes; invalid replacements fail
+  with exported `MiddlewareContractError`. Artifact identity and input
+  serialization errors now become per-item `artifact_preparation_error` results
+  during processing instead of aborting the batch. Store I/O, format, and
+  checkpoint-write failures still propagate for ordinary execution checkpoints.
+- Fingerprint and checkpoint middleware-transformed requests consistently on JSONL
+  and SQLite. Current filtering bypasses replay; explicitly stored filter results
+  are not replay eligible. Legacy filter records are excluded on read as well.
+  Filtered and invalid middleware requests do not open the store.
+  Replay preserves current effective context and historical post-`after_process`
+  output without rerunning that hook. Version hook changes through artifact
+  application/parser identity. Artifact schemas remain unchanged.
+- Preserve completed artifact replays when a deadline or abort arrives during
+  lookup. Aborts and total-item/batch deadline failures are checkpointed for audit
+  when an artifact key can be prepared, but are never replay eligible, including
+  under `REUSE_ALL`. Legacy records in those categories are also excluded during
+  lookup so they cannot mask an older success. Interrupted artifact preparation
+  is not restarted solely for audit; unrepresentable inputs cannot be checkpointed.
+  Artifact errors during batch-abort or batch-deadline audit preparation or append
+  are logged without replacing the controlled stop. Per-item deadline checkpoint
+  failures still raise, just like ordinary execution checkpoint failures.
+- Configure effective strategies once across concurrent workers, including on
+  replay-only runs, and bind the compatibility cooldown to their admission scope.
+  Capacity warnings retain the submitting caller's source location, module, and
+  warning registry for filtering and deduplication. Module-based suppression must
+  match the attributed caller's module rather than the library; message-based
+  filters also work. Configuration
+  entries verify strategy identity and are released during cleanup. Restore the
+  processor's `_run_middlewares_before` override and avoid rerunning work-item
+  subclass construction hooks during copying or middleware validation, while
+  honoring subclass `_validate_fields()` overrides. Streaming captures warning
+  attribution before starting its producer task; warning registries are created
+  only when a warning is issued.
+
+- **BREAKING**: Batch `process_all()` now leaves the artifact store open until
+  context exit or explicit `shutdown()` / `cleanup()`, so strategy teardown
+  always precedes store close. Stream finalization runs the ordered close
+  before publishing its terminal; cleanup failures can therefore surface from
+  `results()`. Convenience APIs still preserve completed results for failures
+  confined to user strategy cleanup. Automatic exit does not retry a failed
+  stream-finalization close; it applies the finalization report even when the
+  stream terminal was not consumed. A later explicit close retries failures.
+- Cleanup discovers resource phases after preceding barriers finish, so a
+  admitted request can still prepare its strategy during gateway draining,
+  and that strategy is included in teardown. Interrupting a
+  private barrier wait skips dependent teardown until a later close.
+- Quota gates retain every owned wake across rescheduling and unsolicited
+  failures until shutdown observes its outcome. Failed or cancelled wakes
+  schedule replacements so reservations continue. Stop-aware sleeps classify
+  settled children independently of concurrent stop signals and join children
+  already stopping if the helper is cancelled. Secondary admission failures
+  are logged with tracebacks.
+- **BREAKING: Cleanup failures now raise instead of only logging.** `async with`
+  exit, `shutdown()`, `cleanup()`, `LLMCallPool.aclose()`, and
+  `process_stream()` now attempt every cleanup step and then raise the first
+  ordinary failure (every failure is logged with a traceback). A body
+  exception or the caller's cancellation is never replaced by a cleanup
+  error. `process_prompts()`, `process_stream()`, and `call_result()` still
+  return completed results when the only failure came from a user strategy's
+  own `cleanup()`; runtime, admission, and artifact-store failures propagate.
+  Previously every cleanup failure was logged and swallowed. See
+  `docs/cleanup-lifecycle-contract.md`.
+- **BREAKING: Synchronous progress and post-processor callbacks are now an
+  ordering barrier.** Their timeouts still stop the worker waiting, but the
+  callback thread cannot be cancelled, so batch and stream finalization
+  (artifact-store close, `BATCH_COMPLETED`, end of stream) wait for the
+  thread to finish instead of closing resources underneath it. Callbacks run
+  in separate processor-owned pools for progress and post-processing, so slow
+  progress callbacks cannot leave post-processors queued until timeout.
+- **BREAKING: Once strategy teardown has started, preparing a new strategy
+  raises `RuntimeError`.** Admitted requests may still prepare during draining.
+  Lifecycle state is one-way (open, closing, closed); a
+  failed close stays closing and the next explicit close retries only the
+  steps that did not complete.
+- Manual `shutdown()` now runs the same ordered close as `async with` exit:
+  runtime tasks and callbacks, then admission resources, then prepared
+  strategies, then the artifact store. It closes the artifact store
+  (including the SQLite executor and WAL checkpoint) after an early stream
+  exit, a producer error, or a failed run, where it previously leaked it.
+- Worker and progress cancellation waits are diagnostic: one warning after two
+  seconds, then the wait continues. Any cleanup step still running after 30
+  seconds logs one warning. There is no cleanup deadline.
+- Cancelling the task that is closing once defers the cancellation until
+  cleanup finishes, then re-raises it. Cancelling it a second time
+  force-aborts the running step, skips and logs the rest, and propagates
+  immediately, which may leave an artifact store unflushed. This is the
+  operator's escape from a cleanup callback that never returns.
+- Streaming `results()` now ends with exactly one durable terminal decision.
+  A worker crash or finalization failure re-raises the original exception;
+  a finalizer cancelled by `shutdown()` before `finish()` completed raises
+  the new `StreamFinalizationError` instead of ending cleanly or hanging.
+  Results published before the decision are delivered first, and repeated or
+  concurrent `results()` calls observe the same outcome.
+- A batch worker that fails after the queue drained now raises its original
+  exception after finalization instead of a fabricated `CancelledError`.
+- The bundled `progress=True` reporter now closes as the last ordered cleanup
+  step, so a bar-close failure is logged and follows the same precedence as
+  every other cleanup failure instead of replacing a producer error or the
+  consumer's cancellation.
+
+### Added
+
+- `StreamFinalizationError` and `CleanupInterruptedError` (both ordinary
+  `Exception` subclasses). The latter reports a strategy `cleanup()` that
+  raised `CancelledError` itself or whose private task was cancelled by
+  something else; the caller's task is not cancelled and the next close
+  retries the step.
+- User strategy `cleanup()` must be idempotent and safe after a partially
+  completed earlier attempt; documented on `LLMCallStrategy.cleanup()`.
+
+### Fixed
+
+- Worker crashes and artifact-write failures now reach streaming consumers
+  after a fixed number of queued results. Concurrent readers share the limit,
+  so surviving workers cannot keep postponing failure by refilling the queue.
+- **BREAKING**: `process_all()` raises the new `BatchInterruptedError`
+  (`RuntimeError`) when workers are cancelled before the batch drains, including
+  by concurrent processor shutdown. It no longer fabricates caller cancellation;
+  cancelling the calling task itself still raises `asyncio.CancelledError`.
+- Quota wake deadlines use the quota refill timestamp. Clock-read jitter no
+  longer replaces an unchanged deadline with another wake task.
+
+- `RetryState.clear()` can no longer disable the total-item deadline or erase
+  framework accounting: executor deadlines, try counters, quota values, and
+  timing now live in a private sidecar that is absent from `RetryState.data`,
+  `asdict()`, equality, `repr`, `copy`, `deepcopy`, and pickling. Every
+  `_abl_*` key was removed from user data. Quota events report
+  `try_number=None` before a physical try is assigned.
+- `KeyboardInterrupt` and `SystemExit` raised during cleanup or stream
+  finalization keep their type; they are never converted into item failures
+  or a clean end of stream, and they take precedence over a deferred
+  cancellation.
+- A failed `AdmissionRegistry.shutdown()` is retryable: both components of a
+  quota scope are attempted, and the scope is released only after both
+  closed. The rate-limit coordinator and quota gate never cancel their owned
+  cooldown or wake task: shutdown signals it to stop, its sleep ends early,
+  and it is waited for through a detached future, so a retry after a
+  cancelled shutdown re-joins it and any cancelled state on the task is by
+  construction a third party's (including a cancellation already pending
+  when shutdown began). Such a cancellation, an observer raising
+  `CancelledError` during a cooldown event, and a failure raised by the task
+  are reported once by the close that observes them, as
+  `CleanupInterruptedError` or the task's own exception, with no second
+  finalization attempt in that call. The settled task is released with the
+  report, so a failure and its traceback are not retained after the call
+  that raised them. The coordinator tracks a paused generation by state: the
+  next explicit close finalizes it, and `COOLDOWN_ENDED` is delivered once.
+  Every live owned cooldown task is tracked, not only the newest: workers are
+  released before `COOLDOWN_ENDED` observers finish, so an immediately
+  retried item can start a newer generation while the older task is still
+  delivering, and shutdown now waits for that older task and reports its
+  failure too (further failures are logged with tracebacks). The stop-aware
+  sleep classifies its private children: a sleep or stop watcher cancelled
+  by a third party is reported as an interruption instead of ending the
+  cooldown silently. If cancellation occurs before finalization starts, the
+  coordinator finalizes the generation to release workers and still reports
+  the interruption at close. This also covers cancellation before the owned
+  task starts. Interrupted finalization remains retryable only by a later
+  explicit close.
+
 ## [0.23.0] - 2026-08-27
 
 ### Added

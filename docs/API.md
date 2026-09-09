@@ -312,6 +312,17 @@ by blocking until space is available.
 
 Process all work items in the queue.
 
+Batch completion leaves strategies and the artifact store open. Use the
+processor as an async context manager or call `await processor.shutdown()`
+to close admission resources, strategies, and then the store in order.
+Streaming finalization performs this teardown before `results()` ends;
+cleanup failures propagate there, and only a later explicit close retries
+failed steps.
+
+If another task shuts down the processor before the batch drains,
+`process_all()` raises `BatchInterruptedError` (a `RuntimeError` subclass).
+Cancellation of the calling task itself still raises `asyncio.CancelledError`.
+
 ```python
 result = await processor.process_all()
 ```
@@ -325,15 +336,51 @@ result = await processor.process_all()
 3. Waits for all work to complete
 4. Returns aggregated results
 
-#### `async def cleanup() -> None`
+#### `async def cleanup() -> None` / `async def shutdown() -> None`
 
-Clean up resources (cancel pending workers, clear queue).
+Release every owned resource in dependency order. `cleanup()`, `shutdown()`,
+and `async with` exit all run the same ordered close:
+
+1. Runtime tasks and callbacks: the stream finalizer, workers, queued work,
+   progress callbacks, background post-processors, and callback threads.
+2. Admission resources (quota scopes and the rate-limit coordinator).
+3. Prepared strategies (`strategy.cleanup()`).
+4. The artifact store, including after an early stream exit or a failed run.
 
 ```python
-await processor.cleanup()
+await processor.shutdown()
 ```
 
-**Note:** Automatically called when using async context manager.
+Behavior (see `docs/cleanup-lifecycle-contract.md` for the full contract):
+
+- **Every step is attempted.** A failing strategy `cleanup()` does not stop
+  sibling strategies or the artifact store from closing. Every failure is
+  logged with a traceback; with no body exception, the first failure is
+  raised after all steps have run. Inside `async with`, a body exception
+  stays primary and cleanup failures are only logged.
+- **Repeat calls are safe.** A step that succeeded is never repeated. A step
+  that failed or was interrupted is retried by the next explicit close.
+  Concurrent calls share one in-flight attempt. Because a retry re-invokes a
+  strategy's whole `cleanup()`, user `cleanup()` implementations must be
+  idempotent and safe after a partially completed earlier attempt.
+- **No deadline.** Cleanup waits for the artifact store and the gateway drain
+  to finish. The two-second worker and progress thresholds only log a warning
+  and keep waiting; any step still running after 30 seconds logs one warning.
+  A dependent resource is never closed while the resource it depends on is
+  still running, including synchronous callback threads.
+- **Cancellation.** Cancelling the task that is closing once defers that
+  cancellation until cleanup finishes, then re-raises it (cleanup errors are
+  logged, not raised). Cancelling it a second time force-aborts: the running
+  step is abandoned, later steps are skipped and logged, and the cancellation
+  propagates immediately. This is the operator's escape from a cleanup that
+  never returns and deliberately sacrifices durability.
+- **Interruptions.** A strategy `cleanup()` that raises `CancelledError`
+  itself, or whose private task is cancelled by something else, surfaces as
+  `CleanupInterruptedError` (an ordinary `Exception`); the caller's task is
+  not cancelled and the next close retries the step.
+- `KeyboardInterrupt` and `SystemExit` raised by a cleanup step keep their
+  type and take precedence over a deferred cancellation.
+- Once a close has started, preparing a new strategy raises `RuntimeError`.
 
 #### Context Manager Support
 
@@ -341,7 +388,7 @@ await processor.cleanup()
 async with ParallelBatchProcessor(config=config) as processor:
     await processor.add_work(item)
     result = await processor.process_all()
-# Automatic cleanup
+# Automatic cleanup (same ordered close as shutdown())
 ```
 
 **Example:**
@@ -464,7 +511,9 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
 2. For each attempt (including retries):
    - `execute()` is called (or `dry_run()` if `config.dry_run=True`)
    - If `execute()` raises an exception, `on_error()` is called before retry logic
-3. `cleanup()` - Called once after all attempts complete
+3. `cleanup()` - Runs during resource teardown after attempts finish. Successful
+   cleanup is never repeated; failed or interrupted cleanup is retried by a
+   later explicit close. Implementations must be idempotent.
 
 **Methods:**
 
@@ -793,8 +842,9 @@ class GeminiCachedModel:
 
 - `prepare()`: Finds or creates the Gemini cache (once per shared instance)
 - `generate()`: Uses the cache and auto-renews when enabled
-- `cleanup()`: Runs once when the processor exits; by default caches are left alive so
-  future batches can reuse them (call `delete_cache()` to remove immediately)
+- `cleanup()`: Runs during processor teardown, with failed or interrupted calls
+  retried by a later explicit close. By default caches are left alive so future
+  batches can reuse them (call `delete_cache()` to remove immediately).
 
 **Requires:** `pip install 'async-batch-llm[gemini]'`
 
@@ -1297,12 +1347,32 @@ class Middleware(ABC):
 
 **Methods:**
 
-- `before_process()`: Modify work item before processing. Return `None` to skip
-  the item (it is recorded as failed).
-- `after_process()`: Modify the result after processing (takes only the result).
-- `on_error()`: Handle errors. Return a `WorkItemResult` to substitute it for the
-  error (the first middleware returning non-None wins), or `None` for default
-  error handling.
+- `before_process()`: Runs once per accepted logical item per run, in registration
+  order, after submission-index assignment and inside the total-item deadline.
+  It precedes artifact fingerprinting/lookup, strategy preparation, admission,
+  and provider execution. Retries reuse its effective item. Return `None` to
+  produce a failed `middleware_filtered` result without replay or provider work.
+- A replacement may change prompt, context, and strategy, but must retain the
+  accepted `item_id` and satisfy normal `LLMWorkItem` validation. Invalid returns
+  fail with non-retryable `MiddlewareContractError` (`middleware_contract_error`).
+  The framework preserves the accepted submission index and clears stale artifact
+  keys. The effective strategy controls classification, quota, and concurrency.
+- `after_process()`: Runs once on a newly executed success in reverse registration
+  order. Artifacts store its final result. It does not run on replay, filtering,
+  or a result supplied by `on_error`. If this hook changes without changing the
+  effective request, bump `ArtifactIdentity.application_version` or `parser_version`
+  to invalidate old processed outputs; middleware code is not hashed automatically.
+- Middleware `on_error()`: Runs for a terminal execution/preparation failure,
+  after retry exhaustion or a non-retryable failure, rather than for each attempt.
+  The first non-`None` result wins. Filtering, replacement-contract errors,
+  controlled deadlines, and batch aborts bypass it. Strategy `on_error()` remains
+  the separate attempt-level hook.
+
+Ordinary callback exceptions are logged and skipped (fail-open); return `None`
+to filter deliberately. Validation of a returned work item happens outside that
+fail-open handling. Cancellation, `KeyboardInterrupt`, and `SystemExit` propagate.
+`ITEM_STARTED` is emitted once when logical preprocessing begins, including items
+that subsequently replay or filter, rather than once per retry attempt.
 
 All three are abstract — subclass `BaseMiddleware` for no-op defaults so you
 only override the hooks you need.
@@ -1372,9 +1442,10 @@ class ProcessorObserver(ABC):
 
 **Cleanup note:**
 
-- Preferred: wrap `ParallelBatchProcessor` in `async with` so strategy cleanup runs automatically.
-- If you do not use a context manager, call `await processor.shutdown()` after `process_all()` to flush
-  observers, stop workers, and run strategy cleanups.
+- Preferred: wrap `ParallelBatchProcessor` in `async with` so the ordered close runs automatically.
+- If you do not use a context manager, call `await processor.shutdown()` after `process_all()`. It
+  stops workers and callbacks, releases admission state, runs strategy cleanups, and closes the
+  artifact store. Repeated calls are safe and retry only what did not complete.
 
 ---
 

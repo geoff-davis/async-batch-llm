@@ -55,3 +55,9 @@
 ## ToolCall
 
 ::: async_batch_llm.ToolCall
+
+## Lifecycle exceptions
+
+::: async_batch_llm.StreamFinalizationError
+
+::: async_batch_llm.CleanupInterruptedError

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -13,11 +14,19 @@ from typing import Any
 from ..llm_strategies import LLMCallStrategy
 from ..strategies import RateLimitStrategy, TokenEstimateExceedsLimit
 from ..token_estimation import TokenEstimate
+from .cleanup import (
+    CleanupStep,
+    first_failure,
+    release_successful_task,
+    sleep_unless_stopped,
+    stop_owned_tasks,
+)
 from .event_dispatcher import EventDispatcher
 from .rate_limit_coordinator import RateLimitCoordinator
 
 _REQUEST_UNITS = 1.0
 _FLOAT_TOLERANCE = 1e-9
+logger = logging.getLogger(__name__)
 
 
 class AdmissionGateClosed(RuntimeError):
@@ -212,6 +221,8 @@ class QuotaGate:
         self._waiters: deque[_Waiter] = deque()
         self._wake_task: asyncio.Task[None] | None = None
         self._wake_deadline: float | None = None
+        self._wake_stop: asyncio.Event | None = None
+        self._owned_wakes: dict[asyncio.Task[None], asyncio.Event] = {}
         self._closed = False
 
     @property
@@ -409,7 +420,7 @@ class QuotaGate:
                 limited_by=limited_by,
             )
             waiter.future.set_result(reservation)
-        self._cancel_wake_task()
+        self._stop_wake_task()
 
     def _schedule_wake(self, estimate: TokenEstimate | None) -> None:
         delay = 0.0
@@ -424,49 +435,81 @@ class QuotaGate:
             assert self._token_refill_per_second is not None
             token_deficit = max(0.0, estimate.total_tokens - self._token_available)
             delay = max(delay, token_deficit / self._token_refill_per_second)
-        deadline = self._clock() + delay
+        # Available quota was computed at _last_refill. A fresh clock read
+        # shifts the deadline by read latency and needlessly replaces wakes.
+        deadline = self._last_refill + delay
         if self._wake_task is not None and not self._wake_task.done():
             if (
                 self._wake_deadline is not None
                 and self._wake_deadline <= deadline + _FLOAT_TOLERANCE
             ):
                 return
-            self._cancel_wake_task()
+            self._stop_wake_task()
         self._wake_deadline = deadline
-        self._wake_task = asyncio.create_task(self._wake_after(delay))
+        stop = asyncio.Event()
+        self._wake_stop = stop
+        delay = max(0.0, deadline - self._clock())
+        self._wake_task = asyncio.create_task(self._wake_after(delay, stop))
+        self._owned_wakes[self._wake_task] = stop
+        self._wake_task.add_done_callback(self._wake_done)
 
-    async def _wake_after(self, delay: float) -> None:
-        try:
-            await self._sleep(delay)
-        except asyncio.CancelledError:
-            raise
-        finally:
-            if self._wake_task is asyncio.current_task():
-                self._wake_task = None
-                self._wake_deadline = None
-        if not self._closed:
-            self._process_waiters()
+    async def _wake_after(self, delay: float, stop: asyncio.Event) -> None:
+        """Owned wake: sleep, then admit waiters.
 
-    def _cancel_wake_task(self) -> asyncio.Task[None] | None:
-        task = self._wake_task
+        ``stop`` (set by :meth:`shutdown` or a reschedule) ends the sleep
+        early and skips admission. Only the sleep sub-task is ever cancelled
+        by the gate, so a ``CancelledError`` reaching this task is a third
+        party's and simply propagates. Unsuccessful tasks stay in the ownership
+        registry until shutdown reports them, even after rescheduling. Only
+        successful tasks release themselves from that registry.
+        """
+        await sleep_unless_stopped(self._sleep(delay), stop, name="quota gate sleep")
+
+    def _wake_done(self, task: asyncio.Task[None]) -> None:
+        # A done callback also runs when cancellation precedes the coroutine's
+        # first instruction. Every lost wake must hand off to a replacement.
+        stop = self._owned_wakes.get(task)
+        release_successful_task(self._owned_wakes, task)
+        if self._wake_task is task:
+            self._wake_task = None
+            self._wake_deadline = None
+            self._wake_stop = None
+            if not self._closed and stop is not None and not stop.is_set():
+                self._process_waiters()
+
+    def _stop_wake_task(self) -> None:
+        """Drop the scheduled wake; it ends its sleep early and admits nothing."""
         self._wake_task = None
         self._wake_deadline = None
-        if task is not None and task is not asyncio.current_task() and not task.done():
-            task.cancel()
-        return task
+        stop = self._wake_stop
+        self._wake_stop = None
+        if stop is not None:
+            stop.set()
 
     async def shutdown(self) -> None:
-        if self._closed:
-            return
+        """Close the gate; idempotent, and a cancelled or failed call is retryable.
+
+        ``_closed`` is set before the first await so new reservations are
+        rejected immediately. The owned wake task is signalled to stop (never
+        cancelled, so a cancelled state on it is always a third party's) and
+        waited for through a detached future. Every owned wake is joined,
+        including older tasks still stopping after a reschedule. A retry
+        after a cancelled call re-joins them. Each failure —
+        its own exception, or a third-party cancellation reported as
+        :class:`CleanupInterruptedError` — is raised by the call that
+        observes it and the settled task is released with it.
+        """
         self._closed = True
-        task = self._cancel_wake_task()
-        if task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        failure = await stop_owned_tasks(self._owned_wakes, name="quota gate wake", logger=logger)
+        self._wake_task = None
+        self._wake_deadline = None
+        self._wake_stop = None
         while self._waiters:
             waiter = self._waiters.popleft()
             if not waiter.future.done():
                 waiter.future.set_exception(AdmissionGateClosed("Quota gate was shut down"))
+        if failure is not None:
+            raise failure
 
     def _validate_estimate(self, estimate: TokenEstimate | None) -> None:
         if not self.tpm_enabled:
@@ -568,24 +611,50 @@ class AdmissionRegistry:
     def states(self) -> tuple[ScopeAdmissionState, ...]:
         return tuple(self._scope_entries.values())
 
+    def cleanup_steps(
+        self, compatibility_coordinator: RateLimitCoordinator | None = None
+    ) -> list[CleanupStep]:
+        """Shared admission barriers, in the same order on every surface."""
+        steps = [CleanupStep("admission registry", self.shutdown, barrier=True)]
+        if compatibility_coordinator is not None:
+            steps.append(
+                CleanupStep(
+                    "compatibility rate-limit coordinator",
+                    compatibility_coordinator.shutdown,
+                    barrier=True,
+                )
+            )
+        return steps
+
     async def shutdown(self) -> None:
-        if self._closed:
-            return
+        """Close every quota scope. Idempotent; a failed scope is retried next call.
+
+        ``_closed`` is set before the first await so a late ``resolve()`` cannot
+        mint a scope that shutdown would then discard unclosed. Each scope is
+        removed only after both of its components closed, so a retry resumes
+        exactly the scopes that did not complete.
+        """
         self._closed = True
-        errors: list[BaseException] = []
-        for state in tuple(self._scope_entries.values()):
-            try:
-                await state.cooldown.shutdown()
-            except BaseException as exc:  # cleanup every scope before surfacing one error
-                errors.append(exc)
-            try:
-                await state.quota_gate.shutdown()
-            except BaseException as exc:
-                errors.append(exc)
-        self._strategy_entries.clear()
-        self._scope_entries.clear()
-        if errors:
-            raise errors[0]
+        errors: list[Exception] = []
+        for key, state in tuple(self._scope_entries.items()):
+            scope_errors: list[Exception] = []
+            for component in (state.cooldown, state.quota_gate):
+                try:
+                    await component.shutdown()
+                except Exception as exc:  # attempt the sibling before surfacing
+                    scope_errors.append(exc)
+            if scope_errors:
+                errors.extend(scope_errors)
+                continue
+            self._scope_entries.pop(key, None)
+        if not errors:
+            self._strategy_entries.clear()
+            return
+        failure = first_failure(
+            errors, logger=logger, message="Additional admission cleanup failed"
+        )
+        assert failure is not None
+        raise failure
 
 
 __all__ = [

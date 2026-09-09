@@ -428,16 +428,15 @@ async def test_stale_row_cannot_be_admitted_for_a_mismatched_strategy(tmp_path, 
         resume=ResumePolicy.REUSE_SUCCESSES,
     ) as processor:
         await processor.add_work(LLMWorkItem(item_id="pin", strategy=pinned, prompt="pin"))
-        with pytest.raises(ArtifactError, match="Automatic artifact identity changed"):
-            await processor.add_work(
-                LLMWorkItem(
-                    item_id="shared",
-                    strategy=mismatched,
-                    prompt="prompt",
-                )
-            )
+        await processor.add_work(
+            LLMWorkItem(item_id="shared", strategy=mismatched, prompt="prompt")
+        )
+        results = (await processor.process_all()).results
+    assert results[0].success
+    assert results[1].error_category == "artifact_preparation_error"
+    assert "Automatic artifact identity changed" in results[1].error
 
-    assert pinned.calls == 0
+    assert pinned.calls == 1
     assert mismatched.calls == 0
 
 

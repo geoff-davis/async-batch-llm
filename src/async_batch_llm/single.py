@@ -89,9 +89,18 @@ async def call_result(
         work_item: LLMWorkItem[Any, TOutput, Any] = LLMWorkItem(
             item_id=_SINGLE_CALL_ITEM_ID, strategy=strategy, prompt=prompt
         )
-        return await host.executor.execute(work_item)
-    finally:
-        await host.aclose()
+        result = await host.executor.execute(work_item)
+    except BaseException as exc:
+        # The body exception (or the caller's cancellation) stays primary;
+        # cleanup still runs to completion and logs its own failures.
+        await host.close_report(primary_exception=exc)
+        raise
+    # A completed, already-billed result is preserved when the only cleanup
+    # failure came from the user strategy's own cleanup(); runtime and
+    # admission failures still raise.
+    report = await host.close_report()
+    report.raise_first(preserve_completed_result=True)
+    return result
 
 
 async def call(

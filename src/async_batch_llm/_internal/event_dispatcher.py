@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Generic
 
 from ..base import LLMWorkItem, TContext, TInput, TOutput, WorkItemResult
 from ..observers import ProcessingEvent, ProcessorObserver
+from ..strategies import MiddlewareContractError
+from .logical_item import PreparedLogicalItem
 
 if TYPE_CHECKING:
     from ..middleware import Middleware
@@ -79,23 +81,44 @@ class EventDispatcher(Generic[TInput, TOutput, TContext]):
     # ── Middleware chain ──────────────────────────────────────────
 
     async def run_before(
-        self, work_item: LLMWorkItem[TInput, TOutput, TContext]
+        self,
+        work_item: LLMWorkItem[TInput, TOutput, TContext],
+        *,
+        prepared: PreparedLogicalItem[TInput, TOutput, TContext] | None = None,
     ) -> LLMWorkItem[TInput, TOutput, TContext] | None:
         """Run `before_process` on each middleware in order. A middleware
         returning `None` skips the item entirely."""
         current_item = work_item
+        accepted_id = work_item.item_id
+        submission_index = work_item.submission_index
         for middleware in self.middlewares:
             try:
                 result = await middleware.before_process(current_item)
-                if result is None:
-                    return None
-                current_item = result
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.warning(
-                    f"[WARN]Middleware before_process error for {work_item.item_id}: {e}"
-                )
+                logger.warning(f"[WARN]Middleware before_process error for {accepted_id}: {e}")
+                result = current_item
+            # Validation is outside fail-open callback handling: an invalid
+            # returned request cannot change accepted identity or reach a provider.
+            candidate = current_item if result is None else result
+            if not isinstance(candidate, LLMWorkItem):
+                raise MiddlewareContractError("before_process must return LLMWorkItem or None")
+            if candidate.item_id != accepted_id:
+                candidate.item_id = accepted_id
+                candidate.submission_index = submission_index
+                raise MiddlewareContractError("before_process cannot change the accepted item_id")
+            try:
+                type(candidate)._validate_fields(candidate)
+            except (TypeError, ValueError) as exc:
+                raise MiddlewareContractError(f"Invalid before_process work item: {exc}") from exc
+            candidate.submission_index = submission_index
+            candidate._artifact_key = None
+            current_item = candidate
+            if prepared is not None:
+                prepared.effective_item = current_item
+            if result is None:
+                return None
         return current_item
 
     async def run_after(

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import json
+import logging
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from benchmarks.scale_soak import monitor as monitor_module
+from benchmarks.scale_soak import scenarios as scenarios_module
 from benchmarks.scale_soak.cli import build_parser, config_from_args, run_config
 from benchmarks.scale_soak.config import (
     PROFILES,
@@ -23,7 +28,7 @@ from benchmarks.scale_soak.fake_provider import (
     behavior_hash,
     token_mix_expected,
 )
-from benchmarks.scale_soak.monitor import MAX_SAMPLES, ResourceMonitor
+from benchmarks.scale_soak.monitor import MAX_SAMPLES, ResourceMonitor, ResourceSnapshot
 from benchmarks.scale_soak.report import (
     REPORT_SCHEMA_NAME,
     REPORT_SCHEMA_VERSION,
@@ -35,6 +40,23 @@ from benchmarks.scale_soak.report import (
 from benchmarks.scale_soak.scenarios import SCENARIO_RUNNERS
 
 pytestmark = pytest.mark.timeout(120)
+
+
+@pytest.fixture(autouse=True)
+async def isolate_harness_test():
+    # SDK clients from earlier tests can schedule aclose() from __del__ when
+    # a scenario's cleanup probe collects garbage. Settle that unrelated work
+    # before taking baselines; never relax the scenario's own leak checks.
+    gc.collect()
+    await asyncio.sleep(0)
+    # run_config() silences framework logs for the CLI. Do not let a harness
+    # test change logging assertions in subsequently selected test modules.
+    logger = logging.getLogger("async_batch_llm")
+    previous_level = logger.level
+    try:
+        yield
+    finally:
+        logger.setLevel(previous_level)
 
 
 def _settings(scenario: str, tmp_path: Path, items: int = 80, **overrides):
@@ -184,6 +206,22 @@ async def test_monitor_sample_buffer_is_bounded() -> None:
     assert len(monitor.samples) == MAX_SAMPLES
 
 
+async def test_cleanup_task_check_rejects_new_live_task(tmp_path: Path) -> None:
+    before = ResourceSnapshot.capture()
+    task = asyncio.create_task(asyncio.Event().wait())
+    result = ScenarioResult("healthy")
+    try:
+        await scenarios_module.check_cleanup(
+            result, _settings("healthy", tmp_path), before, ResourceMonitor()
+        )
+        check = next(row for row in result.assertions if row.name == "tasks_return_to_baseline")
+        assert not check.passed
+        assert result.status == "failed"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 # ── Report schema ────────────────────────────────────────────────────────
 
 
@@ -224,6 +262,26 @@ async def test_each_scenario_reduced_form_passes(scenario: str, tmp_path: Path) 
     result = await SCENARIO_RUNNERS[scenario](settings)
     failed = [check.to_json() for check in result.assertions if not check.passed]
     assert result.status == "passed", failed
+
+
+@pytest.mark.parametrize("has_table", [True, False])
+def test_sqlite_row_count_closes_connection_on_success_and_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, has_table: bool
+) -> None:
+    path = tmp_path / "counts.sqlite"
+    connection = sqlite3.connect(path)
+    if has_table:
+        connection.execute("CREATE TABLE item_records (item_id TEXT)")
+        connection.execute("INSERT INTO item_records VALUES ('one')")
+        connection.commit()
+    # Keep the actual connection alive: cleanup must not depend on GC timing.
+    monkeypatch.setattr(scenarios_module.sqlite3, "connect", lambda _: connection)
+    try:
+        assert scenarios_module._sqlite_row_count(path) == (1 if has_table else None)
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+    finally:
+        connection.close()
 
 
 async def test_reduced_jsonl_store_scenarios_pass(tmp_path: Path) -> None:

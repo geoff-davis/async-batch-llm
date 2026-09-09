@@ -29,6 +29,15 @@ from ..serialization import (
 ReplayKey: TypeAlias = tuple[str, str, str, str | None, str]
 CostCalculator: TypeAlias = Callable[[WorkItemResult[Any, Any]], float | None]
 ContextFingerprinter: TypeAlias = Callable[[Any], str]
+BEST_EFFORT_AUDIT_CATEGORIES = (
+    "batch_aborted",
+    "batch_deadline_exceeded",
+)
+GUARDRAIL_AUDIT_CATEGORIES = (
+    *BEST_EFFORT_AUDIT_CATEGORIES,
+    "framework_total_item_timeout",
+)
+NON_REPLAYABLE_CATEGORIES = ("middleware_filtered", *GUARDRAIL_AUDIT_CATEGORIES)
 
 
 @dataclass(frozen=True)
@@ -244,7 +253,8 @@ def build_item_record(
         "token_usage": serialized_result["token_usage"],
         "timing": serialized_result["timing"],
         "calculated_cost": cost,
-        "replay_eligible": (not result.success) or include_output,
+        "replay_eligible": result.error_category not in NON_REPLAYABLE_CATEGORIES
+        and ((not result.success) or include_output),
         "raw_prompt": raw_prompt,
         "raw_context": raw_context,
         "result": serialized_result,
@@ -282,6 +292,18 @@ def record_replay_key(record: Mapping[str, Any]) -> ReplayKey | None:
     ):
         return None
     return identity, item_id, prompt, context, combined
+
+
+def is_non_replayable_record(record: Mapping[str, Any]) -> bool:
+    """Reject run-local outcomes, including legacy records marked replay eligible."""
+    if record.get("error_category") in NON_REPLAYABLE_CATEGORIES:
+        return True
+    result = record.get("result")
+    if not isinstance(result, Mapping):
+        return False
+    return result.get("error_category") in NON_REPLAYABLE_CATEGORIES or (
+        result.get("success") is False and result.get("error") == "Skipped by middleware"
+    )
 
 
 def record_is_compatible(

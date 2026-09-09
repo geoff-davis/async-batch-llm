@@ -40,6 +40,8 @@ flushes and inspects that writable store.
 
 ::: async_batch_llm.ArtifactError
 
+::: async_batch_llm.ArtifactIdentityError
+
 ::: async_batch_llm.ArtifactSerializationError
 
 ::: async_batch_llm.ArtifactIOError

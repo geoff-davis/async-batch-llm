@@ -14,6 +14,7 @@ import math
 import sqlite3
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
 
@@ -612,7 +613,9 @@ async def run_validation_recovery(settings: ScenarioSettings) -> ScenarioResult:
 
 def _sqlite_row_count(db_path: Path) -> int | None:
     try:
-        with sqlite3.connect(db_path) as connection:
+        # Connection.__exit__ ends a transaction; it does not close the DB.
+        # Resource measurements must not depend on GC or coverage timing.
+        with closing(sqlite3.connect(db_path)) as connection:
             return int(connection.execute("SELECT COUNT(*) FROM item_records").fetchone()[0])
     except sqlite3.DatabaseError:
         return None

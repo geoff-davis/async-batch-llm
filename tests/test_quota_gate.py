@@ -37,7 +37,13 @@ class _ManualClock:
                 sleeper.future.set_result(None)
                 self.sleepers.remove(sleeper)
         # Let the wake task refill the gate and resume granted waiters.
-        await asyncio.sleep(0)
+        await _settle()
+
+
+async def _settle() -> None:
+    """Yield enough loop ticks for reserves, the wake task, and its owned
+    sleep sub-task to reach their next await."""
+    for _ in range(6):
         await asyncio.sleep(0)
 
 
@@ -59,8 +65,7 @@ async def test_continuous_refill_uses_burst_capacity_and_one_wake_task() -> None
 
     third = asyncio.create_task(gate.reserve())
     fourth = asyncio.create_task(gate.reserve())
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await _settle()
     assert gate.waiter_count == 2
     assert gate.has_wake_task
     assert len(clock.sleepers) == 1
@@ -88,8 +93,7 @@ async def test_fractional_rpm_supports_sub_one_rate() -> None:
     await _consume(gate)
 
     waiting = asyncio.create_task(gate.reserve())
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await _settle()
     await clock.advance(119.0)
     assert not waiting.done()
     await clock.advance(1.0)
@@ -108,8 +112,7 @@ async def test_fifo_cancellation_and_pre_provider_refund() -> None:
 
     cancelled = asyncio.create_task(gate.reserve())
     next_waiter = asyncio.create_task(gate.reserve())
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await _settle()
     assert gate.waiter_count == 2
 
     cancelled.cancel()
@@ -137,8 +140,7 @@ async def test_post_provider_finalization_consumes_request() -> None:
     held.finalize()
 
     waiting = asyncio.create_task(gate.reserve())
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await _settle()
     assert not waiting.done()
     await clock.advance(60.0)
     reservation = await waiting
@@ -155,8 +157,7 @@ async def test_fast_path_has_no_timer_and_shutdown_wakes_waiters() -> None:
     assert not gate.has_wake_task
 
     waiting = asyncio.create_task(gate.reserve())
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await _settle()
     wake_task = gate._wake_task
     assert wake_task is not None
 
@@ -193,8 +194,7 @@ async def test_tpm_only_refills_and_reserves_estimate_atomically() -> None:
     assert first.reconcile(120) is not None
 
     waiting = asyncio.create_task(gate.reserve(TokenEstimate(30)))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await _settle()
     assert not waiting.done()
     await clock.advance(14.9)
     assert not waiting.done()
@@ -217,8 +217,7 @@ async def test_combined_gate_is_fifo_and_cancellation_wakes_smaller_next_waiter(
 
     large = asyncio.create_task(gate.reserve(TokenEstimate(60)))
     small = asyncio.create_task(gate.reserve(TokenEstimate(1)))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await _settle()
     await clock.advance(1.0)
     assert not large.done()
     assert not small.done(), "a smaller request must not bypass the FIFO head"
@@ -253,8 +252,7 @@ async def test_reconciliation_refund_debt_known_zero_unknown_and_exactly_once() 
     assert gate.token_available == pytest.approx(-170)
 
     waiting = asyncio.create_task(gate.reserve(TokenEstimate(1)))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await _settle()
     await clock.advance(102.6)
     reservation = await waiting
     reservation.mark_provider_started()
@@ -287,14 +285,15 @@ async def test_tpm_rejects_zero_missing_and_impossible_estimates_immediately() -
 
 @pytest.mark.asyncio
 async def test_prestart_finalization_refunds_request_and_tokens_once() -> None:
-    gate = QuotaGate(1.0, 100)
+    clock = _ManualClock()
+    gate = QuotaGate(1.0, 100, clock=clock, sleep=clock.sleep)
     reservation = await gate.reserve(TokenEstimate(75))
-    assert gate.request_available == pytest.approx(0, abs=1e-5)
-    assert gate.token_available == pytest.approx(25, abs=1e-3)
+    assert gate.request_available == 0
+    assert gate.token_available == 25
     final = reservation.finalize_before_start()
     assert final is not None and final.disposition == "refunded_before_start"
-    assert gate.request_available == pytest.approx(1)
-    assert gate.token_available == pytest.approx(100)
+    assert gate.request_available == 1
+    assert gate.token_available == 100
     assert reservation.finalize_before_start() is None
     await gate.shutdown()
 
@@ -308,8 +307,7 @@ async def test_combined_gate_reports_each_limiting_dimension() -> None:
     first.mark_provider_started()
     first.reconcile(0)
     rpm_waiter = asyncio.create_task(rpm_gate.reserve(TokenEstimate(1)))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await _settle()
     await clock.advance(60)
     rpm = await rpm_waiter
     assert rpm.limited_by == "rpm"
@@ -321,8 +319,7 @@ async def test_combined_gate_reports_each_limiting_dimension() -> None:
     first.mark_provider_started()
     first.reconcile(60)
     tpm_waiter = asyncio.create_task(tpm_gate.reserve(TokenEstimate(60)))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await _settle()
     await clock.advance(60)
     tpm = await tpm_waiter
     assert tpm.limited_by == "tpm"
@@ -334,8 +331,7 @@ async def test_combined_gate_reports_each_limiting_dimension() -> None:
     first.mark_provider_started()
     first.reconcile(60)
     both_waiter = asyncio.create_task(both_gate.reserve(TokenEstimate(60)))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await _settle()
     await clock.advance(60)
     both = await both_waiter
     assert both.limited_by == "both"
@@ -355,8 +351,7 @@ async def test_refunds_cap_at_burst_capacity_and_repeated_cancel_does_not_leak()
 
     held = await gate.reserve(TokenEstimate(100))
     cancelled = asyncio.create_task(gate.reserve(TokenEstimate(1)))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await _settle()
     cancelled.cancel()
     with pytest.raises(asyncio.CancelledError):
         await cancelled
@@ -366,3 +361,40 @@ async def test_refunds_cap_at_burst_capacity_and_repeated_cancel_does_not_leak()
     assert gate.request_available == pytest.approx(1)
     assert gate.token_available == pytest.approx(100)
     await gate.shutdown()
+
+
+@pytest.mark.parametrize("dimension", ["rpm", "tpm", "both"])
+async def test_clock_read_jitter_does_not_reschedule_the_same_quota_deadline(
+    dimension: str,
+) -> None:
+    class JitterClock(_ManualClock):
+        reads = 0
+
+        def __call__(self) -> float:
+            self.reads += 1
+            # A monotonic clock whose read intervals vary by a few microseconds.
+            self.now += 0.000001 * (7 - self.reads % 7)
+            return self.now
+
+    clock = JitterClock()
+    gate = QuotaGate(
+        1 if dimension != "tpm" else None,
+        100 if dimension != "rpm" else None,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    estimate = TokenEstimate(input_tokens=100, output_tokens=0) if dimension != "rpm" else None
+    first = await gate.reserve(estimate)
+    first.mark_provider_started()
+    first.finalize()
+    pending = []
+    try:
+        for _ in range(30):
+            pending.append(asyncio.create_task(gate.reserve(estimate)))
+            await _settle()
+        assert len(clock.sleepers) == 1, "clock jitter replaced an unchanged quota wake"
+    finally:
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        await gate.shutdown()

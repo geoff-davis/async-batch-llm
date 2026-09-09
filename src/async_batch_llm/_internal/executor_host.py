@@ -14,6 +14,7 @@ makes concurrent callers coordinate by quota-scope identity.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Generic, cast
 
 from ..base import (
@@ -36,11 +37,14 @@ from ..token_extractor import TokenExtractor
 from .admission import AdmissionRegistry
 from .capacity import CapacityLimiter
 from .classifier_resolver import StrategyClassifierResolver
+from .cleanup import CleanupAction, CleanupReport, SharedCloser
 from .event_dispatcher import EventDispatcher
 from .guardrails import AbortController
 from .item_executor import ItemExecutor
 from .rate_limit_coordinator import RateLimitCoordinator
 from .strategy_lifecycle import StrategyLifecycle
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutorHost(Generic[TInput, TOutput, TContext]):
@@ -110,12 +114,18 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         self._abort_controller: AbortController | None = None
 
         self.executor: ItemExecutor[TInput, TOutput, TContext] = ItemExecutor(self)
+        self._closer = SharedCloser(self._cleanup_steps, name="ExecutorHost", logger=logger)
 
     # These three satisfy ExecutorHostProtocol's override-point hooks. On the
     # queue-less path there's no subclass to override them, so they delegate
     # straight back to the executor (the processor's versions do the same).
     def _extract_token_usage(self, exception: Exception) -> dict[str, int]:
         return self._token_extractor.extract_from_exception(exception)
+
+    async def _run_middlewares_before(
+        self, work_item: LLMWorkItem[TInput, TOutput, TContext]
+    ) -> LLMWorkItem[TInput, TOutput, TContext] | None:
+        return await self.executor._run_middlewares_before(work_item)
 
     async def _process_item(
         self,
@@ -148,22 +158,30 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
             exception, work_item, worker_id, attempt_number
         )
 
-    async def aclose(self) -> None:
-        """Run cleanup() on every strategy this host prepared."""
-        errors: list[BaseException] = []
-        try:
-            await self._strategy_lifecycle.cleanup_all()
-        except BaseException as exc:
-            errors.append(exc)
-        try:
-            await self._admission_registry.shutdown()
-        except BaseException as exc:
-            errors.append(exc)
-        if self._owns_compatibility_coordinator:
-            try:
-                await self._rate_limit_coord.shutdown()
-            except BaseException as exc:
-                errors.append(exc)
+    def _cleanup_steps(self) -> list[CleanupAction]:
+        """Ordered teardown: admission resources, then strategies, then caches."""
+        return [
+            self._strategy_lifecycle.resource_cleanup_phase(
+                self._admission_registry,
+                self._rate_limit_coord if self._owns_compatibility_coordinator else None,
+                self._clear_classifiers,
+            )
+        ]
+
+    async def _clear_classifiers(self) -> None:
         self._classifier_resolver.clear()
-        if errors:
-            raise errors[0]
+
+    async def close_report(
+        self, *, primary_exception: BaseException | None = None
+    ) -> CleanupReport:
+        """Run or join the shared close attempt and return what it observed."""
+        return await self._closer.close(primary_exception=primary_exception)
+
+    async def aclose(self) -> None:
+        """Release admission state and run cleanup() on every prepared strategy.
+
+        Raises the first ordinary cleanup failure after attempting every step;
+        repeated calls retry only what did not complete.
+        """
+        report = await self.close_report()
+        report.raise_first()

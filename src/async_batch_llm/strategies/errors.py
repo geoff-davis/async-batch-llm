@@ -108,6 +108,12 @@ class TokenTrackingError(Exception):
         self._failed_token_usage = token_usage or {}
 
 
+class MiddlewareContractError(ValueError):
+    """A preprocessing result violated accepted work-item identity or invariants."""
+
+    error_category = "middleware_contract_error"
+
+
 class TokenEstimationError(Exception):
     """Framework-owned, non-retryable token-estimation failure."""
 
@@ -358,6 +364,13 @@ class DefaultErrorClassifier(ErrorClassifier):
         """Classify common errors with conservative defaults."""
         error_str = str(exception).lower()
 
+        if isinstance(exception, MiddlewareContractError):
+            return ErrorInfo(
+                is_retryable=False,
+                is_rate_limit=False,
+                is_timeout=False,
+                error_category=exception.error_category,
+            )
         if isinstance(exception, ItemDeadlineExceeded):
             return ErrorInfo(
                 is_retryable=False,
