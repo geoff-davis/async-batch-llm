@@ -84,11 +84,14 @@ class _Strategy(LLMCallStrategy[str]):
         self.execute_delay = execute_delay
         self.cleanup_calls = 0
         self.cleaned = False
+        self.execution_started = asyncio.Event()
+        self.cleanup_started = asyncio.Event()
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
     ) -> tuple[str, TokenUsage]:
         del attempt, timeout, state
+        self.execution_started.set()
         if self.execute_delay:
             await asyncio.sleep(self.execute_delay)
         return prompt, _TOKENS
@@ -96,6 +99,7 @@ class _Strategy(LLMCallStrategy[str]):
     async def cleanup(self) -> None:
         self.cleanup_calls += 1
         self.log.append(f"{self.name}:cleanup:start")
+        self.cleanup_started.set()
         if self.cleanup_delay:
             await asyncio.sleep(self.cleanup_delay)
         if self.cleanup_error_factory is not None:
@@ -117,6 +121,7 @@ class _StubbornStrategy(_Strategy):
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
     ) -> tuple[str, TokenUsage]:
         del attempt, timeout, state
+        self.execution_started.set()
         try:
             await asyncio.sleep(30)
         except asyncio.CancelledError:
@@ -138,16 +143,20 @@ class _Store:
         close_error: BaseException | None = None,
         append_error: BaseException | None = None,
         append_error_for: set[str] | None = None,
+        prepare_delay: float = 0.0,
     ) -> None:
         self.log = log if log is not None else []
         self.close_delay = close_delay
         self.close_error = close_error
         self.append_error = append_error
         self.append_error_for = append_error_for
+        self.prepare_delay = prepare_delay
         self.close_calls = 0
         self.closed = False
 
     async def prepare_item(self, work_item: Any) -> Any:
+        if self.prepare_delay:
+            await asyncio.sleep(self.prepare_delay)
         return work_item.item_id
 
     async def lookup(self, work_item: Any, prepared_item: Any, policy: Any) -> Any:
@@ -794,7 +803,7 @@ async def test_c1_shutdown_order_runtime_then_admission_then_strategies_then_sto
 
     processor.start()
     await processor.add_work(LLMWorkItem("one", strategy, "prompt"))
-    await asyncio.sleep(0.05)  # the worker is now inside execute()
+    await asyncio.wait_for(strategy.execution_started.wait(), timeout=2)
     await processor.shutdown()
 
     assert log.index("worker:done") < log.index("admission:shutdown")
@@ -958,7 +967,7 @@ async def test_c1_worker_threshold_is_diagnostic_only(
     processor = _processor(artifact_store=store)
     processor.start()
     await processor.add_work(LLMWorkItem("one", strategy, "prompt"))
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(strategy.execution_started.wait(), timeout=2)
 
     await processor.shutdown()
 
@@ -973,9 +982,11 @@ async def test_c1_progress_threshold_is_diagnostic_only(
     caplog.set_level(logging.WARNING)
     log: list[str] = []
     cancelled = False
+    progress_started = asyncio.Event()
 
     async def progress(completed: int, total: int, item_id: str) -> None:
         nonlocal cancelled
+        progress_started.set()
         try:
             await asyncio.sleep(0.2)
         except asyncio.CancelledError:
@@ -991,7 +1002,7 @@ async def test_c1_progress_threshold_is_diagnostic_only(
     )
     processor.start()
     await processor.add_work(LLMWorkItem("one", _Strategy(), "prompt"))
-    await asyncio.sleep(0.05)  # the item is done; its progress callback is running
+    await asyncio.wait_for(progress_started.wait(), timeout=2)
 
     await processor.shutdown()
 
@@ -1006,20 +1017,25 @@ async def test_c1_progress_threshold_is_diagnostic_only(
 
 
 async def _context_body(
-    processor: ParallelBatchProcessor[Any, str, Any], strategy: _Strategy
+    processor: ParallelBatchProcessor[Any, str, Any], strategy: _Strategy, ready: asyncio.Event
 ) -> None:
     async with processor:
         await _run_one(processor, strategy)
+        ready.set()
         await asyncio.sleep(30)
 
 
-async def test_c2_first_cancellation_defers_until_teardown_completes() -> None:
+@pytest.mark.parametrize("prepare_delay", [0.0, 0.1])
+async def test_c2_first_cancellation_defers_until_teardown_completes(prepare_delay: float) -> None:
     log: list[str] = []
     strategy = _Strategy("s", log, cleanup_delay=0.2)
-    store = _Store(log)
+    store = _Store(log, prepare_delay=prepare_delay)
     processor = _processor(artifact_store=store)
-    task = asyncio.create_task(_context_body(processor, strategy))
-    await asyncio.sleep(0.05)
+    ready = asyncio.Event()
+    task = asyncio.create_task(_context_body(processor, strategy, ready))
+    # Cancellation before preparation owes no strategy cleanup. Establish the
+    # completed-item precondition explicitly, even when store startup is slow.
+    await asyncio.wait_for(ready.wait(), timeout=2)
 
     cancelled_at = time.perf_counter()
     task.cancel()
@@ -1031,15 +1047,18 @@ async def test_c2_first_cancellation_defers_until_teardown_completes() -> None:
     assert time.perf_counter() - cancelled_at >= 0.2
 
 
+@pytest.mark.parametrize("prepare_delay", [0.0, 0.1])
 async def test_c2_cancellation_stays_primary_over_ordinary_cleanup_errors(
     caplog: pytest.LogCaptureFixture,
+    prepare_delay: float,
 ) -> None:
     caplog.set_level(logging.ERROR)
     strategy = _Strategy(cleanup_error=ValueError("cleanup boom"))
-    store = _Store()
+    store = _Store(prepare_delay=prepare_delay)
     processor = _processor(artifact_store=store)
-    task = asyncio.create_task(_context_body(processor, strategy))
-    await asyncio.sleep(0.05)
+    ready = asyncio.Event()
+    task = asyncio.create_task(_context_body(processor, strategy, ready))
+    await asyncio.wait_for(ready.wait(), timeout=2)
 
     task.cancel()
     await asyncio.wait([task], timeout=2)
@@ -1067,10 +1086,10 @@ async def test_c2_second_cancellation_force_aborts_and_skips_dependents(
             await asyncio.sleep(30)
 
     task = asyncio.create_task(streaming_body())
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(strategy.execution_started.wait(), timeout=2)
 
     task.cancel()
-    await asyncio.sleep(0.05)  # first delivery: strategy cleanup is now in progress
+    await asyncio.wait_for(strategy.cleanup_started.wait(), timeout=2)
     assert not task.done()
     second_at = time.perf_counter()
     task.cancel()
@@ -1091,7 +1110,7 @@ async def test_c2_shutdown_call_cancelled_once_finishes_then_reraises() -> None:
     await _run_one(processor, strategy)
 
     closing = asyncio.create_task(processor.shutdown())
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(strategy.cleanup_started.wait(), timeout=2)
     closing.cancel()
     await asyncio.wait([closing], timeout=2)
 
