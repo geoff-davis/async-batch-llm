@@ -1101,9 +1101,20 @@ async def test_c2_shutdown_call_cancelled_once_finishes_then_reraises() -> None:
 
 
 async def test_c2_cancelled_single_call_finishes_cleanup_and_stays_cancelled() -> None:
-    strategy = _Strategy(execute_delay=30, cleanup_delay=0.1)
+    execution_started = asyncio.Event()
+
+    class ExecutingStrategy(_Strategy):
+        async def execute(
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+        ) -> tuple[str, TokenUsage]:
+            execution_started.set()
+            return await super().execute(prompt, attempt, timeout, state)
+
+    strategy = ExecutingStrategy(execute_delay=30, cleanup_delay=0.1)
     task = asyncio.create_task(call_result(strategy, "prompt"))
-    await asyncio.sleep(0.05)
+    # Cancellation before preparation has no strategy resource to clean up.
+    # Wait for execution, rather than assuming startup fits within 50 ms.
+    await asyncio.wait_for(execution_started.wait(), timeout=2)
 
     task.cancel()
     await asyncio.wait([task], timeout=2)
