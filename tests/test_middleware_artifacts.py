@@ -16,6 +16,7 @@ from async_batch_llm import (
     ArtifactFormatError,
     ArtifactIOError,
     GuardrailConfig,
+    ItemDeadlineExceeded,
     JsonlArtifactStore,
     LLMCallStrategy,
     LLMWorkItem,
@@ -413,34 +414,54 @@ async def test_submission_without_warning_does_not_create_registry(surface, monk
     assert not hasattr(asyncio.base_events, "__warningregistry__")
 
 
-@pytest.mark.parametrize("phase", ["prepare", "append"])
+@pytest.mark.parametrize(
+    ("phase", "prepare_delay"), [("prepare", 0.0), ("append", 0.0), ("append", 0.1)]
+)
 @pytest.mark.parametrize("error_type", [ArtifactIOError, ArtifactFormatError])
 @pytest.mark.asyncio
-async def test_item_timeout_checkpoint_failure_still_propagates(store_factory, phase, error_type):
-    class HangingStrategy(Strategy):
+async def test_item_timeout_checkpoint_failure_still_propagates(
+    store_factory, phase, prepare_delay, error_type
+):
+    class DeadlineStrategy(Strategy):
         async def execute(self, *args, **kwargs):
-            await asyncio.Event().wait()
+            self.calls.append("deadline")
+            # This test checks checkpoint-error policy, not timer scheduling.
+            # Enter execution after real store preparation before timing out.
+            raise ItemDeadlineExceeded("test execution deadline")
 
     class HangingMiddleware(BaseMiddleware):
         async def before_process(self, item):
             await asyncio.Event().wait()
 
+    strategy = DeadlineStrategy()
     store = store_factory()
+    prepare = store.prepare_item
+
+    async def slow_prepare(item):
+        await asyncio.sleep(prepare_delay)
+        return await prepare(item)
 
     async def fail(*args):
+        if phase == "append":
+            assert strategy.calls == ["deadline"]
+            assert args[-1].error_category == "framework_total_item_timeout"
         raise error_type("timeout checkpoint failed")
 
     if phase == "prepare":
         store.prepare_item = fail
     else:
+        store.prepare_item = slow_prepare
         store.append = fail
     with pytest.raises(error_type, match="timeout checkpoint failed"):
         await run(
             store,
-            HangingStrategy(),
+            strategy,
             HangingMiddleware() if phase == "prepare" else [],
             config=ProcessorConfig(
-                max_workers=1, guardrails=GuardrailConfig(total_timeout_per_item=0.05)
+                max_workers=1,
+                guardrails=GuardrailConfig(
+                    total_timeout_per_item=0.05 if phase == "prepare" else None
+                ),
             ),
         )
 
