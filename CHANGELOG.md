@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Extract private quota-reservation and capacity-admission stages from the item
+  executor, preserving per-attempt accounting, retry hooks, and cleanup ordering.
+
 ## [0.24.1] - 2026-09-11
 
 ### Security
