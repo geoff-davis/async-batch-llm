@@ -457,3 +457,102 @@ async def test_token_usage_tracked_across_retries():
     assert result.succeeded == 1
     # Note: Failed attempt tokens are tracked separately
     assert result.results[0].token_usage.get("total_tokens", 0) > 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name,category,expected_delay",
+    [
+        ("ParseTimeoutError", "api_timeout", 0.01),
+        ("SparseIndexError", "unknown", 0.01),
+        ("UnusualOutput", "validation_error", 0),
+        ("UnusualOutput", "structured_output_validation_error", 0),
+    ],
+)
+async def test_retry_delay_uses_resolved_category(name, category, expected_delay, caplog):
+    from async_batch_llm import CallableStrategy, CallOutcome, call_result
+    from async_batch_llm.strategies import ErrorClassifier
+
+    class Classifier(ErrorClassifier):
+        def classify(self, exception):
+            return ErrorInfo(
+                is_retryable=True,
+                is_rate_limit=False,
+                is_timeout=category == "api_timeout",
+                error_category=category,
+            )
+
+    calls = 0
+
+    async def invoke(prompt, attempt, timeout, state):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise type(name, (Exception,), {})("temporary output")
+        return CallOutcome("ok")
+
+    result = await call_result(
+        CallableStrategy(invoke),
+        "x",
+        error_classifier=Classifier(),
+        config=ProcessorConfig(retry=RetryConfig(max_attempts=2, initial_wait=0.01, jitter=False)),
+    )
+    assert result.success
+    assert calls == 2
+    delay = result.timing.attempts[0].retry_backoff_seconds
+    assert (delay > 0) == (expected_delay > 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["batch", "stream", "single", "pool"])
+@pytest.mark.parametrize("error_kind", ["native", "custom", "content_filter", "incomplete_tool"])
+@pytest.mark.parametrize("terminal", [True, False])
+async def test_pydantic_ai_default_classifier_retry_delay(surface, error_kind, terminal):
+    from pydantic_ai.exceptions import (
+        ContentFilterError,
+        IncompleteToolCall,
+        UnexpectedModelBehavior,
+    )
+
+    from async_batch_llm import LLMCallPool, call_result, process_prompts, process_stream
+
+    class ResultValidationError(Exception):
+        pass
+
+    native_validation = error_kind == "native"
+    exception_type = {
+        "native": UnexpectedModelBehavior,
+        "custom": ResultValidationError,
+        "content_filter": ContentFilterError,
+        "incomplete_tool": IncompleteToolCall,
+    }[error_kind]
+    calls = 0
+
+    def respond(prompt):
+        nonlocal calls
+        calls += 1
+        if terminal or calls == 1:
+            raise exception_type("Exceeded maximum retries for output validation")
+        return TestOutput(value="ok")
+
+    strategy = PydanticAIStrategy(MockAgent(response_factory=respond, latency=0))
+    assert strategy.recommended_error_classifier() is None
+    config = ProcessorConfig(retry=RetryConfig(max_attempts=2, initial_wait=0.02, jitter=False))
+    if surface == "batch":
+        result = (await process_prompts(strategy, ["x"], config=config)).results[0]
+    elif surface == "stream":
+        result = [r async for r in process_stream(strategy, ["x"], config=config)][0]
+    elif surface == "single":
+        result = await call_result(strategy, "x", config=config)
+    else:
+        async with LLMCallPool(strategy, config=config) as pool:
+            result = await pool.submit_result("x")
+    assert calls == 2
+    assert result.success is not terminal
+    attempts = result.timing.attempts
+    assert len(attempts) == 2
+    assert (attempts[0].retry_backoff_seconds == 0) is native_validation
+    expected_category = "validation_error" if native_validation else "unknown"
+    assert attempts[0].error_category == expected_category
+    if terminal:
+        assert result.error_category == expected_category

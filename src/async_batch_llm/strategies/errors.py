@@ -114,6 +114,12 @@ class MiddlewareContractError(ValueError):
     error_category = "middleware_contract_error"
 
 
+class QuotaScopeError(ValueError):
+    """A strategy quota scope could not be resolved safely before admission."""
+
+    error_category = "quota_scope_error"
+
+
 class TokenEstimationError(Exception):
     """Framework-owned, non-retryable token-estimation failure."""
 
@@ -364,7 +370,7 @@ class DefaultErrorClassifier(ErrorClassifier):
         """Classify common errors with conservative defaults."""
         error_str = str(exception).lower()
 
-        if isinstance(exception, MiddlewareContractError):
+        if isinstance(exception, (MiddlewareContractError, QuotaScopeError)):
             return ErrorInfo(
                 is_retryable=False,
                 is_rate_limit=False,
@@ -408,6 +414,22 @@ class DefaultErrorClassifier(ErrorClassifier):
                 is_timeout=False,
                 error_category="structured_output_validation_error",
             )
+
+        # PydanticAIStrategy uses this default classifier. Preserve immediate
+        # validation retries by the exact optional SDK type, never its name.
+        # ContentFilterError and IncompleteToolCall subclasses keep backoff.
+        try:
+            from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+            if type(exception) is UnexpectedModelBehavior:
+                return ErrorInfo(
+                    is_retryable=True,
+                    is_rate_limit=False,
+                    is_timeout=False,
+                    error_category="validation_error",
+                )
+        except ImportError:
+            pass
 
         # Detect rate limit errors from message patterns (works for simple Exception mocks)
         if self._matches_rate_limit(error_str):

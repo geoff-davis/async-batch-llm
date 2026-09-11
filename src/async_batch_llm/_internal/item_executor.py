@@ -44,6 +44,7 @@ from ..strategies import (
     FrameworkTimeoutError,
     ItemDeadlineExceeded,
     MiddlewareContractError,
+    QuotaScopeError,
     RateLimitRetriesExceeded,
     TokenEstimateExceedsLimit,
     TokenEstimationError,
@@ -160,7 +161,7 @@ def _classify_error(exception: Exception, classifier: ErrorClassifier) -> ErrorI
             is_timeout=False,
             error_category="artifact_preparation_error",
         )
-    elif isinstance(exception, (TokenEstimationError, MiddlewareContractError)):
+    elif isinstance(exception, (TokenEstimationError, MiddlewareContractError, QuotaScopeError)):
         error_info = ErrorInfo(
             is_retryable=False,
             is_rate_limit=False,
@@ -771,6 +772,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     BatchDeadlineExceeded,
                     BatchAbortedError,
                     MiddlewareContractError,
+                    QuotaScopeError,
                     ArtifactIdentityError,
                     ArtifactSerializationError,
                 ),
@@ -995,18 +997,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     attach_timing(e)
                     raise
 
-                # Validation errors retry immediately — the strategy adjusts on
-                # retry; other transient errors get exponential backoff keyed off
-                # the logical attempt number. (PydanticAI wraps validation errors
-                # in UnexpectedModelBehavior.)
-                error_msg_for_check = str(e)
-                is_validation_error = (
-                    "validation" in error_type.lower()
-                    or "parse" in error_type.lower()
-                    or "unexpectedmodelbehavior" in error_type.lower()
-                    or "result validation" in error_msg_for_check.lower()
-                    or error_info.error_category == "validation_error"
-                )
+                # Only resolved validation categories bypass transient backoff.
+                # Names and messages are not a reliable classification policy.
+                is_validation_error = error_info.error_category in {
+                    "validation_error",
+                    "structured_output_validation_error",
+                }
 
                 if is_validation_error:
                     wait_time = 0.0
@@ -1540,7 +1536,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 e.__dict__["_failed_token_usage"] = dict(known_provider_token_usage)
             # Notify strategy about the error before handling it
             # This allows strategy to adjust behavior for next retry (v0.3.0: now includes retry_state)
-            if strategy is not None and not isinstance(e, TokenEstimationError):
+            if strategy is not None and not isinstance(e, (TokenEstimationError, QuotaScopeError)):
 
                 async def on_error_with_usage(exception: Exception) -> None:
                     before = self._token_extractor._observe_failed_stamp(exception)
@@ -1591,8 +1587,6 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             effective_strategy = strategy or work_item.strategy
             if classifier is None:
                 classifier = self._classifier_resolver.resolve(effective_strategy)
-            if admission_state is None:
-                admission_state = self._admission_registry.resolve(effective_strategy)
             error_info = _classify_error(e, classifier)
             if item_runtime is not None:
                 item_runtime.current_attempt.error_category = error_info.error_category
@@ -1658,11 +1652,11 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
         strategy = work_item.strategy
         classifier = self._classifier_resolver.resolve(strategy)
-        admission_state = self._admission_registry.resolve(strategy)
         error_info = _classify_error(exception, classifier)
 
         # Check if it's a rate limit
         if error_info.is_rate_limit:
+            admission_state = self._admission_registry.resolve(strategy)
             # Update stats (thread-safe)
             async with self._stats_lock:
                 self._stats.rate_limit_count += 1
@@ -1703,7 +1697,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         # Try middleware error handlers
         middleware_result = (
             None
-            if isinstance(exception, TokenEstimationError)
+            if isinstance(exception, (TokenEstimationError, QuotaScopeError))
             else await self._run_middlewares_on_error(work_item, exception)
         )
         if middleware_result is not None:

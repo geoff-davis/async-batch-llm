@@ -55,6 +55,7 @@ from .strategies import (
     ErrorClassifier,
     ExponentialBackoffStrategy,
     ItemDeadlineExceeded,
+    QuotaScopeError,
     RateLimitStrategy,
 )
 from .token_extractor import TokenExtractor
@@ -752,6 +753,8 @@ class ParallelBatchProcessor(
                     # and format failures still terminate the batch below.
                     if artifact_prepared:
                         raise
+                    result = await self._executor.build_failure_result(work_item, exc, worker_id)
+                except QuotaScopeError as exc:
                     result = await self._executor.build_failure_result(work_item, exc, worker_id)
                 except (ItemDeadlineExceeded, BatchDeadlineExceeded, BatchAbortedError) as exc:
                     result = await self._executor.build_failure_result(work_item, exc, worker_id)

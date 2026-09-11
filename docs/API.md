@@ -528,7 +528,12 @@ takes precedence. The default returns `None`.
 `quota_scope` identifies strategies sharing RPM, TPM, and cooldown by object
 identity. It defaults to `concurrency_scope`, which identifies shared provider
 capacity. Override them independently when account quota and client capacity
-have different ownership.
+have different ownership. Explicit `None` uses strategy identity; unhashable
+objects are supported. A raising property fails closed with non-retryable
+`QuotaScopeError`, without copying the property exception message. Initial
+configuration raises this error directly (including `call_result` and pool
+construction); a middleware-selected strategy failure becomes a per-item
+`quota_scope_error` result. No provider request or quota debit follows it.
 
 #### `async def prepare() -> None`
 
@@ -956,9 +961,11 @@ and canonical SHA-256). The same API/schema fields participate in inferred
 JSONL/SQLite artifact identity, preventing Chat JSON-mode or different-schema
 results from being replayed as compatible strict outputs.
 
-DeepSeek currently documents Responses support only for
-`deepseek-v4-flash`. ABL detects other model ids locally and raises instead of
-silently weakening the guarantee. The explicit fallback is Chat Completions
+ABL validates the surface and schema locally and passes model IDs through to
+DeepSeek for validation. See the [provider Responses reference](https://api-docs.deepseek.com/api/create-response/)
+for available models. The `deepseek` extra requires OpenAI SDK 1.66.0 or newer;
+caller-supplied clients must expose callable `responses.create`. This does not
+add multimodal work-item support or an automatic surface fallback. The explicit fallback is Chat Completions
 with `json_mode=True` plus `pydantic_json_parser(...)`; it requests valid JSON
 but does not enforce the schema and therefore cannot safely repair malformed
 JSON inside the object. Provider/schema rejection is non-retryable under
@@ -1262,7 +1269,8 @@ class ErrorInfo:
   - `"framework_timeout"` - Framework timeout (exceeded `attempt_timeout`)
   - `"api_timeout"` - API-level timeout
   - `"rate_limit"` - Rate limit error
-  - `"validation_error"` - Pydantic validation error
+  - `"validation_error"` - Pydantic validation error or the exact PydanticAI
+    `UnexpectedModelBehavior` type with the default classifier
   - `"insufficient_balance"` - 402 Payment Required / balance exhausted (non-retryable)
   - `"client_error"` - 4xx client error
   - `"server_error"` - 5xx server error

@@ -191,16 +191,18 @@ async def test_same_scope_shares_rpm_while_different_scope_is_independent() -> N
 
 
 @pytest.mark.asyncio
-async def test_none_and_raising_quota_scope_fall_back_to_strategy_identity() -> None:
+async def test_none_quota_scope_falls_back_but_raising_scope_fails_closed() -> None:
     registry = _registry()
     none_scope = _Strategy(scope=None)
     broken_scope = _Strategy(raise_scope=True)
 
     none_state = registry.resolve(none_scope)
-    broken_state = registry.resolve(broken_scope)
+    from async_batch_llm import QuotaScopeError
+
+    with pytest.raises(QuotaScopeError, match="quota_scope"):
+        registry.resolve(broken_scope)
     assert none_state.scope is none_scope
-    assert broken_state.scope is broken_scope
-    assert none_state is not broken_state
+    assert registry.entry_count == 1
     await registry.shutdown()
 
 
@@ -884,3 +886,152 @@ def test_rpm_validation_rejects_nonpositive_nonfinite_and_non_numeric(value: obj
 
 def test_rpm_validation_accepts_positive_fractional_values() -> None:
     assert ProcessorConfig(max_requests_per_minute=0.25).max_requests_per_minute == 0.25
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["batch", "stream", "single", "pool"])
+async def test_raising_quota_scope_fails_closed_on_every_surface(surface, monkeypatch, caplog):
+    from async_batch_llm import process_prompts, process_stream
+
+    class Broken(_Strategy):
+        @property
+        def quota_scope(self):
+            raise RuntimeError("secret-provider-credential")
+
+        async def on_error(self, *args):
+            raise AssertionError("configuration failures must bypass recovery")
+
+    strategy = Broken()
+    registries = []
+    original = AdmissionRegistry.resolve
+
+    def resolve(registry, effective):
+        registries.append(registry)
+        return original(registry, effective)
+
+    monkeypatch.setattr(AdmissionRegistry, "resolve", resolve)
+    config = ProcessorConfig(max_requests_per_minute=60, retry=RetryConfig(max_attempts=3))
+    with pytest.raises(Exception, match="quota_scope") as caught:
+        if surface == "batch":
+            await process_prompts(strategy, ["x"], config=config)
+        elif surface == "stream":
+            [r async for r in process_stream(strategy, ["x"], config=config)]
+        elif surface == "single":
+            await call_result(strategy, "x", config=config)
+        else:
+            async with LLMCallPool(strategy, config=config) as pool:
+                await pool.submit_result("x")
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+    info = DefaultErrorClassifier().classify(caught.value)
+    assert not info.is_retryable
+    assert info.error_category == "quota_scope_error"
+    assert "quota_scope" in str(caught.value)
+    assert "secret-provider-credential" not in str(caught.value) + caplog.text
+    assert strategy.execute_calls == 0
+    assert len(registries) == 1
+    assert registries[0].entry_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("control", [asyncio.CancelledError, KeyboardInterrupt, SystemExit])
+async def test_quota_scope_preserves_control_exceptions(control):
+    class Interrupted(_Strategy):
+        @property
+        def quota_scope(self):
+            raise control()
+
+    registry = _registry()
+    with pytest.raises(control):
+        registry.resolve(Interrupted())
+    assert registry.entry_count == 0
+    await registry.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["batch", "stream"])
+@pytest.mark.parametrize("scope_kind", ["shared", "distinct", "unhashable", "none", "raising"])
+async def test_effective_quota_scope_matrix(surface, scope_kind, monkeypatch):
+    from async_batch_llm import process_prompts, process_stream
+
+    shared = [] if scope_kind == "unhashable" else object()
+    original_strategy = _Strategy(scope=shared)
+    effective = _Strategy(
+        scope=None if scope_kind == "none" else object() if scope_kind == "distinct" else shared,
+        raise_scope=scope_kind == "raising",
+    )
+    resolved = []
+    original_resolve = AdmissionRegistry.resolve
+
+    def resolve(registry, strategy):
+        state = original_resolve(registry, strategy)
+        resolved.append((strategy, state))
+        return state
+
+    class Replace(BaseMiddleware):
+        async def before_process(self, item):
+            item.strategy = effective
+            return item
+
+    monkeypatch.setattr(AdmissionRegistry, "resolve", resolve)
+    kwargs = {"config": ProcessorConfig(max_requests_per_minute=60), "middlewares": [Replace()]}
+    if surface == "batch":
+        result = (await process_prompts(original_strategy, ["x"], **kwargs)).results[0]
+    else:
+        result = [r async for r in process_stream(original_strategy, ["x"], **kwargs)][0]
+    assert original_strategy.execute_calls == 0
+    if scope_kind == "raising":
+        assert not result.success
+        assert result.error_category == "quota_scope_error"
+        assert result.exception is not None
+        assert result.exception.__context__ is None
+        assert result.exception.__cause__ is None
+        assert effective.execute_calls == 0
+        assert not any(strategy is effective for strategy, _ in resolved)
+    else:
+        assert result.success
+        assert effective.execute_calls == 1
+        state = next(state for strategy, state in resolved if strategy is effective)
+        assert state.scope is (effective if scope_kind == "none" else effective.quota_scope)
+        initial = [state for strategy, state in resolved if strategy is original_strategy]
+        if initial:
+            assert (state is initial[0]) == (scope_kind in {"shared", "unhashable"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["single", "pool"])
+@pytest.mark.parametrize("scope_kind", ["shared", "distinct", "unhashable", "none"])
+async def test_queue_less_quota_scope_identity_controls(surface, scope_kind, monkeypatch):
+    shared = [] if scope_kind == "unhashable" else object()
+    strategies = [
+        _Strategy(scope=shared),
+        _Strategy(
+            scope=None if scope_kind == "none" else object() if scope_kind == "distinct" else shared
+        ),
+    ]
+    observations = []
+    original = AdmissionRegistry.resolve
+
+    def resolve(registry, strategy):
+        state = original(registry, strategy)
+        observations.append((registry, strategy, state))
+        return state
+
+    monkeypatch.setattr(AdmissionRegistry, "resolve", resolve)
+    for strategy in strategies:
+        config = ProcessorConfig(max_requests_per_minute=60)
+        if surface == "single":
+            result = await call_result(strategy, "x", config=config)
+        else:
+            async with LLMCallPool(strategy, config=config) as pool:
+                result = await pool.submit_result("x")
+        assert result.success
+        assert strategy.execute_calls == 1
+        states = [state for _, owner, state in observations if owner is strategy]
+        assert states
+        assert all(state is states[0] for state in states)
+        assert states[0].scope is (
+            strategy if strategy.quota_scope is None else strategy.quota_scope
+        )
+    # Separate convenience calls/pools own separate registries, even with a shared scope.
+    assert observations[0][0] is not observations[-1][0]

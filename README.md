@@ -21,6 +21,9 @@ better suited to a provider's native batch API.
 [Examples](https://github.com/geoff-davis/async-batch-llm/tree/main/examples) ·
 [Changelog](https://github.com/geoff-davis/async-batch-llm/blob/main/CHANGELOG.md)
 
+Upgrading from v0.23? Read the [v0.24 migration guide](https://geoff-davis.github.io/async-batch-llm/migration/v0.24/)
+for changed cleanup ownership, cancellation, and stream failure behavior.
+
 ## Quick start
 
 Install the OpenAI and terminal-progress extras, then set `OPENAI_API_KEY`:

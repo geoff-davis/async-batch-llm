@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fail closed with non-retryable `QuotaScopeError` when a strategy's
+  `quota_scope` property raises. Explicit `None` still uses strategy identity;
+  valid shared and unhashable scope objects retain identity-based sharing.
+  Redacted errors do not retain the property failure in their exception chain.
+- Select immediate validation retries by resolved error category, including
+  structured-output validation and PydanticAI `UnexpectedModelBehavior` through
+  its exact optional exception type with the default classifier. Arbitrary
+  exception names and the `ContentFilterError`/`IncompleteToolCall` subclasses
+  retain ordinary classification and backoff. Native `UnexpectedModelBehavior`
+  failures under the default classifier now use `validation_error` instead
+  of `unknown` in result/attempt categories and configured
+  `abort_on_error_categories` matching.
+- Accept explicitly selected DeepSeek Responses model IDs for provider validation
+  and check caller-supplied `responses.create` capability before requests.
+  Require OpenAI SDK 1.66.0 for the `deepseek`, `all`, and `dev` extras, preserve
+  newer request fields through `extra_body`, and read cache telemetry retained
+  as mappings by early Responses SDKs. Other provider floors are unchanged.
+
 - Preserve unknown versus known-zero provider usage in exception extraction and
   TPM reconciliation. Normalize mapping and object reports, reject invalid
   counters, and write derived totals consistently into results, events, live

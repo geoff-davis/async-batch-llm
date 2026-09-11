@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..llm_strategies import LLMCallStrategy
-from ..strategies import RateLimitStrategy, TokenEstimateExceedsLimit
+from ..strategies import QuotaScopeError, RateLimitStrategy, TokenEstimateExceedsLimit
 from ..token_estimation import TokenEstimate
 from .cleanup import (
     CleanupStep,
@@ -567,8 +567,15 @@ class AdmissionRegistry:
         try:
             scope = strategy.quota_scope
         except Exception:
-            scope = strategy
-        return strategy if scope is None else scope
+            # Leave the handler before raising so the original exception,
+            # which may contain credentials, is not retained as __context__.
+            pass
+        else:
+            return strategy if scope is None else scope
+        raise QuotaScopeError(
+            "Unable to resolve strategy.quota_scope. Return a stable shared object "
+            "or None for strategy-local quota admission."
+        )
 
     def resolve(self, strategy: LLMCallStrategy) -> ScopeAdmissionState:
         if self._closed:

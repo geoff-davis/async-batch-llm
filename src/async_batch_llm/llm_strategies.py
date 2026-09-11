@@ -301,7 +301,9 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
         The default follows :attr:`concurrency_scope` for backward-compatible
         ownership. Override it when one provider/account quota spans multiple
         clients or when one shared client serves independent quota budgets.
-        Object identity, not equality, defines sharing.
+        Object identity, not equality, defines sharing. Explicit None falls back
+        to strategy identity. An ordinary property failure raises QuotaScopeError
+        before admission; cancellation and process-control exceptions propagate.
         """
         return self.concurrency_scope
 

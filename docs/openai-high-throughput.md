@@ -78,9 +78,11 @@ Metadata and inferred artifact identity record the Responses surface plus a
 canonical schema hash, so a frozen Chat JSON-mode result or a result from a
 different schema cannot be reused accidentally.
 
-DeepSeek currently supports this Responses surface only for
-`deepseek-v4-flash`; ABL fails locally for another model rather than silently
-falling back. If schema enforcement is unavailable, choose Chat Completions
+ABL validates the surface and schema locally and passes model IDs through to
+DeepSeek for validation. See the [provider Responses reference](https://api-docs.deepseek.com/api/create-response/)
+for available models. The `deepseek` extra requires OpenAI SDK 1.66.0 or newer;
+caller-supplied clients must expose callable `responses.create`. This does not
+add multimodal work-item support or an automatic surface fallback. If schema enforcement is unavailable, choose Chat Completions
 explicitly with `json_mode=True` and `pydantic_json_parser(...)`. That fallback
 validates locally but cannot guarantee or repair malformed provider JSON.
 
