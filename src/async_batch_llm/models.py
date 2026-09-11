@@ -1602,8 +1602,8 @@ class DeepSeekModel(OpenAICompatibleModel):
     Pydantic model class or JSON Schema mapping as ``response_schema``. The
     schema is sent through ``text.format.type="json_schema"`` and
     :class:`DeepSeekStrategy` parses successful output automatically. DeepSeek
-    currently exposes Responses only for ``deepseek-v4-flash``; unsupported
-    models fail locally instead of silently falling back to weaker JSON mode.
+    validates the requested surface and schema locally; model IDs are passed
+    through for provider validation without an implicit surface fallback.
 
     Example:
         >>> model = DeepSeekModel.from_api_key(
@@ -1618,7 +1618,6 @@ class DeepSeekModel(OpenAICompatibleModel):
     _default_base_url: str | None = "https://api.deepseek.com"
     _install_extras: str = "deepseek"
     _api_key_env_var: str | None = "DEEPSEEK_API_KEY"
-    _responses_models = frozenset({"deepseek-v4-flash"})
 
     def __init__(
         self,
@@ -1648,12 +1647,16 @@ class DeepSeekModel(OpenAICompatibleModel):
             )
         if response_schema is not None and json_mode:
             raise ValueError("Pass response_schema or json_mode=True, not both.")
-        if api_surface == "responses" and model not in self._responses_models:
-            raise ValueError(
-                "DeepSeek Responses API currently supports only 'deepseek-v4-flash' "
-                f"(got {model!r}). Use Chat Completions without response_schema as the "
-                "explicit fallback."
-            )
+        if api_surface == "responses":
+            try:
+                create_response = getattr(getattr(client, "responses", None), "create", None)
+            except Exception:
+                create_response = None
+            if not callable(create_response):
+                raise ValueError(
+                    "DeepSeek Responses requires a client with callable responses.create. "
+                    "Install async-batch-llm[deepseek] or supply a Responses-capable client."
+                ) from None
 
         self.api_surface = api_surface
         self.response_schema: dict[str, Any] | None = None
@@ -1850,15 +1853,15 @@ class DeepSeekModel(OpenAICompatibleModel):
             call_kwargs["instructions"] = si
         if temperature is not None:
             call_kwargs["temperature"] = temperature
+        # Keep SDK keywords compatible with OpenAI 1.66.0; newer/provider
+        # fields (including max_tool_calls and top_logprobs) use extra_body.
         response_parameters = {
             "max_output_tokens",
-            "max_tool_calls",
             "parallel_tool_calls",
             "reasoning",
             "text",
             "tool_choice",
             "tools",
-            "top_logprobs",
             "top_p",
             "user",
         }
@@ -1949,7 +1952,13 @@ class DeepSeekModel(OpenAICompatibleModel):
         output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
         total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
         details = getattr(usage, "input_tokens_details", None)
-        cached_tokens = int(getattr(details, "cached_tokens", 0) or 0) if details else 0
+        # Early Responses SDKs retain this newer field as an untyped mapping.
+        cached = (
+            details.get("cached_tokens", 0)
+            if isinstance(details, Mapping)
+            else getattr(details, "cached_tokens", 0)
+        )
+        cached_tokens = int(cached or 0)
         return input_tokens, output_tokens, total_tokens, cached_tokens
 
     def _responses_metadata(self, response: Any) -> dict[str, Any] | None:

@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fail closed with non-retryable `QuotaScopeError` when a strategy's
+  `quota_scope` property raises. Explicit `None` still uses strategy identity;
+  valid shared and unhashable scope objects retain identity-based sharing.
+  Redacted errors do not retain the property failure in their exception chain.
+- Select immediate validation retries by resolved error category, including
+  structured-output validation and PydanticAI `UnexpectedModelBehavior` through
+  its exact optional exception type with the default classifier. Arbitrary
+  exception names and the `ContentFilterError`/`IncompleteToolCall` subclasses
+  retain ordinary classification and backoff. Native `UnexpectedModelBehavior`
+  failures under the default classifier now use `validation_error` instead
+  of `unknown` in result/attempt categories and configured
+  `abort_on_error_categories` matching.
+- Accept explicitly selected DeepSeek Responses model IDs for provider validation
+  and check caller-supplied `responses.create` capability before requests.
+  Require OpenAI SDK 1.66.0 for the `deepseek`, `all`, and `dev` extras, preserve
+  newer request fields through `extra_body`, and read cache telemetry retained
+  as mappings by early Responses SDKs. Other provider floors are unchanged.
+
+- Preserve unknown versus known-zero provider usage in exception extraction and
+  TPM reconciliation. Normalize mapping and object reports, reject invalid
+  counters, and write derived totals consistently into results, events, live
+  statistics, and new JSONL/SQLite checkpoints. Cached-only reports do not imply
+  zero overall usage; valid explicit totals remain authoritative.
+- Observe failed-attempt usage once through synchronous processor extraction
+  overrides, and preserve recoverable provider usage when cancellation, timeout,
+  item/batch deadlines, or abort replace the provider error. Retry totals include
+  each observed attempt once; historical replay remains excluded from live usage.
+- Preserve valid component counts when a provider exception's optional total is
+  `None`, and fall back to alternate cache counters when the primary cache
+  counter is `None`. Successful strategy mappings retain strict validation.
+- Preserve valid usage stamps added or updated by `strategy.on_error` in result
+  totals, including across retries and hook failures. These later reports do not
+  revise quota reconciliation already completed before the hook, so reported item
+  usage can differ from the estimate retained by admission.
+
 ## [0.24.0] - 2026-09-09
 
 ### Changed

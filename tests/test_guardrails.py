@@ -606,3 +606,38 @@ async def test_stream_can_be_closed_externally_without_guardrail_misclassificati
         await task
     with contextlib.suppress(Exception):
         await stream.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_name", ["UnexpectedModelBehavior", "ContentFilterError", "IncompleteToolCall"]
+)
+async def test_pydantic_ai_validation_category_only_aborts_for_exact_type(error_name):
+    from pydantic_ai import exceptions
+
+    from async_batch_llm import PydanticAIStrategy
+    from async_batch_llm.testing import MockAgent
+
+    calls = []
+
+    def respond(prompt):
+        calls.append(prompt)
+        if prompt == "trigger":
+            raise getattr(exceptions, error_name)("Model output rejected")
+        return "ok"
+
+    result = await process_prompts(
+        PydanticAIStrategy(MockAgent(response_factory=respond, latency=0)),
+        [("trigger", "trigger"), ("later", "later")],
+        config=ProcessorConfig(
+            max_workers=1,
+            retry=RetryConfig(max_attempts=1),
+            guardrails=GuardrailConfig(abort_on_error_categories=frozenset({"validation_error"})),
+        ),
+        preserve_order=True,
+    )
+    native = error_name == "UnexpectedModelBehavior"
+    assert result.results[0].error_category == ("validation_error" if native else "unknown")
+    assert (result.termination.kind == "fail_fast") is native
+    assert calls == (["trigger"] if native else ["trigger", "later"])
+    assert result.results[1].success is not native

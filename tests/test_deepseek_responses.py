@@ -242,14 +242,6 @@ def test_artifact_identity_distinguishes_surface_and_schema() -> None:
 
 
 def test_responses_capability_fails_closed_without_schema_fallback() -> None:
-    with pytest.raises(ValueError, match="currently supports only 'deepseek-v4-flash'"):
-        DeepSeekModel(
-            "deepseek-v4-pro",
-            MagicMock(),
-            api_surface="responses",
-            response_schema=Verdict,
-        )
-
     with pytest.raises(ValueError, match="requires api_surface='responses'"):
         DeepSeekModel("deepseek-v4-flash", MagicMock(), response_schema=Verdict)
 
@@ -268,3 +260,122 @@ def test_from_api_key_forwards_responses_configuration_to_model() -> None:
     assert model.response_schema == Verdict.model_json_schema()
     assert model._default_extra_body is not None
     assert model._default_extra_body["reasoning"] == {"effort": "none"}
+
+
+@pytest.mark.parametrize("model_id", ["deepseek-flash", "deepseek-v4-pro", "future-model"])
+@pytest.mark.asyncio
+async def test_explicit_responses_leaves_model_validation_to_provider(model_id):
+    client = _client(_response("ok"))
+    model = DeepSeekModel(model_id, client, api_surface="responses")
+    result = await model.generate("text only")
+    assert result.text == "ok"
+    assert client.responses.create.call_args.kwargs["model"] == model_id
+
+
+@pytest.mark.parametrize(
+    "client",
+    [
+        SimpleNamespace(),
+        SimpleNamespace(responses=None),
+        SimpleNamespace(responses=SimpleNamespace(create=None)),
+    ],
+)
+def test_responses_requires_callable_client_capability(client):
+    with pytest.raises(ValueError, match=r"responses\.create"):
+        DeepSeekModel("deepseek-v4-flash", client, api_surface="responses")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_id", ["deepseek-v4-flash", "deepseek-v4-pro"])
+async def test_real_sdk_responses_request_roundtrip_without_network(model_id):
+    import json
+
+    import httpx
+    from openai import AsyncOpenAI
+
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_mock",
+                "object": "response",
+                "created_at": 1,
+                "model": "deepseek-v4-pro",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "id": "msg_mock",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": '{"valid":true,"reason":"ok"}',
+                                "annotations": [],
+                            }
+                        ],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 20,
+                    "output_tokens": 8,
+                    "total_tokens": 28,
+                    "input_tokens_details": {"cached_tokens": 5},
+                },
+            },
+        )
+
+    async with AsyncOpenAI(
+        api_key="offline-test",
+        base_url="https://offline.invalid/v1",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+    ) as client:
+        model = DeepSeekModel(
+            model_id,
+            client,
+            api_surface="responses",
+            response_schema=Verdict,
+            thinking=False,
+            system_instruction="Return a verdict",
+            extra_headers={"X-Probe": "yes"},
+        )
+        output, usage, _ = await DeepSeekStrategy(
+            model,
+            generation_config={
+                "max_tokens": 256,
+                "max_tool_calls": 2,
+                "top_logprobs": 3,
+                "parallel_tool_calls": False,
+                "tools": [],
+                "tool_choice": "none",
+                "top_p": 0.9,
+                "user": "offline",
+                "provider_extension": True,
+            },
+        ).execute("text only", 1, 10.0)
+    assert output == Verdict(valid=True, reason="ok")
+    assert usage["total_tokens"] == 28
+    assert usage["cached_input_tokens"] == 5
+    assert len(requests) == 1
+    body = json.loads(requests[0].content)
+    assert body["model"] == model_id
+    assert body["max_output_tokens"] == 256
+    assert body["max_tool_calls"] == 2
+    assert body["top_logprobs"] == 3
+    assert body["provider_extension"] is True
+    assert body["reasoning"] == {"effort": "none"}
+    assert body["text"]["format"]["schema"] == Verdict.model_json_schema()
+    assert requests[0].headers["X-Probe"] == "yes"
+
+
+@pytest.mark.asyncio
+async def test_responses_cache_details_preserved_as_mapping_by_early_sdk():
+    response = _response("ok")
+    response.usage.input_tokens_details = {"cached_tokens": 5}
+    model = DeepSeekModel("deepseek-v4-flash", _client(response), api_surface="responses")
+    result = await model.generate("text only")
+    assert result.cached_input_tokens == 5

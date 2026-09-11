@@ -110,7 +110,10 @@ def test_release_version_and_tag_workflow_agree() -> None:
     workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
     assert re.search(r'^version = "0\.24\.0"$', pyproject, re.MULTILINE)
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert "## [Unreleased]\n\n## [0.24.0] - 2026-09-09" in changelog
+    # Unreleased notes may accumulate between releases; validate heading order
+    # without requiring that section to stay empty.
+    headings = re.findall(r"^## \[.*$", changelog, re.MULTILINE)
+    assert headings[:2] == ["## [Unreleased]", "## [0.24.0] - 2026-09-09"]
     assert '"v${PKG_VERSION}" != "${GITHUB_REF_NAME}"' in workflow
 
 

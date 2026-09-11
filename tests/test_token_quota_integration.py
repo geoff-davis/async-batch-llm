@@ -6,6 +6,7 @@ import asyncio
 import threading
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -17,6 +18,8 @@ from async_batch_llm import (
     BaseMiddleware,
     BaseObserver,
     BatchResult,
+    CallableStrategy,
+    CallOutcome,
     GuardrailConfig,
     JsonlArtifactStore,
     LLMCallPool,
@@ -32,6 +35,7 @@ from async_batch_llm import (
     ResumePolicy,
     RetryConfig,
     RetryState,
+    SqliteArtifactStore,
     TokenEstimate,
     TokenEstimationError,
     TokenUsage,
@@ -42,6 +46,411 @@ from async_batch_llm import (
     process_stream,
 )
 from async_batch_llm._internal.executor_host import ExecutorHost
+
+
+@pytest.mark.parametrize("shape", [dict, SimpleNamespace])
+@pytest.mark.parametrize(
+    "names", [("input_tokens", "output_tokens"), ("request_tokens", "response_tokens")]
+)
+async def test_optional_total_reconciles_failed_provider_usage(shape, names):
+    failure = ValueError("provider failed")
+    failure.usage = shape(**{names[0]: 7, names[1]: 3, "total_tokens": None})
+    strategy = _SequenceStrategy([failure], estimate=TokenEstimate(20))
+    result = await call_result(strategy, "x", config=_config(retry=RetryConfig(max_attempts=1)))
+    assert not result.success
+    assert result.token_usage["total_tokens"] == 10
+    assert result.timing.attempts[0].reported_tokens == 10
+    assert result.timing.attempts[0].reconciliation_delta_tokens == -10
+
+
+@pytest.mark.parametrize("surface", ["single", "batch"])
+@pytest.mark.parametrize("ending", ["terminal", "retry_success", "retry_failure"])
+@pytest.mark.parametrize("initial_stamp", [False, True])
+async def test_on_error_usage_is_retained_without_reconciling_again(surface, ending, initial_stamp):
+    reads = []
+
+    class Failure(ConnectionError):
+        def usage(self):
+            reads.append(1)
+            return {}
+
+    first = Failure("provider failed")
+    second = Failure("provider failed again")
+    if initial_stamp:
+        for failure in (first, second):
+            failure._failed_token_usage = {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4}
+
+    class LateUsage(_SequenceStrategy):
+        async def on_error(self, exception, attempt, state=None):
+            self.on_error_calls += 1
+            if initial_stamp:
+                exception._failed_token_usage.update(
+                    input_tokens=7, output_tokens=3, total_tokens=None
+                )
+            else:
+                exception._failed_token_usage = {
+                    "input_tokens": 7,
+                    "output_tokens": 3,
+                    "total_tokens": 10,
+                }
+
+    outcomes = [first]
+    if ending != "terminal":
+        outcomes.append({"total_tokens": 15} if ending == "retry_success" else second)
+    strategy = LateUsage(outcomes, estimate=TokenEstimate(20))
+    config = _config(
+        retry=RetryConfig(max_attempts=len(outcomes), initial_wait=0.001, jitter=False)
+    )
+    if surface == "single":
+        result = await call_result(strategy, "x", config=config)
+    else:
+        result = (await process_prompts(strategy, ["x"], config=config)).results[0]
+    expected = {"terminal": 10, "retry_success": 25, "retry_failure": 20}[ending]
+    assert result.token_usage["total_tokens"] == expected
+    assert result.success is (ending == "retry_success")
+    failed_attempts = 2 if ending == "retry_failure" else 1
+    assert strategy.on_error_calls == failed_attempts
+    assert len(reads) == (0 if initial_stamp else failed_attempts)
+    reported = [4 if initial_stamp else None] * failed_attempts
+    if ending == "retry_success":
+        reported.append(15)
+    assert [attempt.reported_tokens for attempt in result.timing.attempts] == reported
+    assert [attempt.reconciliation_delta_tokens for attempt in result.timing.attempts] == [
+        None if tokens is None else tokens - 20 for tokens in reported
+    ]
+
+
+@pytest.mark.parametrize(
+    "hook_outcome",
+    ["return", "raise", "attempt_timeout", "deadline", "abort", "batch_deadline", "cancel"],
+)
+async def test_late_usage_survives_hook_failure_and_guardrails(hook_outcome):
+    from async_batch_llm._internal.guardrails import AbortCause, AbortController
+
+    entered = asyncio.Event()
+
+    class LateUsage(_SequenceStrategy):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            if hook_outcome == "attempt_timeout":
+                await asyncio.Event().wait()
+            return await super().execute(prompt, attempt, timeout, state)
+
+        async def on_error(self, exception, attempt, state=None):
+            exception._failed_token_usage = {"total_tokens": 10}
+            entered.set()
+            if hook_outcome == "raise":
+                raise RuntimeError("hook failure")
+            if hook_outcome not in {"return", "raise", "attempt_timeout"}:
+                await asyncio.Event().wait()
+
+    strategy = LateUsage([ValueError("original provider error")], estimate=TokenEstimate(20))
+    host = ExecutorHost(
+        _config(
+            retry=RetryConfig(max_attempts=1),
+            attempt_timeout=0.05 if hook_outcome == "attempt_timeout" else 10,
+            guardrails=GuardrailConfig(
+                total_timeout_per_item=0.05 if hook_outcome == "deadline" else None
+            ),
+        ),
+        strategy=strategy,
+    )
+    abort = AbortController(AbortMode.CANCEL_ACTIVE)
+    host._abort_controller = abort
+    task = asyncio.create_task(
+        host.executor.execute(LLMWorkItem(item_id="x", strategy=strategy, prompt="x"))
+    )
+    try:
+        await entered.wait()
+        if hook_outcome in {"abort", "batch_deadline"}:
+            await abort.trip(
+                AbortCause(
+                    kind="fail_fast" if hook_outcome == "abort" else "batch_timeout",
+                    reason="stop hook",
+                )
+            )
+        if hook_outcome == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            result = await task
+            assert not result.success
+            assert result.token_usage["total_tokens"] == 10
+            if hook_outcome in {"return", "raise"}:
+                assert "original provider error" in result.error
+        assert host._stats.unknown_usage_attempts == 1
+        assert host._stats.reported_reconciliation_tokens == 0
+        assert host._stats.refunded_tokens == 0
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await host.aclose()
+
+
+@pytest.mark.parametrize(
+    "stamp", [{}, {"total_tokens": -1}, {"total_tokens": None}, {"total_tokens": 0}]
+)
+async def test_invalid_late_stamp_does_not_erase_usage_but_explicit_zero_does(stamp):
+    failure = ValueError("provider failed")
+    failure.usage = {"total_tokens": 10}
+
+    class LateUsage(_SequenceStrategy):
+        async def on_error(self, exception, attempt, state=None):
+            exception._failed_token_usage = stamp
+
+    strategy = LateUsage([failure], estimate=TokenEstimate(20))
+    result = await call_result(strategy, "x", config=_config(retry=RetryConfig(max_attempts=1)))
+    assert result.token_usage["total_tokens"] == (0 if stamp == {"total_tokens": 0} else 10)
+    assert result.timing.attempts[0].reported_tokens == 10
+    assert result.timing.attempts[0].reconciliation_delta_tokens == -10
+
+
+@pytest.mark.parametrize("usage", [{}, {"total_tokens": None}, {"cached_input_tokens": 40}])
+async def test_unknown_exception_usage_retains_started_reservation(usage):
+    failure = ValueError("provider failed after starting")
+    failure.usage = usage
+    strategy = _SequenceStrategy([failure], estimate=TokenEstimate(10))
+    host = ExecutorHost(_config(retry=RetryConfig(max_attempts=1)), strategy=strategy)
+    gate = host._admission_registry.resolve(strategy).quota_gate
+    try:
+        result = await host.executor.execute(
+            LLMWorkItem(item_id="x", strategy=strategy, prompt="x")
+        )
+        assert not result.success and strategy.calls == 1
+        assert result.timing.attempts[0].reported_tokens is None
+        assert result.timing.attempts[0].reconciliation_delta_tokens is None
+        assert host._stats.unknown_usage_attempts == 1
+        assert host._stats.refunded_tokens == 0
+        assert gate.token_available < 995  # estimate retained; no full refund
+    finally:
+        await host.aclose()
+
+
+@pytest.mark.parametrize(
+    ("usage", "reported"),
+    [
+        ({"input_tokens": 7, "output_tokens": 3}, 10),
+        ({"input_tokens": 7, "output_tokens": 3, "total_tokens": 12}, 12),
+        ({"total_tokens": 0}, 0),
+        ({}, None),
+        ({"cached_input_tokens": 40}, None),
+    ],
+)
+@pytest.mark.parametrize("surface", ["batch", "stream", "single", "pool"])
+@pytest.mark.parametrize("callable_strategy", [False, True])
+async def test_derived_usage_agrees_across_execution_surfaces(
+    surface, callable_strategy, usage, reported
+):
+    original = dict(usage)
+
+    async def callback(prompt, attempt, timeout, state):
+        return CallOutcome(prompt, token_usage=usage)
+
+    strategy = CallableStrategy(callback) if callable_strategy else _SequenceStrategy([usage])
+    config = _config(token_estimator=lambda prompt, **kw: TokenEstimate(20))
+    if surface == "batch":
+        result = (await process_prompts(strategy, ["x"], config=config)).results[0]
+    elif surface == "stream":
+        result = [r async for r in process_stream(strategy, ["x"], config=config)][0]
+    elif surface == "single":
+        result = await call_result(strategy, "x", config=config)
+    else:
+        async with LLMCallPool(strategy, config=config) as pool:
+            result = await pool.submit_result("x")
+    assert result.success
+    assert result.token_usage.get("total_tokens", 0) == (reported or 0)
+    assert result.timing.attempts[0].reported_tokens == reported
+    assert usage == original
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+@pytest.mark.parametrize("terminal_failure", [False, True])
+@pytest.mark.parametrize("late_usage", [False, True])
+async def test_retry_usage_is_canonical_in_stats_artifacts_and_replay(
+    tmp_path, store_type, terminal_failure, late_usage
+):
+    first_failure = ConnectionError("retry")
+    first_usage = {"input_tokens": 7, "output_tokens": 3}
+    first_failure.usage = {} if late_usage else first_usage
+    second_usage = {"input_tokens": 10, "output_tokens": 5}
+    second_failure = ValueError("terminal")
+    second_failure.usage = {} if late_usage else second_usage
+
+    class Strategy(_SequenceStrategy):
+        async def on_error(self, exception, attempt, state=None):
+            if late_usage:
+                exception._failed_token_usage = (
+                    first_usage if exception is first_failure else second_usage
+                )
+
+    strategy = Strategy(
+        [first_failure, second_failure if terminal_failure else second_usage],
+        estimate=TokenEstimate(20),
+    )
+    path = tmp_path / "usage-history"
+    identity = ArtifactIdentity(provider="test", model="canonical")
+    recorder = _Recorder()
+    processor = ParallelBatchProcessor(
+        config=_config(), observers=[recorder], artifact_store=store_type(path, identity=identity)
+    )
+    try:
+        await processor.add_work(LLMWorkItem(item_id="x", strategy=strategy, prompt="x"))
+        batch = await processor.process_all()
+        stats = await processor.get_stats()
+    finally:
+        await processor.cleanup()
+    result = batch.results[0]
+    assert result.success is not terminal_failure
+    assert result.token_usage["total_tokens"] == 25
+    quota_reports = [None, None if terminal_failure else 15] if late_usage else [10, 15]
+    assert [a.reported_tokens for a in result.timing.attempts] == quota_reports
+    assert stats["total_tokens"] == 25
+    assert stats["reported_reconciliation_tokens"] == sum(tokens or 0 for tokens in quota_reports)
+    reconciled = [d for e, d in recorder.events if e is ProcessingEvent.QUOTA_RECONCILED]
+    assert [d["reported_tokens"] for d in reconciled] == quota_reports
+    completed = [d for e, d in recorder.events if e is ProcessingEvent.ITEM_COMPLETED]
+    if not terminal_failure:
+        assert completed[0]["tokens"] == 15
+    reader = store_type(path)
+    try:
+        records = [record async for record in reader.iter_results()]
+    finally:
+        await reader.close()
+    assert records[0].token_usage == result.token_usage
+    replay_strategy = _SequenceStrategy([AssertionError("must not execute")])
+    replay_processor = ParallelBatchProcessor(
+        config=_config(),
+        artifact_store=store_type(path, identity=identity),
+        resume=ResumePolicy.REUSE_ALL,
+    )
+    try:
+        await replay_processor.add_work(
+            LLMWorkItem(item_id="x", strategy=replay_strategy, prompt="x")
+        )
+        replay = await replay_processor.process_all()
+        replay_stats = await replay_processor.get_stats()
+    finally:
+        await replay_processor.cleanup()
+    assert replay.results[0].replayed_from_artifact
+    assert replay.results[0].token_usage == result.token_usage
+    assert replay_strategy.calls == 0
+    assert replay_stats["total_tokens"] == replay_stats["reported_reconciliation_tokens"] == 0
+
+
+async def test_usage_accessor_and_processor_override_are_observed_once_per_attempt():
+    calls = []
+
+    class Failure(ConnectionError):
+        def usage(self):
+            calls.append("usage")
+            return {"input_tokens": 7, "output_tokens": 3}
+
+    class Processor(ParallelBatchProcessor):
+        def _extract_token_usage(self, error):
+            calls.append("override")
+            return super()._extract_token_usage(error)
+
+    strategy = _SequenceStrategy(
+        [Failure("retry"), {"total_tokens": 15}], estimate=TokenEstimate(20)
+    )
+    async with Processor(config=_config()) as processor:
+        await processor.add_work(LLMWorkItem(item_id="x", strategy=strategy, prompt="x"))
+        result = (await processor.process_all()).results[0]
+    assert result.token_usage["total_tokens"] == 25
+    assert calls == ["usage", "override"]
+
+
+@pytest.mark.parametrize(
+    "override", [{}, {"input_tokens": 7, "output_tokens": 3}, {"cached_input_tokens": 40}]
+)
+async def test_processor_usage_override_preserves_knowledge_and_canonical_total(override):
+    class Processor(ParallelBatchProcessor):
+        def _extract_token_usage(self, error):
+            return override
+
+    strategy = _SequenceStrategy([ValueError("failure")], estimate=TokenEstimate(20))
+    async with Processor(config=_config(retry=RetryConfig(max_attempts=1))) as processor:
+        await processor.add_work(LLMWorkItem(item_id="x", strategy=strategy, prompt="x"))
+        result = (await processor.process_all()).results[0]
+    expected = 10 if "input_tokens" in override else None
+    assert result.timing.attempts[0].reported_tokens == expected
+    assert result.token_usage.get("total_tokens", 0) == (expected or 0)
+
+
+@pytest.mark.parametrize("stop", ["cancel", "timeout", "deadline", "abort", "batch_deadline"])
+@pytest.mark.parametrize(
+    "usage", [{}, {"total_tokens": 0}, {"input_tokens": 7, "output_tokens": 3}]
+)
+async def test_interrupted_provider_usage_is_reconciled_once(stop, usage):
+    started = asyncio.Event()
+
+    class Interrupted(_SequenceStrategy):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError as error:
+                error.usage = usage
+                raise
+
+    strategy = Interrupted([], estimate=TokenEstimate(20))
+    config = _config(
+        retry=RetryConfig(max_attempts=1),
+        attempt_timeout=0.05 if stop == "timeout" else 10,
+        guardrails=GuardrailConfig(total_timeout_per_item=0.05 if stop == "deadline" else None),
+    )
+    from async_batch_llm._internal.guardrails import AbortCause, AbortController
+
+    abort = AbortController(AbortMode.CANCEL_ACTIVE)
+    host = ExecutorHost(config, strategy=strategy)
+    host._abort_controller = abort
+    task = asyncio.create_task(
+        host.executor.execute(LLMWorkItem(item_id="x", strategy=strategy, prompt="x"))
+    )
+    try:
+        await started.wait()
+        if stop == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            if stop in {"abort", "batch_deadline"}:
+                await abort.trip(
+                    AbortCause(
+                        kind="fail_fast" if stop == "abort" else "batch_timeout",
+                        reason="test abort",
+                    )
+                )
+            result = await task
+            assert not result.success
+            assert result.token_usage.get("total_tokens", 0) == (
+                10 if "input_tokens" in usage else 0
+            )
+        expected = 10 if "input_tokens" in usage else (0 if "total_tokens" in usage else None)
+        assert host._stats.reported_reconciliation_tokens == (expected or 0)
+        assert host._stats.unknown_usage_attempts == (expected is None)
+        assert host._stats.refunded_tokens == (20 - expected if expected is not None else 0)
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await host.aclose()
+
+
+async def test_known_usage_on_rate_limit_and_transport_retries_is_counted_once():
+    rate = RuntimeError("rate limit exceeded")
+    rate.usage = {"input_tokens": 7, "output_tokens": 3}
+    transport = ConnectionError("temporary")
+    transport.usage = {"input_tokens": 10, "output_tokens": 5}
+    strategy = _SequenceStrategy(
+        [rate, transport, {"total_tokens": 20}], estimate=TokenEstimate(30)
+    )
+    result = await call_result(strategy, "x", config=_config())
+    assert result.success and strategy.calls == 3
+    assert [a.attempt for a in result.timing.attempts] == [1, 1, 2]
+    assert [a.reported_tokens for a in result.timing.attempts] == [10, 15, 20]
+    assert result.token_usage["total_tokens"] == 45
 
 
 class _SequenceStrategy(LLMCallStrategy[str]):

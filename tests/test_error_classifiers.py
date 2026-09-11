@@ -906,3 +906,19 @@ def test_gemini_generic_fallback_still_runs_without_genai_sdk(monkeypatch):
     bug_info = classifier.classify(ValueError("deterministic parse bug"))
     assert bug_info.is_retryable is False
     assert bug_info.error_category == "logic_error"
+
+
+def test_default_classifier_without_optional_pydantic_ai(monkeypatch):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def without_pydantic_ai(name, *args, **kwargs):
+        if name == "pydantic_ai.exceptions":
+            raise ImportError("optional pydantic-ai is not installed")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_pydantic_ai)
+    info = DefaultErrorClassifier().classify(ValueError("invalid argument"))
+    assert not info.is_retryable
+    assert info.error_category == "logic_error"

@@ -11,9 +11,12 @@ operations.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..base import AttemptTiming, RetryState
+
+if TYPE_CHECKING:
+    from ..token_extractor import TokenUsageObservation
 
 _RUNTIME_ATTRIBUTE = "_async_batch_llm_runtime_state"
 
@@ -29,6 +32,9 @@ class AttemptRuntimeState(AttemptTiming):
 
     attempt: int = 0
     try_number: int = 0
+    exception_usage: tuple[BaseException, TokenUsageObservation] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def snapshot(self, **overrides: Any) -> AttemptTiming:
         """Return a detached public timing record with selected final values."""

@@ -75,7 +75,7 @@ class ScaleSoakClassifier(ErrorClassifier):
                 is_retryable=True,
                 is_rate_limit=False,
                 is_timeout=False,
-                error_category="validation",
+                error_category="validation_error",
             )
         if isinstance(exception, FakePoisonError):
             return ErrorInfo(

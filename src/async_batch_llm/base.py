@@ -170,7 +170,8 @@ class TokenUsage(TypedDict, total=False):
     Fields:
         input_tokens: Number of tokens in the input/prompt
         output_tokens: Number of tokens in the output/completion
-        total_tokens: Total tokens used (input + output)
+        total_tokens: Provider-reported total, or input + output when omitted.
+            A valid explicit total is authoritative even when the components differ.
         cached_input_tokens: Number of input tokens served from cache (Gemini)
     """
 

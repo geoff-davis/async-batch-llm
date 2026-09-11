@@ -44,6 +44,7 @@ from ..strategies import (
     FrameworkTimeoutError,
     ItemDeadlineExceeded,
     MiddlewareContractError,
+    QuotaScopeError,
     RateLimitRetriesExceeded,
     TokenEstimateExceedsLimit,
     TokenEstimationError,
@@ -160,7 +161,7 @@ def _classify_error(exception: Exception, classifier: ErrorClassifier) -> ErrorI
             is_timeout=False,
             error_category="artifact_preparation_error",
         )
-    elif isinstance(exception, (TokenEstimationError, MiddlewareContractError)):
+    elif isinstance(exception, (TokenEstimationError, MiddlewareContractError, QuotaScopeError)):
         error_info = ErrorInfo(
             is_retryable=False,
             is_rate_limit=False,
@@ -429,41 +430,41 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 "Token estimation failed; verify the configured local estimator."
             ) from None
 
-    def _observe_exception_usage(self, exception: Exception) -> TokenUsageObservation:
-        """Preserve processor extraction overrides while retaining known/unknown."""
+    def _observe_exception_usage(self, exception: BaseException) -> TokenUsageObservation:
+        """Observe once per physical attempt, including compatibility overrides."""
+        prepared = self._current_prepared()
+        attempt = prepared.runtime_state.current_attempt if prepared is not None else None
+        if attempt is not None and attempt.exception_usage is not None:
+            previous, observation = attempt.exception_usage
+            if previous is exception:
+                return observation
+        observation = self._resolve_exception_usage(exception)
+        if attempt is not None:
+            attempt.exception_usage = (exception, observation)
+        return observation
+
+    def _exception_tokens(self, exception: Exception) -> dict[str, int]:
+        return cast("dict[str, int]", self._observe_exception_usage(exception).usage).copy()
+
+    def _resolve_exception_usage(self, exception: BaseException) -> TokenUsageObservation:
+        """Keep legacy zero-filled overrides from manufacturing known usage."""
         default = self._token_extractor.observe_exception(exception)
+        if not isinstance(exception, Exception):
+            return default
         try:
-            override_usage = self._host._extract_token_usage(exception)
+            with self._token_extractor._reuse_observation(exception, default):
+                override_usage = self._host._extract_token_usage(exception)
+            observed_override = self._token_extractor.observe_result(override_usage)
         except asyncio.CancelledError:
             raise
         except Exception:
             return default
-        nonzero_override = any(
-            not isinstance(value, bool) and isinstance(value, int) and value != 0
-            for value in override_usage.values()
-        )
-        try:
-            observed_override = self._token_extractor.observe_result(override_usage)
-        except (TypeError, ValueError):
-            return default
+        if observed_override.known and observed_override.reported_tokens:
+            return observed_override
         if default.known:
-            return TokenUsageObservation(
-                usage=cast(TokenUsage, dict(override_usage)),
-                known=True,
-                reported_tokens=(
-                    observed_override.reported_tokens
-                    if nonzero_override
-                    else default.reported_tokens
-                ),
-            )
-        if nonzero_override:
-            return TokenUsageObservation(
-                usage=cast(TokenUsage, dict(override_usage)),
-                known=True,
-                reported_tokens=observed_override.reported_tokens,
-            )
+            return default
         return TokenUsageObservation(
-            usage=cast(TokenUsage, dict(override_usage)),
+            usage=observed_override.usage,
             known=False,
             reported_tokens=None,
         )
@@ -771,6 +772,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     BatchDeadlineExceeded,
                     BatchAbortedError,
                     MiddlewareContractError,
+                    QuotaScopeError,
                     ArtifactIdentityError,
                     ArtifactSerializationError,
                 ),
@@ -907,7 +909,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             except Exception as e:
                 # Accumulate token usage across every attempt (including
                 # rate-limit retries) so users see the true cost of a failure.
-                attempt_tokens = self._host._extract_token_usage(e)
+                attempt_tokens = self._exception_tokens(e)
                 self._token_extractor.accumulate(cumulative_failed_tokens, attempt_tokens)
                 admission_wait_seconds = item_runtime.cumulative_admission_wait_seconds
                 if hasattr(e, "__dict__"):
@@ -995,18 +997,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     attach_timing(e)
                     raise
 
-                # Validation errors retry immediately — the strategy adjusts on
-                # retry; other transient errors get exponential backoff keyed off
-                # the logical attempt number. (PydanticAI wraps validation errors
-                # in UnexpectedModelBehavior.)
-                error_msg_for_check = str(e)
-                is_validation_error = (
-                    "validation" in error_type.lower()
-                    or "parse" in error_type.lower()
-                    or "unexpectedmodelbehavior" in error_type.lower()
-                    or "result validation" in error_msg_for_check.lower()
-                    or error_info.error_category == "validation_error"
-                )
+                # Only resolved validation categories bypass transient backoff.
+                # Names and messages are not a reliable classification policy.
+                is_validation_error = error_info.error_category in {
+                    "validation_error",
+                    "structured_output_validation_error",
+                }
 
                 if is_validation_error:
                     wait_time = 0.0
@@ -1142,6 +1138,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         classifier: ErrorClassifier | None = None
         admission_state: ScopeAdmissionState | None = None
         known_provider_token_usage: TokenUsage | None = None
+        interrupted_usage: TokenUsageObservation | None = None
 
         try:
             # Middleware may replace a work item's strategy. Admission and
@@ -1310,13 +1307,27 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                 effective_timeout = attempt_timeout
                                 if remaining is not None:
                                     effective_timeout = min(effective_timeout, remaining)
+
+                                async def execute_observing_failure() -> Any:
+                                    # Guardrails join the provider child but may replace
+                                    # its error with a deadline/abort/caller cancellation.
+                                    # Capture reported usage before that replacement.
+                                    nonlocal interrupted_usage
+                                    try:
+                                        return await strategy.execute(
+                                            work_item.prompt,
+                                            attempt_number,
+                                            effective_timeout,
+                                            retry_state,
+                                        )
+                                    except BaseException as provider_failure:
+                                        interrupted_usage = self._observe_exception_usage(
+                                            provider_failure
+                                        )
+                                        raise
+
                                 raw_result = await await_with_guardrails(
-                                    strategy.execute(
-                                        work_item.prompt,
-                                        attempt_number,
-                                        effective_timeout,
-                                        retry_state,
-                                    ),
+                                    execute_observing_failure(),
                                     item_deadline=deadline,
                                     item_id=work_item.item_id,
                                     abort_controller=self._abort_controller,
@@ -1363,27 +1374,25 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                 raw_result
                             )
                             usage_observation = self._token_extractor.observe_result(token_usage)
+                            token_usage = usage_observation.usage
                             if (
                                 usage_observation.known
                                 and usage_observation.reported_tokens is not None
                             ):
-                                normalized_usage = cast(
-                                    "dict[str, int]", usage_observation.usage
-                                ).copy()
-                                normalized_usage["total_tokens"] = usage_observation.reported_tokens
-                                known_provider_token_usage = cast(TokenUsage, normalized_usage)
+                                known_provider_token_usage = token_usage
                         except BaseException as provider_error:
+                            observation = (
+                                interrupted_usage
+                                if interrupted_usage is not None
+                                else self._observe_exception_usage(provider_error)
+                            )
+                            if item_runtime is not None:
+                                item_runtime.current_attempt.exception_usage = (
+                                    provider_error,
+                                    observation,
+                                )
                             if reservation.provider_started and not reservation.finalized:
                                 if admission_state.quota_gate.tpm_enabled:
-                                    observation = (
-                                        self._observe_exception_usage(provider_error)
-                                        if isinstance(provider_error, Exception)
-                                        else TokenUsageObservation(
-                                            usage=cast(TokenUsage, {}),
-                                            known=False,
-                                            reported_tokens=None,
-                                        )
-                                    )
                                     finalization = (
                                         reservation.reconcile(observation.reported_tokens)
                                         if observation.known
@@ -1527,10 +1536,30 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 e.__dict__["_failed_token_usage"] = dict(known_provider_token_usage)
             # Notify strategy about the error before handling it
             # This allows strategy to adjust behavior for next retry (v0.3.0: now includes retry_state)
-            if strategy is not None and not isinstance(e, TokenEstimationError):
+            if strategy is not None and not isinstance(e, (TokenEstimationError, QuotaScopeError)):
+
+                async def on_error_with_usage(exception: Exception) -> None:
+                    before = self._token_extractor._observe_failed_stamp(exception)
+                    try:
+                        await strategy.on_error(exception, attempt_number, retry_state)
+                    finally:
+                        # The guardrail joins this child before replacing a hook
+                        # failure with a deadline/abort/cancellation. Capture any
+                        # new or changed exact report before that replacement.
+                        # Quota was already finalized; update only the observation
+                        # consumed by result/retry accounting, never quota timing.
+                        after = self._token_extractor._observe_failed_stamp(exception)
+                        if (
+                            item_runtime is not None
+                            and after is not None
+                            and after.known
+                            and after != before
+                        ):
+                            item_runtime.current_attempt.exception_usage = (exception, after)
+
                 try:
                     await await_with_guardrails(
-                        strategy.on_error(e, attempt_number, retry_state),
+                        on_error_with_usage(e),
                         item_deadline=deadline,
                         item_id=work_item.item_id,
                         abort_controller=self._abort_controller,
@@ -1542,7 +1571,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     BatchDeadlineExceeded,
                     BatchAbortedError,
                 ) as guard_exc:
-                    failed_tokens = self._host._extract_token_usage(e)
+                    failed_tokens = self._exception_tokens(e)
                     if failed_tokens:
                         guard_exc.__dict__["_failed_token_usage"] = failed_tokens
                     raise
@@ -1558,8 +1587,6 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             effective_strategy = strategy or work_item.strategy
             if classifier is None:
                 classifier = self._classifier_resolver.resolve(effective_strategy)
-            if admission_state is None:
-                admission_state = self._admission_registry.resolve(effective_strategy)
             error_info = _classify_error(e, classifier)
             if item_runtime is not None:
                 item_runtime.current_attempt.error_category = error_info.error_category
@@ -1578,7 +1605,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     abort_controller=self._abort_controller,
                 )
             except (ItemDeadlineExceeded, BatchDeadlineExceeded, BatchAbortedError) as guard_exc:
-                failed_tokens = self._host._extract_token_usage(e)
+                failed_tokens = self._exception_tokens(e)
                 if failed_tokens:
                     guard_exc.__dict__["_failed_token_usage"] = failed_tokens
                 raise
@@ -1616,7 +1643,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         """
         # Try to extract token usage from failed LLM calls using robust extraction
         # Even if validation fails, the LLM consumed tokens
-        failed_token_usage = self._host._extract_token_usage(exception)
+        failed_token_usage = self._exception_tokens(exception)
         if failed_token_usage and failed_token_usage.get("total_tokens", 0) > 0:
             logger.debug(
                 f"Extracted token usage from failed attempt for {work_item.item_id}: "
@@ -1625,11 +1652,11 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
         strategy = work_item.strategy
         classifier = self._classifier_resolver.resolve(strategy)
-        admission_state = self._admission_registry.resolve(strategy)
         error_info = _classify_error(exception, classifier)
 
         # Check if it's a rate limit
         if error_info.is_rate_limit:
+            admission_state = self._admission_registry.resolve(strategy)
             # Update stats (thread-safe)
             async with self._stats_lock:
                 self._stats.rate_limit_count += 1
@@ -1670,7 +1697,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         # Try middleware error handlers
         middleware_result = (
             None
-            if isinstance(exception, TokenEstimationError)
+            if isinstance(exception, (TokenEstimationError, QuotaScopeError))
             else await self._run_middlewares_on_error(work_item, exception)
         )
         if middleware_result is not None:
