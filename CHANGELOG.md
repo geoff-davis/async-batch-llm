@@ -7,8 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve accumulated admission wait in failed results when an item deadline
+  interrupts retry backoff, keeping it consistent with the item timing record.
+
+- Keep exception classification and cumulative failed usage local to each item
+  and physical attempt. Reusing a provider exception across retries, strategies,
+  or concurrent items no longer carries prior classification or accumulated
+  tokens into later work. Read-only exception dictionaries retain usage support.
+
 ### Changed
 
+- Carry retry outcomes, timing, and usage in private execution records instead
+  of writing executor metadata or cumulative usage onto provider exceptions.
+  Original exception identity and provider-supplied usage stamps are preserved;
+  use result token usage and timing for cumulative item accounting.
 - Extract private quota-reservation and capacity-admission stages from the item
   executor, preserving per-attempt accounting, retry hooks, and cleanup ordering.
 

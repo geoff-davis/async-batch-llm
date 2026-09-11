@@ -11,14 +11,51 @@ operations.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Generic
 
-from ..base import AttemptTiming, RetryState
+from ..base import (
+    AttemptTiming,
+    RetryState,
+    TContext,
+    TokenUsage,
+    TOutput,
+    WorkItemResult,
+    WorkItemTiming,
+)
 
 if TYPE_CHECKING:
+    from ..strategies import ErrorClassifier, ErrorInfo
     from ..token_extractor import TokenUsageObservation
 
 _RUNTIME_ATTRIBUTE = "_async_batch_llm_runtime_state"
+
+
+@dataclass
+class AttemptResult(Generic[TOutput, TContext]):
+    """Returned host result: success, terminal failure, or middleware recovery."""
+
+    result: WorkItemResult[TOutput, TContext]
+    timing: AttemptTiming
+
+
+@dataclass
+class AttemptFailure:
+    """One physical attempt's error, without mutating the originating exception."""
+
+    exception: Exception
+    usage: TokenUsageObservation
+    timing: AttemptTiming
+    error_info: ErrorInfo
+
+
+@dataclass
+class ItemFailure:
+    """Terminal retry summary passed explicitly to failed-result construction."""
+
+    exception: Exception
+    token_usage: TokenUsage
+    timing: WorkItemTiming
+    error_info: ErrorInfo
 
 
 @dataclass
@@ -36,6 +73,10 @@ class AttemptRuntimeState(AttemptTiming):
         default=None, repr=False, compare=False
     )
 
+    classification: tuple[Exception, ErrorClassifier, ErrorInfo] | None = field(
+        default=None, repr=False, compare=False
+    )
+
     def snapshot(self, **overrides: Any) -> AttemptTiming:
         """Return a detached public timing record with selected final values."""
         values = {item.name: getattr(self, item.name) for item in fields(AttemptTiming)}
@@ -47,6 +88,7 @@ class AttemptRuntimeState(AttemptTiming):
 class ItemRuntimeState:
     """Framework state that spans every retry for one logical item."""
 
+    failure: ItemFailure | None = field(default=None, repr=False, compare=False)
     total_deadline: float | None = None
     cumulative_admission_wait_seconds: float = 0.0
     current_attempt: AttemptRuntimeState = field(default_factory=AttemptRuntimeState)

@@ -310,3 +310,21 @@ reliable provider total, retaining the reservation is intentional.
 
 See [Choosing Your Limits](choosing-your-limits.md) for sizing order and
 [Troubleshooting](troubleshooting.md) for symptom-based guidance.
+
+## Exception identity and attempt ownership
+
+The executor keeps classification, timing, and cumulative usage in private
+per-attempt and per-item records. It does not add or update
+`_abl_error_info`, `_abl_work_item_timing`, `_abl_admission_wait_seconds`, or
+cumulative `_failed_token_usage` on provider exceptions. A reused exception is
+classified against the current strategy on every physical attempt. `call()`
+and call-pool raising APIs still raise the original exception instance.
+
+Provider or custom strategy `_failed_token_usage` stamps remain supported,
+including read-only mapping views of exception attributes. Such stamps describe
+provider usage; item-wide totals and timing belong to `WorkItemResult`. Framework
+guard replacements carry usage knowledge internally rather than creating
+zero-filled stamps. An explicit valid zero supplied by a hook remains known
+zero. A custom hook that writes an ordinary four-key zero dictionary is asserting
+known zero: the framework cannot distinguish it from a copied unknown-usage
+compatibility dictionary once that provenance has been discarded.

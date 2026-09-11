@@ -317,3 +317,24 @@ async def test_gateway_aclose_cancellation_does_not_abort_cleanup():
     assert result.success
     await asyncio.wait_for(gw.aclose(), timeout=2.0)
     assert gw._host._strategy_lifecycle.cleanup_complete
+
+
+@pytest.mark.parametrize("error_type", [StopAsyncIteration, ValueError, KeyError])
+@pytest.mark.parametrize("surface", ["call", "pool"])
+async def test_attempt_outcome_preserves_original_exception_on_raising_surfaces(
+    error_type, surface
+):
+    failure = error_type("original provider failure")
+
+    async def invoke(prompt, attempt, timeout, state):
+        raise failure
+
+    strategy = CallableStrategy(invoke)
+    config = ProcessorConfig(retry=RetryConfig(max_attempts=1))
+    with pytest.raises(error_type) as caught:
+        if surface == "call":
+            await call(strategy, "x", config=config)
+        else:
+            async with LLMCallPool(strategy, config=config) as pool:
+                await pool.submit("x")
+    assert caught.value is failure

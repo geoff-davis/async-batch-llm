@@ -1035,3 +1035,87 @@ async def test_queue_less_quota_scope_identity_controls(surface, scope_kind, mon
         )
     # Separate convenience calls/pools own separate registries, even with a shared scope.
     assert observations[0][0] is not observations[-1][0]
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+async def test_reused_exception_classification_belongs_to_current_strategy(concurrent):
+    failure = ValueError("shared")
+    classifiers = [_CategoryClassifier("first_category"), _CategoryClassifier("second_category")]
+    strategies = [_Strategy(classifier=c, fail=failure) for c in classifiers]
+    host = ExecutorHost(ProcessorConfig())
+    try:
+
+        async def execute(index):
+            return await host.executor.execute(LLMWorkItem(str(index), strategies[index], "x"))
+
+        if concurrent:
+            results = await asyncio.gather(execute(0), execute(1))
+        else:
+            results = [await execute(0), await execute(1)]
+        assert [r.error_category for r in results] == ["first_category", "second_category"]
+        assert [c.calls for c in classifiers] == [1, 1]
+        assert all(r.exception is failure for r in results)
+        assert "_abl_error_info" not in failure.__dict__
+    finally:
+        await host.aclose()
+
+
+async def test_terminal_outcome_keeps_effective_strategy_classification_after_override():
+    class RetryClassifier(_CategoryClassifier):
+        def classify(self, exception):
+            info = super().classify(exception)
+            info.is_retryable = True
+            return info
+
+    original_classifier = RetryClassifier("original")
+    effective_classifier = RetryClassifier("effective")
+    original = _Strategy(classifier=original_classifier)
+    effective = _Strategy(classifier=effective_classifier, fail=ConnectionError("failed"))
+
+    class Processor(ParallelBatchProcessor):
+        async def _process_item(self, work_item, worker_id, *args, **kwargs):
+            work_item.strategy = effective
+            return await super()._process_item(work_item, worker_id, *args, **kwargs)
+
+    async with Processor(config=ProcessorConfig(retry=RetryConfig(max_attempts=1))) as processor:
+        await processor.add_work(LLMWorkItem("x", original, "x"))
+        result = (await processor.process_all()).results[0]
+    assert result.error_category == "effective"
+    assert [original_classifier.calls, effective_classifier.calls] == [0, 1]
+
+
+@pytest.mark.parametrize("retryable", [True, False], ids=["deadline-in-backoff", "terminal"])
+async def test_failed_result_preserves_capacity_wait_in_admission_timing(retryable):
+    """A terminal guard must retain capacity wait accumulated before backoff."""
+
+    class WaitingFailure(LLMCallStrategy[str]):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            await asyncio.sleep(0.2)
+            if retryable:
+                raise ConnectionError("retry until deadline")
+            raise ValueError("terminal")
+
+    strategy = WaitingFailure()
+    host = ExecutorHost(
+        ProcessorConfig(
+            max_provider_concurrency=1,
+            guardrails=GuardrailConfig(total_timeout_per_item=0.7),
+            retry=RetryConfig(max_attempts=3, initial_wait=2.0, jitter=False),
+        ),
+        strategy=strategy,
+    )
+    try:
+        results = await asyncio.gather(
+            *(host.executor.execute(LLMWorkItem(i, strategy, "x")) for i in "ab")
+        )
+        waited = max(results, key=lambda result: result.timing.admission_wait_seconds)
+        assert not waited.success
+        assert len(waited.timing.attempts) == 1
+        assert waited.timing.admission_wait_seconds >= 0.1
+        if retryable:
+            assert waited.error_category == "framework_total_item_timeout"
+        else:
+            assert isinstance(waited.exception, ValueError)
+        assert waited.admission_wait_seconds == pytest.approx(waited.timing.admission_wait_seconds)
+    finally:
+        await host.aclose()
