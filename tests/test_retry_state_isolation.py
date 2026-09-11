@@ -226,3 +226,53 @@ async def test_quota_events_use_none_before_physical_try_is_assigned() -> None:
     ]
     assert quota_events
     assert all(data["try_number"] is None for data in quota_events)
+
+
+async def test_nested_and_concurrent_execution_preserves_prepared_context():
+    """Nested requests restore the outer context on the same and another host."""
+    from async_batch_llm._internal.executor_host import ExecutorHost
+
+    entered = set()
+    both_entered = asyncio.Event()
+    states = []
+    hosts = []
+
+    class NestedStrategy(LLMCallStrategy[str]):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            host = hosts[1] if prompt.endswith("other") else hosts[0]
+            prepared = host.executor._current_prepared()
+            assert prepared is not None and prepared.effective_item.prompt == prompt
+            assert prepared.retry_state is state
+            states.append(state)
+            if "-inner-" not in prompt:
+                entered.add(prompt)
+                if len(entered) == 2:
+                    both_entered.set()
+                await both_entered.wait()
+                for target, suffix in [(hosts[0], "same"), (hosts[1], "other")]:
+                    result = await target.executor.execute(
+                        LLMWorkItem(prompt + suffix, self, prompt + "-inner-" + suffix)
+                    )
+                    assert result.success
+                    assert host.executor._current_prepared() is prepared
+            return prompt, _TOKENS
+
+    strategy = NestedStrategy()
+    config = ProcessorConfig()
+    hosts.extend([ExecutorHost(config, strategy=strategy), ExecutorHost(config, strategy=strategy)])
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                *(
+                    hosts[0].executor.execute(LLMWorkItem(p, strategy, p))
+                    for p in ["outer-a", "outer-b"]
+                )
+            ),
+            timeout=2,
+        )
+        assert all(result.success for result in results)
+        assert len(states) == 6 and len({id(state) for state in states}) == 6
+        assert all(host.executor._current_prepared() is None for host in hosts)
+    finally:
+        for host in hosts:
+            await host.aclose()

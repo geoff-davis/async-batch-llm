@@ -1307,3 +1307,91 @@ def test_quota_wait_samples_are_bounded_and_summary_is_quiet_when_disabled() -> 
     ).summary()
     assert "refunded 10" in refunded_before_start
     assert "unknown 0" in refunded_before_start
+
+
+@pytest.mark.parametrize(
+    "boundary", [ProcessingEvent.QUOTA_ADMITTED, ProcessingEvent.ITEM_ADMITTED]
+)
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_partial_admission_releases_quota_and_capacity(monkeypatch, boundary, cancel):
+    """A failure after either acquisition cannot strand an unstarted reservation."""
+    strategy = _SequenceStrategy([{"total_tokens": 10}], estimate=TokenEstimate(20))
+    host = ExecutorHost(
+        _config(
+            max_provider_concurrency=1,
+            max_requests_per_minute=100,
+            retry=RetryConfig(max_attempts=1),
+        ),
+        strategy=strategy,
+    )
+    host._events.observers.append(_Recorder())
+    gate = host._admission_registry.resolve(strategy).quota_gate
+    original_emit = host.executor._emit_event
+    failure = asyncio.CancelledError() if cancel else ValueError("admission telemetry failed")
+    observed = []
+
+    async def emit(event, data=None):
+        observed.append(event)
+        if event is boundary:
+            raise failure
+        await original_emit(event, data)
+
+    monkeypatch.setattr(host.executor, "_emit_event", emit)
+    try:
+        item = LLMWorkItem(item_id="first", strategy=strategy, prompt="first")
+        if cancel:
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await host.executor.execute(item)
+            assert caught.value is failure
+        else:
+            result = await host.executor.execute(item)
+            assert not result.success and result.exception is failure
+        assert strategy.calls == 0
+        assert gate.token_available == pytest.approx(1000)
+        assert gate.request_available == pytest.approx(100)
+        assert ProcessingEvent.QUOTA_RECONCILED not in observed
+        monkeypatch.setattr(host.executor, "_emit_event", original_emit)
+        result = await asyncio.wait_for(
+            host.executor.execute(LLMWorkItem(item_id="next", strategy=strategy, prompt="next")),
+            timeout=1,
+        )
+        assert result.success and strategy.calls == 1
+    finally:
+        await host.aclose()
+
+
+async def test_unseen_quota_grant_is_refunded_before_capacity(monkeypatch):
+    """Cancellation between a child grant and receipt keeps ownership in admission."""
+    from async_batch_llm._internal import item_executor
+
+    strategy = _SequenceStrategy([{"total_tokens": 10}], estimate=TokenEstimate(20))
+    host = ExecutorHost(_config(), strategy=strategy)
+    gate = host._admission_registry.resolve(strategy).quota_gate
+    original_guard = item_executor.await_with_guardrails
+    original_reserve = gate.reserve
+    granted = []
+
+    async def reserve(estimate):
+        reservation = await original_reserve(estimate)
+        granted.append(reservation)
+        return reservation
+
+    async def guard(operation, **kwargs):
+        if isinstance(operation, asyncio.Task):
+            result = await original_guard(operation, **kwargs)
+            if granted and result is granted[-1]:
+                raise asyncio.CancelledError()
+            return result
+        return await original_guard(operation, **kwargs)
+
+    monkeypatch.setattr(gate, "reserve", reserve)
+    monkeypatch.setattr(item_executor, "await_with_guardrails", guard)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await host.executor.execute(LLMWorkItem(item_id="x", strategy=strategy, prompt="x"))
+        assert len(granted) == 1
+        assert granted[0].finalized and not granted[0].provider_started
+        assert gate.token_available == pytest.approx(1000)
+        assert strategy.calls == 0
+    finally:
+        await host.aclose()
