@@ -10,10 +10,190 @@ can be reused and tested in isolation.
 from __future__ import annotations
 
 import logging
+from collections import UserDict
+from types import SimpleNamespace
 
 import pytest
 
 from async_batch_llm.token_extractor import TokenExtractor
+
+
+@pytest.mark.parametrize("shape", [dict, UserDict, SimpleNamespace])
+@pytest.mark.parametrize(
+    "names", [("input_tokens", "output_tokens"), ("request_tokens", "response_tokens")]
+)
+@pytest.mark.parametrize("total", [None, 0, -1, True, 1.5])
+def test_optional_exception_total_uses_components_only_when_absent(shape, names, total):
+    error = RuntimeError("provider failed")
+    error.usage = shape(**{names[0]: 7, names[1]: 3, "total_tokens": total})
+    observed = TokenExtractor().observe_exception(error)
+    expected = 10 if total is None else (0 if total == 0 else None)
+    assert observed.reported_tokens == expected
+    assert observed.known is (expected is not None)
+    assert observed.usage["total_tokens"] == (expected or 0)
+
+
+def test_optional_total_does_not_relax_successful_mapping_validation():
+    with pytest.raises(ValueError, match="total_tokens"):
+        TokenExtractor.observe_result({"input_tokens": 7, "output_tokens": 3, "total_tokens": None})
+
+
+@pytest.mark.parametrize("shape", [dict, UserDict, SimpleNamespace])
+@pytest.mark.parametrize("fallback", ["cache_read_tokens", "prompt_tokens_details"])
+@pytest.mark.parametrize("cached", [None, 0])
+def test_optional_cached_counter_falls_back_without_erasing_known_zero(shape, fallback, cached):
+    fields = {"input_tokens": 7, "output_tokens": 3, "cached_input_tokens": cached}
+    if fallback == "cache_read_tokens":
+        fields[fallback] = 40
+    else:
+        fields["cache_read_tokens"] = None
+        fields[fallback] = shape(cached_tokens=40)
+    error = RuntimeError("provider failed")
+    error.usage = shape(**fields)
+    observed = TokenExtractor().observe_exception(error)
+    assert observed.usage["cached_input_tokens"] == (40 if cached is None else 0)
+    assert observed.reported_tokens == 10
+
+
+@pytest.mark.parametrize("shape", [dict, UserDict, lambda **kw: SimpleNamespace(**kw)])
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        ({}, None),
+        ({"unrelated": 12}, None),
+        ({"cached_input_tokens": 40}, None),
+        ({"total_tokens": None}, None),
+        ({"input_tokens": None}, None),
+        ({"input_tokens": 7, "output_tokens": None}, None),
+        ({"total_tokens": 0}, 0),
+        ({"input_tokens": 0}, 0),
+        ({"input_tokens": 7}, 7),
+        ({"input_tokens": 7, "output_tokens": 3}, 10),
+        ({"input_tokens": 7, "output_tokens": 3, "total_tokens": 12}, 12),
+    ],
+)
+def test_exception_usage_presence_and_canonical_total(shape, fields, expected):
+    error = RuntimeError("provider failed")
+    error.usage = shape(**fields)
+    observed = TokenExtractor().observe_exception(error)
+    assert observed.known is (expected is not None)
+    assert observed.reported_tokens == expected
+    assert observed.usage["total_tokens"] == (expected or 0)
+    if "cached_input_tokens" in fields:
+        assert observed.usage["cached_input_tokens"] == 40
+
+
+@pytest.mark.parametrize("value", [None, True, -1, 1.5, float("nan"), float("inf"), "1.5"])
+@pytest.mark.parametrize("key", ["input_tokens", "total_tokens"])
+def test_invalid_exception_counter_is_not_known_zero(value, key):
+    error = RuntimeError("provider failed")
+    error._failed_token_usage = {key: value}
+    observed = TokenExtractor().observe_exception(error)
+    assert observed.known is False
+    assert observed.reported_tokens is None
+
+
+@pytest.mark.parametrize("stamp", [{}, {"total_tokens": None}, {"cached_input_tokens": 40}])
+def test_empty_exact_stamp_does_not_hide_valid_direct_usage(stamp):
+    error = RuntimeError("provider failed")
+    error._failed_token_usage = stamp
+    error.usage = {"input_tokens": 7, "output_tokens": 3}
+    observed = TokenExtractor().observe_exception(error)
+    assert observed.known and observed.reported_tokens == 10
+    assert observed.usage["total_tokens"] == 10
+
+
+@pytest.mark.parametrize("shape", [dict, UserDict, lambda **kw: SimpleNamespace(**kw)])
+def test_legacy_usage_aliases_derive_canonical_total(shape):
+    error = RuntimeError("provider failed")
+    error.usage = shape(request_tokens=7, response_tokens=3)
+    observed = TokenExtractor().observe_exception(error)
+    assert observed.reported_tokens == observed.usage["total_tokens"] == 10
+
+
+def test_modern_usage_attributes_do_not_touch_deprecated_aliases():
+    class Usage:
+        input_tokens = 7
+        output_tokens = 3
+
+        @property
+        def request_tokens(self):
+            raise AssertionError("deprecated alias accessed")
+
+    error = RuntimeError("provider failed")
+    error.usage = Usage()
+    assert TokenExtractor().observe_exception(error).usage["total_tokens"] == 10
+
+
+@pytest.mark.parametrize("source", ["direct", "cause"])
+def test_sync_usage_accessor_is_called_once_and_normalized(source):
+    calls = []
+
+    class UsageOwner:
+        def usage(self):
+            calls.append(1)
+            return UserDict(input_tokens=7, output_tokens=3)
+
+    error = RuntimeError("provider failed")
+    if source == "direct":
+        error.usage = UsageOwner().usage
+    else:
+        cause = RuntimeError("cause")
+        cause.result = UsageOwner()
+        error.__cause__ = cause
+    observed = TokenExtractor().observe_exception(error)
+    assert observed.reported_tokens == observed.usage["total_tokens"] == 10
+    assert calls == [1]
+
+
+@pytest.mark.parametrize("source", ["async_method", "returned_coroutine", "coroutine"])
+def test_async_usage_is_unknown_without_starting_or_leaking_coroutines(source, recwarn):
+    import gc
+
+    calls = []
+
+    async def usage():
+        calls.append(1)
+        return {"total_tokens": 9}
+
+    error = RuntimeError("provider failed")
+    error.usage = {
+        "async_method": usage,
+        "returned_coroutine": lambda: usage(),
+        "coroutine": None,
+    }[source]
+    if source == "coroutine":
+        error.usage = usage()
+    observed = TokenExtractor().observe_exception(error)
+    del error
+    gc.collect()
+    assert observed.known is False
+    assert calls == []
+    assert not [warning for warning in recwarn if "was never awaited" in str(warning.message)]
+
+
+@pytest.mark.parametrize("control", [KeyboardInterrupt, SystemExit])
+def test_usage_accessor_preserves_process_control(control):
+    def usage():
+        raise control()
+
+    error = RuntimeError("provider failed")
+    error.usage = usage
+    with pytest.raises(control):
+        TokenExtractor().observe_exception(error)
+
+
+def test_result_total_is_canonical_without_mutating_input():
+    usage = UserDict(input_tokens=7, output_tokens=3)
+    observed = TokenExtractor.observe_result(usage)
+    assert observed.reported_tokens == observed.usage["total_tokens"] == 10
+    assert usage == {"input_tokens": 7, "output_tokens": 3}
+
+
+@pytest.mark.parametrize("value", [None, True, -1, 1.5, float("nan"), float("inf"), "7"])
+def test_successful_usage_keeps_strict_counter_validation(value):
+    with pytest.raises(ValueError, match="non-negative integer"):
+        TokenExtractor.observe_result({"input_tokens": value})
 
 
 @pytest.fixture

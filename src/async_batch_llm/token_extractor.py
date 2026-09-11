@@ -20,7 +20,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -36,6 +38,7 @@ _EMPTY_USAGE: dict[str, int] = {
     "cached_input_tokens": 0,
 }
 _USAGE_KEYS = frozenset(_EMPTY_USAGE)
+_MISSING = object()
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,11 @@ class TokenUsageObservation:
     reported_tokens: int | None
 
 
+_reused_observation: ContextVar[tuple[object, BaseException, TokenUsageObservation] | None] = (
+    ContextVar("abl_reused_usage_observation", default=None)
+)
+
+
 class TokenExtractor:
     """Best-effort token-usage extraction from LLM exceptions."""
 
@@ -59,12 +67,16 @@ class TokenExtractor:
 
         Tries three strategies in order and returns the first match. Returns
         zeroed dict if no extraction succeeds. Never raises for normal
-        extraction failures — only `asyncio.CancelledError` propagates.
+        extraction failures. Cancellation and process-control exceptions propagate.
         """
         return cast(dict[str, int], self.observe_exception(exception).usage).copy()
 
     def observe_exception(self, exception: BaseException) -> TokenUsageObservation:
         """Observe failed-attempt usage without collapsing unknown into zero."""
+        reused = _reused_observation.get()
+        if reused is not None and reused[0] is self and reused[1] is exception:
+            return reused[2]
+        fallback = TokenUsageObservation(cast(TokenUsage, dict(_EMPTY_USAGE)), False, None)
         try:
             # Strategy 1: Custom _failed_token_usage attribute (set by this
             # framework). Checked first — it carries the exact per-attempt
@@ -72,29 +84,26 @@ class TokenExtractor:
             exc_dict = getattr(exception, "__dict__", None)
             if isinstance(exc_dict, dict):
                 failed = exc_dict.get("_failed_token_usage")
-                if isinstance(failed, dict):
-                    return _mapping_observation(failed, explicit=True, strict=False)
+                if isinstance(failed, Mapping):
+                    fallback = _coerce_usage_observation(failed)
+                    if fallback.known:
+                        return fallback
 
             # Strategy 2: PydanticAI-style exception with result in __cause__.
             # pydantic-ai 1.x exposes usage as a property; older versions and
-            # test doubles expose a usage() method — call only bound methods.
+            # test doubles expose a synchronous usage() method.
             cause = getattr(exception, "__cause__", None)
             if cause is not None:
                 result = getattr(cause, "result", None)
                 if result is not None:
                     usage_attr = getattr(result, "usage", None)
-                    if inspect.ismethod(usage_attr) or inspect.isfunction(usage_attr):
-                        usage_attr = usage_attr()
                     if usage_attr is not None:
-                        return _coerce_usage_observation(usage_attr)
+                        return _accessor_observation(usage_attr)
 
             # Strategy 3: Direct .usage attribute on exception
             usage = getattr(exception, "usage", None)
             if usage is not None:
-                if callable(usage):
-                    usage = usage()
-                if usage is not None:
-                    return _coerce_usage_observation(usage)
+                return _accessor_observation(usage)
 
         except asyncio.CancelledError:
             raise
@@ -106,11 +115,34 @@ class TokenExtractor:
                 e,
             )
 
-        return TokenUsageObservation(
-            usage=cast(TokenUsage, dict(_EMPTY_USAGE)),
-            known=False,
-            reported_tokens=None,
-        )
+        return fallback
+
+    @contextmanager
+    def _reuse_observation(
+        self, exception: BaseException, observation: TokenUsageObservation
+    ) -> Iterator[None]:
+        """Let a synchronous compatibility override call super without re-extraction."""
+        token = _reused_observation.set((self, exception, observation))
+        try:
+            yield
+        finally:
+            _reused_observation.reset(token)
+
+    def _observe_failed_stamp(self, exception: BaseException) -> TokenUsageObservation | None:
+        """Read only an exact stamp, without invoking usage accessors or overrides.
+
+        Recovery hooks may supply a later report for result accounting. As with
+        exception extraction, ordinary malformed reports are best effort and
+        control exceptions propagate. Normalization copies mutable stamp values.
+        """
+        try:
+            exc_dict = getattr(exception, "__dict__", None)
+            failed = exc_dict.get("_failed_token_usage") if isinstance(exc_dict, dict) else None
+            if isinstance(failed, Mapping):
+                return _coerce_usage_observation(failed)
+        except Exception:
+            logger.debug("Failed to read token usage stamp from %s", type(exception).__name__)
+        return None
 
     @staticmethod
     def observe_result(usage: object) -> TokenUsageObservation:
@@ -119,7 +151,6 @@ class TokenExtractor:
             raise TypeError(f"Strategy token usage must be a mapping (got {type(usage).__name__})")
         return _mapping_observation(
             cast(Mapping[object, object], usage),
-            explicit=False,
             strict=True,
         )
 
@@ -133,8 +164,8 @@ class TokenExtractor:
             cumulative[key] = cumulative.get(key, 0) + attempt_tokens.get(key, 0)
 
 
-def _first_attr(usage: Any, *names: str) -> Any:
-    """Return the first present, non-None attribute in ``names`` (short-circuits).
+def _first_attr(usage: Any, *names: str, skip_none: bool = False) -> Any:
+    """Return the first present field, preserving missing versus invalid values.
 
     Short-circuiting matters: pydantic-ai 1.x keeps ``request_tokens`` /
     ``response_tokens`` as *deprecated* aliases that emit a DeprecationWarning
@@ -143,10 +174,31 @@ def _first_attr(usage: Any, *names: str) -> Any:
     ones are present.
     """
     for name in names:
-        value = getattr(usage, name, None)
-        if value is not None:
+        value = (
+            usage.get(name, _MISSING)
+            if isinstance(usage, Mapping)
+            else getattr(usage, name, _MISSING)
+        )
+        if value is not _MISSING and not (skip_none and value is None):
             return value
-    return 0
+    return _MISSING
+
+
+def _accessor_observation(usage: Any) -> TokenUsageObservation:
+    if inspect.iscoroutinefunction(usage) or (
+        callable(usage) and inspect.iscoroutinefunction(type(usage).__call__)
+    ):
+        return _mapping_observation({}, strict=False)
+    if callable(usage):
+        usage = usage()
+    if inspect.isawaitable(usage):
+        # Extraction never schedules or awaits provider work. Close an unstarted
+        # coroutine handed to us so rejecting it does not leak a warning. Futures
+        # and tasks belong to their caller and must not be cancelled here.
+        if inspect.iscoroutine(usage) and inspect.getcoroutinestate(usage) == inspect.CORO_CREATED:
+            usage.close()
+        return _mapping_observation({}, strict=False)
+    return _coerce_usage_observation(usage)
 
 
 def _coerce_usage(usage: Any) -> dict[str, int]:
@@ -163,50 +215,32 @@ def _coerce_usage(usage: Any) -> dict[str, int]:
 
 
 def _coerce_usage_observation(usage: Any) -> TokenUsageObservation:
-    input_tokens, input_valid = _nonnegative_int(
-        _first_attr(usage, "input_tokens", "request_tokens", "prompt_tokens")
-    )
-    output_tokens, output_valid = _nonnegative_int(
-        _first_attr(usage, "output_tokens", "response_tokens", "completion_tokens")
-    )
-    cached, _ = _nonnegative_int(getattr(usage, "cached_input_tokens", 0))
-    if not cached:
-        # pydantic-ai v1 surfaces cache hits as cache_read_tokens.
-        cached, _ = _nonnegative_int(getattr(usage, "cache_read_tokens", 0))
-    if not cached:
-        # OpenAI surfaces cached prompt tokens nested under prompt_tokens_details.
-        details = getattr(usage, "prompt_tokens_details", None)
-        if details is not None:
-            cached, _ = _nonnegative_int(getattr(details, "cached_tokens", 0))
-    total_attr = getattr(usage, "total_tokens", None)
-    total_tokens, total_valid = _nonnegative_int(total_attr)
-    if total_attr is not None:
-        reported_tokens = total_tokens if total_valid else None
-    elif input_valid and output_valid:
-        reported_tokens = input_tokens + output_tokens
-    else:
-        reported_tokens = None
-    normalized = {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": total_tokens if total_attr is not None else 0,
-        "cached_input_tokens": cached,
+    fields = {
+        "input_tokens": _first_attr(usage, "input_tokens", "request_tokens", "prompt_tokens"),
+        "output_tokens": _first_attr(
+            usage, "output_tokens", "response_tokens", "completion_tokens"
+        ),
+        "total_tokens": _first_attr(usage, "total_tokens"),
+        "cached_input_tokens": _first_attr(
+            usage, "cached_input_tokens", "cache_read_tokens", skip_none=True
+        ),
     }
-    return TokenUsageObservation(
-        usage=cast(TokenUsage, normalized),
-        known=reported_tokens is not None,
-        reported_tokens=reported_tokens,
+    if fields["cached_input_tokens"] is _MISSING:
+        fields["cached_input_tokens"] = _first_attr(
+            _first_attr(usage, "prompt_tokens_details"), "cached_tokens"
+        )
+    return _mapping_observation(
+        {key: value for key, value in fields.items() if value is not _MISSING}, strict=False
     )
 
 
 def _mapping_observation(
     usage: Mapping[object, object],
     *,
-    explicit: bool,
     strict: bool,
 ) -> TokenUsageObservation:
     recognized = {key for key in usage if isinstance(key, str) and key in _USAGE_KEYS}
-    normalized = dict(_EMPTY_USAGE)
+    normalized: dict[str, int] = {} if strict else dict(_EMPTY_USAGE)
     valid: dict[str, bool] = {}
     for key in recognized:
         value = usage[key]
@@ -216,36 +250,38 @@ def _mapping_observation(
             )
         normalized[key], valid[key] = _nonnegative_int(value)
 
-    known = explicit or bool(recognized)
-    if not known:
-        reported_tokens = None
-    elif "total_tokens" in recognized:
+    # Provider exception objects commonly expose an optional total. None means
+    # no total was reported, so valid components can still establish usage.
+    # Strict successful mappings reject None in the validation loop above.
+    if "total_tokens" in recognized and usage["total_tokens"] is not None:
         reported_tokens = normalized["total_tokens"] if valid["total_tokens"] else None
     elif "input_tokens" in recognized or "output_tokens" in recognized:
         input_valid = valid.get("input_tokens", True)
         output_valid = valid.get("output_tokens", True)
         reported_tokens = (
-            normalized["input_tokens"] + normalized["output_tokens"]
+            normalized.get("input_tokens", 0) + normalized.get("output_tokens", 0)
             if input_valid and output_valid
             else None
         )
     else:
-        # A recognized cached-token-only mapping is still an explicit known
-        # observation, but cached tokens do not reduce TPM automatically.
-        reported_tokens = 0
+        reported_tokens = None
+    if reported_tokens is not None:
+        normalized["total_tokens"] = reported_tokens
     return TokenUsageObservation(
         usage=cast(TokenUsage, normalized),
-        known=known and reported_tokens is not None,
+        known=reported_tokens is not None,
         reported_tokens=reported_tokens,
     )
 
 
 def _nonnegative_int(v: Any) -> tuple[int, bool]:
-    try:
-        value = int(v) if v is not None else 0
-    except (TypeError, ValueError):
+    if v is None or isinstance(v, bool):
         return 0, False
-    if isinstance(v, bool) or value < 0:
+    try:
+        value = int(v)
+    except (TypeError, ValueError, OverflowError):
+        return 0, False
+    if value < 0 or (not isinstance(v, str) and v != value):
         return 0, False
     return value, True
 

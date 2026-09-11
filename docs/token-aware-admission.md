@@ -86,6 +86,80 @@ Dry-run, compatible artifact replay, and middleware-filtered items bypass live
 quota admission. They emit no quota-admission events and mutate no RPM/TPM
 state.
 
+## Reported usage and canonical totals
+
+Usage knowledge is independent of the compatibility dictionary returned by
+exception extraction. Missing usage may expose zero-filled counters, but those
+placeholders do not authorize a token refund.
+
+| Provider usage | Overall usage known? | Reported total |
+| --- | --- | --- |
+| Absent, `None`, empty, or unrelated fields only | No | `None` |
+| `cached_input_tokens` only | No | `None` |
+| `total_tokens: 0` | Yes | 0 |
+| `input_tokens: 7`, `output_tokens: 3` | Yes | 10 |
+| Input 7, output 3, optional exception total `None` | Yes | 10 |
+| `input_tokens: 7`, output absent | Yes | 7 |
+| Recognized counter explicitly `None` or invalid, without a valid total | No | `None` |
+| Input 7, output 3, explicit total 12 | Yes | 12 |
+
+A valid explicit total wins over the component sum. In exception usage, an
+absent total or `total_tokens=None` permits derivation from input/output
+counters when at least one is present and both present counters are valid.
+A non-None invalid total remains unknown. An absent component counts as zero;
+an invalid component does not. Successful strategy mappings still reject
+`total_tokens=None` under their strict validation contract.
+The derived total is written into the normalized `total_tokens` field used by
+results, events, statistics, and new checkpoints. Caller-owned mappings and
+historical artifacts are not modified. Cached tokens are telemetry, not an
+additional charge or an automatic deduction from the total.
+An optional `cached_input_tokens=None` allows fallback to `cache_read_tokens`
+or `prompt_tokens_details.cached_tokens`; a valid explicit zero remains zero.
+
+Successful strategy mappings require non-negative integers: `None`, booleans,
+negative, fractional, and non-finite values fail validation. Exception extraction
+is best effort and treats invalid counters as unknown rather than known zero.
+It retains compatibility with integral numeric values and integer strings in
+provider exception usage.
+
+Exception usage supports mappings, attribute objects, modern/legacy provider
+field names, and synchronous `.usage()` accessors. A valid framework
+`_failed_token_usage` report takes precedence, followed by cause-result usage
+and direct exception usage. Empty or invalid framework stamps do not hide a
+valid lower-priority report. Async accessors are not started or awaited; ordinary
+accessor failures are best effort, while cancellation and process-control
+exceptions propagate.
+
+The executor observes each failed physical attempt before recovery hooks or
+guardrail error replacement. A synchronous processor `_extract_token_usage`
+override can supply a valid positive total (including a derived one); calling
+`super()` reuses the observation without calling the provider accessor again.
+Zero-filled legacy overrides cannot turn unknown into known zero or erase a
+known positive total. Report explicit unbilled usage on the provider exception
+when a zero refund is intended.
+
+If `strategy.on_error` adds or changes a valid `_failed_token_usage` stamp,
+the executor uses that later report for the failed attempt's result accounting,
+including when the hook raises or is interrupted by a deadline or batch abort.
+It does not call the provider accessor again or revise the completed quota
+reconciliation. A later report replaces that attempt's earlier result usage;
+it is not added as another attempt. Empty/invalid stamps do not erase previously
+observed usage. Explicit known zero is a valid later result report.
+
+For example, if a failed attempt reserved 20 tokens and its usage was unknown
+at reconciliation, admission retains 20. If `on_error` then reports 10, the
+item records 10 tokens while its quota timing still shows unknown usage.
+This preserves usage supplied during recovery without delaying reservation
+finalization behind hooks that may block, fail, or be cancelled.
+
+Quota timing and `QUOTA_RECONCILED` describe individual physical attempts.
+An item that fails with 10 reported tokens and then succeeds with 15 reports
+25 item tokens, while its reconciliations report 10 and 15 separately.
+`ITEM_COMPLETED` reports the final attempt's tokens. Batch live counters add
+newly executed usage; replay keeps the historical item usage but adds zero live
+consumption. Reservation estimates for unknown attempts never become invented
+provider-reported tokens.
+
 ## Quota scopes
 
 `quota_scope` identifies the account or upstream budget shared by strategies.

@@ -14,6 +14,7 @@ from .base import RetryState, TokenUsage
 from .llm_strategies import LLMCallStrategy
 from .strategies import ErrorClassifier
 from .token_estimation import TokenEstimate, TokenEstimator
+from .token_extractor import TokenExtractor
 
 TOutput = TypeVar("TOutput")
 TOutputCallback = TypeVar("TOutputCallback")
@@ -97,13 +98,9 @@ def _normalize_token_usage(usage: Mapping[str, int]) -> TokenUsage:
             )
         normalized[key] = value
 
-    if "total_tokens" not in normalized and (
-        "input_tokens" in normalized or "output_tokens" in normalized
-    ):
-        normalized["total_tokens"] = normalized.get("input_tokens", 0) + normalized.get(
-            "output_tokens", 0
-        )
-    return cast(TokenUsage, normalized)
+    # Use the same canonical total as direct LLMCallStrategy results, while
+    # retaining CallOutcome's stricter key validation above.
+    return TokenExtractor.observe_result(normalized).usage
 
 
 def _normalize_outcome(

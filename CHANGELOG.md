@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve unknown versus known-zero provider usage in exception extraction and
+  TPM reconciliation. Normalize mapping and object reports, reject invalid
+  counters, and write derived totals consistently into results, events, live
+  statistics, and new JSONL/SQLite checkpoints. Cached-only reports do not imply
+  zero overall usage; valid explicit totals remain authoritative.
+- Observe failed-attempt usage once through synchronous processor extraction
+  overrides, and preserve recoverable provider usage when cancellation, timeout,
+  item/batch deadlines, or abort replace the provider error. Retry totals include
+  each observed attempt once; historical replay remains excluded from live usage.
+- Preserve valid component counts when a provider exception's optional total is
+  `None`, and fall back to alternate cache counters when the primary cache
+  counter is `None`. Successful strategy mappings retain strict validation.
+- Preserve valid usage stamps added or updated by `strategy.on_error` in result
+  totals, including across retries and hook failures. These later reports do not
+  revise quota reconciliation already completed before the hook, so reported item
+  usage can differ from the estimate retained by admission.
+
 ## [0.24.0] - 2026-09-09
 
 ### Changed
