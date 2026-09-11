@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-09-11
+
+### Security
+
+- Update the development-only `smol-toml` dependency to 1.7.1 to fix
+  [GHSA-7w5x-hrqm-74c2](https://github.com/advisories/GHSA-7w5x-hrqm-74c2).
+
+### Changed
+
+- Refresh locked provider and development dependencies, including PydanticAI
+  2.41.0, OpenAI 3.13.0, and Google GenAI 2.22.0.
+
+### Documentation
+
+- Add a v0.24 migration guide covering cleanup ownership, cancellation, and
+  interruption behavior, plus the public release roadmap.
+
 ### Fixed
 
 - Fail closed with non-retryable `QuotaScopeError` when a strategy's
@@ -26,7 +43,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Require OpenAI SDK 1.66.0 for the `deepseek`, `all`, and `dev` extras, preserve
   newer request fields through `extra_body`, and read cache telemetry retained
   as mappings by early Responses SDKs. Other provider floors are unchanged.
-
 - Preserve unknown versus known-zero provider usage in exception extraction and
   TPM reconciliation. Normalize mapping and object reports, reject invalid
   counters, and write derived totals consistently into results, events, live

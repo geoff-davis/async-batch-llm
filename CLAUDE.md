@@ -12,7 +12,7 @@ here.
 **strategy pattern** — provider-agnostic at the framework level, with
 first-class support for several providers built in.
 
-**Current version:** v0.24.0 (see `CHANGELOG.md`; `pyproject.toml` is bumped
+**Current version:** v0.24.1 (see `CHANGELOG.md`; `pyproject.toml` is bumped
 by the release-prep flow, so it may briefly lag `main` between releases).
 
 **Key features:**
@@ -668,6 +668,10 @@ assert result.total_items == result.succeeded + result.failed
 
 Most recent first. See `CHANGELOG.md` for full per-release detail.
 
+- **v0.24.1** — preserve failed-attempt usage and late error-hook reports,
+  fail closed on broken quota scopes, select retry delays by resolved category,
+  and verify DeepSeek Responses model/client compatibility. Includes the v0.24
+  migration guide and the development-only smol-toml security fix.
 - **v0.24.0** — isolated retry runtime state, ordered and retryable cleanup,
   durable stream failures, and middleware-before-replay behavior on both stores.
   Cleanup failures and callback barriers change compatibility; batch stores stay
