@@ -82,7 +82,7 @@ class TokenExtractor:
             # framework). Checked first — it carries the exact per-attempt
             # count and must not be shadowed by the heuristic paths below.
             exc_dict = getattr(exception, "__dict__", None)
-            if isinstance(exc_dict, dict):
+            if isinstance(exc_dict, Mapping):
                 failed = exc_dict.get("_failed_token_usage")
                 if isinstance(failed, Mapping):
                     fallback = _coerce_usage_observation(failed)
@@ -137,7 +137,7 @@ class TokenExtractor:
         """
         try:
             exc_dict = getattr(exception, "__dict__", None)
-            failed = exc_dict.get("_failed_token_usage") if isinstance(exc_dict, dict) else None
+            failed = exc_dict.get("_failed_token_usage") if isinstance(exc_dict, Mapping) else None
             if isinstance(failed, Mapping):
                 return _coerce_usage_observation(failed)
         except Exception:

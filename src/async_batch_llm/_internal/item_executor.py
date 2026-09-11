@@ -63,7 +63,14 @@ from .admission import (
 from .capacity import CapacityLimiter
 from .classifier_resolver import StrategyClassifierResolver
 from .error_logging import log_retryable_error, log_validation_error
-from .execution_state import current_try_number, reset_attempt_runtime, runtime_state
+from .execution_state import (
+    AttemptFailure,
+    AttemptResult,
+    ItemFailure,
+    current_try_number,
+    reset_attempt_runtime,
+    runtime_state,
+)
 from .guardrails import AbortController, await_with_guardrails, remaining_seconds
 from .logical_item import PreparedLogicalItem
 
@@ -81,9 +88,6 @@ logger = logging.getLogger(__name__)
 # Kept in sync with parallel.py (single source would create an import cycle).
 ERROR_MESSAGE_MAX_LENGTH = 200
 ERROR_MESSAGE_DETAILED_LENGTH = 500
-_ADMISSION_WAIT_EXCEPTION_KEY = "_abl_admission_wait_seconds"
-_TIMING_EXCEPTION_KEY = "_abl_work_item_timing"
-_ERROR_INFO_EXCEPTION_KEY = "_abl_error_info"
 _prepared_item: ContextVar[tuple[object, PreparedLogicalItem[Any, Any, Any]] | None] = ContextVar(
     "abl_prepared_logical_item", default=None
 )
@@ -152,10 +156,7 @@ def _detach_traceback(exc: _E) -> _E:
 
 
 def _classify_error(exception: Exception, classifier: ErrorClassifier) -> ErrorInfo:
-    """Classify an exception once and reuse that exact decision downstream."""
-    cached = getattr(exception, "__dict__", {}).get(_ERROR_INFO_EXCEPTION_KEY)
-    if isinstance(cached, ErrorInfo):
-        return cached
+    """Resolve current policy without trusting metadata on a reused exception."""
     if isinstance(exception, (ArtifactIdentityError, ArtifactSerializationError)):
         error_info = ErrorInfo(
             is_retryable=False,
@@ -172,8 +173,6 @@ def _classify_error(exception: Exception, classifier: ErrorClassifier) -> ErrorI
         )
     else:
         error_info = classifier.classify(exception)
-    if hasattr(exception, "__dict__"):
-        exception.__dict__[_ERROR_INFO_EXCEPTION_KEY] = error_info
     return error_info
 
 
@@ -431,6 +430,25 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             raise TokenEstimationError(
                 "Token estimation failed; verify the configured local estimator."
             ) from None
+
+    def _classify_error(self, exception: Exception, classifier: ErrorClassifier) -> ErrorInfo:
+        """Cache only within the current attempt and classifier identity."""
+        prepared = self._current_prepared()
+        attempt = prepared.runtime_state.current_attempt if prepared is not None else None
+        cached = attempt.classification if attempt is not None else None
+        if cached is not None and cached[0] is exception and cached[1] is classifier:
+            return cached[2]
+        info = _classify_error(exception, classifier)
+        if attempt is not None:
+            attempt.classification = (exception, classifier, info)
+        return info
+
+    def _transfer_exception_usage(self, source: Exception, target: Exception) -> None:
+        """Retain usage knowledge across guard replacement without stamping zeros."""
+        observation = self._observe_exception_usage(source)
+        prepared = self._current_prepared()
+        if prepared is not None:
+            prepared.runtime_state.current_attempt.exception_usage = (target, observation)
 
     def _observe_exception_usage(self, exception: BaseException) -> TokenUsageObservation:
         """Observe once per physical attempt, including compatibility overrides."""
@@ -720,7 +738,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            result = await self.build_failure_result(work_item, e, worker_id)
+            result = await self.build_failure_result(
+                work_item, e, worker_id, failure=prepared.runtime_state.failure
+            )
         finally:
             _prepared_item.reset(token)
         result.submission_index = prepared.original_item.submission_index
@@ -731,6 +751,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         work_item: LLMWorkItem[TInput, TOutput, TContext],
         e: Exception,
         worker_id: int = 0,
+        *,
+        failure: ItemFailure | None = None,
     ) -> WorkItemResult[TOutput, TContext]:
         """Build the failed result for an exhausted/unhandled error.
 
@@ -741,18 +763,17 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         # All retries exhausted or unhandled exception
         # Create a failed result so the item is recorded
 
-        # Extract token usage from exception if available
-        failed_tokens = {}
-        if hasattr(e, "__dict__") and "_failed_token_usage" in e.__dict__:
-            failed_tokens = e.__dict__["_failed_token_usage"]
-        admission_wait_seconds = float(
-            getattr(e, "__dict__", {}).get(_ADMISSION_WAIT_EXCEPTION_KEY, 0.0)
-        )
-        timing = getattr(e, "__dict__", {}).get(_TIMING_EXCEPTION_KEY)
-        if not isinstance(timing, WorkItemTiming):
+        if failure is not None and failure.exception is e:
+            failed_tokens: dict[str, int] = cast("dict[str, int]", dict(failure.token_usage))
+            timing = failure.timing
+            error_info = failure.error_info
+        else:
+            stamp = self._token_extractor._observe_failed_stamp(e)
+            failed_tokens = cast("dict[str, int]", dict(stamp.usage)) if stamp is not None else {}
             timing = WorkItemTiming()
-        classifier = self._classifier_resolver.resolve(work_item.strategy)
-        error_info = _classify_error(e, classifier)
+            classifier = self._classifier_resolver.resolve(work_item.strategy)
+            error_info = self._classify_error(e, classifier)
+        admission_wait_seconds = timing.admission_wait_seconds
 
         token_msg = ""
         if failed_tokens.get("total_tokens", 0) > 0:
@@ -821,6 +842,66 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
         return result
 
+    async def _run_attempt(
+        self,
+        work_item: LLMWorkItem[TInput, TOutput, TContext],
+        worker_id: int,
+        attempt: int,
+        strategy: LLMCallStrategy[TOutput],
+        retry_state: RetryState,
+        try_number: int,
+        started: float,
+    ) -> AttemptResult[TOutput, TContext] | AttemptFailure:
+        """Adapt legacy host hooks to explicit retry outcomes.
+
+        The host hook owns execution and its resource finalizers. On return or
+        ordinary failure those owners have unwound; this boundary snapshots only
+        metadata. Cancellation/process-control exceptions propagate unchanged.
+        No reservation, lease, or task is transferred to an outcome.
+        """
+        try:
+            result = await self._host._process_item(
+                work_item,
+                worker_id,
+                attempt_number=attempt,
+                strategy=strategy,
+                retry_state=retry_state,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exception:
+            classifier = self._classifier_resolver.resolve(work_item.strategy)
+            info = self._classify_error(exception, classifier)
+            return AttemptFailure(
+                exception,
+                self._observe_exception_usage(exception),
+                _attempt_timing(
+                    retry_state,
+                    attempt=attempt,
+                    try_number=try_number,
+                    total_seconds=max(0.0, time.perf_counter() - started),
+                    success=False,
+                    error_type=type(exception).__name__,
+                    error_category=info.error_category,
+                ),
+                info,
+            )
+        state = runtime_state(retry_state).current_attempt
+        return AttemptResult(
+            result,
+            _attempt_timing(
+                retry_state,
+                attempt=attempt,
+                try_number=try_number,
+                total_seconds=max(0.0, time.perf_counter() - started),
+                success=result.success,
+                error_type=result.error.split(":", 1)[0]
+                if not result.success and result.error
+                else None,
+                error_category=state.error_category,
+            ),
+        )
+
     async def _process_item_with_retries(
         self,
         work_item: LLMWorkItem[TInput, TOutput, TContext],
@@ -833,6 +914,25 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             prepared = await self.prepare_logical_item(work_item, worker_id, deadline)
         if prepared.terminal_result is not None:
             return prepared.terminal_result
+        token = _prepared_item.set((self, prepared))
+        try:
+            return await self._retry_prepared_item(prepared, worker_id, deadline)
+        finally:
+            _prepared_item.reset(token)
+
+    async def _retry_prepared_item(
+        self,
+        prepared: PreparedLogicalItem[TInput, TOutput, TContext],
+        worker_id: int,
+        deadline: float | None,
+    ) -> WorkItemResult[TOutput, TContext]:
+        """Choose retries from finalized attempt outcomes within prepared context.
+
+        Holds logical-item state, never provider capacity. Physical attempt
+        owners finish before an outcome is inspected or backoff starts. Terminal
+        metadata is passed to result construction separately from the exception;
+        cancellation remains control flow and propagates through the host hook.
+        """
         # Existing host overrides may tighten the deadline when delegating.
         # They cannot extend or remove the original total-item budget.
         if deadline is not None and (prepared.deadline is None or deadline < prepared.deadline):
@@ -889,53 +989,45 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 if self._abort_controller is not None:
                     self._abort_controller.raise_if_aborted(work_item.item_id)
             except (ItemDeadlineExceeded, BatchDeadlineExceeded, BatchAbortedError) as exc:
-                self._attach_failed_tokens(exc, cumulative_failed_tokens)
-                exc.__dict__[_TIMING_EXCEPTION_KEY] = _work_item_timing(
-                    item_started, attempt_timings
+                item_runtime.failure = ItemFailure(
+                    exc,
+                    cast(TokenUsage, dict(cumulative_failed_tokens)),
+                    _work_item_timing(item_started, attempt_timings),
+                    self._classify_error(exc, classifier),
                 )
                 raise
             try_number += 1
             try_started = time.perf_counter()
             reset_attempt_runtime(retry_state, try_number)
-            try:
-                # Through the host so a processor subclass override takes effect.
-                result = await self._host._process_item(
-                    work_item,
-                    worker_id,
-                    attempt_number=attempt,
-                    strategy=strategy,
-                    retry_state=retry_state,
+            outcome = await self._run_attempt(
+                work_item, worker_id, attempt, strategy, retry_state, try_number, try_started
+            )
+            if isinstance(outcome, AttemptFailure):
+                attempt_error = outcome.exception
+                self._token_extractor.accumulate(
+                    cumulative_failed_tokens, cast("dict[str, int]", outcome.usage.usage)
                 )
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                # Accumulate token usage across every attempt (including
-                # rate-limit retries) so users see the true cost of a failure.
-                attempt_tokens = self._exception_tokens(e)
-                self._token_extractor.accumulate(cumulative_failed_tokens, attempt_tokens)
-                admission_wait_seconds = item_runtime.cumulative_admission_wait_seconds
-                if hasattr(e, "__dict__"):
-                    e.__dict__[_ADMISSION_WAIT_EXCEPTION_KEY] = admission_wait_seconds
-
-                error_info = _classify_error(e, classifier)
-                error_snippet = str(e)[:ERROR_MESSAGE_MAX_LENGTH]
-                error_type = type(e).__name__
-                attempt_timing = _attempt_timing(
-                    retry_state,
-                    attempt=attempt,
-                    try_number=try_number,
-                    total_seconds=max(0.0, time.perf_counter() - try_started),
-                    success=False,
-                    error_type=error_type,
-                    error_category=error_info.error_category,
-                )
+                error_info = outcome.error_info
+                error_snippet = str(attempt_error)[:ERROR_MESSAGE_MAX_LENGTH]
+                error_type = type(attempt_error).__name__
+                attempt_timing = outcome.timing
                 attempt_timings.append(attempt_timing)
 
-                def attach_timing(exception: Exception) -> None:
-                    if hasattr(exception, "__dict__"):
-                        exception.__dict__[_TIMING_EXCEPTION_KEY] = _work_item_timing(
-                            item_started, attempt_timings
-                        )
+                failure_outcome: AttemptFailure = outcome
+
+                def remember_failure(
+                    exception: Exception, resolved: AttemptFailure = failure_outcome
+                ) -> None:
+                    item_runtime.failure = ItemFailure(
+                        exception,
+                        cast(TokenUsage, dict(cumulative_failed_tokens)),
+                        _work_item_timing(item_started, attempt_timings),
+                        resolved.error_info
+                        if exception is resolved.exception
+                        else self._classify_error(
+                            exception, self._classifier_resolver.resolve(work_item.strategy)
+                        ),
+                    )
 
                 if not error_info.is_retryable:
                     # Surface an operator hint (e.g. a 402 insufficient-balance
@@ -947,9 +1039,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         )
                     else:
                         logger.debug(f"Error not retryable: {error_type}")
-                    self._attach_failed_tokens(e, cumulative_failed_tokens)
-                    attach_timing(e)
-                    raise
+                    remember_failure(attempt_error)
+                    raise attempt_error
 
                 if error_info.is_rate_limit:
                     # Rate limits do NOT consume the max_attempts budget — they're
@@ -965,7 +1056,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                             f"for {work_item.item_id}:\n"
                             f"  Last error type: {error_type}\n"
                             f"  Last error message: "
-                            f"{str(e)[:ERROR_MESSAGE_DETAILED_LENGTH]}{token_summary}"
+                            f"{str(attempt_error)[:ERROR_MESSAGE_DETAILED_LENGTH]}{token_summary}"
                         )
                         exhausted = RateLimitRetriesExceeded(
                             f"Exceeded {max_rate_limit_retries} rate-limit retries for "
@@ -973,10 +1064,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                             item_id=work_item.item_id,
                             rate_limit_retries=rate_limit_retries,
                         )
-                        exhausted.__dict__["_failed_token_usage"] = cumulative_failed_tokens
-                        exhausted.__dict__[_ADMISSION_WAIT_EXCEPTION_KEY] = admission_wait_seconds
-                        attach_timing(exhausted)
-                        raise exhausted from e
+                        remember_failure(exhausted)
+                        raise exhausted from attempt_error
                     logger.warning(
                         f"[WARN]Rate-limit retry {rate_limit_retries} for {work_item.item_id} "
                         f"(attempt {attempt}/{max_attempts} budget unchanged): "
@@ -993,11 +1082,10 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         f"for {work_item.item_id}:\n"
                         f"  Final error type: {error_type}\n"
                         f"  Final error message: "
-                        f"{str(e)[:ERROR_MESSAGE_DETAILED_LENGTH]}{token_summary}"
+                        f"{str(attempt_error)[:ERROR_MESSAGE_DETAILED_LENGTH]}{token_summary}"
                     )
-                    self._attach_failed_tokens(e, cumulative_failed_tokens)
-                    attach_timing(e)
-                    raise
+                    remember_failure(attempt_error)
+                    raise attempt_error
 
                 # Only resolved validation categories bypass transient backoff.
                 # Names and messages are not a reliable classification policy.
@@ -1041,14 +1129,14 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         attempt_timing.retry_backoff_seconds = max(
                             0.0, time.perf_counter() - backoff_started
                         )
-                        self._attach_failed_tokens(exc, cumulative_failed_tokens)
-                        attach_timing(exc)
+                        remember_failure(exc)
                         raise
                     else:
                         attempt_timing.retry_backoff_seconds = max(
                             0.0, time.perf_counter() - backoff_started
                         )
             else:
+                result = outcome.result
                 # _process_item returned without raising (success, or a result
                 # produced by middleware / non-retryable handling). Fold in the
                 # tokens consumed by any earlier failed attempts so cost
@@ -1058,40 +1146,13 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 result.admission_wait_seconds = float(
                     item_runtime.cumulative_admission_wait_seconds
                 )
-                final_error_type: str | None = None
-                if not result.success and result.error:
-                    final_error_type = result.error.split(":", 1)[0]
-                category_value = item_runtime.current_attempt.error_category
-                if (
-                    not result.success
-                    and result.error_category is None
-                    and isinstance(category_value, str)
-                ):
+                category_value = outcome.timing.error_category
+                if not result.success and result.error_category is None:
                     result.error_category = category_value
-                attempt_timings.append(
-                    _attempt_timing(
-                        retry_state,
-                        attempt=attempt,
-                        try_number=try_number,
-                        total_seconds=max(0.0, time.perf_counter() - try_started),
-                        success=result.success,
-                        error_type=final_error_type,
-                        error_category=(
-                            category_value if isinstance(category_value, str) else None
-                        ),
-                    )
-                )
+                attempt_timings.append(outcome.timing)
                 result.timing = _work_item_timing(item_started, attempt_timings)
                 result.admission_wait_seconds = result.timing.admission_wait_seconds
                 return result
-
-    @staticmethod
-    def _attach_failed_tokens(exception: Exception, tokens: dict[str, int]) -> None:
-        """Stamp cumulative failed-attempt tokens onto an exception for the worker
-        to surface in the failed ``WorkItemResult``. No-op if the exception has
-        no writable ``__dict__``."""
-        if hasattr(exception, "__dict__"):
-            exception.__dict__["_failed_token_usage"] = tokens
 
     @staticmethod
     def _cumulative_token_summary(tokens: dict[str, int]) -> str:
@@ -1366,6 +1427,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     execution_started = time.perf_counter()
                     # _unpack_strategy_result accepts both legacy 2-tuples
                     # and current 3-tuples (output, tokens, metadata).
+                    usage_observation: TokenUsageObservation | None = None
                     try:
                         try:
                             remaining = remaining_seconds(deadline, item_id=work_item.item_id)
@@ -1427,13 +1489,6 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                 elapsed=elapsed,
                                 timeout_limit=attempt_timeout,
                             )
-                            if (
-                                hasattr(timeout_exc, "__dict__")
-                                and "_failed_token_usage" in timeout_exc.__dict__
-                            ):
-                                framework_timeout.__dict__["_failed_token_usage"] = (
-                                    timeout_exc.__dict__["_failed_token_usage"]
-                                )
                             raise framework_timeout from timeout_exc
                         output, token_usage, response_metadata = _unpack_strategy_result(raw_result)
                         usage_observation = self._token_extractor.observe_result(token_usage)
@@ -1444,7 +1499,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         ):
                             known_provider_token_usage = token_usage
                     except BaseException as provider_error:
-                        observation = (
+                        usage_observation = (
                             interrupted_usage
                             if interrupted_usage is not None
                             else self._observe_exception_usage(provider_error)
@@ -1452,53 +1507,43 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         if item_runtime is not None:
                             item_runtime.current_attempt.exception_usage = (
                                 provider_error,
-                                observation,
+                                usage_observation,
                             )
-                        if reservation.provider_started and not reservation.finalized:
-                            if admission_state.quota_gate.tpm_enabled:
-                                finalization = (
-                                    reservation.reconcile(observation.reported_tokens)
-                                    if observation.known and observation.reported_tokens is not None
-                                    else reservation.finalize_unknown()
-                                )
-                            else:
-                                finalization = reservation.finalize_request_only()
-                            if finalization is not None:
-                                await self._record_quota_finalization(
-                                    reservation=reservation,
-                                    finalization=finalization,
-                                    state=admission_state,
-                                    work_item=work_item,
-                                    worker_id=worker_id,
-                                    attempt_number=attempt_number,
-                                    retry_state=retry_state,
-                                )
                         raise
-                    else:
-                        if admission_state.quota_gate.tpm_enabled:
-                            finalization = (
-                                reservation.reconcile(usage_observation.reported_tokens)
-                                if usage_observation.known
-                                and usage_observation.reported_tokens is not None
-                                else reservation.finalize_unknown()
-                            )
-                        else:
-                            finalization = reservation.finalize_request_only()
-                        if finalization is not None:
-                            await self._record_quota_finalization(
-                                reservation=reservation,
-                                finalization=finalization,
-                                state=admission_state,
-                                work_item=work_item,
-                                worker_id=worker_id,
-                                attempt_number=attempt_number,
-                                retry_state=retry_state,
-                            )
                     finally:
-                        if item_runtime is not None:
-                            item_runtime.current_attempt.execution_seconds = max(
-                                0.0, time.perf_counter() - execution_started
-                            )
+                        try:
+                            # The provider body supplies one observation on success
+                            # or failure. Reconcile before releasing capacity; the
+                            # admission owner handles partial/pre-start fallback.
+                            if (
+                                usage_observation is not None
+                                and reservation.provider_started
+                                and not reservation.finalized
+                            ):
+                                if admission_state.quota_gate.tpm_enabled:
+                                    finalization = (
+                                        reservation.reconcile(usage_observation.reported_tokens)
+                                        if usage_observation.known
+                                        and usage_observation.reported_tokens is not None
+                                        else reservation.finalize_unknown()
+                                    )
+                                else:
+                                    finalization = reservation.finalize_request_only()
+                                if finalization is not None:
+                                    await self._record_quota_finalization(
+                                        reservation=reservation,
+                                        finalization=finalization,
+                                        state=admission_state,
+                                        work_item=work_item,
+                                        worker_id=worker_id,
+                                        attempt_number=attempt_number,
+                                        retry_state=retry_state,
+                                    )
+                        finally:
+                            if item_runtime is not None:
+                                item_runtime.current_attempt.execution_seconds = max(
+                                    0.0, time.perf_counter() - execution_started
+                                )
 
             llm_duration = time.time() - llm_start_time
             logger.debug(
@@ -1577,15 +1622,17 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            if (
-                known_provider_token_usage is not None
-                and hasattr(e, "__dict__")
-                and "_failed_token_usage" not in e.__dict__
-            ):
-                e.__dict__["_failed_token_usage"] = dict(known_provider_token_usage)
+            if known_provider_token_usage is not None and item_runtime is not None:
+                stamp = self._token_extractor._observe_failed_stamp(e)
+                if stamp is None:
+                    item_runtime.current_attempt.exception_usage = (
+                        e,
+                        self._token_extractor.observe_result(known_provider_token_usage),
+                    )
             # Notify strategy about the error before handling it
             # This allows strategy to adjust behavior for next retry (v0.3.0: now includes retry_state)
             if strategy is not None and not isinstance(e, (TokenEstimationError, QuotaScopeError)):
+                hook_attempt = item_runtime.current_attempt if item_runtime is not None else None
 
                 async def on_error_with_usage(exception: Exception) -> None:
                     before = self._token_extractor._observe_failed_stamp(exception)
@@ -1599,12 +1646,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         # consumed by result/retry accounting, never quota timing.
                         after = self._token_extractor._observe_failed_stamp(exception)
                         if (
-                            item_runtime is not None
+                            hook_attempt is not None
                             and after is not None
                             and after.known
                             and after != before
                         ):
-                            item_runtime.current_attempt.exception_usage = (exception, after)
+                            hook_attempt.exception_usage = (exception, after)
 
                 try:
                     await await_with_guardrails(
@@ -1620,9 +1667,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     BatchDeadlineExceeded,
                     BatchAbortedError,
                 ) as guard_exc:
-                    failed_tokens = self._exception_tokens(e)
-                    if failed_tokens:
-                        guard_exc.__dict__["_failed_token_usage"] = failed_tokens
+                    self._transfer_exception_usage(e, guard_exc)
                     raise
                 except Exception as callback_error:
                     # Log but don't fail if on_error callback has bugs
@@ -1636,7 +1681,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             effective_strategy = strategy or work_item.strategy
             if classifier is None:
                 classifier = self._classifier_resolver.resolve(effective_strategy)
-            error_info = _classify_error(e, classifier)
+            error_info = self._classify_error(e, classifier)
             if item_runtime is not None:
                 item_runtime.current_attempt.error_category = error_info.error_category
             if (
@@ -1654,9 +1699,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     abort_controller=self._abort_controller,
                 )
             except (ItemDeadlineExceeded, BatchDeadlineExceeded, BatchAbortedError) as guard_exc:
-                failed_tokens = self._exception_tokens(e)
-                if failed_tokens:
-                    guard_exc.__dict__["_failed_token_usage"] = failed_tokens
+                self._transfer_exception_usage(e, guard_exc)
                 raise
             finally:
                 if item_runtime is not None and error_info.is_rate_limit:
@@ -1701,7 +1744,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
         strategy = work_item.strategy
         classifier = self._classifier_resolver.resolve(strategy)
-        error_info = _classify_error(exception, classifier)
+        error_info = self._classify_error(exception, classifier)
 
         # Check if it's a rate limit
         if error_info.is_rate_limit:

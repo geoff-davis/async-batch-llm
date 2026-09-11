@@ -1395,3 +1395,75 @@ async def test_unseen_quota_grant_is_refunded_before_capacity(monkeypatch):
         assert strategy.calls == 0
     finally:
         await host.aclose()
+
+
+@pytest.mark.parametrize("surface", ["batch", "stream", "single", "pool"])
+@pytest.mark.parametrize("restricted", [False, True])
+@pytest.mark.parametrize("usage_source", ["usage", "stamp", "cause"])
+async def test_reused_failure_keeps_per_item_usage_without_framework_stamps(
+    surface, restricted, usage_source
+):
+    from types import MappingProxyType
+
+    class Failure(ConnectionError):
+        __slots__ = ()  # Exceptions still inherit a dictionary; this is not the restriction.
+
+        @property
+        def __dict__(self):
+            original = super().__dict__
+            return MappingProxyType(original) if restricted else original
+
+    failure = Failure("shared provider failure")
+    if usage_source == "usage":
+        failure.usage = {"total_tokens": 10}
+    elif usage_source == "stamp":
+        failure._failed_token_usage = {"total_tokens": 10}
+    else:
+        cause = RuntimeError("provider result")
+        cause.result = SimpleNamespace(usage={"total_tokens": 10})
+        failure.__cause__ = cause
+    original = dict(failure.__dict__)
+    strategy = _SequenceStrategy([failure], estimate=TokenEstimate(20))
+    config = _config(retry=RetryConfig(max_attempts=2))
+    if surface == "batch":
+        results = (await process_prompts(strategy, ["a", "b"], config=config)).results
+    elif surface == "stream":
+        results = [r async for r in process_stream(strategy, ["a", "b"], config=config)]
+    elif surface == "single":
+        results = [await call_result(strategy, p, config=config) for p in ["a", "b"]]
+    else:
+        async with LLMCallPool(strategy, config=config) as pool:
+            results = [await pool.submit_result(p) for p in ["a", "b"]]
+    assert all(not r.success and r.exception is failure for r in results)
+    assert [r.token_usage["total_tokens"] for r in results] == [20, 20]
+    assert all([a.reported_tokens for a in r.timing.attempts] == [10, 10] for r in results)
+    assert dict(failure.__dict__) == original
+
+
+async def test_guard_replacement_keeps_unknown_usage_without_synthetic_zero_stamp():
+    from async_batch_llm._internal.guardrails import AbortCause, AbortController
+
+    entered = asyncio.Event()
+
+    class Hook(_SequenceStrategy):
+        async def on_error(self, exception, attempt, state=None):
+            entered.set()
+            await asyncio.Event().wait()
+
+    strategy = Hook([ValueError("unknown usage")], estimate=TokenEstimate(20))
+    host = ExecutorHost(_config(retry=RetryConfig(max_attempts=1)), strategy=strategy)
+    abort = AbortController(AbortMode.CANCEL_ACTIVE)
+    host._abort_controller = abort
+    task = asyncio.create_task(host.executor.execute(LLMWorkItem("x", strategy, "x")))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        await abort.trip(AbortCause(kind="fail_fast", reason="stop hook"))
+        result = await task
+        assert result.error_category == "batch_aborted"
+        assert result.timing.attempts[0].reported_tokens is None
+        assert "_failed_token_usage" not in result.exception.__dict__
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await host.aclose()
