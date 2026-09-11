@@ -71,6 +71,7 @@ nav:
   - Use Your Existing Async Client: callable-integration.md
   - Testing: testing.md
   - Benchmarks: benchmarks.md
+  - SQLite Maintenance Evidence: sqlite-maintenance-evidence.md
   - v0.22 Scale Evidence: v0.22-scale-evidence.md
   - Provider Integrations:
     - OpenAI-Compatible High Throughput: openai-high-throughput.md

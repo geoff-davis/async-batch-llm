@@ -156,7 +156,7 @@ async def test_creation_schema_manifest_indexes_and_pragmas(tmp_path: Path) -> N
 async def test_lifecycle_does_not_depend_on_asyncio_shield(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Avoid CPython 3.14 completion races for owned store work."""
+    """Characterize the retained callback bridge and private executor ownership."""
 
     def fail_shield(*args: Any, **kwargs: Any) -> None:
         raise AssertionError("SqliteArtifactStore lifecycle must not use asyncio.shield")

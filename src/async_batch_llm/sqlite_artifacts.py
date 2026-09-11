@@ -107,10 +107,11 @@ def _validate_non_negative_number(name: str, value: Any) -> float:
 async def _await_without_cancelling(future: asyncio.Future[Any]) -> Any:
     """Await owned work without propagating caller cancellation into it.
 
-    ``asyncio.shield()`` and ``asyncio.wait()`` can strand their outer waiter on
-    CPython 3.14 when the inner future completes during callback registration.
-    A low-frequency timer backs up the normal completion callback; cancellation
-    of the bridge future still leaves the owned work untouched.
+    A historical Python 3.14 smoke run motivated this defensive wakeup timer;
+    a CPython callback-registration defect has not been independently reproduced.
+    Keep the normal completion callback and its low-frequency backup until the
+    uncertainty is resolved (see docs/sqlite-maintenance-evidence.md). Cancelling
+    the bridge future leaves the owned work untouched.
     """
     if future.done():
         return future.result()

@@ -1,0 +1,18 @@
+{
+  "base_revision": "377ce4899cc0d9a59346418f4fdad5ace21c4491",
+  "platform": "Linux-6.17.0-41-generic-x86_64-with-glibc2.42",
+  "raw_files_and_tools_sha256": {
+    "benchmarks/sqlite_index_evidence.py": "2c48128e4620c5e3e8a79176c6c70595a2a24c9617e0f3302c3e9f1dc63bf223",
+    "benchmarks/sqlite_wait_evidence.py": "376f7602559d6193c1f972397b8bf81be7777d0add09c5afccb7b4b722efa1a7",
+    "benchmarks/sqlite_wait_plugin.py": "79729206ce5be3e583524002573d3d1e46c26134159f7cc9083c35c68019bddf",
+    "reports/sqlite-maintenance/indexes.json": "c6119db3bf1dfedadd8318ce3a1493cd82c547169321fbc60fc4f3aaec5035d3",
+    "reports/sqlite-maintenance/wait-py310.json": "b1daa4db0566dad002bd168a407c55c494dbeb3c90073e01c482850b16403b02",
+    "reports/sqlite-maintenance/wait-py311.json": "7424144251ff506de8872740def1df8b7928c4f559671d4cbfb7b6d95d929351",
+    "reports/sqlite-maintenance/wait-py312.json": "ca9dd60732a874c88024e636e5450ce2d371381f62fd2c178c6028578f144ede",
+    "reports/sqlite-maintenance/wait-py313.json": "e09928377168e3b205c6d0b0e7a0c75f77dc47b7f9b05a02c460aa262ddd3a4e",
+    "reports/sqlite-maintenance/wait-py314.json": "3d5b08b1546fde7f5765256f52c8b4c4936b301342c837a7c84d2790905384ba"
+  },
+  "wait_runs": "five trials x 2000 public lookups; 2000 native future completions per variant; four variants; five interpreters",
+  "index_runs": "three trials x three histories x four index sets; 60 keys x 300 versions; before/after ANALYZE",
+  "timing_limitations": "Local process timings; no CPU affinity or filesystem isolation. Do not treat as universal performance bounds."
+}
