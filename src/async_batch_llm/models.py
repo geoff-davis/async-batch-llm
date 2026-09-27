@@ -106,7 +106,9 @@ def _fallback_cache_content(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return {"type": type(value).__name__, "value": value}
     try:
-        from PIL.Image import Image
+        from importlib import import_module
+
+        Image = import_module("PIL.Image").Image
     except ImportError:
         Image = None  # type: ignore[misc,assignment]
     if Image is not None and isinstance(value, Image):

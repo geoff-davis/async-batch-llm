@@ -778,14 +778,29 @@ async def test_prov6_sdk_retry_setting_survives_reopen(retries):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("auth", ["admin_env", "admin_kwarg", "workload", "missing", "invalid"])
+@pytest.mark.parametrize(
+    "auth", ["api_key", "admin_env", "admin_kwarg", "workload", "missing", "invalid"]
+)
 async def test_sc1_sdk_credentials_resolution(monkeypatch, auth):
-    from openai import OpenAIError
+    import inspect
+
+    from openai import AsyncOpenAI, OpenAIError
+
+    required_option = {
+        "admin_env": "admin_api_key",
+        "admin_kwarg": "admin_api_key",
+        "workload": "workload_identity",
+        "invalid": "workload_identity",
+    }.get(auth)
+    if required_option and required_option not in inspect.signature(AsyncOpenAI).parameters:
+        pytest.skip(f"Installed OpenAI SDK does not support {required_option}")
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
     kwargs = {}
-    if auth == "admin_env":
+    if auth == "api_key":
+        kwargs["api_key"] = "test-key"
+    elif auth == "admin_env":
         monkeypatch.setenv("OPENAI_ADMIN_KEY", "test-admin")
     elif auth == "admin_kwarg":
         kwargs["admin_api_key"] = "test-admin"
