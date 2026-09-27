@@ -781,9 +781,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
     ) -> WorkItemResult[TOutput, TContext]:
         """Build the failed result for an exhausted/unhandled error.
 
-        Relocated verbatim from the worker loop so both the batch worker and the
-        queue-less surfaces produce identical failure results and ITEM_FAILED
-        events.
+        Batch workers and queue-less surfaces share failure-result construction.
+        The processor emits terminal events after checkpointing the final result.
         """
         # All retries exhausted or unhandled exception
         # Create a failed result so the item is recorded
@@ -850,21 +849,6 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         result.timing = timing
         if not result.success and result.error_category is None:
             result.error_category = error_info.error_category
-
-        # Emit ITEM_FAILED here too. Items that exhaust retries reach
-        # this fallback (the exception propagates out of
-        # _process_item_with_retries) rather than the non-retryable
-        # branch in _handle_execution_error, so without this emit a
-        # MetricsObserver would undercount failures vs BatchResult.
-        if not result.success:
-            await self._emit_event(
-                ProcessingEvent.ITEM_FAILED,
-                {
-                    "item_id": work_item.item_id,
-                    "error_type": type(e).__name__,
-                    "error_category": result.error_category,
-                },
-            )
 
         return result
 
@@ -1661,25 +1645,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 item_runtime.cumulative_admission_wait_seconds if item_runtime is not None else 0.0
             )
 
-            # Skip the duration calc + payload dict when nobody is observing.
-            if self._events.observers:
-                duration = time.time() - start_time
-                await self._emit_event(
-                    ProcessingEvent.ITEM_COMPLETED,
-                    {
-                        "item_id": work_item.item_id,
-                        "duration": duration,
-                        "tokens": token_usage.get("total_tokens", 0),
-                        "admission_wait_seconds": work_result.admission_wait_seconds,
-                        "structured_output_recovered": (work_result.structured_output_recovered),
-                        "structured_output_recovery_reason": (
-                            work_result.structured_output_recovery_reason
-                        ),
-                        "structured_output_retries_avoided": (
-                            work_result.structured_output_retries_avoided
-                        ),
-                    },
-                )
+            prepared = self._current_prepared()
+            if self._events.observers and prepared is not None:
+                prepared.completion_event = {
+                    "duration": time.time() - start_time,
+                    "tokens": token_usage.get("total_tokens", 0),
+                }
 
             # Only a successful live provider attempt advances this scope's
             # cooldown recovery. Dry-run must remain admission-state-neutral.
@@ -1882,15 +1853,6 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             f"  Error type: {error_name}\n"
             f"  Error message: {error_msg[:ERROR_MESSAGE_DETAILED_LENGTH]}\n"
             f"  This error will NOT be retried (not retryable){token_summary}"
-        )
-
-        await self._emit_event(
-            ProcessingEvent.ITEM_FAILED,
-            {
-                "item_id": work_item.item_id,
-                "error_type": error_name,
-                "error_category": error_info.error_category,
-            },
         )
 
         return WorkItemResult(

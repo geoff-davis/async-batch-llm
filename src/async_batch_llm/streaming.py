@@ -27,9 +27,15 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from ._internal.capacity import capture_capacity_warning_source
 from ._internal.cleanup import CleanupStep
-from ._internal.guardrails import BatchAdmissionStopped
 from .artifacts import ArtifactStore, ResumePolicy
-from .base import BatchResult, BatchTermination, LLMWorkItem, WorkItemResult
+from .base import (
+    BatchAdmissionClosedError,
+    BatchResult,
+    BatchTermination,
+    LLMWorkItem,
+    WorkItemResult,
+    _ProcessorState,
+)
 from .core import ProcessorConfig
 from .parallel import ParallelBatchProcessor
 
@@ -326,14 +332,14 @@ async def _process_stream_impl(
         except asyncio.CancelledError:
             if not processor.aborted:
                 raise  # consumer broke out early; cleanup handles teardown
-        except BatchAdmissionStopped:
+        except BatchAdmissionClosedError:
             pass  # controlled batch timeout/fail-fast stopped source admission
         except BaseException as exc:  # noqa: BLE001 - surfaced to the consumer below
             processor._finalization_primary_exception = exc
         finally:
             # Normal completion, controlled abort, or producer error: close the
             # accepted stream so every queued item receives a terminal result.
-            if not processor._finished:
+            if processor._state is _ProcessorState.STREAMING:
                 await processor.finish()
 
     body_error: BaseException | None = None

@@ -283,6 +283,10 @@ class BatchDeadlineExceeded(TimeoutError):
         self.item_id = item_id
 
 
+class BatchAdmissionClosedError(RuntimeError):
+    """The processor no longer accepts work; create a new processor to submit more."""
+
+
 class BatchAbortedError(RuntimeError):
     """An accepted collateral item was stopped by configured fail-fast."""
 

@@ -165,6 +165,7 @@ from .sqlite_artifacts import SqliteArtifactStore, SqliteDurability
 # Error classification and rate limit strategies
 from .strategies import (
     BatchAbortedError,
+    BatchAdmissionClosedError,
     BatchDeadlineExceeded,
     DefaultErrorClassifier,
     EmptyResponseError,
@@ -313,6 +314,7 @@ __all__ = [
     "MiddlewareContractError",
     "BatchDeadlineExceeded",
     "BatchAbortedError",
+    "BatchAdmissionClosedError",
     "ProviderResponseError",
     "QuotaScopeError",
     "RateLimitRetriesExceeded",

@@ -37,6 +37,9 @@ class EventDispatcher(Generic[TInput, TOutput, TContext]):
         observers: list[ProcessorObserver],
         middlewares: list[Middleware[TInput, TOutput, TContext]],
     ):
+        for observer in observers:
+            if not callable(getattr(observer, "on_event", None)):
+                raise TypeError("Observers must provide a callable on_event(event, data) method")
         self.observers = observers
         self.middlewares = middlewares
         self._invalid_after_classes: set[type] = set()
@@ -62,7 +65,7 @@ class EventDispatcher(Generic[TInput, TOutput, TContext]):
         event_data = data or {}
         for observer in self.observers:
             try:
-                if observer._abl_fast_observer:
+                if getattr(observer, "_abl_fast_observer", False) is True:
                     await observer.on_event(event, dict(event_data))
                 else:
                     await asyncio.wait_for(

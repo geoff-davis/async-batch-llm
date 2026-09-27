@@ -1449,10 +1449,30 @@ class ProcessorObserver(ABC):
 - `ITEM_COMPLETED`: `{item_id, duration, tokens, admission_wait_seconds,
   structured_output_recovered, structured_output_recovery_reason,
   structured_output_retries_avoided}`
-- `ITEM_FAILED`: `{item_id, error_type}`
+- `ITEM_FAILED`: `{item_id, submission_index, error_type, error_category}`
+- `ITEM_REPLAYED`: `{item_id, submission_index, success, error_type, error_category}`
 - `RATE_LIMIT_HIT`: `{item_id, worker_id}`
 - `COOLDOWN_STARTED`: `{worker_id, duration, consecutive}`
 - `COOLDOWN_ENDED`: `{duration, error?}`
+
+`add_work()` raises public `BatchAdmissionClosedError` (a `RuntimeError`) when
+finish, shutdown, or batch abort has stopped admission. Rejected items receive
+no submission index. Use a new processor for additional work.
+
+Observers may be duck-typed objects with a callable `on_event(event, data)`;
+subclassing `ProcessorObserver` is optional. The callback must return an awaitable.
+Invalid callbacks are rejected at processor construction. Observer exceptions and
+callback timeouts are logged without failing the item.
+
+Each finalized item emits exactly one of `ITEM_COMPLETED`, `ITEM_FAILED`, or
+`ITEM_REPLAYED`, after its checkpoint and before any fail-fast `BATCH_ABORTED` event.
+Middleware-filtered items count as failed; middleware recovery and `after_process`
+changes determine the final event. Fatal checkpoint failures and cancellation before
+finalization produce no terminal item event or processed-stat increment. Early
+shutdown may abandon accepted items, so processed counts can be lower than total.
+Replay does not emit an additional success/failure event or consume live tokens.
+For live provider successes, `duration` and `tokens` retain final-attempt values;
+new recovery-only success events use the final result's timing and token totals.
 
 **Cleanup note:**
 

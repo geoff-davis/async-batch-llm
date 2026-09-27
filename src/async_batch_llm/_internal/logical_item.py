@@ -20,6 +20,9 @@ class PreparedLogicalItem(Generic[TInput, TOutput, TContext]):
     retry_state: RetryState = field(default_factory=RetryState)
     terminal_result: WorkItemResult[TOutput, TContext] | None = None
 
+    # Final provider-attempt telemetry survives retry accounting and checkpointing.
+    completion_event: dict | None = None
+
     @property
     def runtime_state(self) -> ItemRuntimeState:
         return runtime_state(self.retry_state)

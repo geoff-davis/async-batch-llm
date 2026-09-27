@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Wake bounded producers when processor admission closes, including shutdown and
+  batch abort. Reject submissions after closure before configuring strategies or
+  running middleware; expose `BatchAdmissionClosedError` for callers.
+- Report one final item event after middleware recovery and checkpointing. Filtered
+  items and middleware failures now count as failed, recovered items as successful,
+  and failed replay error counts match processor statistics.
+- Accept duck-typed observers with callable `on_event`, and reject invalid observers
+  at construction instead of dropping their events.
+- `finish()` now rejects producers still waiting for input-queue space with
+  `BatchAdmissionClosedError`; work whose enqueue already committed is retained.
+  Multi-producer callers should join all producers before calling `finish()`.
+
 - Match Gemini caches by model and content fingerprint, honor provider expiry,
   and retry a narrowly recognized missing-cache error once after replacement.
   Fingerprint normalized request content, including nested parts, bytes and images;
@@ -77,6 +89,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Warn once per processor when enabled quota scopes exceed `max_workers`.
 
 ### Changed
+
+- **BREAKING:** Processor instances enforce one-shot batch/streaming entry. Mixing
+  `start()` and `process_all()`, restarting after close, and `finish()` after closing
+  without a prior finish raise `RuntimeError`. Repeated `start()` while streaming
+  and repeated `finish()` after a normal finish remain no-ops.
+- Terminal observer notifications follow artifact persistence and reflect the final
+  result. Fatal persistence failures and cancelled/abandoned items without a final
+  result do not emit a success or failure event. Replay keeps `ITEM_REPLAYED` only.
 
 - Gemini caches without the new reserved `abl-content` tag are no longer adopted;
   the first use creates a new cache. Escaped display names exceeding 128 characters
