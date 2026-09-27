@@ -17,6 +17,10 @@ from ..strategies.errors import BatchAbortedError, BatchDeadlineExceeded, ItemDe
 _T = TypeVar("_T")
 
 
+class _OperationTimerExpired(TimeoutError):
+    """Only the guardrail operation timer may raise this internal signal."""
+
+
 class BatchAdmissionStopped(RuntimeError):
     """Internal signal that a controlled abort stopped source admission."""
 
@@ -193,7 +197,7 @@ async def await_with_guardrails(
             raise abort_controller.exception_for(item_id)
         if deadline_is_limit:
             raise ItemDeadlineExceeded("End-to-end item deadline exceeded", item_id=item_id)
-        raise TimeoutError
+        raise _OperationTimerExpired
     except asyncio.CancelledError:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):

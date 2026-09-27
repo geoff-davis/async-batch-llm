@@ -1247,7 +1247,12 @@ class MyErrorClassifier(ErrorClassifier):
 
 ### ErrorInfo
 
-Information about a classified error.
+Information about a classified error. If a classifier raises an ordinary
+exception, the framework logs it with the classifier name and traceback, then
+fails that item with `classifier_error` and no retry. The result retains the
+original provider exception. Other items continue unless the caller explicitly
+includes `classifier_error` in `abort_on_error_categories`. Cancellation and
+process-control exceptions still propagate.
 
 ```python
 @dataclass
@@ -1727,7 +1732,7 @@ Exception raised when framework-level timeout is exceeded.
 ```python
 class FrameworkTimeoutError(TimeoutError):
     """
-    Timeout enforced by the async-batch-llm framework (asyncio.wait_for).
+    Timeout enforced by the async-batch-llm attempt timer.
 
     This distinguishes framework-level timeouts from API-level timeouts.
     Framework timeouts indicate the configured attempt_timeout was exceeded,
@@ -1739,8 +1744,12 @@ class FrameworkTimeoutError(TimeoutError):
 
 Differentiates between:
 
-- **Framework timeout**: `asyncio.wait_for()` timed out (exceeded `attempt_timeout`)
+- **Framework timeout**: the framework attempt timer exceeded `attempt_timeout`
 - **API timeout**: LLM provider returned timeout error (network issue, slow response)
+
+Provider-raised `TimeoutError` and `asyncio.TimeoutError` retain their exception
+identity and the `provider_or_transport_timeout` timing label. They do not emit
+framework timeout advice. Total-item and batch deadlines remain separate guards.
 
 **Error Classification:**
 
@@ -1752,9 +1761,9 @@ Differentiates between:
 
 If you see frequent `FrameworkTimeoutError`, it indicates:
 
-1. LLM calls are taking longer than configured timeout
-2. Retry delays don't fit within timeout window
-3. Solution: Increase `attempt_timeout` or reduce retry configuration
+Provider attempts are taking longer than `attempt_timeout`. Consider increasing
+that limit if the duration is expected. Admission waits and retry backoff do not
+consume the attempt timeout; they are covered by the total-item deadline.
 
 **Example:**
 

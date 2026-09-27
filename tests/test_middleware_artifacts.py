@@ -1145,3 +1145,79 @@ async def test_legacy_filter_artifact_cannot_replay_after_policy_allows(
     assert result.replayed_from_artifact is earlier_success
     assert result.output == ("stored" if earlier_success else "PROMPT!")
     assert strategy.calls == ([] if earlier_success else ["prompt"])
+
+
+@pytest.mark.parametrize("store_cls", [JsonlArtifactStore, SqliteArtifactStore])
+@pytest.mark.parametrize("terminal", [False, True])
+async def test_exec1_middleware_recovery_accounts_for_paid_attempts(tmp_path, store_cls, terminal):
+    from async_batch_llm import ArtifactIdentity, EmptyResponseError, TokenTrackingError
+
+    class PaidFailures(LLMCallStrategy[str]):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            error_type = EmptyResponseError if terminal and attempt == 2 else TokenTrackingError
+            raise error_type(
+                "paid failure",
+                token_usage={"input_tokens": 100, "output_tokens": 10, "total_tokens": 110},
+            )
+
+    class Recovery(BaseMiddleware):
+        async def on_error(self, work_item, error):
+            return WorkItemResult(
+                item_id=work_item.item_id,
+                success=True,
+                output="recovered",
+                token_usage={"total_tokens": 7},
+            )
+
+    path = tmp_path / "records"
+    identity = ArtifactIdentity(provider="test", model="exec1")
+    strategy = PaidFailures()
+    results = await process_prompts(
+        strategy,
+        [("x", "x")],
+        middlewares=[Recovery()],
+        artifact_store=store_cls(path, identity=identity),
+        config=ProcessorConfig(retry=RetryConfig(max_attempts=3, initial_wait=0.001, jitter=False)),
+    )
+    result = results.results[0]
+    assert result.success
+    assert result.token_usage["total_tokens"] == (220 if terminal else 330) + 7
+    stored = (
+        await store_cls.read_results(path)
+        if store_cls is SqliteArtifactStore
+        else store_cls.read_results(path)
+    )
+    assert stored.results[0].token_usage == result.token_usage
+    replayed = await process_prompts(
+        strategy,
+        [("x", "x")],
+        artifact_store=store_cls(path, identity=identity),
+        resume=ResumePolicy.REUSE_SUCCESSES,
+    )
+    assert replayed.results[0].replayed_from_artifact
+    assert replayed.results[0].token_usage == result.token_usage
+
+
+@pytest.mark.parametrize("invalid", [None, {"output": "wrong type"}])
+async def test_exec4_invalid_after_process_preserves_paid_success(invalid, caplog):
+    class InvalidAfter(BaseMiddleware):
+        async def after_process(self, result):
+            return invalid
+
+    class Provider(Strategy):
+        errors = 0
+
+        async def on_error(self, exception, attempt, state):
+            self.errors += 1
+
+    provider = Provider()
+    batch = await process_prompts(
+        provider, [("a", "one"), ("b", "two")], middlewares=[InvalidAfter()]
+    )
+    assert batch.succeeded == 2
+    assert len(provider.calls) == 2
+    assert provider.errors == 0
+    assert all(r.token_usage["total_tokens"] == 3 for r in batch.results)
+    messages = [r.message for r in caplog.records if "InvalidAfter" in r.message]
+    assert len(messages) == 1
+    assert type(invalid).__name__ in messages[0]

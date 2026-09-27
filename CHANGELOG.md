@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Share strategy preparation and cleanup across overlapping execution hosts on
+  one event loop. Distinct built-in OpenAI-compatible strategies sharing a model
+  also keep its owned client open until the last strategy releases it. Redundant
+  manual cleanup after releasing a strategy's model lease is a no-op.
+- Reopen owned OpenAI-compatible clients after cleanup for sequential reuse,
+  preserving explicit or negotiated connection limits. Caller-provided HTTP
+  transports are no longer closed by model cleanup.
+- Preserve provider timeout exceptions and their provider/transport timing
+  category instead of relabeling them as framework attempt timeouts.
+- Report a failing error classifier as a non-retryable `classifier_error` item
+  failure, preserving the provider exception and allowing other items to finish.
+- Include failed-attempt usage in middleware recovery results, in addition to
+  any usage supplied by the middleware, including persisted and replayed results.
+- Preserve successful results when `after_process` returns an invalid type,
+  without repeating the provider call. Warn once per middleware class per dispatcher.
+
+### Changed
+
+- Provider-raised timeouts now use the provider classifier's category instead
+  of `framework_timeout`: `api_timeout` for the default, OpenAI and OpenRouter
+  classifiers, or Gemini's existing message-dependent mapping (`timeout` for
+  a recognized timeout message; `unknown` with `is_timeout=False` for a bare
+  `TimeoutError()`). This affects `abort_on_error_categories`, per-category
+  metrics and consumers of `is_timeout`.
+- Overlapping hosts prepare a shared strategy once and defer actual cleanup
+  until its last lease releases. Cleanup reports retain each host's release step,
+  including a no-op release after failed preparation. Ordinary prepare failures
+  are shared between waiting hosts; subsequent acquisitions can retry.
+- Refuse automatic connection-pool resizing after an OpenAI-compatible model
+  has started a provider request. This also applies after cleanup until reopening,
+  preventing a newly added strategy from closing a peer's active client.
+
 ## [0.25.0] - 2026-09-11
 
 ### Fixed

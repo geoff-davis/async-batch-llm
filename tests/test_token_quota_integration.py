@@ -1064,7 +1064,17 @@ class _InvalidAfterMiddleware(BaseMiddleware[str, str, None]):
 
 
 @pytest.mark.asyncio
-async def test_failure_after_provider_reconciliation_preserves_known_usage() -> None:
+@pytest.mark.parametrize("internal_failure", [False, True])
+async def test_after_provider_reconciliation_preserves_known_usage(
+    monkeypatch, internal_failure
+) -> None:
+    if internal_failure:
+        from async_batch_llm._internal.event_dispatcher import EventDispatcher
+
+        async def fail_dispatch(self, result):
+            raise RuntimeError("internal failure after provider reconciliation")
+
+        monkeypatch.setattr(EventDispatcher, "run_after", fail_dispatch)
     strategy = _SequenceStrategy(
         [{"input_tokens": 4, "output_tokens": 3}],
         estimate=TokenEstimate(10),
@@ -1080,7 +1090,7 @@ async def test_failure_after_provider_reconciliation_preserves_known_usage() -> 
         await processor.cleanup()
 
     result = batch.results[0]
-    assert not result.success
+    assert result.success is not internal_failure
     assert strategy.calls == 1
     assert result.token_usage["total_tokens"] == 7
     assert result.timing.attempts[0].reported_tokens == 7

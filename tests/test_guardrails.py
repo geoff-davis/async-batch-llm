@@ -641,3 +641,19 @@ async def test_pydantic_ai_validation_category_only_aborts_for_exact_type(error_
     assert (result.termination.kind == "fail_fast") is native
     assert calls == (["trigger"] if native else ["trigger", "later"])
     assert result.results[1].success is not native
+
+
+@pytest.mark.parametrize("error_type", [TimeoutError, asyncio.TimeoutError])
+async def test_exec2_provider_timeout_retains_identity_and_timing(error_type, caplog):
+    error = error_type("provider socket timeout")
+
+    class ProviderTimeout(LLMCallStrategy[str]):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            raise error
+
+    result = await call_result(
+        ProviderTimeout(), "x", config=ProcessorConfig(retry=RetryConfig(max_attempts=1))
+    )
+    assert result.exception is error
+    assert result.timing.attempts[0].timeout_category == "provider_or_transport_timeout"
+    assert "Consider increasing config.attempt_timeout" not in caplog.text

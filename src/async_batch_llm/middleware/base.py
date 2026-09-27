@@ -33,7 +33,12 @@ class Middleware(ABC, Generic[TInput, TOutput, TContext]):
     - Middleware ``on_error`` runs for a terminal execution/preparation failure,
       not each retry. It is bypassed for filtering, invalid replacement items,
       controlled deadlines, and batch aborts. Strategy ``on_error`` remains an
-      attempt-level hook.
+      attempt-level hook. Recovery result usage is additive: the framework
+      includes usage consumed by failed provider attempts plus the usage returned
+      by middleware. Do not duplicate failed-attempt usage in the returned result.
+    - An invalid ``after_process`` return value preserves the previous result,
+      without retrying the provider or calling strategy ``on_error``. A warning
+      names the class and returned type once per middleware class per dispatcher.
     """
 
     @abstractmethod

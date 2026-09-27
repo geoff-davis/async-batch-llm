@@ -53,7 +53,10 @@ class ManagedLLMModel(LLMModel, Protocol):
 
     Models that need one-time setup (creating a cache) or cleanup
     implement this protocol. The strategy delegates prepare/cleanup
-    calls to the model.
+    calls to the model. Preparation must support reuse after cleanup; cleanup
+    must tolerate a partially completed previous cleanup. Overlapping hosts share
+    a strategy lifecycle within one event loop. Built-in OpenAI-compatible models
+    also share ownership across distinct ModelStrategy instances.
 
     Added in v0.6.0.
     """

@@ -521,3 +521,240 @@ class TestConnectionPoolSizing:
         mock_http_client.assert_called_once_with(300)
         _, kwargs = mock_client_cls.call_args
         assert kwargs["http_client"] is mock_http_client.return_value
+
+
+@pytest.mark.parametrize("surface", ["call", "batch", "direct"])
+async def test_prov1_owned_model_reopens_after_cleanup(surface, monkeypatch):
+    import httpx
+    from openai import AsyncOpenAI as SDKClient
+
+    import async_batch_llm.models as models
+    from async_batch_llm import OpenAIStrategy, call, process_prompts
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "id": "r",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "fake",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "ok"},
+                    }
+                ],
+            },
+        )
+
+    created = []
+
+    def construct(**kwargs):
+        kwargs["http_client"] = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        client = SDKClient(**kwargs)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(models, "AsyncOpenAI", construct)
+    model = OpenAIModel.from_api_key("fake", api_key="key", max_retries=0)
+    strategy = OpenAIStrategy(model)
+    for _ in range(2):
+        if surface == "call":
+            assert await call(strategy, "x") == "ok"
+        elif surface == "batch":
+            batch = await process_prompts(strategy, [("x", "x")])
+            assert batch.succeeded == 1
+        else:
+            assert (await model.generate("x")).text == "ok"
+            await model.cleanup()
+    assert len(created) == 2
+    assert all(client.is_closed() for client in created)
+
+
+async def test_prov1_caller_transport_survives_model_cleanup():
+    import httpx
+
+    transport = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200))
+    )
+    try:
+        model = OpenAIModel.from_api_key("fake", api_key="key", http_client=transport)
+        await model.cleanup()
+        assert not transport.is_closed
+        assert (await transport.get("https://test.invalid")).status_code == 200
+    finally:
+        await transport.aclose()
+
+
+async def test_prov1_two_strategies_share_owned_model_until_last_release(monkeypatch):
+    import asyncio
+
+    import httpx
+    from openai import AsyncOpenAI
+
+    from async_batch_llm import OpenAIStrategy, ProcessorConfig, RetryConfig, call_result, models
+
+    slow_started, fast_closed = asyncio.Event(), asyncio.Event()
+    in_flight = 0
+    close_counts = []
+
+    async def handle(request):
+        nonlocal in_flight
+        in_flight += 1
+        try:
+            if b"slow" in request.content:
+                slow_started.set()
+                await fast_closed.wait()
+            else:
+                await slow_started.wait()
+            return httpx.Response(
+                200,
+                json={
+                    "id": "x",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": "m",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "finish_reason": "stop",
+                            "message": {"role": "assistant", "content": "ok"},
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                },
+            )
+        finally:
+            in_flight -= 1
+
+    def factory(**kwargs):
+        client = AsyncOpenAI(
+            **kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        )
+        original_close = client.close
+
+        async def close():
+            close_counts.append(in_flight)
+            await original_close()
+
+        client.close = close
+        return client
+
+    monkeypatch.setattr(models, "AsyncOpenAI", factory)
+    model = OpenAIModel.from_api_key("m", api_key="test", max_retries=0)
+    config = ProcessorConfig(max_workers=1, retry=RetryConfig(max_attempts=1))
+    slow = asyncio.create_task(call_result(OpenAIStrategy(model), "slow", config=config))
+    await slow_started.wait()
+    try:
+        fast = await call_result(OpenAIStrategy(model), "fast", config=config)
+        assert fast.success
+        assert close_counts == []
+    finally:
+        fast_closed.set()
+        result = await slow
+    assert result.success
+    assert close_counts == [0]
+
+
+async def test_prov1_abandoned_host_does_not_pin_retained_strategys_model_lease():
+    import gc
+    import weakref
+
+    from async_batch_llm import OpenAIStrategy
+    from async_batch_llm._internal.strategy_lifecycle import StrategyLifecycle
+
+    client = _build_client(_build_response())
+    client.close = AsyncMock()
+    model = OpenAIModel("m", client=client)
+    model._owns_client = True
+    retained_strategy, peer = OpenAIStrategy(model), OpenAIStrategy(model)
+    abandoned, remaining = StrategyLifecycle(), StrategyLifecycle()
+    await abandoned.ensure_prepared(retained_strategy)
+    await remaining.ensure_prepared(peer)
+    abandoned_ref = weakref.ref(abandoned)
+    del abandoned
+    gc.collect()
+    assert abandoned_ref() is None
+    await remaining.cleanup_all()
+    client.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize("negotiated", [False, True])
+async def test_prov1_reopen_preserves_pool_limit(negotiated):
+    import asyncio
+
+    model = OpenAIModel.from_api_key(
+        "m", api_key="test", **({} if negotiated else {"max_connections": 17})
+    )
+    if negotiated:
+        assert await model.request_concurrency(17)
+    original = model._client
+    await model.cleanup()
+    await asyncio.gather(*(model.prepare() for _ in range(10)))
+    try:
+        assert model._client is not original
+        assert model.max_concurrency == 17
+        assert model._client._client._transport._pool._max_connections == 17
+    finally:
+        await model.cleanup()
+
+
+async def test_prov1_resize_does_not_close_active_shared_client():
+    model = OpenAIModel.from_api_key("m", api_key="test")
+    original = model._client
+    model._client_used = True
+    try:
+        assert not await model.request_concurrency(17)
+        assert model._client is original
+        assert not original.is_closed()
+    finally:
+        await model.cleanup()
+
+
+async def test_prov1_none_http_client_keeps_sdk_transport_owned():
+    model = OpenAIModel.from_api_key("m", api_key="test", http_client=None)
+    first = model._client
+    await model.cleanup()
+    assert first.is_closed()
+    await model.prepare()
+    try:
+        assert model._client is not first
+        assert not model._client.is_closed()
+    finally:
+        await model.cleanup()
+
+
+@pytest.mark.parametrize("host_managed", [False, True])
+async def test_prov1_redundant_manual_cleanup_preserves_peer_model_lease(host_managed):
+    import gc
+
+    from async_batch_llm import OpenAIStrategy
+    from async_batch_llm._internal.strategy_lifecycle import StrategyLifecycle
+
+    model = OpenAIModel.from_api_key("m", api_key="test")
+    first, peer = OpenAIStrategy(model), OpenAIStrategy(model)
+    host = StrategyLifecycle()
+    await peer.prepare()
+    try:
+        if host_managed:
+            await host.ensure_prepared(first)
+            await host.cleanup_all()
+        else:
+            await first.prepare()
+            await first.cleanup()
+        gc.collect()
+        assert not model._client.is_closed()
+        await first.cleanup()
+        assert not model._client.is_closed()
+    finally:
+        await peer.cleanup()
+    assert model._client.is_closed()
+    # Reusing the same strategy must acquire a fresh lease after the no-op close.
+    await first.prepare()
+    try:
+        assert not model._client.is_closed()
+    finally:
+        await first.cleanup()
+    assert model._client.is_closed()

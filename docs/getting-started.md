@@ -190,7 +190,34 @@ strength.
 See [Use Your Existing Async Client](callable-integration.md) for lifecycle,
 token accounting, cancellation, classification, and shared-call composition.
 
-## 9. Production guides
+## 9. Reusing strategies and models
+
+You can reuse a strategy across sequential batches or calls. Built-in
+OpenAI-compatible models created with `from_api_key()` reopen their owned client
+when prepared again after cleanup, preserving configured connection limits.
+Caller-provided SDK clients and HTTP transports remain caller-owned; close them
+only after all users finish.
+
+Overlapping calls, processors, and gateways on the same event loop share one
+strategy preparation. Each host releases its lease at close; the last host runs
+cleanup. Distinct built-in OpenAI-compatible strategies wrapping the same model
+also share its client lifetime. Use context managers or explicit close: garbage
+collection removes abandoned leases but cannot run asynchronous cleanup. A last
+owner abandoned after a peer deferred cleanup can therefore leak its resources.
+
+Ordinary preparation failures are shared by concurrent waiters in different
+hosts. A later acquisition retries; workers within one host are serialized and
+retry independently. Cancellation of the preparing caller lets peers retry.
+Custom managed models must support `prepare()` after `cleanup()` and idempotent
+cleanup after partial failure. Lifecycle registries are scoped to an event loop;
+sharing active SDK clients across threads or event loops is not supported.
+Do not manually close a model while framework calls still use it.
+Repeated cleanup of a strategy that already released its model lease is a no-op.
+Subclasses overriding `ModelStrategy.prepare()` must call `super().prepare()`
+to participate in shared-model ownership. An override that bypasses it retains
+the legacy direct model cleanup behavior.
+
+## 10. Production guides
 
 - [Choosing Your Limits](choosing-your-limits.md)
 - [Production Checklist](production-checklist.md)

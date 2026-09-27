@@ -97,6 +97,21 @@ Cancellation of the task that is closing a resource is counted explicitly.
   needed by that work is allowed during draining. Once the strategy phase is
   closing, new strategy preparation is rejected.
 
+### Shared strategy leases
+
+- Within one event loop, overlapping hosts share preparation of a strategy by
+  identity. Every acquired lease has a cleanup report step, including a no-op
+  release after failed preparation. A non-last release succeeds without running
+  strategy cleanup; the last release runs it. Built-in OpenAI-compatible models
+  apply the same ownership rules across distinct strategies wrapping one model.
+- Failed or interrupted last-owner cleanup retains that owner's lease. A new
+  owner waits for in-progress cleanup and prepares again afterward. A later close
+  retries cleanup only if the original owner is still last; otherwise it releases
+  its lease without closing a peer's resources.
+- Hosts must be explicitly closed. Garbage collection drops abandoned leases but
+  never schedules asynchronous cleanup; deferred cleanup can be lost if the
+  remaining owner is abandoned.
+
 ## 5. Stream finalization
 
 - The streaming end-of-stream is published only after successful

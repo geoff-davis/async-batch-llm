@@ -2478,3 +2478,37 @@ async def test_c3_interrupted_cooldown_sleep_releases_workers_and_is_reported(
             waiter.cancel()
         await asyncio.gather(waiter, return_exceptions=True)
         await host.aclose()
+
+
+async def test_shared_strategy_failed_prepare_has_release_step_without_cleanup() -> None:
+    from async_batch_llm._internal.strategy_lifecycle import StrategyLifecycle
+
+    class Unprepared(_Strategy):
+        async def prepare(self):
+            raise ValueError("no resource prepared")
+
+    strategy = Unprepared()
+    host = StrategyLifecycle()
+    with pytest.raises(ValueError, match="no resource"):
+        await host.ensure_prepared(strategy)
+    steps = host.cleanup_steps()
+    assert len(steps) == 1
+    assert steps[0].name == "strategy Unprepared"
+    await host.cleanup_all()
+    assert host.cleanup_complete
+    assert strategy.cleanup_calls == 0
+
+
+async def test_shared_strategy_nonlast_release_is_successful_cleanup_step() -> None:
+    from async_batch_llm._internal.strategy_lifecycle import StrategyLifecycle
+
+    strategy = _Strategy()
+    first, second = StrategyLifecycle(), StrategyLifecycle()
+    await first.ensure_prepared(strategy)
+    await second.ensure_prepared(strategy)
+    assert len(first.cleanup_steps()) == 1
+    await first.cleanup_all()
+    assert first.cleanup_complete
+    assert strategy.cleanup_calls == 0
+    await second.cleanup_all()
+    assert strategy.cleanup_calls == 1
