@@ -758,3 +758,68 @@ async def test_prov1_redundant_manual_cleanup_preserves_peer_model_lease(host_ma
     finally:
         await first.cleanup()
     assert model._client.is_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retries", [None, 3])
+async def test_prov6_sdk_retry_setting_survives_reopen(retries):
+    kwargs = {} if retries is None else {"max_retries": retries}
+    model = OpenAIModel.from_api_key("fake", api_key="test", **kwargs)
+    expected = 0 if retries is None else retries
+    try:
+        assert model._client.max_retries == expected
+        assert await model.request_concurrency(3)
+        assert model._client.max_retries == expected
+        await model.cleanup()
+        await model.prepare()
+        assert model._client.max_retries == expected
+    finally:
+        await model.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "auth", ["api_key", "admin_env", "admin_kwarg", "workload", "missing", "invalid"]
+)
+async def test_sc1_sdk_credentials_resolution(monkeypatch, auth):
+    import inspect
+
+    from openai import AsyncOpenAI, OpenAIError
+
+    required_option = {
+        "admin_env": "admin_api_key",
+        "admin_kwarg": "admin_api_key",
+        "workload": "workload_identity",
+        "invalid": "workload_identity",
+    }.get(auth)
+    if required_option and required_option not in inspect.signature(AsyncOpenAI).parameters:
+        pytest.skip(f"Installed OpenAI SDK does not support {required_option}")
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    kwargs = {}
+    if auth == "api_key":
+        kwargs["api_key"] = "test-key"
+    elif auth == "admin_env":
+        monkeypatch.setenv("OPENAI_ADMIN_KEY", "test-admin")
+    elif auth == "admin_kwarg":
+        kwargs["admin_api_key"] = "test-admin"
+    elif auth == "workload":
+        kwargs["workload_identity"] = {"provider": "test-provider"}
+    elif auth == "invalid":
+        kwargs.update(api_key="test", workload_identity={"provider": "test-provider"})
+    if auth == "missing":
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            OpenAIModel.from_api_key("test", **kwargs)
+    elif auth == "invalid":
+        with pytest.raises(OpenAIError, match="mutually exclusive"):
+            OpenAIModel.from_api_key("test", **kwargs)
+    else:
+        model = OpenAIModel.from_api_key("test", **kwargs)
+        try:
+            assert model._client.max_retries == 0
+            await model.cleanup()
+            await model.prepare()
+            assert model._client.max_retries == 0
+        finally:
+            await model.cleanup()

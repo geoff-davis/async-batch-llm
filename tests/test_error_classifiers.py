@@ -922,3 +922,304 @@ def test_default_classifier_without_optional_pydantic_ai(monkeypatch):
     info = DefaultErrorClassifier().classify(ValueError("invalid argument"))
     assert not info.is_retryable
     assert info.error_category == "logic_error"
+
+
+@pytest.mark.parametrize("kind", ["default", "openai", "openrouter", "gemini", "pydantic_ai"])
+@pytest.mark.parametrize(
+    "case,category,retryable,timeout",
+    [
+        ("rate_budget", "rate_limit_retries_exceeded", False, False),
+        ("empty", "empty_response", False, False),
+        ("schema", "structured_output_schema_rejected", False, False),
+        ("validation", "structured_output_validation_error", True, False),
+        ("framework_timeout", "framework_timeout", True, True),
+        ("bare_timeout", None, True, True),
+    ],
+)
+def test_prov9_shared_classification(kind, case, category, retryable, timeout):
+    from async_batch_llm.classifiers import OpenAIErrorClassifier, OpenRouterErrorClassifier
+    from async_batch_llm.strategies.errors import (
+        EmptyResponseError,
+        RateLimitRetriesExceeded,
+        StructuredOutputSchemaError,
+        StructuredOutputValidationError,
+    )
+
+    classifiers = {
+        "default": DefaultErrorClassifier(),
+        "openai": OpenAIErrorClassifier(),
+        "openrouter": OpenRouterErrorClassifier(),
+        "gemini": GeminiErrorClassifier(),
+        "pydantic_ai": PydanticAIStrategy(MockAgent()).recommended_error_classifier()
+        or DefaultErrorClassifier(),
+    }
+    errors = {
+        "rate_budget": RateLimitRetriesExceeded("quota retry budget exhausted"),
+        "empty": EmptyResponseError("MAX_TOKENS"),
+        "schema": StructuredOutputSchemaError("bad schema"),
+        "validation": StructuredOutputValidationError("invalid output"),
+        "framework_timeout": FrameworkTimeoutError("quota timeout"),
+        "bare_timeout": TimeoutError(),
+    }
+    info = classifiers[kind].classify(errors[case])
+    assert info.error_category == (category or ("timeout" if kind == "gemini" else "api_timeout"))
+    assert info.is_retryable is retryable
+    assert info.is_timeout is timeout
+    assert not info.is_rate_limit
+
+
+@pytest.mark.parametrize(
+    "status,category,retryable",
+    [
+        (401, "authentication", False),
+        (403, "permission_denied", False),
+        (404, "client_error", False),
+        (429, "rate_limit", True),
+        (500, "server_error", True),
+        (503, "server_error", True),
+    ],
+)
+def test_prov8_pydantic_status_dispatch(status, category, retryable):
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    classifier = (
+        PydanticAIStrategy(MockAgent()).recommended_error_classifier() or DefaultErrorClassifier()
+    )
+    info = classifier.classify(ModelHTTPError(status, "test"))
+    assert info.error_category == category
+    assert info.is_retryable is retryable
+    assert info.is_rate_limit is (status == 429)
+
+
+def test_prov8_usage_limit_is_terminal():
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    classifier = (
+        PydanticAIStrategy(MockAgent()).recommended_error_classifier() or DefaultErrorClassifier()
+    )
+    info = classifier.classify(UsageLimitExceeded("limit"))
+    assert not info.is_retryable
+    assert info.error_category == "usage_limit_exceeded"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"code": "insufficient_quota"},
+        {"error": {"code": "insufficient_quota"}},
+    ],
+)
+def test_prov4_openai_quota_is_not_cooldown(body):
+    import httpx2
+    from openai import RateLimitError
+
+    from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+    response = httpx2.Response(429, request=httpx2.Request("POST", "https://test.invalid"))
+    info = OpenAIErrorClassifier().classify(RateLimitError("quota", response=response, body=body))
+    assert info.error_category == "insufficient_balance"
+    assert not info.is_retryable
+    assert not info.is_rate_limit
+
+
+@pytest.mark.parametrize(
+    "ids,expected",
+    [
+        (["GenerateRequestsPerDayPerProject"], "quota_exhausted"),
+        (["GenerateRequestsPerDayPerProject", "GenerateRequestsPerMinute"], "rate_limit"),
+        (["unknown"], "rate_limit"),
+    ],
+)
+def test_prov4_gemini_daily_quota(ids, expected):
+    from google.genai.errors import ClientError
+
+    exc = ClientError(
+        429,
+        {
+            "error": {
+                "message": "quota",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                        "violations": [{"quotaId": value} for value in ids],
+                    }
+                ],
+            }
+        },
+    )
+    info = GeminiErrorClassifier().classify(exc)
+    assert info.error_category == expected
+    assert info.is_retryable is (expected == "rate_limit")
+
+
+def test_prov5_gemini_retry_delay():
+    from google.genai.errors import ClientError
+
+    exc = ClientError(
+        429,
+        {
+            "error": {
+                "message": "rate limit",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                        "retryDelay": "37s",
+                    }
+                ],
+            }
+        },
+    )
+    assert GeminiErrorClassifier().classify(exc).suggested_wait == 37
+
+
+@pytest.mark.parametrize("delay,expected", [(float("inf"), None), (float("nan"), None), (-1, 0)])
+def test_prov5_error_info_sanitizes_delay(delay, expected):
+    from async_batch_llm.strategies.errors import ErrorInfo
+
+    assert ErrorInfo(True, True, False, "rate_limit", delay).suggested_wait == expected
+
+
+def test_prov5_retry_after_milliseconds_precedes_seconds():
+    from types import SimpleNamespace
+
+    from async_batch_llm.strategies.errors import _retry_after_seconds
+
+    exc = Exception()
+    exc.response = SimpleNamespace(headers={"retry-after-ms": "1250", "retry-after": "99"})
+    assert _retry_after_seconds(exc) == 1.25
+
+
+@pytest.mark.parametrize("status", [400, 403, 404, 429, 502, 503])
+def test_prov9_openrouter_no_provider_only_transient_statuses(status):
+    from async_batch_llm.classifiers import OpenRouterErrorClassifier
+    from async_batch_llm.strategies.errors import ProviderResponseError
+
+    info = OpenRouterErrorClassifier().classify(
+        ProviderResponseError("No allowed providers", code=status)
+    )
+    assert info.is_retryable is (status in (502, 503))
+    assert info.error_category == ("network_error" if status in (502, 503) else "client_error")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["batch", "stream", "single", "pool"])
+@pytest.mark.parametrize("provider", ["openai", "pydantic_flat", "pydantic_nested"])
+async def test_prov4_quota_stops_after_one_provider_call(surface, monkeypatch, provider):
+    import httpx2
+    from openai import RateLimitError
+
+    from async_batch_llm import LLMCallPool, call_result, process_prompts, process_stream
+    from async_batch_llm._internal.rate_limit_coordinator import RateLimitCoordinator
+    from async_batch_llm.classifiers import OpenAIErrorClassifier
+
+    cooldown_calls = 0
+    original = RateLimitCoordinator.handle_rate_limit
+
+    async def record_cooldown(self, *args, **kwargs):
+        nonlocal cooldown_calls
+        cooldown_calls += 1
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(RateLimitCoordinator, "handle_rate_limit", record_cooldown)
+
+    class QuotaFailure(LLMCallStrategy[str]):
+        calls = 0
+
+        def recommended_error_classifier(self):
+            if provider != "openai":
+                from async_batch_llm.classifiers import PydanticAIErrorClassifier
+
+                return PydanticAIErrorClassifier()
+            return OpenAIErrorClassifier()
+
+        async def execute(self, prompt, attempt, timeout, state=None):
+            self.calls += 1
+            if provider != "openai":
+                from pydantic_ai.exceptions import ModelHTTPError
+
+                body = {"code": "insufficient_quota"}
+                if provider == "pydantic_nested":
+                    body = {"error": body}
+                raise ModelHTTPError(429, "test", body=body)
+            response = httpx2.Response(429, request=httpx2.Request("POST", "https://test.invalid"))
+            raise RateLimitError("quota", response=response, body={"code": "insufficient_quota"})
+
+    strategy = QuotaFailure()
+    config = ProcessorConfig(
+        retry=RetryConfig(max_attempts=2, max_rate_limit_retries=1, initial_wait=0.001),
+        rate_limit=RateLimitConfig(
+            cooldown_seconds=0.001, max_cooldown_seconds=0.01, slow_start_items=0
+        ),
+    )
+    if surface == "batch":
+        result = (await process_prompts(strategy, ["q"], config=config)).results[0]
+    elif surface == "stream":
+        result = [r async for r in process_stream(strategy, ["q"], config=config)][0]
+    elif surface == "single":
+        result = await call_result(strategy, "q", config=config)
+    else:
+        async with LLMCallPool(strategy, config=config) as pool:
+            result = await pool.submit_result("q")
+    assert strategy.calls == 1
+    assert result.error_category == "insufficient_balance"
+    assert cooldown_calls == 0
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_sc4_pydantic_quota_exhaustion(nested):
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    from async_batch_llm.classifiers import PydanticAIErrorClassifier
+
+    body = {"code": "insufficient_quota"}
+    if nested:
+        body = {"error": body}
+    info = PydanticAIErrorClassifier().classify(ModelHTTPError(429, "test", body=body))
+    assert info.error_category == "insufficient_balance"
+    assert not info.is_retryable
+    assert not info.is_rate_limit
+
+
+@pytest.mark.parametrize("classifier_name", ["openai", "openrouter"])
+@pytest.mark.parametrize("status", [None, "429", "mock", 429])
+@pytest.mark.parametrize("quota", [False, True])
+def test_sc5_rate_limit_type_fallback(classifier_name, status, quota):
+    from unittest.mock import MagicMock
+
+    from openai import RateLimitError
+
+    from async_batch_llm.classifiers.openai import OpenAIErrorClassifier
+    from async_batch_llm.classifiers.openrouter import OpenRouterErrorClassifier
+
+    response = MagicMock()
+    response.headers = {"retry-after": "2"}
+    if status != "mock":
+        response.status_code = status
+    error = RateLimitError(
+        "limited",
+        response=response,
+        body={"error": {"code": "insufficient_quota"}} if quota else None,
+    )
+    original_status = error.status_code
+    classifier = (
+        OpenAIErrorClassifier() if classifier_name == "openai" else OpenRouterErrorClassifier()
+    )
+    info = classifier.classify(error)
+    assert info.error_category == ("insufficient_balance" if quota else "rate_limit")
+    assert info.is_rate_limit is (not quota)
+    assert info.is_retryable is (not quota)
+    assert info.suggested_wait == (None if quota else 2)
+    assert error.status_code is original_status
+
+
+def test_sc5_unknown_status_does_not_imply_rate_limit():
+    from unittest.mock import MagicMock
+
+    from openai import APIStatusError
+
+    from async_batch_llm.classifiers.openai import OpenAIErrorClassifier
+
+    error = APIStatusError("unknown", response=MagicMock(), body=None)
+    info = OpenAIErrorClassifier().classify(error)
+    assert info.error_category == "api_error"
+    assert not info.is_rate_limit

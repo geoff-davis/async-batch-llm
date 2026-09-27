@@ -454,9 +454,11 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
     async def prepare(self) -> None:
         """Delegate to model.prepare() if the model has a managed lifecycle."""
         from ._internal.strategy_lifecycle import _acquire_lease, _retain_child_lease
-        from .models import OpenAICompatibleModel
 
-        if isinstance(self.model, OpenAICompatibleModel):
+        if (
+            isinstance(self.model, ManagedLLMModel)
+            and getattr(self.model, "_abl_owned_lifecycle", False) is True
+        ):
             lease = self._model_lease() if self._model_lease is not None else None
             if lease is None or lease.released or lease.loop() is not asyncio.get_running_loop():
                 lease = _acquire_lease(self.model)
@@ -694,6 +696,11 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
             )
 
         self.agent = agent
+
+    def recommended_error_classifier(self) -> "ErrorClassifier":
+        from .classifiers import PydanticAIErrorClassifier
+
+        return PydanticAIErrorClassifier()
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None

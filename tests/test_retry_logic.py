@@ -536,7 +536,9 @@ async def test_pydantic_ai_default_classifier_retry_delay(surface, error_kind, t
         return TestOutput(value="ok")
 
     strategy = PydanticAIStrategy(MockAgent(response_factory=respond, latency=0))
-    assert strategy.recommended_error_classifier() is None
+    from async_batch_llm import PydanticAIErrorClassifier
+
+    assert isinstance(strategy.recommended_error_classifier(), PydanticAIErrorClassifier)
     config = ProcessorConfig(retry=RetryConfig(max_attempts=2, initial_wait=0.02, jitter=False))
     if surface == "batch":
         result = (await process_prompts(strategy, ["x"], config=config)).results[0]

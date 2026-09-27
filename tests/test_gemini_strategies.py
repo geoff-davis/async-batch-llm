@@ -131,6 +131,8 @@ class TestGeminiModel:
         mock_response.usage_metadata = MagicMock()
         mock_response.usage_metadata.prompt_token_count = input_tokens
         mock_response.usage_metadata.candidates_token_count = output_tokens
+        mock_response.usage_metadata.tool_use_prompt_token_count = None
+        mock_response.usage_metadata.thoughts_token_count = None
         mock_response.usage_metadata.total_token_count = total_tokens
         mock_response.usage_metadata.cached_content_token_count = 0
 
@@ -229,6 +231,8 @@ class TestGeminiModel:
         mock_response.usage_metadata = MagicMock()
         mock_response.usage_metadata.prompt_token_count = 10
         mock_response.usage_metadata.candidates_token_count = 0
+        mock_response.usage_metadata.tool_use_prompt_token_count = None
+        mock_response.usage_metadata.thoughts_token_count = None
         mock_response.usage_metadata.total_token_count = 10
         mock_response.usage_metadata.cached_content_token_count = 0
         mock_response.candidates = []
@@ -516,8 +520,10 @@ class TestGeminiCachedModel:
         mock_cache = MagicMock()
         mock_cache.name = name
         mock_cache.model = "projects/test/models/gemini-test"
+        mock_cache.expire_time = None
         if create_time:
             mock_cache.create_time = MagicMock()
+            mock_cache.expire_time = None
             mock_cache.create_time.timestamp.return_value = create_time
         else:
             mock_cache.create_time = None
@@ -530,6 +536,8 @@ class TestGeminiCachedModel:
         mock_response.usage_metadata = MagicMock()
         mock_response.usage_metadata.prompt_token_count = 10
         mock_response.usage_metadata.candidates_token_count = 20
+        mock_response.usage_metadata.tool_use_prompt_token_count = None
+        mock_response.usage_metadata.thoughts_token_count = None
         mock_response.usage_metadata.total_token_count = 30
         mock_response.usage_metadata.cached_content_token_count = cached_tokens
         mock_response.candidates = []
@@ -616,6 +624,9 @@ class TestGeminiCachedModel:
             cache_ttl_seconds=3600,
         )
 
+        from async_batch_llm.models import _encode_tags_to_display_name
+
+        existing_cache.display_name = _encode_tags_to_display_name(model._cache_tags)
         await model.prepare()
 
         # Should not create new cache
@@ -650,6 +661,9 @@ class TestGeminiCachedModel:
             cache_tags={"version": "1.0", "type": "test"},
         )
 
+        from async_batch_llm.models import _encode_tags_to_display_name
+
+        matching_cache.display_name = _encode_tags_to_display_name(model._cache_tags)
         await model.prepare()
 
         assert model._cache == matching_cache
@@ -755,6 +769,7 @@ class TestGeminiCachedModel:
         # Manually set up expired cache
         await model.prepare()
         model._cache_created_at = time.time() - 100  # Expired
+        model._cache_expires_at = time.time() - 90
 
         # Generate should trigger renewal
         await model.generate("test")
@@ -969,3 +984,55 @@ class TestTokenTrackingErrorIntegration:
         error = TokenTrackingError("Error occurred")
 
         assert error._failed_token_usage == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("thoughts", [None, 0, 900])
+@pytest.mark.parametrize("tools", [None, 50])
+async def test_prov7_thinking_tokens_are_output_and_metadata(thoughts, tools):
+    from google.genai import types
+
+    from async_batch_llm import GeminiModel
+
+    response = types.GenerateContentResponse(
+        candidates=[
+            types.Candidate(
+                content=types.Content(role="model", parts=[types.Part(text="42")]),
+                finish_reason="STOP",
+            )
+        ],
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=100,
+            candidates_token_count=5,
+            thoughts_token_count=thoughts,
+            tool_use_prompt_token_count=tools,
+            total_token_count=105 + (thoughts or 0) + (tools or 0),
+        ),
+    )
+    client = MagicMock()
+    client.aio.models.generate_content = AsyncMock(return_value=response)
+    result = await GeminiModel("gemini-2.5-flash", client).generate("q")
+    assert result.output_tokens == 5 + (thoughts or 0)
+    assert result.input_tokens + result.output_tokens == result.total_tokens
+    assert (result.metadata or {}).get("reasoning_tokens", 0) == (thoughts or 0)
+
+
+@pytest.mark.asyncio
+async def test_prov9_empty_response_names_finish_reason():
+    from google.genai import types
+
+    from async_batch_llm.strategies.errors import EmptyResponseError
+
+    response = types.GenerateContentResponse(
+        candidates=[types.Candidate(finish_reason="MAX_TOKENS")],
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=10,
+            thoughts_token_count=100,
+            total_token_count=110,
+        ),
+    )
+    client = MagicMock()
+    client.aio.models.generate_content = AsyncMock(return_value=response)
+    with pytest.raises(EmptyResponseError, match="MAX_TOKENS") as caught:
+        await GeminiModel("gemini-test", client).generate("q")
+    assert caught.value._failed_token_usage["output_tokens"] == 100

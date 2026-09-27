@@ -147,6 +147,8 @@ def _mock_gemini_response(*, with_grounding: bool = False):
     response.usage_metadata = MagicMock()
     response.usage_metadata.prompt_token_count = 5
     response.usage_metadata.candidates_token_count = 7
+    response.usage_metadata.thoughts_token_count = None
+    response.usage_metadata.tool_use_prompt_token_count = None
     response.usage_metadata.total_token_count = 12
     response.usage_metadata.cached_content_token_count = 0
 

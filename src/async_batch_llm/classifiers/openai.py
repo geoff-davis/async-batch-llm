@@ -10,15 +10,11 @@ Added in v0.9.0.
 
 from __future__ import annotations
 
+import asyncio
+
 from ..strategies.errors import (
-    BatchAbortedError,
-    BatchDeadlineExceeded,
     ErrorClassifier,
     ErrorInfo,
-    FrameworkTimeoutError,
-    ItemDeadlineExceeded,
-    StructuredOutputSchemaError,
-    StructuredOutputValidationError,
     _retry_after_seconds,
     matches_any_pattern,
 )
@@ -66,36 +62,9 @@ class OpenAIErrorClassifier(ErrorClassifier):
         return matches_any_pattern(error_str, patterns)
 
     def classify(self, exception: Exception) -> ErrorInfo:
-        if isinstance(exception, ItemDeadlineExceeded):
-            return ErrorInfo(False, False, True, "framework_total_item_timeout")
-        if isinstance(exception, BatchDeadlineExceeded):
-            return ErrorInfo(False, False, True, "batch_deadline_exceeded")
-        if isinstance(exception, BatchAbortedError):
-            return ErrorInfo(False, False, False, "batch_aborted")
-        # Framework timeout takes priority over everything else.
-        if isinstance(exception, FrameworkTimeoutError):
-            return ErrorInfo(
-                is_retryable=True,
-                is_rate_limit=False,
-                is_timeout=True,
-                error_category="framework_timeout",
-            )
-
-        if isinstance(exception, StructuredOutputSchemaError):
-            return ErrorInfo(
-                is_retryable=False,
-                is_rate_limit=False,
-                is_timeout=False,
-                error_category="structured_output_schema_rejected",
-            )
-
-        if isinstance(exception, StructuredOutputValidationError):
-            return ErrorInfo(
-                is_retryable=True,
-                is_rate_limit=False,
-                is_timeout=False,
-                error_category="structured_output_validation_error",
-            )
+        info = self._framework_prelude(exception)
+        if info is not None:
+            return info
 
         # Try to dispatch on the openai SDK's exception types when available.
         info = self._classify_openai_exception(exception)
@@ -119,7 +88,7 @@ class OpenAIErrorClassifier(ErrorClassifier):
         # Generic timeout/connection by exception type or message.
         error_str = str(exception)
 
-        if isinstance(exception, TimeoutError) or self._matches_any_pattern(
+        if isinstance(exception, (TimeoutError, asyncio.TimeoutError)) or self._matches_any_pattern(
             error_str, TIMEOUT_PATTERNS
         ):
             return ErrorInfo(
@@ -162,32 +131,7 @@ class OpenAIErrorClassifier(ErrorClassifier):
                 error_category="rate_limit",
             )
 
-        # Logic bugs — deterministic; don't retry.
-        logic_bug_types = (
-            ValueError,
-            TypeError,
-            AttributeError,
-            KeyError,
-            IndexError,
-            NameError,
-            ZeroDivisionError,
-            AssertionError,
-        )
-        if isinstance(exception, logic_bug_types):
-            return ErrorInfo(
-                is_retryable=False,
-                is_rate_limit=False,
-                is_timeout=False,
-                error_category="logic_error",
-            )
-
-        # Default: unknown but retryable (likely transient).
-        return ErrorInfo(
-            is_retryable=True,
-            is_rate_limit=False,
-            is_timeout=False,
-            error_category="unknown",
-        )
+        return self._generic_tail(exception)
 
     def _classify_openai_exception(self, exception: Exception) -> ErrorInfo | None:
         """Return ErrorInfo for openai-SDK exceptions, or None to defer."""
@@ -202,13 +146,7 @@ class OpenAIErrorClassifier(ErrorClassifier):
             return None
 
         if isinstance(exception, RateLimitError):
-            return ErrorInfo(
-                is_retryable=True,
-                is_rate_limit=True,
-                is_timeout=False,
-                error_category="rate_limit",
-                suggested_wait=_retry_after_seconds(exception),
-            )
+            return self._classify_status_error(exception)
 
         if isinstance(exception, APITimeoutError):
             return ErrorInfo(
@@ -234,6 +172,30 @@ class OpenAIErrorClassifier(ErrorClassifier):
     def _classify_status_error(self, exception: Exception) -> ErrorInfo:
         """Branch on ``APIStatusError.status_code``."""
         status_code = getattr(exception, "status_code", None)
+        if not isinstance(status_code, int):
+            # SDK-shaped test doubles may omit a concrete response status.
+            # Preserve the SDK exception type without mutating the exception.
+            try:
+                from openai import RateLimitError
+            except ImportError:
+                pass
+            else:
+                if isinstance(exception, RateLimitError):
+                    status_code = 429
+
+        body = getattr(exception, "body", None)
+        error = body.get("error", body) if isinstance(body, dict) else {}
+        if status_code == 429 and (
+            getattr(exception, "code", None) == "insufficient_quota"
+            or (isinstance(error, dict) and error.get("code") == "insufficient_quota")
+        ):
+            return ErrorInfo(
+                False,
+                False,
+                False,
+                "insufficient_balance",
+                hint="Provider quota or credits exhausted; check account billing and limits.",
+            )
 
         if status_code == 429:
             return ErrorInfo(

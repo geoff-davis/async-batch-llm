@@ -27,7 +27,6 @@ from async_batch_llm import (
     ProcessorConfig,
 )
 
-
 async def main() -> None:
     model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-...")
     strategy = OpenAIStrategy(model)
@@ -44,9 +43,23 @@ async def main() -> None:
 
     print(result.results[0].output)
 
-
 asyncio.run(main())
 ```
+
+OpenAI credential resolution remains with the installed SDK, including supported
+admin-key and workload-identity authentication. Missing credentials raise
+`ValueError`; other SDK configuration errors retain their original type.
+
+## Retry ownership
+
+`from_api_key()` defaults the OpenAI SDK's `max_retries` to zero, including
+OpenRouter and DeepSeek models. The framework owns retries so its attempt counts,
+timeouts, and quota accounting reflect provider requests. An explicit
+`max_retries=N` overrides this default and is preserved when a client reopens.
+
+If you supply an SDK client yourself, construct it with `max_retries=0` to
+avoid retries inside a framework attempt. See the
+[OpenAI SDK retry documentation](https://github.com/openai/openai-python#retries).
 
 ## Choosing a model
 
@@ -67,6 +80,10 @@ is a better fit; that's a future addition (`OpenAIResponsesModel`).
 
 ## Structured output
 
+Trailing-markdown recovery uses the same Pydantic JSON validation as ordinary
+responses. Strict models therefore accept JSON representations of dates and tuples
+consistently on both paths.
+
 Use the `json_mode=True` convenience to request JSON, and the built-in
 `pydantic_json_parser` helper to parse it. The parser strips markdown code
 fences before validating, so providers that wrap JSON in ```` ```json ... ``` ````
@@ -78,11 +95,9 @@ from pydantic import BaseModel
 
 from async_batch_llm import OpenAIModel, OpenAIStrategy, pydantic_json_parser
 
-
 class Sentiment(BaseModel):
     sentiment: str
     confidence: float
-
 
 model = OpenAIModel.from_api_key(
     "gpt-4o-mini",
@@ -179,8 +194,9 @@ are unchanged unless you asked the model for these features.
 `OpenAIErrorClassifier` understands the openai SDK's exception hierarchy:
 
 - `RateLimitError` → retryable, rate-limit category. If the response carries a
-  `Retry-After` header, it's parsed into `ErrorInfo.suggested_wait`, which the
-  `RateLimitCoordinator` honors as a *floor* on the cooldown (the
+  `retry-after-ms` (preferred) or `Retry-After` header, it is parsed into
+  `ErrorInfo.suggested_wait`, which the
+  `RateLimitCoordinator` honors as a *floor* capped by `rate_limit.max_cooldown_seconds` (the
   `RateLimitStrategy` still owns the default duration when there's no header).
 - `APITimeoutError` → retryable, timeout.
 - `APIConnectionError` → retryable, network.
@@ -281,7 +297,6 @@ local vLLM, etc. with a few lines:
 ```python
 from async_batch_llm import OpenAICompatibleModel
 
-
 class TogetherModel(OpenAICompatibleModel):
     _default_base_url = "https://api.together.xyz/v1"
     _install_extras = "openai"
@@ -300,3 +315,7 @@ its source for a worked example of customizing token extraction.
   [`examples/example_deepseek.py`](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_deepseek.py).
 - [`examples/example_openai.py`](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_openai.py)
   — runnable example.
+
+Explicit `insufficient_quota` responses use `insufficient_balance` and stop
+without coordinated cooldown. OpenRouter's "No allowed providers" is transient
+only for 502/503; other statuses use the non-retryable `client_error` category.

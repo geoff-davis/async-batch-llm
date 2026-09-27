@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import math
 import time
 from typing import Any
 
@@ -51,7 +52,9 @@ class RateLimitCoordinator:
         # reject the processor's concrete dispatcher.
         events: EventDispatcher[Any, Any, Any],
         quota_scope_id: int | None = None,
+        max_cooldown_seconds: float = 600.0,
     ) -> None:
+        self._max_cooldown_seconds = max_cooldown_seconds
         self._strategy = rate_limit_strategy
         self._events = events
         self._quota_scope_id = quota_scope_id
@@ -282,6 +285,13 @@ class RateLimitCoordinator:
                 "[WARN]Rate limit strategy failed to determine cooldown: %s. "
                 "Resuming workers immediately.",
                 exc,
+            )
+
+        if suggested_wait is not None:
+            suggested_wait = (
+                min(max(0.0, suggested_wait), self._max_cooldown_seconds)
+                if math.isfinite(suggested_wait)
+                else None
             )
 
         # Respect a server-suggested wait (e.g. Retry-After) as a floor:

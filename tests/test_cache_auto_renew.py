@@ -44,6 +44,7 @@ def _make_mock_cache(name: str, *, expire_in: float = 3600.0) -> Any:
     cache.model = "projects/test/models/gemini-test"
     cache.display_name = None
     cache.create_time = MagicMock()
+    cache.expire_time = None
     cache.create_time.timestamp.return_value = time.time()
     cache.expire_time = MagicMock()
     cache.expire_time.timestamp.return_value = time.time() + expire_in
@@ -56,6 +57,8 @@ def _make_response(text: str) -> Any:
     usage = MagicMock()
     usage.prompt_token_count = 5
     usage.candidates_token_count = 3
+    usage.tool_use_prompt_token_count = None
+    usage.thoughts_token_count = None
     usage.total_token_count = 8
     usage.cached_content_token_count = 4
     response.usage_metadata = usage
@@ -170,3 +173,98 @@ def test_cache_within_renewal_buffer_helper():
     no_expiry = MagicMock()
     no_expiry.expire_time = None
     assert model._cache_within_renewal_buffer(no_expiry) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,message,recover",
+    [
+        (403, "CachedContent not found (or permission denied)", True),
+        (404, "Not found: cached content metadata", True),
+        (403, "API key denied", False),
+        (500, "CachedContent not found", False),
+    ],
+)
+async def test_prov3_missing_cache_retries_once(status, message, recover):
+    from google.genai.errors import APIError
+
+    from async_batch_llm.models import GeminiCachedModel
+
+    client = MagicMock()
+    old = _make_mock_cache("old")
+    fresh = _make_mock_cache("fresh")
+    client.aio.caches.list = AsyncMock(side_effect=lambda: _AsyncIterList([]))
+    client.aio.caches.create = AsyncMock(side_effect=[old, fresh])
+    error = APIError(status, {"error": {"message": message}})
+    client.aio.models.generate_content = AsyncMock(side_effect=[error, error])
+    model = GeminiCachedModel("gemini-test", client, [])
+    await model.prepare()
+    with pytest.raises(APIError) as raised:
+        await model.generate("q")
+    assert raised.value is error
+    assert client.aio.models.generate_content.await_count == (2 if recover else 1)
+    assert client.aio.caches.create.await_count == (2 if recover else 1)
+
+
+@pytest.mark.asyncio
+async def test_prov3_adopted_expiry_overrides_creation_plus_local_ttl():
+    from async_batch_llm.models import GeminiCachedModel, _encode_tags_to_display_name
+
+    client = MagicMock()
+    model = GeminiCachedModel("gemini-test", client, [])
+    cache = _make_mock_cache("adopted", expire_in=60)
+    cache.display_name = _encode_tags_to_display_name(model._cache_tags)
+    client.aio.caches.list = AsyncMock(return_value=_AsyncIterList([cache]))
+    await model.prepare()
+    assert model.cache_name == "adopted"
+    assert model._is_cache_expired()
+
+
+@pytest.mark.asyncio
+async def test_prov3_concurrent_missing_cache_shares_one_replacement():
+    import asyncio
+
+    from google.genai.errors import APIError
+
+    from async_batch_llm.models import GeminiCachedModel
+
+    client = MagicMock()
+    old, fresh = _make_mock_cache("old"), _make_mock_cache("fresh")
+    client.aio.caches.list = AsyncMock(side_effect=lambda: _AsyncIterList([]))
+    client.aio.caches.create = AsyncMock(side_effect=[old, fresh])
+    arrived = 0
+    both_started = asyncio.Event()
+
+    async def generate(**kwargs):
+        nonlocal arrived
+        if kwargs["config"]["cached_content"] == "old":
+            arrived += 1
+            if arrived == 2:
+                both_started.set()
+            await both_started.wait()
+            raise APIError(404, {"error": {"message": "CachedContent not found"}})
+        return _make_response("ok")
+
+    client.aio.models.generate_content = AsyncMock(side_effect=generate)
+    model = GeminiCachedModel("gemini-test", client, [])
+    await model.prepare()
+    results = await asyncio.gather(model.generate("a"), model.generate("b"))
+    assert [result.text for result in results] == ["ok", "ok"]
+    assert client.aio.caches.create.await_count == 2
+    assert client.aio.models.generate_content.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_prov3_adopted_unknown_age_remains_due_for_renewal():
+    from async_batch_llm.models import GeminiCachedModel, _encode_tags_to_display_name
+
+    client = MagicMock()
+    model = GeminiCachedModel("gemini-test", client, [])
+    cache = _make_mock_cache("unknown")
+    cache.create_time = None
+    cache.expire_time = None
+    cache.display_name = _encode_tags_to_display_name(model._cache_tags)
+    client.aio.caches.list = AsyncMock(return_value=_AsyncIterList([cache]))
+    await model.prepare()
+    assert model.cache_name == "unknown"
+    assert model._is_cache_expired()

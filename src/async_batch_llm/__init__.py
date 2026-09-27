@@ -98,6 +98,7 @@ from .classifiers import (
     GeminiErrorClassifier,
     OpenAIErrorClassifier,
     OpenRouterErrorClassifier,
+    PydanticAIErrorClassifier,
 )
 
 # Configuration
@@ -336,6 +337,7 @@ __all__ = [
     "GeminiErrorClassifier",
     "OpenAIErrorClassifier",
     "OpenRouterErrorClassifier",
+    "PydanticAIErrorClassifier",
     # Processor
     "ParallelBatchProcessor",
     # Structured-output parsing helpers

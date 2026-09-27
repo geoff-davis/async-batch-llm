@@ -44,6 +44,7 @@ async def test_cache_expiration_only_one_new_cache_created():
     new_cache.expire_time = datetime.now(timezone.utc) + timedelta(hours=1)  # Fresh
     new_cache.model = "models/gemini-2.0-flash"  # Full path format
     new_cache.create_time = MagicMock()
+    new_cache.expire_time = None
     new_cache.create_time.timestamp = MagicMock(return_value=datetime.now(timezone.utc).timestamp())
 
     async def mock_create_cache(*args, **kwargs):
@@ -73,6 +74,8 @@ async def test_cache_expiration_only_one_new_cache_created():
         response.usage_metadata = MagicMock()
         response.usage_metadata.prompt_token_count = 100
         response.usage_metadata.candidates_token_count = 50
+        response.usage_metadata.tool_use_prompt_token_count = None
+        response.usage_metadata.thoughts_token_count = None
         response.usage_metadata.total_token_count = 150
         response.usage_metadata.cached_content_token_count = 80
         return response
@@ -162,6 +165,7 @@ async def test_cache_expiration_during_processing():
     current_cache.expire_time = datetime.now(timezone.utc) + timedelta(hours=1)
     current_cache.model = "models/gemini-2.0-flash"
     current_cache.create_time = MagicMock()
+    current_cache.expire_time = None
     current_cache.create_time.timestamp = MagicMock(
         return_value=datetime.now(timezone.utc).timestamp()
     )
@@ -171,6 +175,7 @@ async def test_cache_expiration_during_processing():
     new_cache.expire_time = datetime.now(timezone.utc) + timedelta(hours=1)
     new_cache.model = "models/gemini-2.0-flash"
     new_cache.create_time = MagicMock()
+    new_cache.expire_time = None
     new_cache.create_time.timestamp = MagicMock(return_value=datetime.now(timezone.utc).timestamp())
 
     async def mock_create_cache(*args, **kwargs):
@@ -209,6 +214,8 @@ async def test_cache_expiration_during_processing():
         response.usage_metadata = MagicMock()
         response.usage_metadata.prompt_token_count = 100
         response.usage_metadata.candidates_token_count = 50
+        response.usage_metadata.tool_use_prompt_token_count = None
+        response.usage_metadata.thoughts_token_count = None
         response.usage_metadata.total_token_count = 150
         response.usage_metadata.cached_content_token_count = 80
         return response
@@ -269,6 +276,7 @@ async def test_cache_check_is_thread_safe():
     cache.expire_time = datetime.now(timezone.utc) - timedelta(hours=1)  # Expired
     cache.model = "models/gemini-2.0-flash"
     cache.create_time = MagicMock()
+    cache.expire_time = None
     cache.create_time.timestamp = MagicMock(
         return_value=(datetime.now(timezone.utc) - timedelta(hours=2)).timestamp()
     )
@@ -278,6 +286,7 @@ async def test_cache_check_is_thread_safe():
     new_cache.expire_time = datetime.now(timezone.utc) + timedelta(hours=1)
     new_cache.model = "models/gemini-2.0-flash"
     new_cache.create_time = MagicMock()
+    new_cache.expire_time = None
     new_cache.create_time.timestamp = MagicMock(return_value=datetime.now(timezone.utc).timestamp())
 
     async def mock_create(*args, **kwargs):
@@ -299,6 +308,8 @@ async def test_cache_check_is_thread_safe():
         response.usage_metadata = MagicMock()
         response.usage_metadata.prompt_token_count = 100
         response.usage_metadata.candidates_token_count = 50
+        response.usage_metadata.tool_use_prompt_token_count = None
+        response.usage_metadata.thoughts_token_count = None
         response.usage_metadata.total_token_count = 150
         response.usage_metadata.cached_content_token_count = 80
         return response

@@ -35,6 +35,7 @@ def _make_mock_cache(name: str, *, display_name: str | None = None) -> Any:
     cache.name = name
     cache.model = "projects/test/models/gemini-test"
     cache.display_name = display_name
+    cache.expire_time = None
     cache.create_time = MagicMock()
     cache.create_time.timestamp.return_value = time.time()
     return cache
@@ -127,6 +128,7 @@ async def test_find_existing_cache_via_display_name_tags():
         cache_tags=want,
     )
 
+    matching.display_name = _encode_tags_to_display_name(model._cache_tags)
     await model.prepare()
 
     assert model._cache is matching
@@ -157,8 +159,8 @@ async def test_cache_without_display_name_tags_is_skipped_when_model_has_tags():
 
 
 @pytest.mark.asyncio
-async def test_model_without_tags_reuses_any_cache_regardless_of_display_name():
-    """Backward-compat: a model with no cache_tags matches any cache, just as before."""
+async def test_model_without_user_tags_rejects_cache_without_content_tag():
+    """Content identity is required even when no user tags are supplied."""
     _genai_or_skip()
     from async_batch_llm.models import GeminiCachedModel, _encode_tags_to_display_name
 
@@ -174,7 +176,7 @@ async def test_model_without_tags_reuses_any_cache_regardless_of_display_name():
     )
 
     await model.prepare()
-    assert model._cache is tagged
+    assert model._cache is not tagged
 
 
 @pytest.mark.asyncio
@@ -232,12 +234,12 @@ async def test_create_cache_forwards_tags_as_display_name_only():
     config = call_kwargs["config"]
 
     # The fix: tags appear in display_name, never in a metadata kwarg.
-    assert config.display_name == _encode_tags_to_display_name(tags)
+    assert config.display_name == _encode_tags_to_display_name(model._cache_tags)
     assert not hasattr(config, "metadata") or getattr(config, "metadata", None) is None
 
 
 @pytest.mark.asyncio
-async def test_create_cache_without_tags_leaves_display_name_unset():
+async def test_create_cache_without_user_tags_includes_content_tag():
     _genai_or_skip()
     from async_batch_llm.models import GeminiCachedModel
 
@@ -253,4 +255,123 @@ async def test_create_cache_without_tags_leaves_display_name_unset():
     await model.prepare()
 
     config = client.aio.caches.create.call_args.kwargs["config"]
-    assert config.display_name is None
+    assert "abl-content" in config.display_name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["same", "different", "legacy", "different_model"])
+async def test_prov2_cache_requires_exact_content_identity(case):
+    from datetime import datetime, timedelta, timezone
+
+    from google.genai.types import CachedContent, Content, Part
+
+    from async_batch_llm.models import GeminiCachedModel
+
+    stored = []
+    client = _make_mock_client([])
+
+    async def create(*, model, config):
+        cache = CachedContent(
+            name=f"cachedContents/{len(stored)}",
+            model=f"models/{model}",
+            display_name=config.display_name,
+            create_time=datetime.now(timezone.utc),
+            expire_time=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        stored.append(cache)
+        return cache
+
+    async def listing():
+        return _AsyncIterList(stored)
+
+    client.aio.caches.create = AsyncMock(side_effect=create)
+    client.aio.caches.list = AsyncMock(side_effect=listing)
+    content = [Content(role="user", parts=[Part(text="private context")])]
+    first = GeminiCachedModel("gemini-test", client, content)
+    await first.prepare()
+    if case == "legacy":
+        stored[0].display_name = "old cache"
+    second = GeminiCachedModel(
+        "different-gemini-test" if case == "different_model" else "gemini-test",
+        client,
+        [Content(role="user", parts=[Part(text="other")])] if case == "different" else content,
+    )
+    await second.prepare()
+    assert client.aio.caches.create.await_count == (1 if case == "same" else 2)
+    assert (first.cache_name == second.cache_name) is (case == "same")
+
+
+@pytest.mark.parametrize("tags", [{"abl-content": "forged"}, {"long": "x" * 128}])
+def test_prov2_cache_tag_budget_and_reserved_key(tags):
+    from async_batch_llm.models import GeminiCachedModel
+
+    with pytest.raises(ValueError, match="abl-content|128-character"):
+        GeminiCachedModel("gemini-test", _make_mock_client([]), [], cache_tags=tags)
+
+
+@pytest.mark.parametrize("kind", ["nested", "bytes", "image", "file", "equivalent"])
+def test_sc2_sc3_cache_fingerprints_follow_request_content(kind):
+    from google.genai import types
+
+    from async_batch_llm.models import GeminiCachedModel
+
+    if kind == "nested":
+        left = [["doc", types.Part(text="more")]]
+        right = [
+            types.Content(role="user", parts=[types.Part(text="doc"), types.Part(text="more")])
+        ]
+    elif kind == "bytes":
+        left = [
+            {
+                "role": "user",
+                "parts": [{"inline_data": {"data": b"%PDF", "mime_type": "application/pdf"}}],
+            }
+        ]
+        right = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part(inline_data=types.Blob(data=b"%PDF", mime_type="application/pdf"))
+                ],
+            )
+        ]
+    elif kind == "image":
+        Image = pytest.importorskip("PIL.Image")
+        left = [Image.new("RGB", (2, 2), "red")]
+        right = [Image.new("RGB", (2, 2), "red")]
+    elif kind == "file":
+        left = [
+            types.File(uri="https://test/files/a", mime_type="application/pdf", state="PROCESSING")
+        ]
+        right = [
+            types.File(uri="https://test/files/a", mime_type="application/pdf", state="ACTIVE")
+        ]
+    else:
+        left = ["doc"]
+        right = [types.Content(role="user", parts=[types.Part(text="doc")])]
+    first = GeminiCachedModel("gemini-test", _make_mock_client([]), left)
+    second = GeminiCachedModel("gemini-test", _make_mock_client([]), right)
+    assert first._cache_tags["abl-content"] == second._cache_tags["abl-content"]
+    other = GeminiCachedModel("gemini-test", _make_mock_client([]), ["different"])
+    assert first._cache_tags["abl-content"] != other._cache_tags["abl-content"]
+
+
+def test_sc2_sc3_cache_fallback_without_sdk_transformer(monkeypatch):
+    from google.genai import _transformers, types
+
+    from async_batch_llm.models import GeminiCachedModel
+
+    monkeypatch.delattr(_transformers, "t_contents")
+    file = types.File(uri="https://test/files/a", mime_type="application/pdf", state="PROCESSING")
+    content = [
+        ["doc", types.Part(text="more")],
+        {"parts": [{"inline_data": {"data": b"%PDF", "mime_type": "application/pdf"}}]},
+        file,
+    ]
+    first = GeminiCachedModel("gemini-test", _make_mock_client([]), content)
+    file.state = "ACTIVE"
+    second = GeminiCachedModel("gemini-test", _make_mock_client([]), content)
+    assert first._cache_tags == second._cache_tags
+    file.uri = "https://test/files/b"
+    different = GeminiCachedModel("gemini-test", _make_mock_client([]), content)
+    assert first._cache_tags != different._cache_tags

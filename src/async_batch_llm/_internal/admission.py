@@ -548,9 +548,11 @@ class AdmissionRegistry:
         events: EventDispatcher[Any, Any, Any],
         max_requests_per_minute: float | None,
         max_tokens_per_minute: int | None = None,
+        max_cooldown_seconds: float = 600.0,
         clock: Callable[[], float] = time.perf_counter,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
+        self._max_cooldown_seconds = max_cooldown_seconds
         self._rate_limit_strategy = rate_limit_strategy
         self._events = events
         self._max_requests_per_minute = max_requests_per_minute
@@ -598,6 +600,7 @@ class AdmissionRegistry:
                     rate_limit_strategy=self._rate_limit_strategy,
                     events=self._events,
                     quota_scope_id=ordinal,
+                    max_cooldown_seconds=self._max_cooldown_seconds,
                 ),
                 quota_gate=QuotaGate(
                     self._max_requests_per_minute,

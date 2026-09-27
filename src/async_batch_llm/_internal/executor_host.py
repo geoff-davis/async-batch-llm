@@ -87,6 +87,7 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
             events=self._events,
             max_requests_per_minute=config.max_requests_per_minute,
             max_tokens_per_minute=config.max_tokens_per_minute,
+            max_cooldown_seconds=config.rate_limit.max_cooldown_seconds,
         )
         # Queue-less hosts are constructed for one strategy, so this old
         # private alias can point at that strategy's real scoped coordinator.
@@ -98,6 +99,7 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
             self._rate_limit_coord = RateLimitCoordinator(
                 rate_limit_strategy=self.rate_limit_strategy,
                 events=self._events,
+                max_cooldown_seconds=config.rate_limit.max_cooldown_seconds,
             )
             self._owns_compatibility_coordinator = True
         self._strategy_lifecycle: StrategyLifecycle[TOutput] = StrategyLifecycle()

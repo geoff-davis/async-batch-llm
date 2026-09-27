@@ -796,3 +796,39 @@ For issues with:
 - **batch-llm**: <https://github.com/geoff-davis/async-batch-llm/issues>
 - **Gemini API**: <https://developers.google.com/support>
 - **google-genai SDK**: <https://github.com/googleapis/python-genai/issues>
+
+## Cache identity, expiry, and client ownership
+
+Cached models require an `abl-content` fingerprint in each cache's display name.
+It covers the model and ordered cached content (including instructions supplied
+as content). Caches created by older versions lack the fingerprint and are not
+adopted, causing a one-time cache creation cost. The reserved tag uses 32 hex
+characters of SHA-256; user tags still use subset matching. The complete escaped
+display name must fit the API's 128-character limit, checked at construction.
+Content is normalized with the SDK's request transformer before fingerprinting.
+Equivalent strings and user-role Content values share an identity; nested parts,
+inline bytes, images, and uploaded File handles are supported. File state and other
+server metadata do not affect identity: only the URI and MIME type sent to Gemini
+matter. SDK models omit unset fields.
+
+If the private SDK transformer is unavailable, a conservative typed fallback
+handles nested content, bytes, images, and file references. It uses a separate hash
+namespace and may miss equivalent input spellings. Moving between SDK normalization
+and the fallback, or SDK changes to serialized request fields, can cause a cache miss.
+
+Provider `expire_time` takes precedence over creation time plus the local TTL,
+including after renewal. With auto-renewal enabled, a 403/404 error naming cached
+content triggers one cache replacement and one retry inside the same attempt.
+Unrelated permission errors propagate. Concurrent failures share the replacement.
+This narrowly matches cached-content messages; it is not a general 403/404 retry
+policy.
+
+`llm("gemini:...")` owns its Gemini client, closes both transports at cleanup,
+and rebuilds it for later reuse. Strategies sharing the same built-in model hold
+shared lifecycle leases. `GeminiModel(model, client)` and `GeminiCachedModel`
+leave caller-supplied clients open.
+
+Gemini output tokens include candidate and thinking tokens; input tokens include
+prompt and tool-use prompt tokens. Positive thinking usage is also available as
+`metadata["reasoning_tokens"]`. Empty responses include the provider finish
+reason and use the non-retryable `empty_response` category.

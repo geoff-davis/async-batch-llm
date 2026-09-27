@@ -142,3 +142,16 @@ async def test_shutdown_without_cooldown_is_noop():
     coord = _make_coordinator(cooldown=1.0)
     await coord.shutdown()
     assert next(iter(coord._owned_cooldowns), None) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "suggestion,expected", [(86400, 0.1), (float("inf"), 0.01), (float("nan"), 0.01)]
+)
+async def test_prov5_coordinator_caps_untrusted_suggestion(monkeypatch, suggestion, expected):
+    events = EventDispatcher(observers=[], middlewares=[])
+    coord = RateLimitCoordinator(
+        FixedDelayStrategy(cooldown=0.01), events, max_cooldown_seconds=0.1
+    )
+    assert await _captured_cooldown(coord, monkeypatch, suggested_wait=suggestion) == expected
+    await coord.shutdown()

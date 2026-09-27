@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Match Gemini caches by model and content fingerprint, honor provider expiry,
+  and retry a narrowly recognized missing-cache error once after replacement.
+  Fingerprint normalized request content, including nested parts, bytes and images;
+  uploaded-file state changes no longer alter cache identity.
+- Stop retrying explicit OpenAI quota exhaustion and unambiguous Gemini daily
+  quota exhaustion. Parse millisecond Retry-After headers and Gemini retry delays;
+  clamp server-suggested cooldowns to the configured maximum and ignore non-finite waits.
+- Classify PydanticAI HTTP failures by status and stop on usage-limit failures or
+  explicit `insufficient_quota` bodies, including nested OpenAI error bodies.
+- Reopen factory-owned Gemini clients after closing both transports, with shared
+  model leases protecting concurrent strategies.
+- Report missing OpenAI credentials as ValueError and list valid factory kwargs
+  when an unknown keyword is supplied. Preserve SDK-supported admin-key and
+  workload-identity credential resolution.
+
+- Trailing-markdown JSON recovery now uses Pydantic's JSON validation, preserving
+  strict-model behavior for dates and tuples.
 - Share strategy preparation and cleanup across overlapping execution hosts on
   one event loop. Distinct built-in OpenAI-compatible strategies sharing a model
   also keep its owned client open until the last strategy releases it. Redundant
@@ -27,11 +44,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Gemini caches without the new reserved `abl-content` tag are no longer adopted;
+  the first use creates a new cache. Escaped display names exceeding 128 characters
+  are rejected before making a request.
+- Built-in classifiers report terminal rate-limit retry exhaustion as
+  `rate_limit_retries_exceeded` (not a rate limit), empty provider responses as
+  `empty_response`, and Gemini structured-output failures with the shared
+  structured-output categories. Direct classification also preserves named middleware
+  contract and quota-scope errors. These affect category counts and abort-category matching.
+- Gemini now recognizes a bare provider TimeoutError as `timeout` with
+  `is_timeout=True`. OpenRouter "No allowed providers" is retryable only for
+  status 502/503; other statuses are `client_error`.
+
+- OpenAI-compatible `from_api_key()` models default SDK retries to zero so the
+  framework owns retry accounting; explicit `max_retries` values still win and
+  survive client reopening.
+- Gemini output token counts now include thinking tokens. Positive thinking usage
+  is also exposed as `metadata["reasoning_tokens"]`; input counts include tool-use prompt tokens.
 - Provider-raised timeouts now use the provider classifier's category instead
   of `framework_timeout`: `api_timeout` for the default, OpenAI and OpenRouter
   classifiers, or Gemini's existing message-dependent mapping (`timeout` for
-  a recognized timeout message; `unknown` with `is_timeout=False` for a bare
-  `TimeoutError()`). This affects `abort_on_error_categories`, per-category
+  recognized messages and bare `TimeoutError()`). This affects `abort_on_error_categories`, per-category
   metrics and consumers of `is_timeout`.
 - Overlapping hosts prepare a shared strategy once and defer actual cleanup
   until its last lease releases. Cleanup reports retain each host's release step,
