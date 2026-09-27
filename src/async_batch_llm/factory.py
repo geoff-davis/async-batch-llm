@@ -9,6 +9,7 @@ Added in v0.20.0 (issue #95).
 
 from __future__ import annotations
 
+import inspect
 import os
 from collections.abc import Callable
 from typing import Any, TypeVar, overload
@@ -41,6 +42,39 @@ def _valid_prefixes() -> str:
     )
 
 
+def _validate_model_kwargs(provider: str, kwargs: dict[str, Any]) -> None:
+    model_cls: Any = {
+        "gemini": GeminiModel,
+        "openai": OpenAIModel,
+        "openrouter": OpenRouterModel,
+        "deepseek": DeepSeekModel,
+    }[provider]
+    constructors = (
+        [model_cls.__init__]
+        if provider == "gemini"
+        else [cls.from_api_key for cls in model_cls.__mro__ if hasattr(cls, "from_api_key")]
+    )
+    if provider != "gemini" and _models.AsyncOpenAI is not None:
+        from openai import AsyncOpenAI
+
+        constructors.append(AsyncOpenAI.__init__)
+    valid = {"api_key"}
+    for constructor in constructors:
+        valid.update(
+            name
+            for name, parameter in inspect.signature(constructor).parameters.items()
+            if parameter.kind not in (parameter.VAR_KEYWORD, parameter.VAR_POSITIONAL)
+            and not name.startswith("_")
+            and name not in {"self", "cls", "client", "model"}
+        )
+    unknown = kwargs.keys() - valid
+    if unknown:
+        raise TypeError(
+            f"Unknown {provider} model kwargs: {', '.join(sorted(unknown))}. "
+            f"Valid kwargs: {', '.join(sorted(valid))}"
+        )
+
+
 def _build_gemini(model_id: str, model_kwargs: dict[str, Any]) -> GeminiModel:
     if _models.genai is None:
         raise ImportError(
@@ -56,7 +90,10 @@ def _build_gemini(model_id: str, model_kwargs: dict[str, Any]) -> GeminiModel:
                 "GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable."
             )
     client = _models.genai.Client(api_key=api_key)
-    return GeminiModel(model_id, client, **model_kwargs)
+    model = GeminiModel(model_id, client, **model_kwargs)
+    model._owns_client = True
+    model._reopen_kwargs = {"api_key": api_key}
+    return model
 
 
 @overload
@@ -145,6 +182,8 @@ def llm(
             "construct a model and strategy explicitly (see the 'custom "
             "strategy' docs)."
         )
+
+    _validate_model_kwargs(provider, model_kwargs)
 
     strategy_kwargs: dict[str, Any] = {
         "temperature": temperature,

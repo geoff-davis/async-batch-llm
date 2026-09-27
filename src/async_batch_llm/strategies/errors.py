@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import math
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -53,12 +55,19 @@ def _retry_after_seconds(exception: Exception) -> float | None:
     headers = getattr(response, "headers", None)
     if not headers:
         return None
+    milliseconds = headers.get("retry-after-ms") or headers.get("Retry-After-Ms")
+    if milliseconds is not None:
+        try:
+            delay = float(milliseconds) / 1000
+            return delay if math.isfinite(delay) and delay >= 0 else None
+        except (TypeError, ValueError, OverflowError):
+            return None
     raw = headers.get("retry-after") or headers.get("Retry-After")
     if raw is None:
         return None
     try:
         delay = float(raw)
-        return delay if delay > 0 else None
+        return delay if math.isfinite(delay) and delay >= 0 else None
     except (TypeError, ValueError):
         pass
     # HTTP-date form: compute the delay relative to now.
@@ -68,8 +77,8 @@ def _retry_after_seconds(exception: Exception) -> float | None:
 
         when = parsedate_to_datetime(raw)
         delay = when.timestamp() - time.time()
-        return delay if delay > 0 else None
-    except (TypeError, ValueError):
+        return delay if math.isfinite(delay) and delay >= 0 else None
+    except (TypeError, ValueError, OverflowError, OSError):
         return None
 
 
@@ -321,7 +330,7 @@ class ErrorInfo:
         suggested_wait: For rate limits, a server-suggested minimum wait in
             seconds (e.g. parsed from a ``Retry-After`` header). The
             ``RateLimitCoordinator`` honors this as a *floor* on the cooldown:
-            the backoff strategy may wait longer, but never shorter. ``None``
+            the backoff strategy may wait longer, subject to the configured maximum. ``None``
             means "no suggestion; use the strategy's value as-is".
         hint: Optional human-readable remediation hint for the operator
             (e.g. "top up your prepaid balance" for a 402). Surfaced in the
@@ -336,40 +345,19 @@ class ErrorInfo:
     suggested_wait: float | None = None
     hint: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.suggested_wait is not None:
+            if not math.isfinite(self.suggested_wait):
+                self.suggested_wait = None
+            else:
+                self.suggested_wait = max(0.0, self.suggested_wait)
+
 
 class ErrorClassifier(ABC):
     """Abstract base class for classifying LLM provider errors."""
 
-    @abstractmethod
-    def classify(self, exception: Exception) -> ErrorInfo:
-        """
-        Classify an exception and determine handling strategy.
-
-        Args:
-            exception: The exception to classify
-
-        Returns:
-            ErrorInfo with classification details
-        """
-        pass
-
-
-class DefaultErrorClassifier(ErrorClassifier):
-    """Default error classifier that handles common error types."""
-
-    def _matches_rate_limit(self, error_str: str) -> bool:
-        """Return True if the error string looks like a rate limit.
-
-        Numeric codes ("429") match on word boundaries via
-        :func:`matches_any_pattern`, so "Expected 4290 tokens" is not
-        misread as a rate limit.
-        """
-        return matches_any_pattern(error_str, RATE_LIMIT_PATTERNS)
-
-    def classify(self, exception: Exception) -> ErrorInfo:
-        """Classify common errors with conservative defaults."""
-        error_str = str(exception).lower()
-
+    def _framework_prelude(self, exception: Exception) -> ErrorInfo | None:
+        """Classify framework-owned failures before provider/message dispatch."""
         if isinstance(exception, (MiddlewareContractError, QuotaScopeError)):
             return ErrorInfo(
                 is_retryable=False,
@@ -415,58 +403,16 @@ class DefaultErrorClassifier(ErrorClassifier):
                 error_category="structured_output_validation_error",
             )
 
-        # PydanticAIStrategy uses this default classifier. Preserve immediate
-        # validation retries by the exact optional SDK type, never its name.
-        # ContentFilterError and IncompleteToolCall subclasses keep backoff.
-        try:
-            from pydantic_ai.exceptions import UnexpectedModelBehavior
-
-            if type(exception) is UnexpectedModelBehavior:
-                return ErrorInfo(
-                    is_retryable=True,
-                    is_rate_limit=False,
-                    is_timeout=False,
-                    error_category="validation_error",
-                )
-        except ImportError:
-            pass
-
-        # Detect rate limit errors from message patterns (works for simple Exception mocks)
-        if self._matches_rate_limit(error_str):
-            return ErrorInfo(
-                is_retryable=True,  # Rate limits are retryable - framework handles cooldown
-                is_rate_limit=True,
-                is_timeout=False,
-                error_category="rate_limit",
-            )
-
-        # Check for framework timeout (retryable but indicates timeout config may need adjustment)
         if isinstance(exception, FrameworkTimeoutError):
-            return ErrorInfo(
-                is_retryable=True,  # Retry - might succeed if LLM is faster
-                is_rate_limit=False,
-                is_timeout=True,
-                error_category="framework_timeout",
-            )
+            return ErrorInfo(True, False, True, "framework_timeout")
+        if isinstance(exception, RateLimitRetriesExceeded):
+            return ErrorInfo(False, False, False, "rate_limit_retries_exceeded")
+        if isinstance(exception, EmptyResponseError):
+            return ErrorInfo(False, False, False, "empty_response")
+        return None
 
-        # Check for API timeout (retryable - might be transient)
-        if isinstance(exception, TimeoutError) or "timeout" in error_str:
-            return ErrorInfo(
-                is_retryable=True,
-                is_rate_limit=False,
-                is_timeout=True,
-                error_category="api_timeout",
-            )
-
-        # Check for connection errors
-        if isinstance(exception, ConnectionError) or "connection" in error_str:
-            return ErrorInfo(
-                is_retryable=True,
-                is_rate_limit=False,
-                is_timeout=False,
-                error_category="connection_error",
-            )
-
+    def _generic_tail(self, exception: Exception) -> ErrorInfo:
+        """Classify validation and deterministic programming failures."""
         # Check for Pydantic validation errors (retryable - LLM might generate valid output on retry)
         try:
             from pydantic import ValidationError
@@ -510,3 +456,82 @@ class DefaultErrorClassifier(ErrorClassifier):
             is_timeout=False,
             error_category="unknown",
         )
+
+    @abstractmethod
+    def classify(self, exception: Exception) -> ErrorInfo:
+        """
+        Classify an exception and determine handling strategy.
+
+        Args:
+            exception: The exception to classify
+
+        Returns:
+            ErrorInfo with classification details
+        """
+        pass
+
+
+class DefaultErrorClassifier(ErrorClassifier):
+    """Default error classifier that handles common error types."""
+
+    def _matches_rate_limit(self, error_str: str) -> bool:
+        """Return True if the error string looks like a rate limit.
+
+        Numeric codes ("429") match on word boundaries via
+        :func:`matches_any_pattern`, so "Expected 4290 tokens" is not
+        misread as a rate limit.
+        """
+        return matches_any_pattern(error_str, RATE_LIMIT_PATTERNS)
+
+    def classify(self, exception: Exception) -> ErrorInfo:
+        """Classify common errors with conservative defaults."""
+        error_str = str(exception).lower()
+
+        info = self._framework_prelude(exception)
+        if info is not None:
+            return info
+
+        # PydanticAIStrategy uses this default classifier. Preserve immediate
+        # validation retries by the exact optional SDK type, never its name.
+        # ContentFilterError and IncompleteToolCall subclasses keep backoff.
+        try:
+            from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+            if type(exception) is UnexpectedModelBehavior:
+                return ErrorInfo(
+                    is_retryable=True,
+                    is_rate_limit=False,
+                    is_timeout=False,
+                    error_category="validation_error",
+                )
+        except ImportError:
+            pass
+
+        # Detect rate limit errors from message patterns (works for simple Exception mocks)
+        if self._matches_rate_limit(error_str):
+            return ErrorInfo(
+                is_retryable=True,  # Rate limits are retryable - framework handles cooldown
+                is_rate_limit=True,
+                is_timeout=False,
+                error_category="rate_limit",
+            )
+
+        # Check for API timeout (retryable - might be transient)
+        if isinstance(exception, (TimeoutError, asyncio.TimeoutError)) or "timeout" in error_str:
+            return ErrorInfo(
+                is_retryable=True,
+                is_rate_limit=False,
+                is_timeout=True,
+                error_category="api_timeout",
+            )
+
+        # Check for connection errors
+        if isinstance(exception, ConnectionError) or "connection" in error_str:
+            return ErrorInfo(
+                is_retryable=True,
+                is_rate_limit=False,
+                is_timeout=False,
+                error_category="connection_error",
+            )
+
+        return self._generic_tail(exception)

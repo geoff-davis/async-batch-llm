@@ -930,11 +930,9 @@ from pydantic import BaseModel
 
 from async_batch_llm import DeepSeekModel, DeepSeekStrategy
 
-
 class Verdict(BaseModel):
     valid: bool
     reason: str
-
 
 model = DeepSeekModel.from_api_key(
     "deepseek-v4-flash",
@@ -1281,7 +1279,10 @@ class ErrorInfo:
   - `"server_error"` - 5xx server error
   - `"connection_error"` - Network connection error
   - `"unknown"` - Unclassified error
-- `suggested_wait` (float | None): Suggested wait time before retry (seconds). Used for rate limits.
+- `suggested_wait` (float | None): Server-suggested rate-limit wait in seconds.
+  Non-finite values become `None`; negative values become zero. The coordinator
+  caps this suggestion at `rate_limit.max_cooldown_seconds`. A custom cooldown
+  strategy still controls its own returned duration.
 - `hint` (str | None): Optional operator-facing remediation hint, surfaced in
   the logs at WARNING when a non-retryable error gives up (e.g. the 402
   "top up your prepaid balance" guidance). `None` means no extra guidance.
@@ -1955,6 +1956,36 @@ if __name__ == "__main__":
 ```
 
 ---
+
+### Provider classifier categories
+
+`PydanticAIStrategy` recommends the exported `PydanticAIErrorClassifier`.
+It classifies `ModelHTTPError` by HTTP status (429 rate limit, 401 authentication,
+403 permission denied, other deterministic 4xx client errors, transient 5xx
+server errors). `UsageLimitExceeded` is non-retryable with category
+`usage_limit_exceeded`. Exact `UnexpectedModelBehavior` remains a retryable
+`validation_error`; its content-filter and incomplete-tool-call subclasses
+retain ordinary retry backoff.
+
+All built-in classifiers handle framework deadlines, aborts and framework
+timeouts before provider matching, along with named middleware-contract and
+quota-scope errors. Terminal rate-limit retry exhaustion uses
+`rate_limit_retries_exceeded` with `is_rate_limit=False`. Empty provider
+responses use non-retryable `empty_response`; the exception remains a
+`ValueError` subclass. Structured-output schema rejection is non-retryable
+`structured_output_schema_rejected`; local output validation is retryable
+`structured_output_validation_error`.
+
+Gemini provider timeouts use `timeout`, including bare `TimeoutError()`.
+Default, OpenAI and OpenRouter provider timeouts use `api_timeout`.
+Gemini daily quota exhaustion uses non-retryable `quota_exhausted` only when
+every reported quota violation has an explicit per-day quota ID; ambiguous and
+mixed daily/minute violations remain rate limits. Gemini RPC retry-delay hints
+are parsed alongside HTTP headers.
+
+Category changes affect per-category metrics and `abort_on_error_categories`.
+The string factory rejects unknown model kwargs with a list of accepted names,
+and unresolved OpenAI credentials raise `ValueError`.
 
 ## See Also
 

@@ -8,7 +8,10 @@ Added in v0.6.0.
 """
 
 import asyncio
+import base64
+import copy
 import hashlib
+import io
 import json
 import logging
 import time
@@ -80,6 +83,59 @@ def _build_openai_http_client(max_connections: int) -> Any:
     )
 
 
+def _fallback_cache_content(value: Any) -> Any:
+    """Conservative typed identity when the SDK normalizer is unavailable."""
+    from google.genai import types
+
+    if isinstance(value, types.File):
+        return {"type": "File", "uri": value.uri, "mime_type": value.mime_type}
+    if isinstance(value, BaseModel):
+        return {
+            "type": type(value).__name__,
+            "value": value.model_dump(mode="json", exclude_none=True),
+        }
+    if isinstance(value, (bytes, bytearray)):
+        return {"type": "bytes", "value": base64.b64encode(value).decode("ascii")}
+    if isinstance(value, list):
+        return {"type": "list", "value": [_fallback_cache_content(item) for item in value]}
+    if isinstance(value, dict):
+        return {
+            "type": "dict",
+            "value": {key: _fallback_cache_content(item) for key, item in value.items()},
+        }
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return {"type": type(value).__name__, "value": value}
+    try:
+        from PIL.Image import Image
+    except ImportError:
+        Image = None  # type: ignore[misc,assignment]
+    if Image is not None and isinstance(value, Image):
+        encoded = io.BytesIO()
+        value.save(encoded, format="PNG")
+        return {
+            "type": "image",
+            "mode": value.mode,
+            "size": value.size,
+            "format": value.format,
+            "data": base64.b64encode(encoded.getvalue()).decode("ascii"),
+        }
+    raise ValueError(f"Unsupported cached content type: {type(value).__name__}")
+
+
+def _canonical_cache_content(contents: Any) -> Any:
+    """Fingerprint the normalized request, not volatile SDK handle metadata."""
+    # Preserve construction with empty contents (validation belongs to create).
+    if isinstance(contents, list) and not contents:
+        return []
+    try:
+        from google.genai._transformers import t_contents
+    except ImportError:
+        # Separate namespace: a fallback digest cannot match an SDK-normalized
+        # digest accidentally. SDK upgrades may cause a safe one-time cache miss.
+        return {"fallback": _fallback_cache_content(contents)}
+    return [content.model_dump(mode="json", exclude_none=True) for content in t_contents(contents)]
+
+
 def _encode_tags_to_display_name(tags: dict[str, str]) -> str:
     """Encode cache_tags as a deterministic string for the CachedContent display_name.
 
@@ -131,6 +187,10 @@ def _extract_metadata(response: Any) -> dict[str, Any] | None:
             # Finish reason
             if hasattr(candidate, "finish_reason") and candidate.finish_reason:
                 metadata["finish_reason"] = str(candidate.finish_reason)
+
+        thoughts = getattr(getattr(response, "usage_metadata", None), "thoughts_token_count", 0)
+        if isinstance(thoughts, int) and thoughts > 0:
+            metadata["reasoning_tokens"] = thoughts
 
         # Grounding (google_search tool) — only present when the caller
         # requested it, so default payloads are unchanged for everyone else.
@@ -277,8 +337,12 @@ def _extract_tokens(response: Any) -> tuple[int, int, int, int]:
         )
         return 0, 0, 0, 0
 
-    input_tokens = getattr(usage_metadata, "prompt_token_count", 0) or 0
-    output_tokens = getattr(usage_metadata, "candidates_token_count", 0) or 0
+    input_tokens = (getattr(usage_metadata, "prompt_token_count", 0) or 0) + (
+        getattr(usage_metadata, "tool_use_prompt_token_count", 0) or 0
+    )
+    output_tokens = (getattr(usage_metadata, "candidates_token_count", 0) or 0) + (
+        getattr(usage_metadata, "thoughts_token_count", 0) or 0
+    )
     total_tokens = getattr(usage_metadata, "total_token_count", 0) or 0
     cached_tokens = 0
     if hasattr(usage_metadata, "cached_content_token_count"):
@@ -329,11 +393,49 @@ class GeminiModel:
                 "Install with: pip install 'async-batch-llm[gemini]'"
             )
 
+        self._abl_owned_lifecycle = True
+        self._owns_client = False
+        self._reopen_kwargs: dict[str, Any] | None = None
+        self._client_closed = False
+        self._client_lifecycle_lock: asyncio.Lock | None = None
+        self._client_lifecycle_loop: asyncio.AbstractEventLoop | None = None
         self._model = model
         self._client = client
         self._safety_settings = safety_settings
         self._default_system_instruction = system_instruction
         self._metadata_extractors = metadata_extractors
+
+    def _lifecycle_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._client_lifecycle_loop is not loop:
+            self._client_lifecycle_loop = loop
+            self._client_lifecycle_lock = asyncio.Lock()
+        assert self._client_lifecycle_lock is not None
+        return self._client_lifecycle_lock
+
+    async def prepare(self) -> None:
+        """Reopen a closed factory-owned client; caller clients stay untouched."""
+        if self._owns_client and self._client_closed:
+            async with self._lifecycle_lock():
+                if self._client_closed:
+                    assert self._reopen_kwargs is not None
+                    self._client = genai.Client(**self._reopen_kwargs)
+                    self._client_closed = False
+
+    async def cleanup(self) -> None:
+        """Close both transports of a factory-owned Gemini client."""
+        if not self._owns_client:
+            return
+        async with self._lifecycle_lock():
+            if self._client_closed:
+                return
+            try:
+                await self._client.aio.aclose()
+            finally:
+                try:
+                    self._client.close()
+                finally:
+                    self._client_closed = True
 
     def _build_metadata(self, response: Any) -> dict[str, Any] | None:
         """Built-in Gemini metadata plus any user-supplied extractors."""
@@ -359,6 +461,8 @@ class GeminiModel:
         Returns:
             Normalized LLMResponse.
         """
+        await self.prepare()
+
         # Build config dict
         call_config: dict[str, Any] = {}
         if temperature is not None:
@@ -394,7 +498,8 @@ class GeminiModel:
             if metadata and "safety_ratings" in metadata:
                 safety_info = f" Safety ratings: {metadata['safety_ratings']}"
             _raise_empty_response(
-                f"Empty response from model (likely blocked by safety filter).{safety_info}",
+                f"Empty response from model (finish_reason="
+                f"{(metadata or {}).get('finish_reason', 'unknown')}).{safety_info}",
                 tokens,
             )
 
@@ -506,16 +611,37 @@ class GeminiCachedModel:
 
         self._model = model
         self._client = client
-        self._cached_content = cached_content
+        self._cached_content = copy.deepcopy(cached_content)
         self._cache_ttl_seconds = cache_ttl_seconds
         self._cache_renewal_buffer_seconds = cache_renewal_buffer_seconds
         self._auto_renew = auto_renew
-        self._cache_tags = cache_tags or {}
+        if cache_tags and "abl-content" in cache_tags:
+            raise ValueError("cache_tags key 'abl-content' is reserved for content identity")
+        canonical_content = _canonical_cache_content(self._cached_content)
+        canonical = json.dumps(
+            {
+                "model": model.rsplit("/models/", 1)[-1].removeprefix("models/"),
+                "contents": canonical_content,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        self._cache_tags = dict(cache_tags or {})
+        self._cache_tags["abl-content"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+        display_name = _encode_tags_to_display_name(self._cache_tags)
+        if len(display_name) > 128:
+            raise ValueError(
+                "cache_tags exceed the 128-character display_name budget including "
+                "the reserved abl-content fingerprint and JSON escaping"
+            )
         self._safety_settings = safety_settings
         self._metadata_extractors = metadata_extractors
 
         self._cache: Any = None
         self._cache_created_at: float | None = None
+        self._cache_expires_at: float | None = None
         self._cache_lock: Any = None
         self._prepared = False
 
@@ -582,6 +708,7 @@ class GeminiCachedModel:
             # re-enter see an empty cache and no-op.
             self._cache = None
             self._cache_created_at = None
+            self._cache_expires_at = None
             self._prepared = False
 
             try:
@@ -661,11 +788,41 @@ class GeminiCachedModel:
         if config:
             call_config.update(config)
 
-        response = await self._client.aio.models.generate_content(
-            model=self._model,
-            contents=prompt,
-            config=call_config,  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
-        )
+        requested_cache = call_config["cached_content"]
+        owned_cache_name = self._cache.name
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self._model,
+                contents=prompt,
+                config=call_config,  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
+            )
+        except Exception as exc:
+            from google.genai.errors import APIError
+
+            missing_cache = (
+                isinstance(exc, APIError)
+                and exc.code in (403, 404)
+                and "cachedcontent" in str(exc.message).lower().replace(" ", "")
+                and requested_cache == owned_cache_name
+            )
+            if not self._auto_renew or not missing_cache:
+                raise
+            assert self._cache_lock is not None
+            async with self._cache_lock:
+                if self._cache is not None and self._cache.name == requested_cache:
+                    self._cache = None
+                    self._cache_created_at = None
+                    self._cache_expires_at = None
+                    self._prepared = False
+                    await self._find_or_create_cache(renewing=True, exclude_name=requested_cache)
+                    self._prepared = True
+            assert self._cache is not None
+            call_config["cached_content"] = self._cache.name
+            response = await self._client.aio.models.generate_content(
+                model=self._model,
+                contents=prompt,
+                config=call_config,  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
+            )
 
         tokens = _extract_tokens(response)
         input_tokens, output_tokens, total_tokens, cached_tokens = tokens
@@ -677,7 +834,8 @@ class GeminiCachedModel:
             if metadata and "safety_ratings" in metadata:
                 safety_info = f" Safety ratings: {metadata['safety_ratings']}"
             _raise_empty_response(
-                f"Empty response from model (likely blocked by safety filter).{safety_info}",
+                f"Empty response from model (finish_reason="
+                f"{(metadata or {}).get('finish_reason', 'unknown')}).{safety_info}",
                 tokens,
             )
 
@@ -694,11 +852,35 @@ class GeminiCachedModel:
     # ── Cache internals ─────────────────────────────────────────
 
     def _is_cache_expired(self) -> bool:
-        if self._cache is None or self._cache_created_at is None:
+        if self._cache is None:
+            return True
+        if self._cache_expires_at is not None:
+            return self._cache_expires_at - time.time() <= self._cache_renewal_buffer_seconds
+        if self._cache_created_at is None:
             return True
         cache_age = time.time() - self._cache_created_at
         expires_in = self._cache_ttl_seconds - cache_age
         return expires_in <= self._cache_renewal_buffer_seconds
+
+    def _remember_cache_expiry(
+        self, cache: Any, *, renewed: bool = False, newly_created: bool = False
+    ) -> None:
+        expiry = getattr(cache, "expire_time", None)
+        created = getattr(cache, "create_time", None)
+        if renewed:
+            self._cache_created_at = time.time()
+        elif created is not None:
+            self._cache_created_at = created.timestamp()
+        elif newly_created:
+            self._cache_created_at = time.time()
+        else:
+            # Unknown age on an adopted cache must not grant it a fresh TTL.
+            self._cache_created_at = time.time() - self._cache_ttl_seconds
+        self._cache_expires_at = (
+            expiry.timestamp()
+            if expiry is not None
+            else self._cache_created_at + self._cache_ttl_seconds
+        )
 
     def _cache_within_renewal_buffer(self, cache: Any) -> bool:
         """True if ``cache`` expires within the renewal buffer.
@@ -741,7 +923,11 @@ class GeminiCachedModel:
                 # reference current when they do.
                 if updated is not None:
                     self._cache = updated
-                self._cache_created_at = time.time()
+                if updated is not None:
+                    self._remember_cache_expiry(updated, renewed=True)
+                else:
+                    self._cache_created_at = time.time()
+                    self._cache_expires_at = time.time() + self._cache_ttl_seconds
                 self._prepared = True
                 logger.info(
                     f"Renewed Gemini cache TTL in place: {self._cache.name} "
@@ -761,16 +947,23 @@ class GeminiCachedModel:
         # themselves inside the renewal buffer so we don't re-adopt a dud.
         self._cache = None
         self._cache_created_at = None
+        self._cache_expires_at = None
         self._prepared = False
         await self._find_or_create_cache(renewing=True)
         self._prepared = True
 
-    async def _find_or_create_cache(self, renewing: bool = False) -> None:
+    async def _find_or_create_cache(
+        self, renewing: bool = False, *, exclude_name: str | None = None
+    ) -> None:
         try:
             caches = await self._client.aio.caches.list()
 
             async for cache in caches:
-                if not cache.model or not cache.model.endswith(self._model):
+                if cache.name == exclude_name:
+                    continue
+                if not cache.model or cache.model.rsplit("/models/", 1)[-1].removeprefix(
+                    "models/"
+                ) != self._model.rsplit("/models/", 1)[-1].removeprefix("models/"):
                     continue
 
                 # During renewal, ignore any candidate that is itself about to
@@ -802,13 +995,10 @@ class GeminiCachedModel:
                         continue
 
                 self._cache = cache
-                if hasattr(cache, "create_time") and cache.create_time:
-                    self._cache_created_at = cache.create_time.timestamp()
-                else:
-                    self._cache_created_at = time.time() - self._cache_ttl_seconds
+                self._remember_cache_expiry(cache)
 
                 tag_info = f" with tags {self._cache_tags}" if self._cache_tags else ""
-                age = time.time() - self._cache_created_at
+                age = time.time() - (self._cache_created_at or time.time())
                 logger.info(
                     f"Reusing existing Gemini cache: {self._cache.name}{tag_info} (age: {age:.0f}s)"
                 )
@@ -835,7 +1025,7 @@ class GeminiCachedModel:
             config=CreateCachedContentConfig(**config_kwargs),
         )
 
-        self._cache_created_at = time.time()
+        self._remember_cache_expiry(self._cache, newly_created=True)
         tag_info = f" with tags {self._cache_tags}" if self._cache_tags else ""
         logger.info(
             f"Created new Gemini cache: {self._cache.name}{tag_info} "
@@ -913,6 +1103,7 @@ class OpenAICompatibleModel:
                 f"Install with: pip install 'async-batch-llm[{self._install_extras}]'"
             )
 
+        self._abl_owned_lifecycle = True
         self._model = model
         self._client = client
         self._default_system_instruction = system_instruction
@@ -1330,11 +1521,12 @@ class OpenAICompatibleModel:
         if resolved_key is None and cls._api_key_env_var is not None:
             import os as _os
 
-            resolved_key = _os.environ.get(cls._api_key_env_var)
+            key_env = cls._api_key_env_var
+            resolved_key = _os.environ.get(key_env)
             if not resolved_key:
                 raise ValueError(
                     f"No API key for {cls.__name__}: pass api_key= or set the "
-                    f"{cls._api_key_env_var} environment variable."
+                    f"{key_env} environment variable."
                 )
 
         # When resolved_key is None and the SDK can self-resolve (OpenAIModel),
@@ -1342,7 +1534,25 @@ class OpenAICompatibleModel:
         # error if neither path produces one.
         if resolved_key is not None:
             client_kwargs["api_key"] = resolved_key
-        client = AsyncOpenAI(**client_kwargs)
+        client_kwargs.setdefault("max_retries", 0)
+        from openai import OpenAIError
+
+        try:
+            client = AsyncOpenAI(**client_kwargs)
+        except OpenAIError as exc:
+            # Keep all SDK authentication mechanisms and configuration errors.
+            # Only translate its known missing-credentials diagnostics.
+            if str(exc).startswith(
+                (
+                    "Missing credentials.",
+                    "The api_key client option must be set",
+                )
+            ):
+                raise ValueError(
+                    f"No credentials for {cls.__name__}: pass SDK credentials or set "
+                    "OPENAI_API_KEY (or OPENAI_ADMIN_KEY where supported)."
+                ) from exc
+            raise
 
         if json_mode:
             # Inject a JSON response_format, letting any explicit caller-supplied

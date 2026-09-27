@@ -286,15 +286,15 @@ def test_cache_tags_isolation():
     )
 
     # Verify tags are stored
-    assert model_a._cache_tags == {"version": "v1", "experiment": "A"}
-    assert model_b._cache_tags == {"version": "v1", "experiment": "B"}
+    assert model_a._cache_tags.items() >= {"version": "v1", "experiment": "A"}.items()
+    assert model_b._cache_tags.items() >= {"version": "v1", "experiment": "B"}.items()
 
     # Verify they have different cache identity
     assert model_a._cache_tags != model_b._cache_tags
 
 
 def test_cache_tags_none_default():
-    """Test that cache_tags defaults to empty dict when not provided."""
+    """A content fingerprint is present even without user-supplied tags."""
     try:
         import google.genai as genai
         from google.genai.types import Content
@@ -318,8 +318,7 @@ def test_cache_tags_none_default():
         # cache_tags not provided
     )
 
-    # Should default to empty dict
-    assert model._cache_tags == {}
+    assert set(model._cache_tags) == {"abl-content"}
 
 
 # =============================================================================

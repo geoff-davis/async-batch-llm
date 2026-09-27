@@ -1,12 +1,10 @@
 """Google Gemini-specific error classification."""
 
+import asyncio
+
 from ..strategies.errors import (
-    BatchAbortedError,
-    BatchDeadlineExceeded,
     ErrorClassifier,
     ErrorInfo,
-    FrameworkTimeoutError,
-    ItemDeadlineExceeded,
     _retry_after_seconds,
     matches_any_pattern,
 )
@@ -18,6 +16,46 @@ TIMEOUT_PATTERNS = ("timeout", "504", "deadline")
 # blip (distinct from a 429 quota rate limit). Retried with per-item exponential
 # backoff like any other 5xx, NOT a coordinated cooldown (see classify()).
 OVERLOAD_PATTERNS = ("503", "unavailable", "overloaded", "high demand")
+
+
+def _rpc_details(exception: Exception) -> list[dict]:
+    payload = getattr(exception, "details", None)
+    if isinstance(payload, dict):
+        payload = payload.get("error", payload)
+        payload = payload.get("details", []) if isinstance(payload, dict) else []
+    return (
+        [entry for entry in payload if isinstance(entry, dict)] if isinstance(payload, list) else []
+    )
+
+
+def _daily_quota_exhausted(exception: Exception) -> bool:
+    violations = []
+    for entry in _rpc_details(exception):
+        if str(entry.get("@type", "")).endswith("/google.rpc.QuotaFailure"):
+            entries = entry.get("violations")
+            if not isinstance(entries, list) or not entries:
+                return False
+            violations.extend(entries)
+    return bool(violations) and all(
+        isinstance(v, dict) and "perday" in str(v.get("quotaId", "")).lower() for v in violations
+    )
+
+
+def _suggested_wait(exception: Exception) -> float | None:
+    header = _retry_after_seconds(exception)
+    if header is not None:
+        return header
+    for entry in _rpc_details(exception):
+        if str(entry.get("@type", "")).endswith("/google.rpc.RetryInfo"):
+            delay = entry.get("retryDelay")
+            if isinstance(delay, str) and delay.endswith("s"):
+                try:
+                    return ErrorInfo(
+                        True, True, False, "rate_limit", float(delay[:-1])
+                    ).suggested_wait
+                except ValueError:
+                    pass
+    return None
 
 
 class GeminiErrorClassifier(ErrorClassifier):
@@ -47,20 +85,9 @@ class GeminiErrorClassifier(ErrorClassifier):
 
     def classify(self, exception: Exception) -> ErrorInfo:
         """Classify Gemini-specific errors."""
-        if isinstance(exception, ItemDeadlineExceeded):
-            return ErrorInfo(False, False, True, "framework_total_item_timeout")
-        if isinstance(exception, BatchDeadlineExceeded):
-            return ErrorInfo(False, False, True, "batch_deadline_exceeded")
-        if isinstance(exception, BatchAbortedError):
-            return ErrorInfo(False, False, False, "batch_aborted")
-        # Check for framework timeout first (highest priority)
-        if isinstance(exception, FrameworkTimeoutError):
-            return ErrorInfo(
-                is_retryable=True,  # Retry - might succeed if LLM is faster
-                is_rate_limit=False,
-                is_timeout=True,
-                error_category="framework_timeout",
-            )
+        info = self._framework_prelude(exception)
+        if info is not None:
+            return info
 
         # Dispatch on the genai SDK's status code when available. When the
         # SDK isn't installed (or the exception isn't a genai one), fall
@@ -97,7 +124,9 @@ class GeminiErrorClassifier(ErrorClassifier):
             )
 
         # Check if it looks like a timeout
-        if self._matches_any_pattern(error_str, TIMEOUT_PATTERNS):
+        if isinstance(exception, (TimeoutError, asyncio.TimeoutError)) or self._matches_any_pattern(
+            error_str, TIMEOUT_PATTERNS
+        ):
             return ErrorInfo(
                 is_retryable=True,
                 is_rate_limit=False,
@@ -119,33 +148,7 @@ class GeminiErrorClassifier(ErrorClassifier):
         except ImportError:
             pass
 
-        # Check for logic bugs (deterministic errors that won't be fixed by retrying)
-        logic_bug_types = (
-            ValueError,
-            TypeError,
-            AttributeError,
-            KeyError,
-            IndexError,
-            NameError,
-            ZeroDivisionError,
-            AssertionError,
-        )
-        if isinstance(exception, logic_bug_types):
-            return ErrorInfo(
-                is_retryable=False,  # Don't retry logic bugs (deterministic failures)
-                is_rate_limit=False,
-                is_timeout=False,
-                error_category="logic_error",
-            )
-
-        # Default: treat unknown generic exceptions as retryable
-        # This allows custom transient errors and test mocks to work
-        return ErrorInfo(
-            is_retryable=True,  # Retry unknown exceptions (might be transient)
-            is_rate_limit=False,
-            is_timeout=False,
-            error_category="unknown",
-        )
+        return self._generic_tail(exception)
 
     def _classify_genai_exception(self, exception: Exception) -> ErrorInfo | None:
         """Return ErrorInfo for google-genai SDK exceptions, or None to defer."""
@@ -159,6 +162,8 @@ class GeminiErrorClassifier(ErrorClassifier):
 
         code = getattr(exception, "code", None)
 
+        if code == 429 and _daily_quota_exhausted(exception):
+            return ErrorInfo(False, False, False, "quota_exhausted")
         if code == 429:
             # Genuine quota exhaustion — the one case that warrants the
             # coordinated cooldown (all workers pause).
@@ -167,7 +172,7 @@ class GeminiErrorClassifier(ErrorClassifier):
                 is_rate_limit=True,
                 is_timeout=False,
                 error_category="rate_limit",
-                suggested_wait=_retry_after_seconds(exception),
+                suggested_wait=_suggested_wait(exception),
             )
 
         if code == 401:
@@ -224,7 +229,7 @@ class GeminiErrorClassifier(ErrorClassifier):
                 is_rate_limit=True,
                 is_timeout=False,
                 error_category="rate_limit",
-                suggested_wait=_retry_after_seconds(exception),
+                suggested_wait=_suggested_wait(exception),
             )
         if self._matches_any_pattern(error_str, OVERLOAD_PATTERNS):
             return ErrorInfo(

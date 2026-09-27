@@ -171,3 +171,57 @@ class TestErrorClassifierSelection:
     def test_recommended_classifier(self, spec, classifier_name):
         strategy = llm(spec, api_key="test-key")
         assert type(strategy.recommended_error_classifier()).__name__ == classifier_name
+
+
+@pytest.mark.asyncio
+async def test_prov9_factory_gemini_owned_client_reopens_and_shares(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from async_batch_llm import call
+
+    clients = []
+
+    def construct(**kwargs):
+        client = MagicMock()
+        client.aio.aclose = AsyncMock()
+        client.aio.models.generate_content = AsyncMock(
+            return_value=SimpleNamespace(
+                text="ok",
+                candidates=[],
+                usage_metadata=None,
+            )
+        )
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(models_module.genai, "Client", construct)
+    strategy = llm("gemini:test", api_key="test")
+    peer = GeminiStrategy(strategy.model)
+    await strategy.prepare()
+    await peer.prepare()
+    await strategy.cleanup()
+    clients[0].aio.aclose.assert_not_awaited()
+    await peer.cleanup()
+    clients[0].aio.aclose.assert_awaited_once()
+    clients[0].close.assert_called_once()
+    assert await call(strategy, "q") == "ok"
+    assert len(clients) == 2
+    clients[1].aio.aclose.assert_awaited_once()
+    clients[1].close.assert_called_once()
+
+
+def test_prov9_factory_missing_openai_key_is_value_error(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+        llm("openai:test")
+
+
+@pytest.mark.parametrize("provider", ["openai", "openrouter", "deepseek", "gemini"])
+def test_prov9_factory_lists_valid_kwargs(provider):
+    with pytest.raises(
+        TypeError, match="Valid kwargs:.*api_key.*system_instruction|Valid kwargs:.*api_key"
+    ) as raised:
+        llm(f"{provider}:test", api_key="test", typo=True)
+    assert "typo" in str(raised.value)
+    assert "temperature" not in str(raised.value)

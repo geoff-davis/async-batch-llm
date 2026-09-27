@@ -207,3 +207,26 @@ async def test_recovery_avoids_retry_and_updates_batch_and_observer_metrics():
     assert "async_batch_llm_structured_output_recoveries 1" in prometheus
     assert "async_batch_llm_structured_output_retries_avoided 1" in prometheus
     assert 'reason="trailing_markdown_fence"} 1' in prometheus
+
+
+@pytest.mark.parametrize("suffix", ["", "\n```", "\n```_"])
+def test_prov9_recovery_preserves_strict_json_validation(suffix):
+    from datetime import date
+
+    from pydantic import ConfigDict
+
+    class StrictRecord(BaseModel):
+        model_config = ConfigDict(strict=True)
+        when: date
+        coordinates: tuple[int, int]
+
+    parser = pydantic_json_parser(StrictRecord, recover_trailing_markdown=True)
+    response = LLMResponse(
+        text='{"when":"2026-09-27","coordinates":[1,2]}' + suffix,
+        input_tokens=1,
+        output_tokens=1,
+        total_tokens=2,
+    )
+    result = parser(response)
+    assert result.when == date(2026, 9, 27)
+    assert result.coordinates == (1, 2)

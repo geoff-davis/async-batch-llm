@@ -203,6 +203,8 @@ async def test_gemini_cached_model_lifecycle():
 
     # Create mock cache
     mock_cache = MagicMock()
+    mock_cache.create_time = None
+    mock_cache.expire_time = None
     mock_cache.name = "test-cache"
 
     # Create mock response
@@ -211,6 +213,8 @@ async def test_gemini_cached_model_lifecycle():
     mock_response.usage_metadata = MagicMock()
     mock_response.usage_metadata.prompt_token_count = 10
     mock_response.usage_metadata.candidates_token_count = 20
+    mock_response.usage_metadata.thoughts_token_count = None
+    mock_response.usage_metadata.tool_use_prompt_token_count = None
     mock_response.usage_metadata.total_token_count = 30
     mock_response.usage_metadata.cached_content_token_count = 0
     mock_response.candidates = []
@@ -255,9 +259,13 @@ async def test_gemini_cached_model_auto_renewal():
 
     # Create mock caches
     mock_cache1 = MagicMock()
+    mock_cache1.create_time = None
+    mock_cache1.expire_time = None
     mock_cache1.name = "test-cache-1"
 
     mock_cache2 = MagicMock()
+    mock_cache2.create_time = None
+    mock_cache2.expire_time = None
     mock_cache2.name = "test-cache-2"
 
     # Create mock response
@@ -266,6 +274,8 @@ async def test_gemini_cached_model_auto_renewal():
     mock_response.usage_metadata = MagicMock()
     mock_response.usage_metadata.prompt_token_count = 10
     mock_response.usage_metadata.candidates_token_count = 20
+    mock_response.usage_metadata.thoughts_token_count = None
+    mock_response.usage_metadata.tool_use_prompt_token_count = None
     mock_response.usage_metadata.total_token_count = 30
     mock_response.usage_metadata.cached_content_token_count = 0
     mock_response.candidates = []

@@ -74,7 +74,7 @@ def strip_code_fences(text: str) -> str:
     return body.strip()
 
 
-def _recover_trailing_markdown_json(text: str) -> tuple[Any, str] | None:
+def _recover_trailing_markdown_json(text: str) -> tuple[str, str] | None:
     """Decode one complete object/array followed only by an allowed fence."""
     candidate = text.lstrip()
     try:
@@ -90,7 +90,7 @@ def _recover_trailing_markdown_json(text: str) -> tuple[Any, str] | None:
     remainder = candidate[end:].strip()
     if remainder not in _TRAILING_MARKDOWN_FENCE_ARTIFACTS:
         return None
-    return value, "trailing_markdown_fence"
+    return candidate[:end], "trailing_markdown_fence"
 
 
 def pydantic_json_parser(
@@ -137,8 +137,8 @@ def pydantic_json_parser(
             if recovered is None:
                 raise
 
-        value, reason = recovered
-        output = model_cls.model_validate(value)
+        candidate_text, reason = recovered
+        output = model_cls.model_validate_json(candidate_text)
         metadata = dict(response.metadata or {})
         metadata.update(
             {
