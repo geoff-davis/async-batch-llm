@@ -22,7 +22,7 @@ The live-attempt order is:
 
 ```text
 coordinated cooldown → token estimation → atomic RPM+TPM reservation
-→ provider-capacity wait → provider start
+→ provider-capacity wait → final cooldown check → provider start
 ```
 
 No provider-capacity slot is held during estimation or quota waiting.
@@ -50,7 +50,7 @@ provider attempt needs a `TokenEstimate`. Supply `token_estimator` on the
 config, on `CallableStrategy`, or through a strategy's `estimate_tokens()`
 hook. A missing estimator fails before provider work with
 `TokenEstimatorRequired`. An individual estimate larger than the configured
-bucket fails immediately with `TokenEstimateExceedsLimit`; it cannot become
+per-minute token limit fails immediately with `TokenEstimateExceedsLimit`; it cannot become
 admissible by waiting.
 
 `CharacterTokenEstimator` uses a character-ratio heuristic and a fixed
@@ -328,3 +328,48 @@ zero-filled stamps. An explicit valid zero supplied by a hook remains known
 zero. A custom hook that writes an ordinary four-key zero dictionary is asserting
 known zero: the framework cannot distinguish it from a copied unknown-usage
 compatibility dictionary once that provenance has been discarded.
+
+## Burst size and admission races
+
+`ProcessorConfig.quota_burst_seconds=None` preserves a full-minute bucket.
+A positive finite value `b` sets fixed capacity `C=max(1, limit*b/60)` in each
+configured dimension, with refill at `limit/60` per second. RPM starts with `C`
+units. TPM also starts full; a head estimate larger than `C` can start when the
+bucket is full and leaves debt that must refill before later requests. Capacity
+never grows permanently. An estimate larger than the per-minute TPM limit still
+fails before provider work.
+
+Without refunds, at most `C+limit` RPM units are admitted in any rolling minute.
+For TPM reservations the bound is `max(C, E_max)+limit`, where `E_max` is the
+largest admitted estimate in that interval. This exception matters for large
+requests: the simpler `limit*(1+b/60)` bound applies only when neither the
+one-unit floor nor oversized estimates apply. Reconciliation can refund tokens
+and allow more reservations; these bounds are not guarantees about actual tokens
+reported by a provider. Provider windows, SDK retries and other processes remain
+outside this local limiter.
+
+A cooldown may begin while an attempt waits for quota or capacity. The final
+synchronous start check preempts that attempt, releases capacity, refunds both
+quota dimensions exactly once, then re-enters admission at the FIFO tail.
+Preemption consumes no attempt or rate-limit retry budget. Quota, cooldown and
+capacity waits accumulate on the same attempt timing. Admission/finalization
+events can repeat for the same physical try; they describe reservations, not
+provider calls. Cancellation, item/batch deadlines and aborts during re-entry
+retain the same refund and cleanup rules.
+
+Each provider start snapshots its scope's cooldown generation. A late 429 from
+an older generation still consumes the item's rate-limit retry budget but does
+not start another cooldown or escalate its consecutive counter. An exhausted
+item reports failure without waiting for the shared cooldown it just triggered;
+that coordinator-owned cooldown continues to pause its peers until completion
+or host shutdown.
+
+If the rate-limit strategy raises or returns a non-finite or negative duration,
+ABL logs a warning and peers wait for at least the configured
+`cooldown_seconds` (and a longer server hint, subject to its configured cap).
+Bare `ExponentialBackoffStrategy()` now uses the same 300-second initial cooldown
+and 1.5 multiplier as `RateLimitConfig`. Both retry backoffs are overflow-safe.
+
+Scope registry entries remain strongly owned until ordered host cleanup. Weak
+entries are deferred: dropping a scope must not orphan its quota wake or cooldown
+task or bypass a failed cleanup retry.

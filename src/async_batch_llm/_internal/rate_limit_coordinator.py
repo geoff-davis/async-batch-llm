@@ -53,8 +53,10 @@ class RateLimitCoordinator:
         events: EventDispatcher[Any, Any, Any],
         quota_scope_id: int | None = None,
         max_cooldown_seconds: float = 600.0,
+        fallback_cooldown_seconds: float = 300.0,
     ) -> None:
         self._max_cooldown_seconds = max_cooldown_seconds
+        self._fallback_cooldown_seconds = fallback_cooldown_seconds
         self._strategy = rate_limit_strategy
         self._events = events
         self._quota_scope_id = quota_scope_id
@@ -128,6 +130,10 @@ class RateLimitCoordinator:
             return 0.0
 
     @property
+    def is_paused(self) -> bool:
+        return not self._rate_limit_event.is_set()
+
+    @property
     def current_generation(self) -> int:
         """The current cooldown generation counter. Snapshot for workers
         to pass back into :meth:`handle_rate_limit`."""
@@ -146,6 +152,8 @@ class RateLimitCoordinator:
         observed_generation: int | None = None,
         suggested_wait: float | None = None,
         strategy_type: str | None = None,
+        *,
+        wait: bool = True,
     ) -> None:
         """Coordinate a cooldown among workers.
 
@@ -163,6 +171,8 @@ class RateLimitCoordinator:
                 server asked. Only the coordinating worker's value is applied.
             strategy_type: Safe class name for scoped diagnostics. Arbitrary
                 quota-scope values are never formatted or logged.
+            wait: False reports the limit and pauses peers without waiting here.
+                The coordinator still owns and joins the cooldown at shutdown.
         """
         if observed_generation is None:
             observed_generation = self._cooldown_generation
@@ -218,8 +228,9 @@ class RateLimitCoordinator:
 
         # Coordinator and waiters alike wait for the generation to complete;
         # each caller's cancellation affects only itself.
-        await generation_event.wait()
-        logger.debug(f"Worker {worker_id} resumed after cooldown gen {generation}")
+        if wait:
+            await generation_event.wait()
+            logger.debug(f"Worker {worker_id} resumed after cooldown gen {generation}")
 
     async def _run_cooldown(
         self,
@@ -276,14 +287,16 @@ class RateLimitCoordinator:
 
         try:
             cooldown = await self._strategy.on_rate_limit(worker_id, consecutive)
+            if not math.isfinite(cooldown) or cooldown < 0:
+                raise ValueError("Rate limit strategy cooldown must be finite and non-negative")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             cooldown_error = exc
-            cooldown = 0.0
+            cooldown = self._fallback_cooldown_seconds
             logger.warning(
                 "[WARN]Rate limit strategy failed to determine cooldown: %s. "
-                "Resuming workers immediately.",
+                "Using the configured fallback cooldown.",
                 exc,
             )
 
@@ -295,10 +308,8 @@ class RateLimitCoordinator:
             )
 
         # Respect a server-suggested wait (e.g. Retry-After) as a floor:
-        # the backoff strategy may ask for longer, but we never undershoot
-        # the server's request. Only applied when the strategy itself
-        # didn't error.
-        if cooldown_error is None and suggested_wait is not None and suggested_wait > cooldown:
+        # applies to both the strategy result and the configured error fallback.
+        if suggested_wait is not None and suggested_wait > cooldown:
             logger.info(
                 "[RATE-LIMIT]Raising cooldown from %.1fs to server-suggested %.1fs.",
                 cooldown,
@@ -323,7 +334,7 @@ class RateLimitCoordinator:
         if cooldown_error is not None:
             logger.warning(
                 "[RATE-LIMIT]Rate limit detected by worker %s (gen %d%s%s). "
-                "Skipping cooldown due to prior error.",
+                "Using fallback cooldown after strategy error.",
                 worker_id,
                 generation,
                 scope_log,
@@ -424,7 +435,7 @@ class RateLimitCoordinator:
 
         if error is not None:
             logger.warning(
-                "[WARN]Cooldown ended early due to error: %s. Workers resumed immediately.",
+                "[WARN]Cooldown completed with a strategy or sleep error: %s.",
                 error,
             )
         else:

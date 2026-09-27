@@ -67,6 +67,8 @@ class AttemptRuntimeState(AttemptTiming):
     dataclass or hand-written copy list was not updated.
     """
 
+    cooldown_generation: int | None = None
+    wait_for_rate_limit: bool = True
     attempt: int = 0
     try_number: int = 0
     exception_usage: tuple[BaseException, TokenUsageObservation] | None = field(

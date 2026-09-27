@@ -109,6 +109,18 @@ scope. Every retry is another physical request and gets a fresh reservation. A
 429 still triggers reactive coordinated cooldown; RPM smoothing cannot
 reproduce every provider window exactly.
 
+The default `quota_burst_seconds=None` starts with a full minute of quota and
+refills continuously: a busy scope can admit about **twice the configured limit**
+in its first minute. Set `quota_burst_seconds=5` to start with five seconds of
+quota. For RPM limit `L`, capacity is `C=max(1, L*5/60)`, and a rolling minute
+admits at most `C+L` requests. When the one-request floor does not apply this is
+`L*65/60`. It is a token bucket, not a strict provider rolling-window limiter.
+
+Limits apply independently to each quota scope within each processor/pool.
+Separate strategy instances can create separate budgets. The processor warns
+once when distinct scopes exceed `max_workers` with RPM or TPM enabled; reuse a
+strategy/model or return one stable shared `quota_scope` to share limits.
+
 ### 6. Tokens per minute — `max_tokens_per_minute`
 
 TPM requires an estimator. Reserve estimated input plus expected output, not
@@ -127,7 +139,8 @@ config = ProcessorConfig(
 
 Prefer a provider tokenizer over the character heuristic. Review actual
 refunds, underestimation debt, and unknown-usage attempts, then tune the output
-allowance. One estimate must fit inside the configured bucket. Increasing
+allowance. One estimate must fit inside the configured per-minute token limit. A request
+larger than the burst bucket may borrow future refill when that bucket is full. Increasing
 workers cannot overcome RPM/TPM and can increase task and queue pressure while
 work waits.
 
@@ -173,7 +186,9 @@ Target: 10,000 classification prompts against an OpenAI-tier endpoint
 - **Step 1:** `500 / 60 × 2 ≈ 16` → `concurrency=16`.
 - **Steps 2–3:** covered by the knob (factory pool and admission both become 16).
 - **Step 4:** this strategy owns one account quota, so its default scope is sufficient.
-- **Step 5:** reserve 450 RPM, leaving shared-account headroom below the published 500.
+- **Step 5:** reserve 450 RPM with `quota_burst_seconds=5`. This permits at most
+  487 requests per rolling minute, leaving headroom below 500. The default full
+  bucket could instead permit about 900 in the first minute.
 - **Step 6:** reserve measured prompt tokens plus 300 expected output tokens.
 - **Step 7:** skip the ramp at this width.
 - **Step 8:** `cooldown_seconds=60.0` for reactive 429 recovery.
@@ -196,6 +211,7 @@ config = ProcessorConfig(
     concurrency=16,
     attempt_timeout=30.0,
     max_requests_per_minute=450,
+    quota_burst_seconds=5,
     max_tokens_per_minute=200_000,
     token_estimator=CharacterTokenEstimator(expected_output_tokens=300),
     rate_limit=RateLimitConfig(cooldown_seconds=60.0),
@@ -226,3 +242,12 @@ For very large or unbounded inputs, add `max_queue_size` (bounded input
 buffering) and switch to `process_stream()` so results don't accumulate.
 That's a memory decision, not a throughput one — see
 [bounded work and backpressure](bounded-work.md).
+
+## Numeric configuration
+
+Retry, rate-limit, startup-ramp and processor numeric fields require finite
+numbers. Counts and concurrency limits require Python integers, excluding booleans
+and floats (including integral floats). Delays and timeouts reject NaN, infinity
+and booleans. Use the documented `None` options to disable optional limits.
+Configuration is validated at construction; use a fresh config or
+`dataclasses.replace` when changing values, rather than mutating it afterward.

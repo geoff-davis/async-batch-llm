@@ -155,3 +155,40 @@ async def test_prov5_coordinator_caps_untrusted_suggestion(monkeypatch, suggesti
     )
     assert await _captured_cooldown(coord, monkeypatch, suggested_wait=suggestion) == expected
     await coord.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_adm5_failed_strategy_uses_fallback_and_suggested_wait(monkeypatch):
+    class Broken(FixedDelayStrategy):
+        async def on_rate_limit(self, worker_id, consecutive_limit_count):
+            raise RuntimeError("broken policy")
+
+    coord = RateLimitCoordinator(Broken(), EventDispatcher([], []))
+    coord._fallback_cooldown_seconds = 5
+    assert await _captured_cooldown(coord, monkeypatch, suggested_wait=8) == 8
+    await coord.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration", [float("nan"), float("inf"), -float("inf"), -5.0, 0.0, 0.25])
+@pytest.mark.parametrize("suggested_wait", [None, 0.0, 8.0])
+async def test_sd1_invalid_cooldown_return_uses_fallback(
+    duration, suggested_wait, monkeypatch, caplog
+):
+    import math
+
+    coord = RateLimitCoordinator(
+        FixedDelayStrategy(cooldown=duration),
+        EventDispatcher([], []),
+        fallback_cooldown_seconds=5,
+    )
+    invalid = not math.isfinite(duration) or duration < 0
+    expected = max(5 if invalid else duration, suggested_wait or 0)
+    try:
+        actual = await _captured_cooldown(coord, monkeypatch, suggested_wait=suggested_wait)
+        assert actual == expected
+        assert ("Using the configured fallback cooldown" in caplog.text) is invalid
+        assert not coord.is_paused
+    finally:
+        await coord.shutdown()
+    assert not coord._owned_cooldowns

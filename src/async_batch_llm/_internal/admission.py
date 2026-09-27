@@ -196,22 +196,28 @@ class QuotaGate:
         max_requests_per_minute: float | None,
         max_tokens_per_minute: int | None = None,
         *,
+        quota_burst_seconds: float | None = None,
         clock: Callable[[], float] = time.perf_counter,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
+        burst_fraction = 1.0 if quota_burst_seconds is None else quota_burst_seconds / 60.0
         self.max_requests_per_minute = max_requests_per_minute
         self.max_tokens_per_minute = max_tokens_per_minute
         self._clock = clock
         self._sleep = sleep
         self._request_capacity = (
-            max(1.0, max_requests_per_minute) if max_requests_per_minute is not None else None
+            max(1.0, max_requests_per_minute * burst_fraction)
+            if max_requests_per_minute is not None
+            else None
         )
         self._request_refill_per_second = (
             max_requests_per_minute / 60.0 if max_requests_per_minute is not None else None
         )
         self._request_available = self._request_capacity
         self._token_capacity = (
-            float(max_tokens_per_minute) if max_tokens_per_minute is not None else None
+            max(1.0, max_tokens_per_minute * burst_fraction)
+            if max_tokens_per_minute is not None
+            else None
         )
         self._token_refill_per_second = (
             max_tokens_per_minute / 60.0 if max_tokens_per_minute is not None else None
@@ -331,7 +337,12 @@ class QuotaGate:
             return True
         assert estimate is not None
         assert self._token_available is not None
-        return self._token_available + _FLOAT_TOLERANCE >= estimate.total_tokens
+        assert self._token_capacity is not None
+        # A full bucket may admit one oversized head, borrowing future refill.
+        # Capacity stays fixed so that a large head cannot permanently widen bursts.
+        return self._token_available + _FLOAT_TOLERANCE >= min(
+            estimate.total_tokens, self._token_capacity
+        )
 
     def _ready(self, estimate: TokenEstimate | None) -> bool:
         return self._request_ready() and self._tokens_ready(estimate)
@@ -433,7 +444,10 @@ class QuotaGate:
             assert estimate is not None
             assert self._token_available is not None
             assert self._token_refill_per_second is not None
-            token_deficit = max(0.0, estimate.total_tokens - self._token_available)
+            assert self._token_capacity is not None
+            token_deficit = max(
+                0.0, min(estimate.total_tokens, self._token_capacity) - self._token_available
+            )
             delay = max(delay, token_deficit / self._token_refill_per_second)
         # Available quota was computed at _last_refill. A fresh clock read
         # shifts the deadline by read latency and needlessly replaces wakes.
@@ -549,10 +563,17 @@ class AdmissionRegistry:
         max_requests_per_minute: float | None,
         max_tokens_per_minute: int | None = None,
         max_cooldown_seconds: float = 600.0,
+        quota_burst_seconds: float | None = None,
+        max_workers: int | None = None,
+        fallback_cooldown_seconds: float = 300.0,
         clock: Callable[[], float] = time.perf_counter,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._max_cooldown_seconds = max_cooldown_seconds
+        self._quota_burst_seconds = quota_burst_seconds
+        self._max_workers = max_workers
+        self._warned_scope_count = False
+        self._fallback_cooldown_seconds = fallback_cooldown_seconds
         self._rate_limit_strategy = rate_limit_strategy
         self._events = events
         self._max_requests_per_minute = max_requests_per_minute
@@ -601,15 +622,32 @@ class AdmissionRegistry:
                     events=self._events,
                     quota_scope_id=ordinal,
                     max_cooldown_seconds=self._max_cooldown_seconds,
+                    fallback_cooldown_seconds=self._fallback_cooldown_seconds,
                 ),
                 quota_gate=QuotaGate(
                     self._max_requests_per_minute,
                     self._max_tokens_per_minute,
+                    quota_burst_seconds=self._quota_burst_seconds,
                     clock=self._clock,
                     sleep=self._sleep,
                 ),
             )
             self._scope_entries[scope_id] = state
+            if (
+                not self._warned_scope_count
+                and self._max_workers is not None
+                and len(self._scope_entries) > self._max_workers
+                and (
+                    self._max_requests_per_minute is not None
+                    or self._max_tokens_per_minute is not None
+                )
+            ):
+                self._warned_scope_count = True
+                logger.warning(
+                    "Distinct quota scopes exceed max_workers: RPM/TPM limits apply per scope. "
+                    "Reuse a strategy/model or return one stable shared quota_scope object "
+                    "to share admission limits."
+                )
         self._strategy_entries[strategy_id] = _StrategyScopeEntry(strategy, state)
         return state
 

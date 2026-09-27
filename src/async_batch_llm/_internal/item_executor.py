@@ -60,6 +60,7 @@ from .admission import (
     QuotaReservation,
     ScopeAdmissionState,
 )
+from .backoff import capped_backoff
 from .capacity import CapacityLimiter
 from .classifier_resolver import StrategyClassifierResolver
 from .error_logging import log_retryable_error, log_validation_error
@@ -96,6 +97,11 @@ ERROR_MESSAGE_DETAILED_LENGTH = 500
 _prepared_item: ContextVar[tuple[object, PreparedLogicalItem[Any, Any, Any]] | None] = ContextVar(
     "abl_prepared_logical_item", default=None
 )
+
+
+class _AdmissionPaused(Exception):
+    """An unstarted grant must be refunded and re-enter admission."""
+
 
 _E = TypeVar("_E", bound=BaseException)
 
@@ -342,11 +348,14 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         suggested_wait: float | None = None,
         strategy_type: str | None = None,
     ) -> None:
+        prepared = self._current_prepared()
+        wait = prepared.runtime_state.current_attempt.wait_for_rate_limit if prepared else True
         await state.cooldown.handle_rate_limit(
             worker_id,
             observed_generation,
             suggested_wait,
             strategy_type=strategy_type,
+            wait=wait,
         )
 
     def _log_retryable_error(
@@ -551,7 +560,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         if retry_state is None:
             return
         attempt = runtime_state(retry_state).current_attempt
-        attempt.quota_wait_seconds = reservation.wait_seconds
+        attempt.quota_wait_seconds += reservation.wait_seconds
         attempt.quota_scope_id = scope_id
         attempt.reserved_tokens = reservation.reserved_tokens
         attempt.estimated_input_tokens = reservation.estimated_input_tokens
@@ -614,16 +623,18 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             admission_state.cooldown if admission_state is not None else self._rate_limit_coord
         )
         cooldown_started = time.perf_counter()
-        await await_with_guardrails(
-            coordinator.wait_if_paused(),
-            item_deadline=deadline,
-            item_id=item_id,
-            abort_controller=self._abort_controller,
-        )
-        if retry_state is not None:
-            runtime_state(retry_state).current_attempt.cooldown_wait_seconds = max(
-                0.0, time.perf_counter() - cooldown_started
+        try:
+            await await_with_guardrails(
+                coordinator.wait_if_paused(),
+                item_deadline=deadline,
+                item_id=item_id,
+                abort_controller=self._abort_controller,
             )
+        finally:
+            if retry_state is not None:
+                runtime_state(retry_state).current_attempt.cooldown_wait_seconds += max(
+                    0.0, time.perf_counter() - cooldown_started
+                )
         delay = await await_with_guardrails(
             coordinator.apply_slow_start(),
             item_deadline=deadline,
@@ -639,7 +650,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 abort_controller=self._abort_controller,
             )
             if retry_state is not None:
-                runtime_state(retry_state).current_attempt.startup_ramp_wait_seconds = max(
+                runtime_state(retry_state).current_attempt.startup_ramp_wait_seconds += max(
                     0.0, time.perf_counter() - ramp_started
                 )
 
@@ -1013,7 +1024,8 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 raise
             try_number += 1
             try_started = time.perf_counter()
-            reset_attempt_runtime(retry_state, try_number)
+            current_attempt = reset_attempt_runtime(retry_state, try_number)
+            current_attempt.wait_for_rate_limit = rate_limit_retries < max_rate_limit_retries
             outcome = await self._run_attempt(
                 work_item, worker_id, attempt, strategy, retry_state, try_number, try_started
             )
@@ -1112,9 +1124,10 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 if is_validation_error:
                     wait_time = 0.0
                 else:
-                    wait_time = min(
-                        self.config.retry.initial_wait
-                        * (self.config.retry.exponential_base ** (attempt - 1)),
+                    wait_time = capped_backoff(
+                        self.config.retry.initial_wait,
+                        self.config.retry.exponential_base,
+                        attempt - 1,
                         self.config.retry.max_wait,
                     )
                     if self.config.retry.jitter:
@@ -1122,6 +1135,19 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
 
                         # Jitter to 50-100% of the computed wait to spread retries.
                         wait_time = wait_time * (0.5 + random.random() * 0.5)
+
+                if (
+                    deadline is not None
+                    and wait_time > 0
+                    and wait_time >= deadline - time.perf_counter()
+                ):
+                    exhausted_deadline = ItemDeadlineExceeded(
+                        f"Retry delay cannot fit before the deadline for {work_item.item_id}; "
+                        f"last error: {error_type}: {error_snippet}",
+                        item_id=work_item.item_id,
+                    )
+                    remember_failure(exhausted_deadline)
+                    raise exhausted_deadline from attempt_error
 
                 retry_desc = "immediately" if wait_time == 0 else f"in {wait_time:.1f}s"
                 logger.warning(
@@ -1258,7 +1284,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     else:
                         unseen_reservation.finalize()
                 if item_runtime is not None:
-                    item_runtime.current_attempt.quota_wait_seconds = max(
+                    item_runtime.current_attempt.quota_wait_seconds += max(
                         0.0, time.perf_counter() - quota_wait_started
                     )
                     item_runtime.current_attempt.quota_scope_id = admission_state.ordinal
@@ -1324,7 +1350,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 total_admission_wait = previous_wait + admission.wait_seconds
                 if item_runtime is not None:
                     item_runtime.cumulative_admission_wait_seconds = total_admission_wait
-                    item_runtime.current_attempt.admission_wait_seconds = admission.wait_seconds
+                    item_runtime.current_attempt.admission_wait_seconds += admission.wait_seconds
                     item_runtime.current_attempt.startup_ramp_wait_seconds += (
                         admission.startup_ramp_wait_seconds
                     )
@@ -1429,136 +1455,165 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                         )
                 response_metadata = None
             else:
-                async with self._admit_physical_attempt(
-                    work_item,
-                    strategy,
-                    admission_state,
-                    worker_id,
-                    attempt_number,
-                    retry_state,
-                    deadline,
-                ) as reservation:
-                    llm_start_time = time.time()
-                    execution_started = time.perf_counter()
-                    # _unpack_strategy_result accepts both legacy 2-tuples
-                    # and current 3-tuples (output, tokens, metadata).
-                    usage_observation: TokenUsageObservation | None = None
+                while True:
                     try:
-                        try:
-                            remaining = remaining_seconds(deadline, item_id=work_item.item_id)
-                            effective_timeout = attempt_timeout
-                            if remaining is not None:
-                                effective_timeout = min(effective_timeout, remaining)
+                        async with self._admit_physical_attempt(
+                            work_item,
+                            strategy,
+                            admission_state,
+                            worker_id,
+                            attempt_number,
+                            retry_state,
+                            deadline,
+                        ) as reservation:
 
-                            async def execute_observing_failure() -> Any:
-                                # Guardrails join the provider child but may replace
-                                # its error with a deadline/abort/caller cancellation.
-                                # Capture reported usage before that replacement.
-                                nonlocal interrupted_usage
+                            def mark_provider_started() -> None:
+                                if admission_state.cooldown.is_paused:
+                                    raise _AdmissionPaused()
+                                if item_runtime is not None:
+                                    item_runtime.current_attempt.cooldown_generation = (
+                                        admission_state.cooldown.current_generation
+                                    )
+                                reservation.mark_provider_started()
+
+                            llm_start_time = time.time()
+                            execution_started = time.perf_counter()
+                            # _unpack_strategy_result accepts both legacy 2-tuples
+                            # and current 3-tuples (output, tokens, metadata).
+                            usage_observation: TokenUsageObservation | None = None
+                            try:
                                 try:
-                                    return await strategy.execute(
-                                        work_item.prompt,
-                                        attempt_number,
-                                        effective_timeout,
-                                        retry_state,
+                                    remaining = remaining_seconds(
+                                        deadline, item_id=work_item.item_id
                                     )
-                                except BaseException as provider_failure:
-                                    interrupted_usage = self._observe_exception_usage(
-                                        provider_failure
-                                    )
-                                    raise
+                                    effective_timeout = attempt_timeout
+                                    if remaining is not None:
+                                        effective_timeout = min(effective_timeout, remaining)
 
-                            raw_result = await await_with_guardrails(
-                                execute_observing_failure(),
-                                item_deadline=deadline,
-                                item_id=work_item.item_id,
-                                abort_controller=self._abort_controller,
-                                operation_timeout=attempt_timeout,
-                                active_provider=True,
-                                on_start=reservation.mark_provider_started,
-                            )
-                        except ItemDeadlineExceeded:
-                            if item_runtime is not None:
-                                item_runtime.current_attempt.timeout_category = (
-                                    "framework_total_item_timeout"
-                                )
-                            raise
-                        except (BatchDeadlineExceeded, BatchAbortedError):
-                            raise
-                        except _OperationTimerExpired as timeout_exc:
-                            elapsed = time.time() - llm_start_time
-                            if item_runtime is not None:
-                                item_runtime.current_attempt.timeout_category = (
-                                    "framework_execution_timeout"
-                                )
-                            logger.error(
-                                f"⏱ FRAMEWORK TIMEOUT for {work_item.item_id} "
-                                f"after {elapsed:.1f}s (limit: {attempt_timeout}s, "
-                                f"attempt {attempt_number}). Consider increasing "
-                                "config.attempt_timeout if this error persists."
-                            )
-                            framework_timeout = FrameworkTimeoutError(
-                                f"Framework timeout after {elapsed:.1f}s "
-                                f"(limit: {attempt_timeout}s)",
-                                item_id=work_item.item_id,
-                                elapsed=elapsed,
-                                timeout_limit=attempt_timeout,
-                            )
-                            raise framework_timeout from timeout_exc
-                        output, token_usage, response_metadata = _unpack_strategy_result(raw_result)
-                        usage_observation = self._token_extractor.observe_result(token_usage)
-                        token_usage = usage_observation.usage
-                        if (
-                            usage_observation.known
-                            and usage_observation.reported_tokens is not None
-                        ):
-                            known_provider_token_usage = token_usage
-                    except BaseException as provider_error:
-                        usage_observation = (
-                            interrupted_usage
-                            if interrupted_usage is not None
-                            else self._observe_exception_usage(provider_error)
-                        )
-                        if item_runtime is not None:
-                            item_runtime.current_attempt.exception_usage = (
-                                provider_error,
-                                usage_observation,
-                            )
-                        raise
-                    finally:
-                        try:
-                            # The provider body supplies one observation on success
-                            # or failure. Reconcile before releasing capacity; the
-                            # admission owner handles partial/pre-start fallback.
-                            if (
-                                usage_observation is not None
-                                and reservation.provider_started
-                                and not reservation.finalized
-                            ):
-                                if admission_state.quota_gate.tpm_enabled:
-                                    finalization = (
-                                        reservation.reconcile(usage_observation.reported_tokens)
-                                        if usage_observation.known
-                                        and usage_observation.reported_tokens is not None
-                                        else reservation.finalize_unknown()
+                                    async def execute_observing_failure(
+                                        timeout: float = effective_timeout,
+                                    ) -> Any:
+                                        # Guardrails join the provider child but may replace
+                                        # its error with a deadline/abort/caller cancellation.
+                                        # Capture reported usage before that replacement.
+                                        nonlocal interrupted_usage
+                                        try:
+                                            return await strategy.execute(
+                                                work_item.prompt,
+                                                attempt_number,
+                                                timeout,
+                                                retry_state,
+                                            )
+                                        except BaseException as provider_failure:
+                                            interrupted_usage = self._observe_exception_usage(
+                                                provider_failure
+                                            )
+                                            raise
+
+                                    raw_result = await await_with_guardrails(
+                                        execute_observing_failure(),
+                                        item_deadline=deadline,
+                                        item_id=work_item.item_id,
+                                        abort_controller=self._abort_controller,
+                                        operation_timeout=attempt_timeout,
+                                        active_provider=True,
+                                        on_start=mark_provider_started,
                                     )
-                                else:
-                                    finalization = reservation.finalize_request_only()
-                                if finalization is not None:
-                                    await self._record_quota_finalization(
-                                        reservation=reservation,
-                                        finalization=finalization,
-                                        state=admission_state,
-                                        work_item=work_item,
-                                        worker_id=worker_id,
-                                        attempt_number=attempt_number,
-                                        retry_state=retry_state,
+                                except ItemDeadlineExceeded:
+                                    if item_runtime is not None:
+                                        item_runtime.current_attempt.timeout_category = (
+                                            "framework_total_item_timeout"
+                                        )
+                                    raise
+                                except (BatchDeadlineExceeded, BatchAbortedError):
+                                    raise
+                                except _OperationTimerExpired as timeout_exc:
+                                    elapsed = time.time() - llm_start_time
+                                    if item_runtime is not None:
+                                        item_runtime.current_attempt.timeout_category = (
+                                            "framework_execution_timeout"
+                                        )
+                                    logger.error(
+                                        f"⏱ FRAMEWORK TIMEOUT for {work_item.item_id} "
+                                        f"after {elapsed:.1f}s (limit: {attempt_timeout}s, "
+                                        f"attempt {attempt_number}). Consider increasing "
+                                        "config.attempt_timeout if this error persists."
                                     )
-                        finally:
-                            if item_runtime is not None:
-                                item_runtime.current_attempt.execution_seconds = max(
-                                    0.0, time.perf_counter() - execution_started
+                                    framework_timeout = FrameworkTimeoutError(
+                                        f"Framework timeout after {elapsed:.1f}s "
+                                        f"(limit: {attempt_timeout}s)",
+                                        item_id=work_item.item_id,
+                                        elapsed=elapsed,
+                                        timeout_limit=attempt_timeout,
+                                    )
+                                    raise framework_timeout from timeout_exc
+                                output, token_usage, response_metadata = _unpack_strategy_result(
+                                    raw_result
                                 )
+                                usage_observation = self._token_extractor.observe_result(
+                                    token_usage
+                                )
+                                token_usage = usage_observation.usage
+                                if (
+                                    usage_observation.known
+                                    and usage_observation.reported_tokens is not None
+                                ):
+                                    known_provider_token_usage = token_usage
+                            except _AdmissionPaused:
+                                raise
+                            except BaseException as provider_error:
+                                usage_observation = (
+                                    interrupted_usage
+                                    if interrupted_usage is not None
+                                    else self._observe_exception_usage(provider_error)
+                                )
+                                if item_runtime is not None:
+                                    item_runtime.current_attempt.exception_usage = (
+                                        provider_error,
+                                        usage_observation,
+                                    )
+                                raise
+                            finally:
+                                try:
+                                    # The provider body supplies one observation on success
+                                    # or failure. Reconcile before releasing capacity; the
+                                    # admission owner handles partial/pre-start fallback.
+                                    if (
+                                        usage_observation is not None
+                                        and reservation.provider_started
+                                        and not reservation.finalized
+                                    ):
+                                        if admission_state.quota_gate.tpm_enabled:
+                                            finalization = (
+                                                reservation.reconcile(
+                                                    usage_observation.reported_tokens
+                                                )
+                                                if usage_observation.known
+                                                and usage_observation.reported_tokens is not None
+                                                else reservation.finalize_unknown()
+                                            )
+                                        else:
+                                            finalization = reservation.finalize_request_only()
+                                        if finalization is not None:
+                                            await self._record_quota_finalization(
+                                                reservation=reservation,
+                                                finalization=finalization,
+                                                state=admission_state,
+                                                work_item=work_item,
+                                                worker_id=worker_id,
+                                                attempt_number=attempt_number,
+                                                retry_state=retry_state,
+                                            )
+                                finally:
+                                    if item_runtime is not None and reservation.provider_started:
+                                        item_runtime.current_attempt.execution_seconds = max(
+                                            0.0, time.perf_counter() - execution_started
+                                        )
+                    except _AdmissionPaused:
+                        # Capacity has been released and the unstarted quota refunded.
+                        # Rejoin FIFO at the tail; this is still the same physical try.
+                        continue
+                    break
 
             llm_duration = time.time() - llm_start_time
             logger.debug(
@@ -1781,7 +1836,10 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             # Handle rate limit (cooldown) - this will pause all workers.
             # Pass the classifier's suggested_wait (e.g. a parsed Retry-After)
             # as a floor on the cooldown duration.
-            observed_generation = admission_state.cooldown.current_generation
+            prepared = self._current_prepared()
+            observed_generation = (
+                prepared.runtime_state.current_attempt.cooldown_generation if prepared else None
+            )
             await self._handle_rate_limit(
                 admission_state,
                 worker_id,

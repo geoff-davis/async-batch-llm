@@ -231,7 +231,7 @@ async def test_process_item_retries_propagate_cancellation():
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_strategy_failure_does_not_block_workers():
+async def test_adm5_rate_limit_strategy_failure_uses_fallback_then_resumes():
     """Rate limit strategies that raise should not leave workers paused."""
 
     class FlakyRateLimitStrategy(RateLimitStrategy):
@@ -249,12 +249,17 @@ async def test_rate_limit_strategy_failure_does_not_block_workers():
 
     flaky_strategy = FlakyRateLimitStrategy()
 
+    from async_batch_llm.core import RateLimitConfig
+
     processor = ParallelBatchProcessor[str, TestOutput, None](
         rate_limit_strategy=flaky_strategy,
+        config=ProcessorConfig(rate_limit=RateLimitConfig(cooldown_seconds=0.02)),
     )
 
     # Simulate rate limit handling directly to ensure internal coordination
-    await asyncio.wait_for(processor._handle_rate_limit(worker_id=0), timeout=0.1)
+    started = time.perf_counter()
+    await asyncio.wait_for(processor._handle_rate_limit(worker_id=0), timeout=0.5)
+    assert time.perf_counter() - started >= 0.015
 
     assert flaky_strategy.calls == 1
     assert processor._rate_limit_event.is_set()

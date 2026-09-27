@@ -71,8 +71,9 @@ async def test_total_item_deadline_spans_retry_backoff_and_preserves_usage() -> 
     assert result.error_category == "framework_total_item_timeout"
     assert isinstance(result.exception, ItemDeadlineExceeded)
     assert result.token_usage["total_tokens"] == 3
-    assert result.timing.attempts[0].retry_backoff_seconds >= 0.02
-    assert result.timing.total_seconds >= 0.03
+    assert result.timing.attempts[0].retry_backoff_seconds == 0
+    assert isinstance(result.exception.__cause__, _TransientWithTokens)
+    assert "_TransientWithTokens: retry me" in result.error
 
 
 @pytest.mark.asyncio
@@ -657,3 +658,57 @@ async def test_exec2_provider_timeout_retains_identity_and_timing(error_type, ca
     assert result.exception is error
     assert result.timing.attempts[0].timeout_category == "provider_or_transport_timeout"
     assert "Consider increasing config.attempt_timeout" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
+async def test_adm6_early_deadline_keeps_error_and_guardrail_record(tmp_path, backend):
+    from async_batch_llm import (
+        ArtifactIdentity,
+        JsonlArtifactStore,
+        ResumePolicy,
+        SqliteArtifactStore,
+    )
+
+    events = []
+
+    class Observer(BaseObserver):
+        async def on_event(self, event, data):
+            events.append(event)
+
+    store_type = JsonlArtifactStore if backend == "jsonl" else SqliteArtifactStore
+    path = tmp_path / ("results." + backend)
+    identity = ArtifactIdentity(provider="test", model="test")
+    config = ProcessorConfig(
+        retry=RetryConfig(initial_wait=10, max_wait=10, jitter=False),
+        guardrails=GuardrailConfig(total_timeout_per_item=2),
+    )
+    strategy = _RetryThenSleep()
+    store = store_type(path, identity=identity)
+    async with ParallelBatchProcessor(
+        config=config, artifact_store=store, observers=[Observer()]
+    ) as processor:
+        await processor.add_work(LLMWorkItem(item_id="x", prompt="x", strategy=strategy))
+        result = (await asyncio.wait_for(processor.process_all(), 0.5)).results[0]
+    assert result.error_category == "framework_total_item_timeout"
+    assert "_TransientWithTokens: retry me" in result.error
+    assert result.timing.attempts[0].error_category == "unknown"
+    assert result.timing.attempts[0].retry_backoff_seconds == 0
+    reader = store_type(path, identity=identity)
+    try:
+        records = [r async for r in reader.iter_results()]
+        assert len(records) == 1
+        assert "_TransientWithTokens: retry me" in records[0].error
+    finally:
+        await reader.close()
+
+    assert events.count(ProcessingEvent.ITEM_DEADLINE_EXCEEDED) == 1
+    assert not processor.aborted
+    async with ParallelBatchProcessor(
+        config=config,
+        artifact_store=store_type(path, identity=identity),
+        resume=ResumePolicy.REUSE_ALL,
+    ) as resumed:
+        await resumed.add_work(LLMWorkItem(item_id="x", prompt="x", strategy=strategy))
+        await asyncio.wait_for(resumed.process_all(), 0.5)
+    assert strategy.calls == 2

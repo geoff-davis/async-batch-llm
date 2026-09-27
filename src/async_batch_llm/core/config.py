@@ -16,6 +16,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _validate_number(value: object, *, name: str, integer: bool = False) -> None:
+    """Reject non-numeric/non-finite values before field-specific bounds."""
+    if integer:
+        from ..token_estimation import _non_negative_integer
+
+        # Existing field-specific messages handle negative integers.
+        if not isinstance(value, int) or isinstance(value, bool):
+            _non_negative_integer(value, name=name)
+    elif isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number (got {value!r})")
+
+
 @dataclass
 class RetryConfig:
     """Configuration for retry behavior.
@@ -48,6 +60,10 @@ class RetryConfig:
 
     def validate(self) -> None:
         """Validate retry configuration."""
+        for name in ("max_attempts", "max_rate_limit_retries"):
+            _validate_number(getattr(self, name), name=name, integer=True)
+        for name in ("initial_wait", "max_wait", "exponential_base"):
+            _validate_number(getattr(self, name), name=name)
         if self.max_attempts < 1:
             raise ValueError(
                 f"max_attempts must be >= 1 (got {self.max_attempts}). "
@@ -94,6 +110,10 @@ class RateLimitConfig:
 
     def __post_init__(self) -> None:
         """Validate configuration on construction."""
+        for name in ("cooldown_seconds", "max_cooldown_seconds"):
+            _validate_number(getattr(self, name), name=name)
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be >= 0")
         # The cap applies to the *escalated* cooldown, so it can never sit
         # below the base cooldown — lift it to match rather than rejecting
         # the config. This must be an unconditional, idempotent lift (not an
@@ -114,6 +134,17 @@ class RateLimitConfig:
 
     def validate(self) -> None:
         """Validate rate limit configuration."""
+        _validate_number(self.slow_start_items, name="slow_start_items", integer=True)
+        for name in (
+            "cooldown_seconds",
+            "slow_start_initial_delay",
+            "slow_start_final_delay",
+            "backoff_multiplier",
+            "max_cooldown_seconds",
+        ):
+            _validate_number(getattr(self, name), name=name)
+        if self.max_cooldown_seconds < 0:
+            raise ValueError("max_cooldown_seconds must be >= 0")
         if self.cooldown_seconds < 0:
             raise ValueError(
                 f"cooldown_seconds must be >= 0 (got {self.cooldown_seconds}). "
@@ -157,6 +188,11 @@ class StartupRampConfig:
         self.validate()
 
     def validate(self) -> None:
+        for name in ("initial_concurrency", "concurrency_step", "max_concurrency"):
+            if getattr(self, name) is not None:
+                _validate_number(getattr(self, name), name=name, integer=True)
+        for name in ("ramp_interval_seconds", "jitter_seconds"):
+            _validate_number(getattr(self, name), name=name)
         if self.initial_concurrency < 1:
             raise ValueError("initial_concurrency must be >= 1")
         if self.concurrency_step < 1:
@@ -312,6 +348,8 @@ class ProcessorConfig:
     # compatibility. TPM is disabled unless a positive integer is supplied.
     max_tokens_per_minute: int | None = None
     token_estimator: TokenEstimator | None = None
+    # None preserves the historical full-minute token bucket.
+    quota_burst_seconds: float | None = None
 
     def __post_init__(self) -> None:
         """Resolve the deprecated timeout alias, then validate."""
@@ -351,6 +389,30 @@ class ProcessorConfig:
 
     def validate(self) -> None:
         """Validate complete configuration."""
+        for name in (
+            "concurrency",
+            "max_workers",
+            "max_provider_concurrency",
+            "progress_interval",
+            "max_queue_size",
+            "max_result_queue_size",
+            "max_tokens_per_minute",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                _validate_number(value, name=name, integer=True)
+        for name in (
+            "attempt_timeout",
+            "post_processor_timeout",
+            "progress_callback_timeout",
+            "progress_refresh_interval_seconds",
+            "quota_burst_seconds",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                _validate_number(value, name=name)
+        if self.quota_burst_seconds is not None and self.quota_burst_seconds <= 0:
+            raise ValueError("quota_burst_seconds must be finite and > 0 or None")
         if self.concurrency is not None and self.concurrency < 1:
             raise ValueError(
                 f"concurrency must be >= 1 or None (got {self.concurrency}). "
@@ -415,17 +477,16 @@ class ProcessorConfig:
                 f"(got {self.progress_refresh_interval_seconds!r})."
             )
         if self.max_requests_per_minute is not None:
-            if (
-                isinstance(self.max_requests_per_minute, bool)
-                or not isinstance(self.max_requests_per_minute, (int, float))
-                or not math.isfinite(self.max_requests_per_minute)
-                or self.max_requests_per_minute <= 0
-            ):
+            try:
+                _validate_number(self.max_requests_per_minute, name="max_requests_per_minute")
+                if self.max_requests_per_minute <= 0:
+                    raise ValueError
+            except ValueError:
                 raise ValueError(
                     "max_requests_per_minute must be > 0 or None (and finite when set) "
                     f"(got {self.max_requests_per_minute!r}). Set it to None to disable "
                     "proactive rate limiting, or a positive number (including fractional RPM)."
-                )
+                ) from None
         if self.max_tokens_per_minute is not None and (
             isinstance(self.max_tokens_per_minute, bool)
             or not isinstance(self.max_tokens_per_minute, int)

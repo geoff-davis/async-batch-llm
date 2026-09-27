@@ -222,7 +222,6 @@ class ParallelBatchProcessor(
             if overrides:
                 config = dataclasses.replace(config, **overrides)
 
-        config.validate()
         # Always an int after ProcessorConfig.__post_init__ resolution.
         resolved_max_workers = cast(int, config.max_workers)
 
@@ -281,6 +280,9 @@ class ParallelBatchProcessor(
             max_requests_per_minute=config.max_requests_per_minute,
             max_tokens_per_minute=config.max_tokens_per_minute,
             max_cooldown_seconds=config.rate_limit.max_cooldown_seconds,
+            quota_burst_seconds=config.quota_burst_seconds,
+            max_workers=config.max_workers,
+            fallback_cooldown_seconds=config.rate_limit.cooldown_seconds,
         )
         # A private compatibility coordinator serves direct legacy calls made
         # before a strategy exists. Once the first item is admitted, the old
@@ -289,6 +291,7 @@ class ParallelBatchProcessor(
             rate_limit_strategy=self.rate_limit_strategy,
             events=self._events,
             max_cooldown_seconds=config.rate_limit.max_cooldown_seconds,
+            fallback_cooldown_seconds=config.rate_limit.cooldown_seconds,
         )
         self._rate_limit_coord = self._compatibility_rate_limit_coord
         self._compatibility_scope_bound = False

@@ -163,3 +163,13 @@ Path("summary.json").write_text(result.to_json(), encoding="utf-8")
 
 Serialization, artifact I/O, and programming failures remain exceptions. They
 are not disguised as controlled guardrail termination.
+
+## Retry delay cannot fit
+
+If the actual jittered retry delay is at least the remaining item deadline,
+ABL fails immediately with `ItemDeadlineExceeded` instead of spending that time
+waiting. Its message and cause retain the last provider error; the attempt timing
+keeps that error's category and reports zero retry-backoff wait. The final result
+uses `framework_total_item_timeout`, so `abort_on_error_categories` matches that
+final category rather than the provider category. The existing guardrail audit
+and non-replayable-record behavior remains in effect.

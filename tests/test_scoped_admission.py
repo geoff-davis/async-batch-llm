@@ -1119,3 +1119,157 @@ async def test_failed_result_preserves_capacity_wait_in_admission_timing(retryab
         assert waited.admission_wait_seconds == pytest.approx(waited.timing.admission_wait_seconds)
     finally:
         await host.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pause_at", [ProcessingEvent.QUOTA_ADMITTED, ProcessingEvent.ITEM_ADMITTED]
+)
+@pytest.mark.parametrize("exit_mode", ["success", "cancel", "deadline", "abort"])
+async def test_adm1_preempted_start_refunds_without_consuming_attempt(pause_at, exit_mode):
+    from async_batch_llm._internal.guardrails import AbortCause
+
+    reservations = []
+    rewaiting = asyncio.Event()
+    report_tasks = []
+    calls = []
+
+    class Strategy(LLMCallStrategy[str]):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            calls.append((attempt, state))
+            assert not scope.cooldown._in_cooldown
+            return "ok", {"total_tokens": 1}
+
+    class Observer(BaseObserver):
+        fired = False
+
+        async def on_event(self, event, data):
+            if event is pause_at and not self.fired:
+                self.fired = True
+                report_tasks.append(asyncio.create_task(scope.cooldown.handle_rate_limit(0)))
+                while not scope.cooldown._in_cooldown:
+                    await asyncio.sleep(0)
+
+    strategy = Strategy()
+    from async_batch_llm import TokenEstimate
+
+    config = ProcessorConfig(
+        max_workers=1,
+        max_provider_concurrency=1,
+        max_requests_per_minute=60,
+        max_tokens_per_minute=60,
+        token_estimator=lambda *args, **kwargs: TokenEstimate(1, 0),
+        guardrails=GuardrailConfig(
+            total_timeout_per_item=0.04 if exit_mode == "deadline" else None
+        ),
+        rate_limit=RateLimitConfig(cooldown_seconds=0.08, slow_start_items=0),
+    )
+    processor = ParallelBatchProcessor(config=config, observers=[Observer()])
+    scope = processor._admission_registry.resolve(strategy)
+    original_reserve = scope.quota_gate.reserve
+    original_wait = scope.cooldown.wait_if_paused
+
+    async def reserve(estimate=None):
+        r = await original_reserve(estimate)
+        reservations.append(r)
+        return r
+
+    async def wait():
+        if reservations:
+            rewaiting.set()
+        await original_wait()
+
+    scope.quota_gate.reserve = reserve
+    scope.cooldown.wait_if_paused = wait
+    await processor.add_work(LLMWorkItem(item_id="one", prompt="x", strategy=strategy))
+    task = asyncio.create_task(processor.process_all())
+    try:
+        if exit_mode in {"cancel", "abort"}:
+            await asyncio.wait_for(rewaiting.wait(), 1)
+            if exit_mode == "cancel":
+                task.cancel()
+            else:
+                await processor._abort_controller.trip(AbortCause("fail_fast", "test"))
+        if exit_mode == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            batch = await asyncio.wait_for(task, 2)
+            result = batch.results[0]
+            if exit_mode == "success":
+                assert result.success
+                assert len(calls) == 1
+                assert calls[0][0] == 1
+                assert len(result.timing.attempts) == 1
+            else:
+                assert not result.success
+                assert not calls
+        assert reservations
+        assert reservations[0].finalized
+        assert reservations[0].finalization.disposition == "refunded_before_start"
+        assert not scope.quota_gate.waiter_count
+        assert all(r.finalized for r in reservations)
+        assert scope.quota_gate.request_available >= 59
+        assert scope.quota_gate.token_available >= 59
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await processor.shutdown()
+        await asyncio.gather(*report_tasks)
+
+
+@pytest.mark.asyncio
+async def test_adm2_old_attempt_does_not_start_another_cooldown():
+    first_started = asyncio.Event()
+    cooldown_ended = asyncio.Event()
+    generation_counts = []
+
+    class Observer(BaseObserver):
+        async def on_event(self, event, data):
+            if event is ProcessingEvent.COOLDOWN_STARTED:
+                generation_counts.append(data["consecutive"])
+            if event is ProcessingEvent.COOLDOWN_ENDED:
+                cooldown_ended.set()
+
+    class Strategy(LLMCallStrategy[str]):
+        def __init__(self):
+            self.seen = set()
+
+        async def execute(self, prompt, attempt, timeout, state=None):
+            if prompt not in self.seen:
+                self.seen.add(prompt)
+                if prompt == "old":
+                    first_started.set()
+                    await cooldown_ended.wait()
+                else:
+                    await first_started.wait()
+                raise RuntimeError("429 rate limit")
+            return "ok", {}
+
+    strategy = Strategy()
+    async with ParallelBatchProcessor(
+        config=ProcessorConfig(
+            max_workers=2, rate_limit=RateLimitConfig(cooldown_seconds=0.01, slow_start_items=0)
+        ),
+        observers=[Observer()],
+    ) as processor:
+        for name in ("old", "new"):
+            await processor.add_work(LLMWorkItem(item_id=name, prompt=name, strategy=strategy))
+        result = await asyncio.wait_for(processor.process_all(), 2)
+    assert all(r.success for r in result.results)
+    assert generation_counts == [1]
+
+
+def test_adm7_many_scopes_warn_once_only_with_quota(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        for limit in (None, 60):
+            processor = ParallelBatchProcessor(
+                config=ProcessorConfig(max_requests_per_minute=limit, max_workers=1)
+            )
+            registry = processor._admission_registry
+            for _ in range(4):
+                registry.resolve(_Strategy())
+    assert sum("Distinct quota scopes" in r.message for r in caplog.records) == 1

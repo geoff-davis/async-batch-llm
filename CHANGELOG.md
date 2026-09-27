@@ -26,6 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Trailing-markdown JSON recovery now uses Pydantic's JSON validation, preserving
   strict-model behavior for dates and tuples.
+- Recheck scoped cooldown immediately before provider start; preempted quota and
+  capacity grants are released and re-enter FIFO admission without consuming retries.
+- Ignore stale-generation 429s for cooldown escalation while retaining per-item
+  rate-limit retry accounting. Exhausted items no longer wait for a shared cooldown.
+- Cap exponential retry calculations without overflow, and use the configured
+  cooldown as fallback when a rate-limit strategy raises or returns a non-finite
+  or negative duration.
+- Fail immediately when retry backoff cannot fit the item deadline, preserving the
+  original error in the deadline exception message/cause and attempt category.
+- Avoid duplicate processor configuration warnings on construction.
+
 - Share strategy preparation and cleanup across overlapping execution hosts on
   one event loop. Distinct built-in OpenAI-compatible strategies sharing a model
   also keep its owned client open until the last strategy releases it. Redundant
@@ -41,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any usage supplied by the middleware, including persisted and replayed results.
 - Preserve successful results when `after_process` returns an invalid type,
   without repeating the provider call. Warn once per middleware class per dispatcher.
+
+### Added
+
+- Optional `ProcessorConfig.quota_burst_seconds` to reduce RPM/TPM bursts while
+  preserving the full-minute default. Oversized TPM estimates borrow future refill.
+- Warn once per processor when enabled quota scopes exceed `max_workers`.
 
 ### Changed
 
@@ -61,6 +78,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   survive client reopening.
 - Gemini output token counts now include thinking tokens. Positive thinking usage
   is also exposed as `metadata["reasoning_tokens"]`; input counts include tool-use prompt tokens.
+- **BREAKING**: Numeric retry, rate-limit, ramp and processor settings reject non-finite values
+  and booleans; integer fields reject floats, including integral floats.
+- **BREAKING**: Bare `ExponentialBackoffStrategy()` defaults now match `RateLimitConfig`:
+  initial cooldown 300 seconds (was 60), multiplier 1.5 (was 2.0).
+
 - Provider-raised timeouts now use the provider classifier's category instead
   of `framework_timeout`: `api_timeout` for the default, OpenAI and OpenRouter
   classifiers, or Gemini's existing message-dependent mapping (`timeout` for
