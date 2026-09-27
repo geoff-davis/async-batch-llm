@@ -595,3 +595,29 @@ async def test_exec3_classifier_failure_is_an_item_failure(surface, caplog):
     assert result.error_category == "classifier_error"
     assert classifier.calls == 1
     assert any("BrokenClassifier" in r.message and r.exc_info for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_adm5_many_retries_preserve_original_failure_instead_of_overflow():
+    from async_batch_llm import ProcessorConfig, RetryConfig, call_result
+    from async_batch_llm.llm_strategies import LLMCallStrategy
+
+    failure = RuntimeError("transient outage")
+
+    class Strategy(LLMCallStrategy[str]):
+        calls = 0
+
+        async def execute(self, prompt, attempt, timeout, state=None):
+            self.calls += 1
+            raise failure
+
+    strategy = Strategy()
+    result = await call_result(
+        strategy,
+        "x",
+        config=ProcessorConfig(
+            retry=RetryConfig(max_attempts=1100, initial_wait=1e-9, max_wait=1e-9, jitter=False),
+        ),
+    )
+    assert strategy.calls == 1100
+    assert result.exception is failure

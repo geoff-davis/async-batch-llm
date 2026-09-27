@@ -154,3 +154,18 @@ async def test_exponential_backoff_slow_start_zero_items():
     should_delay, delay = strategy.should_apply_slow_start(items_since_resume=0)
     assert should_delay is False
     assert delay == 0.0
+
+
+@pytest.mark.asyncio
+async def test_adm5_exponential_backoff_never_overflows():
+    strategy = ExponentialBackoffStrategy(initial_cooldown=1, max_cooldown=10)
+    assert await strategy.on_rate_limit(0, 10000) == 10
+
+
+def test_adm5_bare_defaults_match_config():
+    from async_batch_llm.core import RateLimitConfig
+
+    config = RateLimitConfig()
+    strategy = ExponentialBackoffStrategy()
+    assert strategy.initial_cooldown == config.cooldown_seconds
+    assert strategy.backoff_multiplier == config.backoff_multiplier

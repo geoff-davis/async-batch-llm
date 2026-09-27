@@ -180,3 +180,24 @@ async def test_raises_rate_limit_retries_exceeded_type():
     assert result.failed == 1
     # Sanity: the exception class is importable and named in the error string.
     assert RateLimitRetriesExceeded.__name__ in result.results[0].error
+
+
+@pytest.mark.asyncio
+async def test_adm6_exhausted_item_reports_without_waiting_for_shared_cooldown():
+    import asyncio
+
+    from async_batch_llm import LLMCallPool
+
+    config = _fast_config(max_rate_limit_retries=0)
+    config.rate_limit.cooldown_seconds = 2
+    config.rate_limit.slow_start_items = 0
+    strategy = _SequenceStrategy(["429", "ok"])
+    async with LLMCallPool(strategy, config=config) as pool:
+        result = await asyncio.wait_for(pool.submit_result("x"), 0.3)
+        assert isinstance(result.exception, RateLimitRetriesExceeded)
+        peer = asyncio.create_task(pool.submit_result("y"))
+        await asyncio.sleep(0.02)
+        assert strategy.calls == 1
+        assert not peer.done()
+        peer.cancel()
+        await asyncio.gather(peer, return_exceptions=True)

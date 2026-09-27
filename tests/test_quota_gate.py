@@ -398,3 +398,60 @@ async def test_clock_read_jitter_does_not_reschedule_the_same_quota_deadline(
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
         await gate.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_adm3_five_second_burst_bound_with_manual_clock():
+    clock = _ManualClock()
+    # On the base implementation the knob is absent; exercise its full-minute
+    # policy rather than treating a constructor TypeError as failure evidence.
+    import inspect
+
+    burst = (
+        {"quota_burst_seconds": 5}
+        if "quota_burst_seconds" in inspect.signature(QuotaGate).parameters
+        else {}
+    )
+    gate = QuotaGate(60, **burst, clock=clock, sleep=clock.sleep)
+    tasks = [asyncio.create_task(gate.reserve()) for _ in range(100)]
+    await _settle()
+    assert sum(t.done() for t in tasks) == 5
+    for _ in range(60):
+        await clock.advance(1)
+    assert sum(t.done() for t in tasks) == 65
+    for task in tasks:
+        if task.done():
+            r = task.result()
+            r.mark_provider_started()
+            r.finalize()
+        else:
+            task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    await gate.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_adm3_oversized_head_borrows_without_widening_bucket():
+    clock = _ManualClock()
+    import inspect
+
+    burst = (
+        {"quota_burst_seconds": 5}
+        if "quota_burst_seconds" in inspect.signature(QuotaGate).parameters
+        else {}
+    )
+    gate = QuotaGate(None, 60, **burst, clock=clock, sleep=clock.sleep)
+    large = await gate.reserve(TokenEstimate(20, 0))
+    large.mark_provider_started()
+    large.finalize_unknown()
+    assert gate.token_available == -15
+    small = asyncio.create_task(gate.reserve(TokenEstimate(1, 0)))
+    await _settle()
+    await clock.advance(15)
+    assert not small.done()
+    await clock.advance(1)
+    r = await small
+    r.finalize_before_start()
+    await clock.advance(60)
+    assert gate.token_available == 5
+    await gate.shutdown()

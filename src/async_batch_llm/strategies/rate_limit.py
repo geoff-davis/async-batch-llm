@@ -3,6 +3,8 @@
 import logging
 from abc import ABC, abstractmethod
 
+from .._internal.backoff import capped_backoff
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,9 +48,9 @@ class ExponentialBackoffStrategy(RateLimitStrategy):
 
     def __init__(
         self,
-        initial_cooldown: float = 60.0,
+        initial_cooldown: float = 300.0,
         max_cooldown: float = 600.0,
-        backoff_multiplier: float = 2.0,
+        backoff_multiplier: float = 1.5,
         slow_start_items: int = 50,
         slow_start_initial_delay: float = 2.0,
         slow_start_final_delay: float = 0.1,
@@ -73,8 +75,10 @@ class ExponentialBackoffStrategy(RateLimitStrategy):
 
     async def on_rate_limit(self, worker_id: int, consecutive_limit_count: int) -> float:
         """Calculate exponential backoff cooldown."""
-        cooldown = min(
-            self.initial_cooldown * (self.backoff_multiplier ** (consecutive_limit_count - 1)),
+        cooldown = capped_backoff(
+            self.initial_cooldown,
+            self.backoff_multiplier,
+            consecutive_limit_count - 1,
             self.max_cooldown,
         )
         logger.info(
