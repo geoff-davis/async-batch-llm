@@ -192,3 +192,66 @@ async def test_sd1_invalid_cooldown_return_uses_fallback(
     finally:
         await coord.shutdown()
     assert not coord._owned_cooldowns
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "host_kind", ["direct", "batch_scope", "batch_compat", "executor_scope", "executor_compat"]
+)
+@pytest.mark.parametrize("strategy_result", ["raises", "nan", "valid"])
+@pytest.mark.parametrize(
+    "suggestion,clamped",
+    [(None, 0), (-5, 0), (2, 2), (7, 7), (86400, 10), (float("nan"), 0), (float("inf"), 0)],
+)
+async def test_c4_d5_hint_clamp_and_fallback_across_hosts(
+    host_kind, strategy_result, suggestion, clamped, monkeypatch
+):
+    from async_batch_llm import ParallelBatchProcessor, ProcessorConfig, RateLimitConfig
+    from async_batch_llm._internal.executor_host import ExecutorHost
+    from async_batch_llm.llm_strategies import LLMCallStrategy
+
+    class CooldownPolicy(FixedDelayStrategy):
+        async def on_rate_limit(self, worker_id, consecutive_limit_count):
+            if strategy_result == "raises":
+                raise RuntimeError("policy failed")
+            return float("nan") if strategy_result == "nan" else 30.0
+
+    class Strategy(LLMCallStrategy[str]):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            return "ok", {}
+
+    config = ProcessorConfig(
+        rate_limit=RateLimitConfig(cooldown_seconds=5, max_cooldown_seconds=10)
+    )
+    policy = CooldownPolicy()
+    strategy = Strategy()
+    if host_kind == "direct":
+        coord = RateLimitCoordinator(
+            policy,
+            EventDispatcher([], []),
+            max_cooldown_seconds=10,
+            fallback_cooldown_seconds=5,
+        )
+        close = coord.shutdown
+    elif host_kind.startswith("batch"):
+        processor = ParallelBatchProcessor(config=config, rate_limit_strategy=policy)
+        coord = (
+            processor._admission_registry.resolve(strategy).cooldown
+            if host_kind == "batch_scope"
+            else processor._compatibility_rate_limit_coord
+        )
+        close = processor.shutdown
+    else:
+        host = ExecutorHost(
+            config,
+            strategy=strategy if host_kind == "executor_scope" else None,
+            rate_limit_strategy=policy,
+        )
+        coord = host._rate_limit_coord
+        close = host.aclose
+    try:
+        duration = await _captured_cooldown(coord, monkeypatch, suggested_wait=suggestion)
+        # Only the server hint is capped. Valid custom cooldowns may exceed it.
+        assert duration == max(30 if strategy_result == "valid" else 5, clamped)
+    finally:
+        await close()
