@@ -556,3 +556,40 @@ async def test_pydantic_ai_default_classifier_retry_delay(surface, error_kind, t
     assert attempts[0].error_category == expected_category
     if terminal:
         assert result.error_category == expected_category
+
+
+@pytest.mark.parametrize("surface", ["batch", "single"])
+async def test_exec3_classifier_failure_is_an_item_failure(surface, caplog):
+    from async_batch_llm import LLMCallStrategy, call_result, process_prompts
+    from async_batch_llm.strategies import ErrorClassifier
+
+    original = ValueError("provider error")
+
+    class BrokenClassifier(ErrorClassifier):
+        calls = 0
+
+        def classify(self, exception):
+            self.calls += 1
+            raise RuntimeError("classifier bug")
+
+    class Provider(LLMCallStrategy[str]):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            if prompt == "bad":
+                raise original
+            return prompt, {}
+
+    classifier = BrokenClassifier()
+    strategy = Provider()
+    if surface == "single":
+        result = await call_result(strategy, "bad", error_classifier=classifier)
+    else:
+        batch = await process_prompts(
+            strategy, [("bad", "bad"), ("ok", "ok")], error_classifier=classifier
+        )
+        assert batch.succeeded == 1
+        result = next(r for r in batch.results if r.item_id == "bad")
+    assert not result.success
+    assert result.exception is original
+    assert result.error_category == "classifier_error"
+    assert classifier.calls == 1
+    assert any("BrokenClassifier" in r.message and r.exc_info for r in caplog.records)

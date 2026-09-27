@@ -8,9 +8,11 @@ v0.6.0: Strategies now accept an LLMModel instead of raw client + model name.
         GeminiStrategy(model=GeminiCachedModel(...)) instead.
 """
 
+import asyncio
 import inspect
 import logging
 import time
+import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, cast, overload
@@ -25,6 +27,7 @@ from .token_estimation import TokenEstimate, TokenEstimator
 if TYPE_CHECKING:
     from pydantic_ai import Agent
 
+    from ._internal.strategy_lifecycle import _StrategyLease
     from .core.protocols import LLMModel
     from .strategies.errors import ErrorClassifier
 else:
@@ -391,6 +394,8 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
         if token_estimator is not None and not callable(token_estimator):
             raise TypeError("token_estimator must be callable or None")
         self.model = model
+        self._model_lease: weakref.ReferenceType[_StrategyLease] | None = None
+        self._direct_model_lease: _StrategyLease | None = None
         # The overloads restrict the None-parser path to TOutput=str, so the cast
         # below is sound at static-analysis time.
         self.response_parser = response_parser or (lambda response: cast(TOutput, response.text))
@@ -448,13 +453,32 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
 
     async def prepare(self) -> None:
         """Delegate to model.prepare() if the model has a managed lifecycle."""
-        if isinstance(self.model, ManagedLLMModel):
+        from ._internal.strategy_lifecycle import _acquire_lease, _retain_child_lease
+        from .models import OpenAICompatibleModel
+
+        if isinstance(self.model, OpenAICompatibleModel):
+            lease = self._model_lease() if self._model_lease is not None else None
+            if lease is None or lease.released or lease.loop() is not asyncio.get_running_loop():
+                lease = _acquire_lease(self.model)
+                self._model_lease = weakref.ref(lease)
+            if not _retain_child_lease(self, lease):
+                self._direct_model_lease = lease
+            await lease.shared.ensure_ready(self.model)
+        elif isinstance(self.model, ManagedLLMModel):
             await self.model.prepare()
 
     async def cleanup(self) -> None:
         """Delegate to model.cleanup() if the model has a managed lifecycle."""
         if isinstance(self.model, ManagedLLMModel):
-            await self.model.cleanup()
+            lease = self._model_lease() if self._model_lease is not None else None
+            if lease is not None:
+                await lease.release(self.model)
+                self._direct_model_lease = None
+            elif self._model_lease is None:
+                # No lease has ever been acquired (e.g. custom managed models).
+                # An expired weak reference instead means ownership was already
+                # released; a redundant close must not bypass a peer's lease.
+                await self.model.cleanup()
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None

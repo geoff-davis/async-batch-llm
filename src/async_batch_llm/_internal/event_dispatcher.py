@@ -28,8 +28,8 @@ OBSERVER_CALLBACK_TIMEOUT = 5.0
 class EventDispatcher(Generic[TInput, TOutput, TContext]):
     """Dispatches observer events and runs the middleware chain.
 
-    Stateless with respect to the batch; holds only references to the
-    registered observers/middlewares. Safe to share between worker tasks.
+    Holds registered callbacks and deduplicates invalid-return warnings by
+    middleware class for this dispatcher. Safe to share between worker tasks.
     """
 
     def __init__(
@@ -39,6 +39,7 @@ class EventDispatcher(Generic[TInput, TOutput, TContext]):
     ):
         self.observers = observers
         self.middlewares = middlewares
+        self._invalid_after_classes: set[type] = set()
 
     # ── Observer events ──────────────────────────────────────────
 
@@ -128,7 +129,17 @@ class EventDispatcher(Generic[TInput, TOutput, TContext]):
         current_result = result
         for middleware in reversed(self.middlewares):
             try:
-                current_result = await middleware.after_process(current_result)
+                candidate = await middleware.after_process(current_result)
+                if isinstance(candidate, WorkItemResult):
+                    current_result = candidate
+                elif type(middleware) not in self._invalid_after_classes:
+                    self._invalid_after_classes.add(type(middleware))
+                    logger.warning(
+                        "Middleware %s.after_process returned %s instead of WorkItemResult; "
+                        "preserving the previous result",
+                        type(middleware).__name__,
+                        type(candidate).__name__,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as e:

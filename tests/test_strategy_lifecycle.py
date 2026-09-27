@@ -349,3 +349,219 @@ async def test_mixed_shared_and_unique_strategies():
     assert shared_strategy.cleanup_called
     assert unique_strategy1.cleanup_called
     assert unique_strategy2.cleanup_called
+
+
+async def test_core1_concurrent_calls_share_one_lifecycle():
+    import asyncio
+
+    from async_batch_llm import call
+
+    class Shared(LifecycleTrackingStrategy):
+        prepares = 0
+        cleanups = 0
+        finished = 0
+        all_started = asyncio.Event()
+        started = 0
+
+        async def prepare(self):
+            self.prepares += 1
+
+        async def cleanup(self):
+            assert self.finished == 10
+            self.cleanups += 1
+
+        async def execute(self, prompt, attempt, timeout, state=None):
+            self.started += 1
+            if self.started == 10:
+                self.all_started.set()
+            await self.all_started.wait()
+            await asyncio.sleep(int(prompt) * 0.001)
+            assert self.cleanups == 0
+            self.finished += 1
+            return prompt, {}
+
+    strategy = Shared()
+    results = await asyncio.gather(*(call(strategy, str(i)) for i in range(10)))
+    assert results == [str(i) for i in range(10)]
+    assert strategy.prepares == strategy.cleanups == 1
+
+
+async def test_core1_processor_and_call_share_lease():
+    from async_batch_llm import call
+
+    strategy = LifecycleTrackingStrategy()
+    async with ParallelBatchProcessor() as processor:
+        await processor.add_work(LLMWorkItem("a", strategy, "a"))
+        await processor.process_all()
+        assert not strategy.cleanup_called
+        await call(strategy, "b")
+        assert not strategy.cleanup_called
+    assert strategy.cleanup_called
+
+
+async def test_core1_prepare_failure_shared_then_next_acquirer_retries():
+    import asyncio
+
+    from async_batch_llm._internal.strategy_lifecycle import StrategyLifecycle
+
+    entered, proceed = asyncio.Event(), asyncio.Event()
+    failure = ValueError("prepare failed")
+
+    class Shared(LifecycleTrackingStrategy):
+        preparations = 0
+
+        async def prepare(self):
+            self.preparations += 1
+            if self.preparations == 1:
+                entered.set()
+                await proceed.wait()
+                raise failure
+
+    strategy = Shared()
+    hosts = [StrategyLifecycle() for _ in range(3)]
+    first = asyncio.create_task(hosts[0].ensure_prepared(strategy))
+    await entered.wait()
+    second = asyncio.create_task(hosts[1].ensure_prepared(strategy))
+    await asyncio.sleep(0)
+    proceed.set()
+    try:
+        outcomes = await asyncio.gather(first, second, return_exceptions=True)
+        assert outcomes == [failure, failure]
+        await hosts[2].ensure_prepared(strategy)
+        assert strategy.preparations == 2
+    finally:
+        for host in hosts:
+            await host.cleanup_all()
+
+
+@pytest.mark.parametrize("owner_cancelled", [True, False])
+async def test_core1_cancelled_prepare_does_not_cancel_peer(owner_cancelled):
+    import asyncio
+
+    from async_batch_llm._internal.strategy_lifecycle import StrategyLifecycle
+
+    entered, proceed = asyncio.Event(), asyncio.Event()
+
+    class Shared(LifecycleTrackingStrategy):
+        preparations = 0
+
+        async def prepare(self):
+            self.preparations += 1
+            entered.set()
+            await proceed.wait()
+
+    strategy = Shared()
+    hosts = [StrategyLifecycle(), StrategyLifecycle()]
+    tasks = [asyncio.create_task(hosts[0].ensure_prepared(strategy))]
+    await entered.wait()
+    tasks.append(asyncio.create_task(hosts[1].ensure_prepared(strategy)))
+    await asyncio.sleep(0)
+    cancelled = 0 if owner_cancelled else 1
+    tasks[cancelled].cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tasks[cancelled]
+    proceed.set()
+    await tasks[1 - cancelled]
+    assert strategy.preparations == (2 if owner_cancelled else 1)
+    for host in hosts:
+        await host.cleanup_all()
+    assert strategy.cleanup_called
+
+
+async def test_core1_new_owner_waits_for_last_cleanup():
+    import asyncio
+
+    from async_batch_llm._internal.strategy_lifecycle import StrategyLifecycle
+
+    entered, proceed = asyncio.Event(), asyncio.Event()
+
+    class Shared(LifecycleTrackingStrategy):
+        preparations = 0
+
+        async def prepare(self):
+            self.preparations += 1
+
+        async def cleanup(self):
+            entered.set()
+            await proceed.wait()
+
+    strategy = Shared()
+    first, second = StrategyLifecycle(), StrategyLifecycle()
+    await first.ensure_prepared(strategy)
+    closing = asyncio.create_task(first.cleanup_all())
+    await entered.wait()
+    preparing = asyncio.create_task(second.ensure_prepared(strategy))
+    await asyncio.sleep(0)
+    assert not preparing.done()
+    assert strategy.preparations == 1
+    proceed.set()
+    await closing
+    await preparing
+    assert strategy.preparations == 2
+    await second.cleanup_all()
+
+
+@pytest.mark.parametrize("new_owner", [True, False])
+async def test_core1_failed_cleanup_retries_only_for_last_owner(new_owner):
+    from async_batch_llm._internal.strategy_lifecycle import StrategyLifecycle
+
+    class Shared(LifecycleTrackingStrategy):
+        preparations = 0
+        cleanups = 0
+
+        async def prepare(self):
+            self.preparations += 1
+
+        async def cleanup(self):
+            self.cleanups += 1
+            if self.cleanups == 1:
+                raise ValueError("partial cleanup")
+
+    strategy = Shared()
+    first, second = StrategyLifecycle(), StrategyLifecycle()
+    await first.ensure_prepared(strategy)
+    with pytest.raises(ValueError, match="partial cleanup"):
+        await first.cleanup_all()
+    if new_owner:
+        await second.ensure_prepared(strategy)
+        assert strategy.preparations == 2
+    await first.cleanup_all()
+    assert strategy.cleanups == (1 if new_owner else 2)
+    if new_owner:
+        await second.cleanup_all()
+    assert strategy.cleanups == 2
+
+
+async def test_core1_abandoned_host_does_not_keep_peer_lease_alive():
+    import gc
+    import weakref
+
+    from async_batch_llm._internal.strategy_lifecycle import StrategyLifecycle
+
+    strategy = LifecycleTrackingStrategy()
+    abandoned, remaining = StrategyLifecycle(), StrategyLifecycle()
+    await abandoned.ensure_prepared(strategy)
+    await remaining.ensure_prepared(strategy)
+    reference = weakref.ref(abandoned)
+    del abandoned
+    gc.collect()
+    assert reference() is None
+    await remaining.cleanup_all()
+    assert strategy.cleanup_called
+
+
+def test_core1_strategy_reuse_across_event_loops():
+    import asyncio
+
+    from async_batch_llm._internal.strategy_lifecycle import StrategyLifecycle
+
+    strategy = LifecycleTrackingStrategy()
+
+    async def run():
+        first, second = StrategyLifecycle(), StrategyLifecycle()
+        await asyncio.gather(first.ensure_prepared(strategy), second.ensure_prepared(strategy))
+        await first.cleanup_all()
+        await second.cleanup_all()
+
+    asyncio.run(run())
+    asyncio.run(run())

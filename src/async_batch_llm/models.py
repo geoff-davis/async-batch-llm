@@ -7,6 +7,7 @@ without knowing about provider-specific details.
 Added in v0.6.0.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -930,6 +931,13 @@ class OpenAICompatibleModel:
         # rebuild the client with a right-sized pool before the first request.
         # None when the caller supplied the client or an explicit pool.
         self._rebuild_client_kwargs: dict[str, Any] | None = None
+        self._reopen_kwargs: dict[str, Any] | None = None
+        self._reopen_pool_size: int | None = None
+        self._caller_http_client = False
+        self._client_closed = False
+        self._client_used = False
+        self._client_lock: asyncio.Lock | None = None
+        self._client_lock_loop: asyncio.AbstractEventLoop | None = None
 
     async def generate(
         self,
@@ -958,6 +966,8 @@ class OpenAICompatibleModel:
         Returns:
             Normalized LLMResponse.
         """
+        await self.prepare()
+        self._client_used = True
         messages = _coerce_to_messages(prompt)
         si = system_instruction or self._default_system_instruction
         if si is not None and not _has_system_message(messages):
@@ -1135,8 +1145,25 @@ class OpenAICompatibleModel:
     # ── Lifecycle ───────────────────────────────────────────────────────
 
     async def prepare(self) -> None:
-        """No-op; OpenAI-compatible models have nothing to initialize."""
-        return
+        """Reopen an owned client after cleanup, preserving its configured pool."""
+        if not self._client_closed or self._reopen_kwargs is None:
+            return
+        async with self._lifecycle_lock():
+            if not self._client_closed:
+                return
+            kwargs = dict(self._reopen_kwargs)
+            if self._reopen_pool_size is not None:
+                kwargs["http_client"] = _build_openai_http_client(self._reopen_pool_size)
+            self._client = AsyncOpenAI(**kwargs)
+            self._client_closed = False
+            self._client_used = False
+
+    def _lifecycle_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._client_lock is None or self._client_lock_loop is not loop:
+            self._client_lock = asyncio.Lock()
+            self._client_lock_loop = loop
+        return self._client_lock
 
     async def request_concurrency(self, concurrency: int) -> bool:
         """Ask the model to support ``concurrency`` parallel requests.
@@ -1159,6 +1186,7 @@ class OpenAICompatibleModel:
             raise ValueError(f"concurrency must be >= 1; got {concurrency}.")
         if (
             not self._owns_client
+            or self._client_used
             or self.max_concurrency is not None
             or self._rebuild_client_kwargs is None
         ):
@@ -1170,6 +1198,8 @@ class OpenAICompatibleModel:
         old_client = self._client
         self._client = new_client
         self.max_concurrency = concurrency
+        self._reopen_pool_size = concurrency
+        self._client_closed = False
         # The old client made no requests yet (this runs before batch start);
         # close it so its default httpx transport doesn't linger.
         close = getattr(old_client, "close", None)
@@ -1190,23 +1220,30 @@ class OpenAICompatibleModel:
 
         Models constructed directly with ``OpenAIModel(model, client=...)``
         do NOT own the client — the caller is expected to close it. Models
-        constructed via :meth:`from_api_key` do own the client and close
-        it here so repeated processor runs don't leak httpx connections.
+        constructed via :meth:`from_api_key` own the client and close it here,
+        unless an HTTP transport was supplied by the caller. Closing that SDK
+        client would also close the caller's transport, so both remain open.
+        A later prepare reopens an owned client with its configured pool size.
         """
-        if not self._owns_client or self._client is None:
+        if not self._owns_client or self._client is None or self._caller_http_client:
             return
-        close = getattr(self._client, "close", None)
-        if close is None:
-            return
-        try:
-            result = close()
-            if hasattr(result, "__await__"):
-                await result
-        except Exception as e:
-            logger.warning(
-                f"Failed to close {type(self).__name__} client: {e}",
-                exc_info=True,
-            )
+        async with self._lifecycle_lock():
+            if self._client_closed:
+                return
+            close = getattr(self._client, "close", None)
+            if close is None:
+                return
+            try:
+                result = close()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception as e:
+                logger.warning(
+                    f"Failed to close {type(self).__name__} client: {e}",
+                    exc_info=True,
+                )
+            finally:
+                self._client_closed = True
 
     # ── Convenience constructor ─────────────────────────────────────────
 
@@ -1273,6 +1310,7 @@ class OpenAICompatibleModel:
                 f"openai is required for {cls.__name__}. "
                 f"Install with: pip install 'async-batch-llm[{cls._install_extras}]'"
             )
+        caller_http_client = client_kwargs.get("http_client") is not None
         if max_connections is not None:
             if "http_client" in client_kwargs:
                 raise ValueError(
@@ -1325,6 +1363,11 @@ class OpenAICompatibleModel:
         )
         instance.max_concurrency = max_connections
         instance._owns_client = True
+        instance._caller_http_client = caller_http_client
+        instance._reopen_kwargs = dict(client_kwargs)
+        instance._reopen_pool_size = max_connections
+        if max_connections is not None:
+            instance._reopen_kwargs.pop("http_client", None)
         if max_connections is None and "http_client" not in client_kwargs:
             # Default-pool client: keep the constructor kwargs so
             # request_concurrency() can rebuild it with a right-sized pool.
@@ -1837,6 +1880,8 @@ class DeepSeekModel(OpenAICompatibleModel):
         system_instruction: str | None,
         config: dict[str, Any] | None,
     ) -> LLMResponse:
+        await self.prepare()
+        self._client_used = True
         input_value: str | list[Any] = prompt if isinstance(prompt, str) else list(prompt)
         si = system_instruction or self._default_system_instruction
         has_system = isinstance(input_value, list) and _has_system_message(input_value)

@@ -71,7 +71,12 @@ from .execution_state import (
     reset_attempt_runtime,
     runtime_state,
 )
-from .guardrails import AbortController, await_with_guardrails, remaining_seconds
+from .guardrails import (
+    AbortController,
+    _OperationTimerExpired,
+    await_with_guardrails,
+    remaining_seconds,
+)
 from .logical_item import PreparedLogicalItem
 
 if TYPE_CHECKING:
@@ -172,7 +177,16 @@ def _classify_error(exception: Exception, classifier: ErrorClassifier) -> ErrorI
             error_category=exception.error_category,
         )
     else:
-        error_info = classifier.classify(exception)
+        try:
+            error_info = classifier.classify(exception)
+        except Exception:
+            logger.error("Error classifier %s failed", type(classifier).__name__, exc_info=True)
+            error_info = ErrorInfo(
+                is_retryable=False,
+                is_rate_limit=False,
+                is_timeout=False,
+                error_category="classifier_error",
+            )
     return error_info
 
 
@@ -804,6 +818,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         )
         result: WorkItemResult[TOutput, TContext]
         if middleware_result is not None:
+            self._merge_failed_tokens(middleware_result, failed_tokens)
             result = middleware_result
         else:
             # Annotated above: ty infers unannotated constructions against
@@ -1470,7 +1485,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                             raise
                         except (BatchDeadlineExceeded, BatchAbortedError):
                             raise
-                        except (TimeoutError, asyncio.TimeoutError) as timeout_exc:
+                        except _OperationTimerExpired as timeout_exc:
                             elapsed = time.time() - llm_start_time
                             if item_runtime is not None:
                                 item_runtime.current_attempt.timeout_category = (
@@ -1793,6 +1808,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             else await self._run_middlewares_on_error(work_item, exception)
         )
         if middleware_result is not None:
+            self._merge_failed_tokens(middleware_result, failed_token_usage)
             return middleware_result
 
         # Log non-retryable error with full details
