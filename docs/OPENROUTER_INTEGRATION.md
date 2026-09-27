@@ -209,7 +209,7 @@ DeepSeek-style upstreams), tool calls, and logprobs land under reserved
 `metadata` keys with typed views on each per-item `WorkItemResult` (not the
 batch-level `BatchResult`): `item_result.reasoning`,
 `item_result.tool_calls`, `item_result.logprobs`. See
-[Typed auxiliary output](API.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs)
+[Typed auxiliary output](api/core.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs)
 for shapes and boundaries (**experimental** — shapes may change while they
 stabilize).
 

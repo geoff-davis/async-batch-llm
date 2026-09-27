@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypedDict, cast, overload  # noqa: F401
 
-from typing_extensions import TypeVar  # PEP 696 defaults on Python < 3.13
+from typing_extensions import Self, TypeVar  # PEP 696 defaults on Python < 3.13
 
 from ._internal.cleanup import (
     CleanupAction,
@@ -28,6 +28,7 @@ from ._internal.cleanup import (
     wait_all_detached,
     wait_detached,
 )
+from ._internal.input_validation import validate_strategy
 from .provider_output import ProviderOutputViews
 from .strategies.errors import BatchAdmissionClosedError
 
@@ -274,6 +275,7 @@ class LLMWorkItem(Generic[TInput, TOutput, TContext]):
                 "Pass an LLMCallStrategy instance (e.g., PydanticAIStrategy, GeminiStrategy, "
                 "or your custom subclass)."
             )
+        validate_strategy(self.strategy)
         if not isinstance(self.prompt, str):
             raise TypeError(
                 f"prompt must be a string (got {type(self.prompt).__name__}: {repr(self.prompt)[:80]}). "
@@ -376,10 +378,9 @@ class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
             ``None`` for successes and for non-error outcomes such as a
             middleware filter-skip. ``call()`` / ``LLMCallPool.submit()`` re-raise
             this exact exception (preserving the provider's type) rather than a
-            generic ``LLMCallError``. Its traceback is detached before storage
-            (the full failure is already logged at the failure site) so
-            accumulated failed results don't pin frame locals; a re-raise gets a
-            fresh traceback. Excluded from equality so two failed results with
+            generic ``LLMCallError``. Batch execution detaches tracebacks after
+            diagnostic logging to avoid retaining frame locals. ``call()``,
+            ``call_result()`` and ``LLMCallPool`` retain the original traceback. Excluded from equality so two failed results with
             distinct exception instances still compare equal.
         admission_wait_seconds: Total time this item spent waiting for provider
             capacity across all attempts. This wait occurs before the per-attempt
@@ -873,6 +874,15 @@ class BatchResult(Generic[TOutput, TContext]):
                 ids = by_category[category]
                 shown = ", ".join(ids[:3]) + ("..." if len(ids) > 3 else "")
                 lines.append(f"  {category:<15} {len(ids)} — {shown}")
+
+        repeated: dict[tuple[str | None, str], int] = {}
+        for result in self.results:
+            if not result.success and result.error is not None:
+                key = (result.error_category, result.error)
+                repeated[key] = repeated.get(key, 0) + 1
+        for (_, error), count in repeated.items():
+            if count > 1:
+                lines.append(f"{count} items failed with the same error: {error}")
 
         return "\n".join(lines)
 
@@ -1425,7 +1435,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             if self._closer.state is CloseState.CLOSED:
                 self._state = _ProcessorState.CLOSED
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         """Context manager entry - returns self for use in async with."""
         return self
 

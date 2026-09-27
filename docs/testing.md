@@ -1,7 +1,29 @@
 # Testing
 
-Three ways to test code that uses async-batch-llm without spending money on API
-calls.
+Test code that uses async-batch-llm without spending money on API calls.
+
+## Provider-free FakeStrategy
+
+```python
+from async_batch_llm import process_prompts
+from async_batch_llm.testing import FakeStrategy
+
+batch = await process_prompts(
+    FakeStrategy(lambda prompt: prompt.upper(), token_usage={"input_tokens": 2, "output_tokens": 1}),
+    ["hello", "world"],
+)
+assert batch.outputs == ["HELLO", "WORLD"]
+```
+
+`FakeStrategy` accepts a fixed response or synchronous `response(prompt)` function,
+`latency` in seconds, and canonical or OpenAI-style token counters. It needs no extras.
+`failure_schedule=[FakeRateLimitError(), None]` makes the first physical call raise
+a simulated 429 and the next succeed; import `FakeRateLimitError` from
+`async_batch_llm.testing`. Each entry corresponds to invocation order, including retries.
+After the schedule ends, calls succeed unless `failure_rate` is set. A nonzero
+`failure_rate` requires `seed=` for reproducibility. Concurrent scheduling can change
+which item receives a scheduled failure. Pass `identity=ArtifactIdentity(...)` for
+artifact persistence. `mock_strategy` remains available with its existing behavior.
 
 ## 1. Dry-run mode (no API calls)
 

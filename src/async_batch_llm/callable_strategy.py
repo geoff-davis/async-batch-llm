@@ -82,6 +82,13 @@ def _normalize_token_usage(usage: Mapping[str, int]) -> TokenUsage:
     if not isinstance(usage, Mapping):
         raise TypeError("CallOutcome.token_usage must be a mapping")
 
+    aliases = {"prompt_tokens": "input_tokens", "completion_tokens": "output_tokens"}
+    if set(usage) & aliases.keys():
+        if set(usage) & {"input_tokens", "output_tokens"}:
+            raise ValueError(
+                "CallOutcome.token_usage cannot mix input/output and prompt/completion keys"
+            )
+        usage = {aliases.get(key, key): value for key, value in usage.items()}
     unknown = set(usage) - _TOKEN_USAGE_KEYS
     if unknown:
         keys = ", ".join(sorted(str(key) for key in unknown))
@@ -162,6 +169,21 @@ class CallableStrategy(LLMCallStrategy[TOutput]):
             raise TypeError(
                 "CallableStrategy invoke must be declared with async def and return CallOutcome"
             )
+        try:
+            signature = inspect.signature(invoke)
+        except (TypeError, ValueError):
+            # Some extension callables do not expose a signature; the execution
+            # boundary still validates their awaitable and CallOutcome.
+            signature = None
+        if signature is not None:
+            try:
+                signature.bind("prompt", attempt=1, timeout=1.0, state=None)
+            except TypeError as exc:
+                raise TypeError(
+                    "CallableStrategy invoke must accept "
+                    "invoke(prompt, *, attempt, timeout, state). "
+                    f"Got signature {signature}: {exc}"
+                ) from exc
         if max_concurrency is not None and (
             isinstance(max_concurrency, bool)
             or not isinstance(max_concurrency, int)

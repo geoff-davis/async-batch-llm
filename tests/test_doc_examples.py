@@ -285,7 +285,7 @@ def test_docs_were_discovered() -> None:
     """Guard against the glob silently matching nothing."""
     assert len(DOC_FILES) > 10
     assert len(ALL_SNIPPETS) > 50
-    assert any(s.path.name == "API.md" for s in ALL_SNIPPETS)
+    assert any(s.path.parent.name == "api" for s in ALL_SNIPPETS)
 
 
 # --- PyPI MathJax dollar-sign guard -----------------------------------

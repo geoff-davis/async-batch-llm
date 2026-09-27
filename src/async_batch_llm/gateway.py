@@ -38,6 +38,7 @@ from typing import Any, Generic, TypeVar, cast
 from ._internal.capacity import warn_if_worker_capacity_exceeded
 from ._internal.cleanup import CleanupAction, CleanupPhase, CleanupStep, SharedCloser
 from ._internal.executor_host import ExecutorHost
+from ._internal.input_validation import validate_strategy
 from .base import LLMWorkItem, WorkItemResult
 from .core import ProcessorConfig
 from .llm_strategies import LLMCallStrategy
@@ -48,7 +49,7 @@ TOutput = TypeVar("TOutput")
 logger = logging.getLogger(__name__)
 
 
-class LLMGateway(Generic[TOutput]):
+class LLMCallPool(Generic[TOutput]):
     """An in-process shared call pool for single LLM calls from many callers.
 
     Create one at startup and call :meth:`submit` from any number of concurrent
@@ -87,13 +88,14 @@ class LLMGateway(Generic[TOutput]):
         if submit_timeout is not None and submit_timeout <= 0:
             raise ValueError(f"submit_timeout must be > 0 (got {submit_timeout})")
 
+        validate_strategy(strategy)
         cfg = config or ProcessorConfig(max_workers=5)
         # Always an int after ProcessorConfig.__post_init__ resolution.
         gateway_workers = cast(int, cfg.max_workers)
         warn_if_worker_capacity_exceeded(
             strategy=strategy,
             max_workers=gateway_workers,
-            surface="LLMGateway",
+            surface="LLMCallPool",
             stacklevel=3,
         )
         self._strategy = strategy
@@ -115,7 +117,7 @@ class LLMGateway(Generic[TOutput]):
         # Concurrent aclose() callers share one ordered close attempt.
         self._closer = SharedCloser(self._cleanup_steps, name="LLMGateway", logger=logger)
 
-    async def __aenter__(self) -> LLMGateway[TOutput]:
+    async def __aenter__(self) -> LLMCallPool[TOutput]:
         return self
 
     async def __aexit__(
@@ -231,6 +233,6 @@ class LLMGateway(Generic[TOutput]):
 
 # Preferred v0.20 name. This is deliberately an exact alias: both imports use
 # the same queue-less class and the same shared ItemExecutor path.
-LLMCallPool = LLMGateway
+LLMGateway = LLMCallPool
 
 __all__ = ["LLMCallPool", "LLMGateway"]

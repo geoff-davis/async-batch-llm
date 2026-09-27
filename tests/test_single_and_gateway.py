@@ -96,13 +96,12 @@ async def test_call_reraises_provider_exception():
 
 
 @pytest.mark.asyncio
-async def test_failed_result_exception_traceback_is_detached():
-    # The stored exception keeps its type/message but has no traceback, so
-    # accumulated failed results don't pin frame locals.
+async def test_failed_single_result_retains_exception_traceback():
+    # Queue-less results retain provider frames for inspection and re-raising.
     cfg = ProcessorConfig(max_workers=1, retry=RetryConfig(max_attempts=2))
     result = await call_result(_strategy(failure_rate=1.0), "boom", config=cfg)
     assert result.exception is not None
-    assert result.exception.__traceback__ is None
+    assert result.exception.__traceback__ is not None
     assert "Random failure" in str(result.exception)
 
 

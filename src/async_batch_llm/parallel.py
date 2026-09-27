@@ -455,6 +455,7 @@ class ParallelBatchProcessor(
         return steps
 
     async def _clear_classifier_cache(self) -> None:
+        self._executor.summarize_failures()
         self._classifier_resolver.clear()
         self._strategy_configurations.clear()
 
@@ -584,6 +585,7 @@ class ParallelBatchProcessor(
 
     async def _on_batch_completed(self) -> None:
         """Emit batch completion event with final stats snapshot."""
+        self._executor.summarize_failures()
         await self._cancel_batch_timeout()
         async with self._stats_lock:
             stats_snapshot = self._stats.copy()

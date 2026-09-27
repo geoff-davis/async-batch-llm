@@ -119,7 +119,9 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         # batch abort controller.
         self._abort_controller: AbortController | None = None
 
-        self.executor: ItemExecutor[TInput, TOutput, TContext] = ItemExecutor(self)
+        self.executor: ItemExecutor[TInput, TOutput, TContext] = ItemExecutor(
+            self, preserve_tracebacks=True
+        )
         self._closer = SharedCloser(self._cleanup_steps, name="ExecutorHost", logger=logger)
 
     # These three satisfy ExecutorHostProtocol's override-point hooks. On the

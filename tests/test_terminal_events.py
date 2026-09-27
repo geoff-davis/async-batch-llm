@@ -337,7 +337,7 @@ async def test_serialization_fallback_emits_final_failure_before_abort(
     measured = await metrics.get_metrics()
     assert measured["items_failed"] == stats["failed"] == 1
     assert measured["items_succeeded"] == stats["succeeded"] == 0
-    assert measured["error_counts"] == stats["error_counts"]
+    assert measured["error_counts"] == stats["error_counts"] == {"ArtifactSerializationError": 1}
     assert [(e, d["error_category"]) for e, d in recorder.events if e in TERMINALS] == [
         (ProcessingEvent.ITEM_FAILED, "artifact_serialization_error")
     ]

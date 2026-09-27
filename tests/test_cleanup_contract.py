@@ -1295,7 +1295,7 @@ async def test_c4_new_preparation_is_rejected_once_close_starts() -> None:
 
 
 async def test_c4_user_cleanup_idempotency_is_documented() -> None:
-    api = (Path(__file__).resolve().parents[1] / "docs" / "API.md").read_text()
+    api = (Path(__file__).resolve().parents[1] / "docs" / "api" / "core.md").read_text()
     assert "idempotent" in api
     assert "idempotent" in (LLMCallStrategy.cleanup.__doc__ or "")
 

@@ -228,3 +228,32 @@ async def invoke(
         metadata={"model": response.model},
     )
 ```
+
+## Input and diagnostic contracts
+
+`invoke` must accept the prompt plus the `attempt`, `timeout` and `state` keyword
+arguments. An inspectable incompatible signature raises `TypeError` at construction;
+callables without an inspectable signature retain runtime validation.
+
+`CallOutcome.token_usage` accepts `input_tokens` / `output_tokens`, or OpenAI's
+`prompt_tokens` / `completion_tokens`. Do not mix those naming schemes in one
+mapping. `total_tokens` and `cached_input_tokens` work with either scheme; the
+stored result always uses canonical keys.
+
+Convenience entry points require an `LLMCallStrategy` instance. Wrap an application
+callback with `CallableStrategy`, a model with `OpenAIStrategy`, or an agent with
+`PydanticAIStrategy`. Prompt sources must be iterables of strings or 2-/3-tuples;
+a bare string, bytes object or mapping is rejected. Integer entries still convert
+to strings with one deprecation warning per call. Other invalid entries name their
+index in the error. Duplicate IDs in `process_prompts` produce one warning; use
+`submission_index` to distinguish items.
+
+Batch diagnostic tracebacks are logged before exception frames are detached.
+Repeated terminal failures with the same category, exception type and first 200
+message characters produce one ERROR diagnostic, then DEBUG messages and a completion
+summary. Each processor tracks at most 1,000 such keys. Further distinct failures
+remain ERROR diagnostics without being retained or included in the deduplication
+summary; already tracked keys continue to accumulate counts.
+`BatchResult.summary()` also groups repeated errors using persisted result fields.
+`call`, `call_result` and `LLMCallPool` retain original traceback frames for inspection
+and re-raising. Holding those failed results can therefore retain callback locals.

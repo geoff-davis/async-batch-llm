@@ -12,7 +12,12 @@ attempt number.
 from __future__ import annotations
 
 import logging
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from types import TracebackType
+
+    from ..strategies import ErrorInfo
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +25,7 @@ logger = logging.getLogger(__name__)
 # Truncation for error messages embedded in the multi-line validation log.
 # Kept in sync with parallel.ERROR_MESSAGE_MAX_LENGTH.
 _ERROR_MESSAGE_MAX_LENGTH = 200
+_MAX_TRACKED_TERMINAL_ERRORS = 1000
 
 
 def log_retryable_error(
@@ -162,3 +168,59 @@ def _walk_chain_for_validation(
         pass
 
     return raw_response, found_error
+
+
+def terminal_traceback(
+    exception: Exception, error_info: ErrorInfo
+) -> tuple[type[Exception], Exception, TracebackType | None] | None:
+    """Select diagnostic stacks without making routine provider failures noisy."""
+    category = error_info.error_category or "unknown"
+    diagnostic = category in {"logic_error", "classifier_error", "unknown"}
+    sdk_error = any(
+        cls.__module__.split(".")[0] in {"openai", "google", "pydantic_ai", "anthropic"}
+        for cls in type(exception).__mro__
+    )
+    framework_error = type(exception).__module__.startswith("async_batch_llm.")
+    if diagnostic or (not error_info.is_retryable and not sdk_error and not framework_error):
+        return type(exception), exception, exception.__traceback__
+    return None
+
+
+class TerminalFailureLogs:
+    """Bounded processor-local counts; retain no exception instances or frames."""
+
+    def __init__(self) -> None:
+        self._counts: dict[tuple[str | None, type[Exception], str], int] = {}
+        self._summarized = False
+
+    def log(
+        self, target: logging.Logger, exception: Exception, info: ErrorInfo, message: str
+    ) -> None:
+        # Match the short result-message limit, rather than retaining arbitrary
+        # provider payloads. Once full, keep new failures visible without growing
+        # state; already tracked keys can still be counted and deduplicated.
+        key = (info.error_category, type(exception), str(exception)[:_ERROR_MESSAGE_MAX_LENGTH])
+        previous = self._counts.get(key)
+        if previous is None and len(self._counts) >= _MAX_TRACKED_TERMINAL_ERRORS:
+            target.error(message, exc_info=terminal_traceback(exception, info))
+            return
+        count = (previous or 0) + 1
+        self._counts[key] = count
+        if count == 1:
+            target.error(message, exc_info=terminal_traceback(exception, info))
+        else:
+            target.debug(message)
+
+    def summarize(self, target: logging.Logger) -> None:
+        if self._summarized:
+            return
+        self._summarized = True
+        for (category, error_type, message), count in self._counts.items():
+            if count > 1:
+                target.error(
+                    "%d items failed with the same error: %s: %s [%s]",
+                    count,
+                    error_type.__name__,
+                    message,
+                    category,
+                )

@@ -201,7 +201,7 @@ truncation of the discount.
 ### PydanticAI strategy
 
 ```python
-agent = Agent("gemini-2.5-flash", result_type=Output)
+agent = Agent("gemini-2.5-flash", output_type=Output)
 strategy = PydanticAIStrategy(agent=agent)
 work_item = LLMWorkItem(item_id="1", strategy=strategy, prompt="...")
 ```
@@ -534,11 +534,11 @@ src/async_batch_llm/
 - `docs/OPENROUTER_INTEGRATION.md` — OpenRouter deep dive, including the
   per-upstream caching matrix and the Anthropic `cache_control` opt-in
   pattern.
-- `docs/API.md` — API reference.
-- `docs/MIGRATION_V0_10.md` — most recent migration guide
+- `docs/api/entrypoints.md` — API reference.
+- `docs/MIGRATION_V0_10.md` — historical migration guide
   (v0.8.x → v0.10.0; covers OpenAI/OpenRouter additions and the metadata
   3-tuple contract change).
-- `docs/MIGRATION_V0_4.md` — earlier migration notes.
+- `docs/migration/v0.4.md` — earlier migration notes.
 - `docs/archive/` — historical migration guides and design plans.
 - `CHANGELOG.md` — release-by-release changes.
 - `CONTRIBUTING.md` — contributor docs, including the release process
@@ -816,9 +816,6 @@ Most recent first. See `CHANGELOG.md` for full per-release detail.
   against per-provider extras; v0.9.0 added `[openai]` and `[openrouter]`
   and they work well. The right test is "does the user benefit from a
   discoverable install hint" — usually yes.
-- **Don't promise behavior the framework can't deliver.** `WorkItemResult`
-  doesn't carry `LLMResponse.metadata` (see #8). Don't write docs that
-  claim it does.
 - **Keep examples runnable.** Every example file should handle missing
   API keys gracefully and use the *current* built-in API, not custom
   strategies that duplicate built-in functionality.
