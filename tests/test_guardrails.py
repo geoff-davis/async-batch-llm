@@ -161,7 +161,10 @@ async def test_batch_deadline_cancels_pre_middleware_and_skips_error_recovery() 
 @pytest.mark.asyncio
 async def test_streaming_admission_has_no_post_commit_cancellation_point() -> None:
     processor = ParallelBatchProcessor(config=ProcessorConfig(max_workers=1))
-    processor._streaming = True
+    from async_batch_llm.base import _ProcessorState
+
+    processor._state = _ProcessorState.STREAMING
+    processor._result_stream = asyncio.Queue()
     processor._guardrails_started = True
     await processor._stats_lock.acquire()
     try:

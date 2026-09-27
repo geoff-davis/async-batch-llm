@@ -15,6 +15,8 @@ import dataclasses
 import pickle
 from typing import Any
 
+import pytest
+
 from async_batch_llm import (
     BaseObserver,
     GuardrailConfig,
@@ -40,6 +42,7 @@ class _ClearThenBlock(LLMCallStrategy[str]):
         self.first_error = first_error
         self.calls = 0
         self.second_cancelled = asyncio.Event()
+        self.deadlines_at_clear: list[tuple[float | None, float | None]] = []
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
@@ -63,7 +66,9 @@ class _ClearThenBlock(LLMCallStrategy[str]):
     ) -> None:
         del exception, attempt
         assert state is not None
+        before = runtime_state(state).total_deadline
         state.clear()
+        self.deadlines_at_clear.append((before, runtime_state(state).total_deadline))
 
 
 class _SuccessfulStrategy(LLMCallStrategy[str]):
@@ -95,7 +100,8 @@ async def test_retry_state_clear_cannot_remove_total_item_deadline() -> None:
     assert [attempt.try_number for attempt in result.timing.attempts] == [1, 2]
 
 
-async def test_retry_state_clear_during_rate_limit_keeps_deadline() -> None:
+@pytest.mark.parametrize("cooldown", [0.01, 0.1])
+async def test_retry_state_clear_during_rate_limit_keeps_deadline(cooldown: float) -> None:
     strategy = _ClearThenBlock(RuntimeError("429 rate limit"))
     result = await call_result(
         strategy,
@@ -104,17 +110,28 @@ async def test_retry_state_clear_during_rate_limit_keeps_deadline() -> None:
             attempt_timeout=0.5,
             retry=RetryConfig(max_attempts=1, max_rate_limit_retries=2),
             rate_limit=RateLimitConfig(
-                cooldown_seconds=0.01,
-                max_cooldown_seconds=0.01,
+                cooldown_seconds=cooldown,
+                max_cooldown_seconds=cooldown,
                 slow_start_items=0,
             ),
             guardrails=GuardrailConfig(total_timeout_per_item=0.05),
         ),
     )
 
-    assert strategy.calls == 2
+    # A busy loop may exhaust the deadline during cooldown, before a second
+    # call is admitted. Both outcomes must preserve the deadline across clear().
+    assert len(strategy.deadlines_at_clear) == 1
+    before, after = strategy.deadlines_at_clear[0]
+    assert before is not None and after == before
+    assert strategy.calls in (1, 2)
+    if cooldown > 0.05:
+        assert strategy.calls == 1
+    if strategy.calls == 2:
+        assert strategy.second_cancelled.is_set()
     assert result.error_category == "framework_total_item_timeout"
-    assert [attempt.try_number for attempt in result.timing.attempts] == [1, 2]
+    assert [attempt.try_number for attempt in result.timing.attempts] == list(
+        range(1, strategy.calls + 1)
+    )
 
 
 def test_retry_state_public_operations_hide_framework_runtime() -> None:

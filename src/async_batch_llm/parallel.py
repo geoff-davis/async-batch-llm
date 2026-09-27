@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Generic, cast
 
-from ._internal.admission import AdmissionRegistry
+from ._internal.admission import AdmissionGateClosed, AdmissionRegistry
 from ._internal.artifact_codec import (
     BEST_EFFORT_AUDIT_CATEGORIES,
     GUARDRAIL_AUDIT_CATEGORIES,
@@ -39,6 +39,7 @@ from .artifacts import (
     _RecordSerializationError,
 )
 from .base import (
+    BatchAdmissionClosedError,
     BatchProcessor,
     BatchTermination,
     LLMWorkItem,
@@ -271,7 +272,7 @@ class ParallelBatchProcessor(
 
         # Set up middleware and observers
         self.middlewares = middlewares or []
-        self.observers = observers or []
+        self.observers = list(observers or [])
 
         # Event + middleware dispatch. Delegates observer emits and the
         # middleware chain (before/after/on_error) to a stateless helper.
@@ -405,6 +406,7 @@ class ParallelBatchProcessor(
         assert controller is not None
         tripped = await controller.trip(cause)
         if tripped:
+            self._admission_closed.set()
             self.termination = controller.termination()
             await self._emit_event(
                 ProcessingEvent.BATCH_ABORTED,
@@ -464,8 +466,8 @@ class ParallelBatchProcessor(
 
     def start(self) -> None:
         """Start streaming workers and the batch deadline clock."""
-        self._start_guardrail_run()
         super().start()
+        self._start_guardrail_run()
 
     async def get_stats(self) -> dict:
         """
@@ -486,6 +488,7 @@ class ParallelBatchProcessor(
 
     async def add_work(self, work_item: LLMWorkItem[TInput, TOutput, TContext]) -> None:
         """Queue a work item and register its identity-scoped admission state."""
+        self._check_accepting_work()
         assert self._abort_controller is not None
         if self._abort_controller.aborted:
             raise BatchAdmissionStopped("Batch is no longer accepting work")
@@ -499,28 +502,18 @@ class ParallelBatchProcessor(
         if has_preprocessing and work_item._capacity_warning_source is None:
             work_item._capacity_warning_source = capture_capacity_warning_source()
         if not has_preprocessing:
-            await self._configure_item_strategy(work_item)
-        if self._streaming and self._guardrails_started:
-            acceptance = asyncio.create_task(super().add_work(work_item))
-            abort_wait = asyncio.create_task(self._abort_controller.event.wait())
             try:
-                done, _ = await asyncio.wait(
-                    {acceptance, abort_wait}, return_when=asyncio.FIRST_COMPLETED
-                )
-                # An acceptance that completed concurrently wins: the item is
-                # now owned by the queue and must receive a terminal result.
-                if acceptance in done:
-                    await acceptance
-                else:
-                    acceptance.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await acceptance
-                    raise BatchAdmissionStopped("Batch stopped accepting work")
-            finally:
-                abort_wait.cancel()
-                await asyncio.gather(abort_wait, return_exceptions=True)
-        else:
-            await super().add_work(work_item)
+                await self._configure_item_strategy(work_item)
+            except AdmissionGateClosed as exc:
+                raise BatchAdmissionClosedError(
+                    "Batch admission is closed; create a new processor for additional work"
+                ) from exc
+        await super().add_work(work_item)
+
+    def _check_accepting_work(self) -> None:
+        super()._check_accepting_work()
+        if self._abort_controller is not None and self._abort_controller.aborted:
+            raise BatchAdmissionStopped("Batch stopped accepting work; create a new processor")
 
     def _configuration_for(self, strategy: LLMCallStrategy) -> _StrategyConfiguration:
         entry = self._strategy_configurations.get(id(strategy))
@@ -712,11 +705,12 @@ class ParallelBatchProcessor(
         """Resolve replay/execution, checkpoint, then publish one terminal result."""
         logger.debug("[Worker %s] Picked up %s from queue", worker_id, work_item.item_id)
         result: WorkItemResult[TOutput, TContext] | None = None
+        completion_event: dict = {}
+        prepared = None
         artifact_key: object | None = None
         artifact_prepared = False
         artifact_prepare_attempted = False
         accepted_index = work_item.submission_index
-        generated_from_abort = False
         controller = self._abort_controller
         assert controller is not None
         if controller.aborted:
@@ -724,7 +718,6 @@ class ParallelBatchProcessor(
                 WorkItemResult[TOutput, TContext],
                 controller.result_for(work_item),
             )
-            generated_from_abort = True
         else:
             prepared = await self._executor.prepare_logical_item(work_item, worker_id)
             result = prepared.terminal_result
@@ -769,6 +762,8 @@ class ParallelBatchProcessor(
                 except (ItemDeadlineExceeded, BatchDeadlineExceeded, BatchAbortedError) as exc:
                     result = await self._executor.build_failure_result(work_item, exc, worker_id)
 
+            completion_event = prepared.completion_event or {}
+
         assert result is not None
         result.submission_index = accepted_index
         audit_only = result.error_category in GUARDRAIL_AUDIT_CATEGORIES
@@ -806,6 +801,53 @@ class ParallelBatchProcessor(
                     raise
                 logger.warning("Cannot checkpoint terminal item %s: %s", work_item.item_id, exc)
 
+        if self._events.observers:
+            if result.replayed_from_artifact:
+                await self._emit_event(
+                    ProcessingEvent.ITEM_REPLAYED,
+                    {
+                        "item_id": work_item.item_id,
+                        "submission_index": work_item.submission_index,
+                        "success": result.success,
+                        "error_type": result.error.split(":")[0] if result.error else None,
+                        "error_category": result.error_category,
+                    },
+                )
+            if result.error_category == "framework_total_item_timeout":
+                await self._emit_event(
+                    ProcessingEvent.ITEM_DEADLINE_EXCEEDED,
+                    {"item_id": work_item.item_id},
+                )
+        completed, total, current_item, stats_snapshot = await self._record_terminal_stats(
+            work_item, result
+        )
+        # Replay retains its dedicated event and counter semantics. Live items
+        # have exactly one terminal notification after persistence and recovery.
+        if self._events.observers and not result.replayed_from_artifact:
+            payload = {
+                "item_id": work_item.item_id,
+                "submission_index": result.submission_index,
+                "duration": result.timing.total_seconds,
+                "tokens": result.token_usage.get("total_tokens", 0),
+                "admission_wait_seconds": result.admission_wait_seconds,
+                "structured_output_recovered": result.structured_output_recovered,
+                "structured_output_recovery_reason": result.structured_output_recovery_reason,
+                "structured_output_retries_avoided": result.structured_output_retries_avoided,
+                "error_type": result.error.split(":")[0] if result.error else None,
+                "error_category": result.error_category,
+            }
+            if result.success:
+                payload.update(completion_event)
+            if payload["error_type"] is None:
+                payload.pop("error_type")
+            await self._emit_event(
+                ProcessingEvent.ITEM_COMPLETED if result.success else ProcessingEvent.ITEM_FAILED,
+                payload,
+            )
+
+        if prepared is not None:
+            prepared.completion_event = None
+
         # Fail-fast is triggered only by a terminal failure and only after its
         # checkpoint is complete. The controller retains the first cause.
         if (
@@ -824,35 +866,6 @@ class ParallelBatchProcessor(
                 )
             )
 
-        if self._events.observers:
-            if result.replayed_from_artifact:
-                await self._emit_event(
-                    ProcessingEvent.ITEM_REPLAYED,
-                    {
-                        "item_id": work_item.item_id,
-                        "submission_index": work_item.submission_index,
-                        "success": result.success,
-                        "error_category": result.error_category,
-                    },
-                )
-            if result.error_category == "framework_total_item_timeout":
-                await self._emit_event(
-                    ProcessingEvent.ITEM_DEADLINE_EXCEEDED,
-                    {"item_id": work_item.item_id},
-                )
-            if generated_from_abort:
-                await self._emit_event(
-                    ProcessingEvent.ITEM_FAILED,
-                    {
-                        "item_id": work_item.item_id,
-                        "error_type": type(result.exception).__name__,
-                        "error_category": result.error_category,
-                    },
-                )
-
-        completed, total, current_item, stats_snapshot = await self._record_terminal_stats(
-            work_item, result
-        )
         # User callbacks fire for every completed item. The private bundled
         # reporter observes every exact count too, but coalesces terminal
         # rendering by time. progress_interval gates only the log line below.

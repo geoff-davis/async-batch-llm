@@ -142,13 +142,10 @@ class TransactionalResultSink:
     async def save(self, result: WorkItemResult[dict[str, str], Any]) -> None:
         # JsonlArtifactStore flushes before publication, so the item record is
         # already visible when application code receives the streamed result.
-        records = [
-            json.loads(line) for line in self.artifact_path.read_text(encoding="utf-8").splitlines()
-        ]
-        assert any(
-            record.get("record_type") == "item" and record.get("item_id") == result.item_id
-            for record in records
-        )
+        # Another worker may be appending the next record: the public reader
+        # excludes incomplete tails, including partially written UTF-8 bytes.
+        checkpoint = JsonlArtifactStore.read_results(self.artifact_path)
+        assert any(stored.item_id == result.item_id for stored in checkpoint.results)
         self.checkpoint_verified_ids.append(result.item_id)
 
         await asyncio.sleep(0)  # begin/commit an asynchronous transaction

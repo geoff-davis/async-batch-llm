@@ -148,13 +148,31 @@ async with ParallelBatchProcessor(config=config) as processor:
             await processor.finish()
 
     producer = asyncio.create_task(produce())
-    async for result in processor.results():
-        await save_result(result.item_id, result.output, result.context)
-    await producer
+    try:
+        async for result in processor.results():
+            await save_result(result.item_id, result.output, result.context)
+        await producer
+    finally:
+        # Own and join the producer even when saving a result raises.
+        if not producer.done():
+            producer.cancel()
+        await asyncio.gather(producer, return_exceptions=True)
 ```
 
 `add_work()` is the backpressure point. Always call `finish()` after the
-producer reaches end-of-input so `results()` can terminate.
+producer reaches end-of-input so `results()` can terminate. The processor wakes
+blocked submissions when `finish()`, shutdown, or a batch abort stops admission;
+rejected work raises public `BatchAdmissionClosedError` (a `RuntimeError`) and
+has no submission index. A concurrently committed enqueue wins and remains owned
+by the processor. Always join application-owned producers, as above.
+
+A processor is one-shot: `process_all()` is valid only before either mode starts,
+and `start()` cannot switch from batch mode or reopen a closed processor. Repeated
+`start()` during streaming is harmless. Repeated `finish()` after a prior finish
+is harmless, including after normal finalization. Calling `finish()` after shutdown
+without a prior finish raises `RuntimeError` and starts no background finalizer.
+Closing begins before cleanup awaits; failed cleanup remains closed to new work
+while a later explicit close retries unfinished cleanup steps.
 
 `results()` ends in exactly one of two ways, decided once and kept durable
 for repeated or concurrent consumers: it returns normally only after every

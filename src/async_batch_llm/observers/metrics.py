@@ -159,6 +159,12 @@ class MetricsObserver(BaseObserver):
                 else:
                     self.metrics["items_failed"] += 1
 
+                if not data.get("success") and data.get("error_type") is not None:
+                    error_type = data["error_type"]
+                    self.metrics["error_counts"][error_type] = (
+                        self.metrics["error_counts"].get(error_type, 0) + 1
+                    )
+
             elif event == ProcessingEvent.BATCH_ABORTED:
                 self.metrics["batches_aborted"] += 1
 

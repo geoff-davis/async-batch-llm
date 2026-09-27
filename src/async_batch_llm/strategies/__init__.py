@@ -2,6 +2,7 @@
 
 from .errors import (
     BatchAbortedError,
+    BatchAdmissionClosedError,
     BatchDeadlineExceeded,
     DefaultErrorClassifier,
     EmptyResponseError,
@@ -28,6 +29,7 @@ from .rate_limit import (
 
 __all__ = [
     "BatchAbortedError",
+    "BatchAdmissionClosedError",
     "BatchDeadlineExceeded",
     "ErrorClassifier",
     "ErrorInfo",

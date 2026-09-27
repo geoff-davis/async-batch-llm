@@ -12,7 +12,12 @@ from typing import Any, Literal, TypeVar
 
 from ..base import BatchTermination, LLMWorkItem, WorkItemResult
 from ..core import AbortMode
-from ..strategies.errors import BatchAbortedError, BatchDeadlineExceeded, ItemDeadlineExceeded
+from ..strategies.errors import (
+    BatchAbortedError,
+    BatchAdmissionClosedError,
+    BatchDeadlineExceeded,
+    ItemDeadlineExceeded,
+)
 
 _T = TypeVar("_T")
 
@@ -21,7 +26,7 @@ class _OperationTimerExpired(TimeoutError):
     """Only the guardrail operation timer may raise this internal signal."""
 
 
-class BatchAdmissionStopped(RuntimeError):
+class BatchAdmissionStopped(BatchAdmissionClosedError):
     """Internal signal that a controlled abort stopped source admission."""
 
 

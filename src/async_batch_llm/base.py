@@ -13,6 +13,7 @@ import warnings
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypedDict, cast, overload  # noqa: F401
 
 from typing_extensions import TypeVar  # PEP 696 defaults on Python < 3.13
@@ -28,6 +29,7 @@ from ._internal.cleanup import (
     wait_detached,
 )
 from .provider_output import ProviderOutputViews
+from .strategies.errors import BatchAdmissionClosedError
 
 # Conditional imports for type checking
 if TYPE_CHECKING:
@@ -1267,6 +1269,15 @@ class _TrackedWorkQueue(asyncio.Queue[Any]):
         return self._data_count
 
 
+class _ProcessorState(Enum):
+    NEW = "new"
+    BATCH = "batch"
+    STREAMING = "streaming"
+    FINISHING = "finishing"
+    CLOSING = "closing"
+    CLOSED = "closed"
+
+
 class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
     """
     Abstract base class for batch LLM processing strategies.
@@ -1352,11 +1363,10 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._post_processor_tasks: set[asyncio.Task[Any]] = set()
         self._post_processor_semaphore: asyncio.Semaphore | None = None
 
-        self._processing_started = False  # Prevent add_work() after process_all() starts
+        self._state = _ProcessorState.NEW
+        self._admission_closed = asyncio.Event()
 
         # Streaming-mode state (see start()/finish()/results()).
-        self._streaming = False
-        self._finished = False
         self._result_stream: (
             asyncio.Queue[WorkItemResult[TOutput, TContext] | _TerminalWake] | None
         ) = None
@@ -1380,6 +1390,40 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         self._finalization_primary_exception: BaseException | None = None
         self._preserve_completed_result = False
         self._batch_completion_delivered = False
+
+    @property
+    def _streaming(self) -> bool:
+        # Mode survives closing for result delivery and teardown.
+        return self._result_stream is not None
+
+    def _check_accepting_work(self) -> None:
+        if self._state not in {_ProcessorState.NEW, _ProcessorState.STREAMING}:
+            if self._state in {_ProcessorState.BATCH, _ProcessorState.FINISHING}:
+                reason = (
+                    "Cannot add work after finish()"
+                    if self._streaming
+                    else "Cannot add work after process_all() has started"
+                )
+            else:
+                reason = f"Cannot add work while processor is {self._state.value}"
+            raise BatchAdmissionClosedError(
+                f"{reason}. Create a new processor for additional work."
+            )
+
+    def _begin_closing(self) -> None:
+        if self._state is not _ProcessorState.CLOSED:
+            self._state = _ProcessorState.CLOSING
+        self._admission_closed.set()
+
+    async def _close_resources(
+        self, *, primary_exception: BaseException | None = None, retry: bool = True
+    ) -> CleanupReport:
+        self._begin_closing()
+        try:
+            return await self._closer.close(primary_exception=primary_exception, retry=retry)
+        finally:
+            if self._closer.state is CloseState.CLOSED:
+                self._state = _ProcessorState.CLOSED
 
     async def __aenter__(self):
         """Context manager entry - returns self for use in async with."""
@@ -1416,20 +1460,22 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         report.raise_first()
 
     async def _close_explicitly(self) -> CleanupReport:
+        self._begin_closing()
         self._finalization_report_observed = True
         self._finalization_report = None
-        return await self._closer.close()
+        return await self._close_resources()
 
     async def _close_after_run(
         self, *, primary_exception: BaseException | None = None
     ) -> CleanupReport:
         """Apply finalization's attempt at exit without automatically retrying it."""
+        self._begin_closing()
         self._finalization_report_observed = True
         report = self._finalization_report
         self._finalization_report = None
         if self._finalization_close_finished:
             return report if report is not None else CleanupReport()
-        return await self._closer.close(
+        return await self._close_resources(
             primary_exception=primary_exception, retry=not self._normal_stream_close
         )
 
@@ -1596,9 +1642,32 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 so the queue can't drain while you add, and blocking would
                 deadlock. Use streaming mode for bounded queues.
         """
+        self._check_accepting_work()
+        if not self._streaming:
+            await self._accept_work(work_item)
+            return
+        acceptance = asyncio.create_task(self._accept_work(work_item))
+        closed = asyncio.create_task(self._admission_closed.wait())
+        try:
+            done, _ = await asyncio.wait({acceptance, closed}, return_when=asyncio.FIRST_COMPLETED)
+            # A committed acceptance wins a concurrent close signal.
+            if acceptance in done:
+                await acceptance
+                return
+            acceptance.cancel()
+            await asyncio.gather(acceptance, return_exceptions=True)
+            self._check_accepting_work()
+        finally:
+            for task in (acceptance, closed):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(acceptance, closed, return_exceptions=True)
+
+    async def _accept_work(self, work_item: LLMWorkItem[TInput, TOutput, TContext]) -> None:
         # Serialize acceptance so the index reflects stable admission order,
         # including when multiple producers call add_work concurrently.
         async with self._submission_lock:
+            self._check_accepting_work()
             if work_item.submission_index is not None:
                 raise ValueError(
                     "The same LLMWorkItem instance cannot be submitted more than once. "
@@ -1606,12 +1675,6 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 )
             work_item.submission_index = self._next_submission_index
             if self._streaming:
-                if self._finished:
-                    work_item.submission_index = None
-                    raise RuntimeError(
-                        "Cannot add work after finish() — the streaming batch is closed. "
-                        "Create a new processor for additional work."
-                    )
                 # Workers are running and draining the queue, so a bounded queue
                 # safely applies backpressure here instead of deadlocking.
                 try:
@@ -1625,13 +1688,6 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
                 # even though a worker already owns the accepted item.
                 self._stats.total += 1
                 return
-
-            if self._processing_started:
-                work_item.submission_index = None
-                raise RuntimeError(
-                    "Cannot add work after process_all() has started. "
-                    "Create a new processor instance for additional batches."
-                )
 
             # Batch mode: workers don't exist yet, so a full bounded queue can't
             # drain — blocking would hang forever. Point users at streaming mode.
@@ -1667,13 +1723,15 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         Consume results via :meth:`results`; call :meth:`finish` when no more
         work will be added.
         """
-        if self._workers:
-            return  # already started (streaming or batch)
-
-        self._streaming = True
-        self._processing_started = True
+        if self._state is _ProcessorState.STREAMING:
+            return
+        if self._state is not _ProcessorState.NEW:
+            raise RuntimeError(
+                f"Cannot start() while processor is {self._state.value}. "
+                "Create a new processor for streaming work."
+            )
+        self._state = _ProcessorState.STREAMING
         self._is_processing = True
-        self._finished = False
         self.termination = BatchTermination()
         self._result_stream = asyncio.Queue()
         self._result_slots = (
@@ -1703,11 +1761,15 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
     async def finish(self) -> None:
         """Signal that no more work will be added; :meth:`results` ends once the
         queue drains and workers stop. Idempotent."""
-        if not self._streaming:
-            raise RuntimeError("finish() is only valid in streaming mode (call start() first).")
-        if self._finished:
+        if self._finalize_task is not None:
             return
-        self._finished = True
+        if self._state is not _ProcessorState.STREAMING:
+            raise RuntimeError(
+                f"Cannot finish() while processor is {self._state.value}. "
+                "Call start() on a new processor to enter streaming mode before finish()."
+            )
+        self._state = _ProcessorState.FINISHING
+        self._admission_closed.set()
         self._finalize_task = asyncio.create_task(self._finalize_stream())
 
     async def _finalize_stream(self) -> None:
@@ -1742,7 +1804,7 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
             # results and never wait for this finalizer from its own owner.
             self._normal_stream_close = True
             try:
-                report = await self._closer.close(
+                report = await self._close_resources(
                     primary_exception=self._finalization_primary_exception
                 )
             finally:
@@ -1911,8 +1973,12 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         Returns:
             BatchResult containing all results and statistics
         """
-        # Mark processing as started to prevent add_work() calls (v0.4.0)
-        self._processing_started = True
+        if self._state is not _ProcessorState.NEW:
+            raise RuntimeError(
+                f"Cannot process_all() while processor is {self._state.value}. "
+                "Create a new processor for another batch."
+            )
+        self._state = _ProcessorState.BATCH
 
         # Initialize result and stats containers for this one-shot batch.
         self._results = []
@@ -2024,6 +2090,8 @@ class BatchProcessor(ABC, Generic[TInput, TOutput, TContext]):
         ]
 
         self._is_processing = False
+        if self._state is _ProcessorState.BATCH:
+            self._state = _ProcessorState.FINISHING
 
         # In concurrent_post_processing mode, post-processors run as background
         # tasks; wait for all of them to finish before returning so callers can

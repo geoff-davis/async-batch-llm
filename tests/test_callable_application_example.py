@@ -43,3 +43,39 @@ async def test_callable_application_example(tmp_path: Path) -> None:
     assert report.first_client_prepared == 1
     assert report.first_client_closed == 1
     assert after - before == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tail", [b'{"record_type":"item","output":"partial', b'{"output":"\xe2\x82']
+)
+async def test_application_sink_ignores_in_progress_artifact_tail(
+    tmp_path: Path, tail: bytes
+) -> None:
+    from async_batch_llm import JsonlArtifactStore, LLMWorkItem, WorkItemResult
+    from examples.example_callable_application import (
+        IDENTITY,
+        FakeApplicationGateway,
+        TransactionalResultSink,
+        build_strategy,
+    )
+
+    path = tmp_path / "application.jsonl"
+    item = LLMWorkItem(
+        item_id="ready", prompt="ready", strategy=build_strategy(FakeApplicationGateway())
+    )
+    result = WorkItemResult(item_id="ready", success=True, output={"label": "keep"})
+    store = JsonlArtifactStore(path, identity=IDENTITY)
+    try:
+        key = await store.prepare_item(item)
+        await store.append(item, key, result)
+    finally:
+        await store.close()
+    with path.open("ab") as handle:
+        handle.write(tail)
+    before = path.read_bytes()
+    sink = TransactionalResultSink(path)
+    await sink.save(result)
+    assert sink.checkpoint_verified_ids == ["ready"]
+    assert sink.rows == {"ready": {"label": "keep"}}
+    assert path.read_bytes() == before
