@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, TypeAlias
 
@@ -37,7 +37,11 @@ GUARDRAIL_AUDIT_CATEGORIES = (
     *BEST_EFFORT_AUDIT_CATEGORIES,
     "framework_total_item_timeout",
 )
-NON_REPLAYABLE_CATEGORIES = ("middleware_filtered", *GUARDRAIL_AUDIT_CATEGORIES)
+NON_REPLAYABLE_CATEGORIES = (
+    "middleware_filtered",
+    "artifact_serialization_error",
+    *GUARDRAIL_AUDIT_CATEGORIES,
+)
 
 
 @dataclass(frozen=True)
@@ -80,9 +84,56 @@ def canonical_json(value: JSONValue) -> str:
     )
 
 
-def fingerprint_json(value: JSONValue) -> str:
+def _validate_utf8(value: Any, *, path: str = "$") -> None:
+    """Reject surrogate data with its JSON path, without changing fingerprints."""
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ResultSerializationError(f"Unsupported lone surrogate at {path}") from exc
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            _validate_utf8(key, path=f"{path}[{key!r}] (key)")
+            _validate_utf8(
+                item,
+                path=f"{path}.{key}"
+                if isinstance(key, str) and key.isidentifier()
+                else f"{path}[{key!r}]",
+            )
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _validate_utf8(item, path=f"{path}[{index}]")
+
+
+def _encode_canonical_utf8(value: JSONValue, *, path: str = "$") -> bytes:
+    """Encode valid data directly; walk invalid data only to locate the error."""
+    encoded = canonical_json(value)
+    try:
+        return encoded.encode("utf-8")
+    except UnicodeEncodeError:
+        _validate_utf8(value, path=path)
+        raise
+
+
+def serialization_failure_result(
+    result: WorkItemResult[Any, Any],
+    error: Exception,
+) -> WorkItemResult[Any, Any]:
+    """Keep guardrail decisions; otherwise fail locally and retain salvage data."""
+    if result.error_category in GUARDRAIL_AUDIT_CATEGORIES:
+        return result
+    return replace(
+        result,
+        success=False,
+        error=str(error),
+        error_category="artifact_serialization_error",
+        exception=error.with_traceback(None),
+    )
+
+
+def fingerprint_json(value: JSONValue, *, path: str = "$") -> str:
     """Return the canonical SHA-256 fingerprint of a JSON-safe value."""
-    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+    return hashlib.sha256(_encode_canonical_utf8(value, path=path)).hexdigest()
 
 
 def identity_mapping(identity: Any, *, for_fingerprint: bool = False) -> dict[str, JSONValue]:
@@ -116,6 +167,8 @@ def fingerprint_work_item(
     context_fingerprinter: ContextFingerprinter | None,
 ) -> PreparedArtifactItem:
     """Fingerprint one input without retaining its raw prompt or context."""
+    _validate_utf8(work_item.prompt, path="$.prompt")
+    _validate_utf8(work_item.item_id, path="$.item_id")
     prompt_hash = hashlib.sha256(work_item.prompt.encode("utf-8")).hexdigest()
     context_hash: str | None = None
     legacy_context_hash: str | None = None
@@ -133,7 +186,7 @@ def fingerprint_work_item(
                 encoder=encoder,
                 path=f"$.items[{work_item.item_id!r}].context",
             )
-            context_hash = fingerprint_json(context_value)
+            context_hash = fingerprint_json(context_value, path="$.context")
     combined_hash = fingerprint_json(
         {
             "item_id": work_item.item_id,
@@ -183,7 +236,7 @@ def build_manifest_record(
     user_metadata: Mapping[str, JSONValue],
 ) -> dict[str, Any]:
     """Build the logical creation-manifest record shared by physical stores."""
-    return {
+    record: dict[str, JSONValue] = {
         "record_type": "manifest",
         "artifact_schema_version": artifact_schema_version,
         "created_at": utc_now(),
@@ -192,6 +245,9 @@ def build_manifest_record(
         "identity_fingerprint": identity_fingerprint,
         "user_metadata": dict(user_metadata),
     }
+
+    _encode_canonical_utf8(record)
+    return record
 
 
 def build_item_record(
@@ -209,8 +265,13 @@ def build_item_record(
     include_context: bool,
     encoder: ValueEncoder | None,
     cost_calculator: CostCalculator | None,
+    serialization_error: Exception | None = None,
 ) -> dict[str, Any]:
     """Build one backend-neutral logical terminal item record."""
+    if serialization_error is not None:
+        result = serialization_failure_result(result, serialization_error)
+        include_output = include_metadata = include_prompt = include_context = False
+        encoder = cost_calculator = None
     serialized_result = work_item_result_to_dict(
         result,
         encoder=encoder,
@@ -218,6 +279,17 @@ def build_item_record(
         include_context=False,
         include_metadata=include_metadata,
     )
+    # Diagnostic text can be escaped without altering application data or
+    # canonical fingerprint bytes. Do this before validating the whole record.
+    if isinstance(serialized_result["error"], str):
+        serialized_result["error"] = (
+            serialized_result["error"].encode("utf-8", "backslashreplace").decode("utf-8")
+        )
+    descriptor = serialized_result.get("exception")
+    if isinstance(descriptor, dict):
+        for key, value in descriptor.items():
+            if isinstance(value, str):
+                descriptor[key] = value.encode("utf-8", "backslashreplace").decode("utf-8")
     raw_context = (
         to_json_value(work_item.context, encoder=encoder, path="$.raw_context")
         if include_context
@@ -230,7 +302,7 @@ def build_item_record(
         to_json_value(cost, path="$.calculated_cost")
 
     strategy_type = type(work_item.strategy)
-    return {
+    record = {
         "record_type": "item",
         "artifact_schema_version": artifact_schema_version,
         "recorded_at": utc_now(),
@@ -259,6 +331,8 @@ def build_item_record(
         "raw_context": raw_context,
         "result": serialized_result,
     }
+    _encode_canonical_utf8(record)
+    return record
 
 
 def replay_key(

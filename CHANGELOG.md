@@ -36,6 +36,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fail immediately when retry backoff cannot fit the item deadline, preserving the
   original error in the deadline exception message/cause and attempt category.
 - Avoid duplicate processor configuration warnings on construction.
+- Repair interrupted JSONL tails before writable resume, including recognizable
+  partial initial manifests. Inspection remains read-only and excludes every
+  unterminated tail; even complete JSON without its final newline is discarded
+  on resume. Later appends are rejected after the first write failure.
+- Register SQLite identities after an inspection-only open so a later run with
+  a new model identity can append safely, including cancellation during registration.
+- Keep record serialization failures local to an item in built-in artifact stores.
+  Preserve its output in memory and checkpoint a minimal, non-replayable failure
+  with category `artifact_serialization_error`. Store I/O and format failures
+  remain fatal; guardrail audit categories and best-effort rules are preserved.
+- Reject lone surrogates in artifact data before it reaches either writer, with
+  the offending JSON path. Escape surrogates in stored diagnostic error text;
+  valid Unicode and compatibility fingerprints remain unchanged.
+- Invoke output decoders only for included, non-null successful outputs, and
+  context decoders only for non-null context. JSONL schema checks reject booleans;
+  inspection error messages use one-based record positions on both backends,
+  without changing stored sequence values.
 
 - Share strategy preparation and cleanup across overlapping execution hosts on
   one event loop. Distinct built-in OpenAI-compatible strategies sharing a model

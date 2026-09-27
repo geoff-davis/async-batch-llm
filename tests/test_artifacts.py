@@ -1049,3 +1049,607 @@ async def test_context_free_legacy_replay_uses_custom_v020_fingerprinter(
     )
     assert result.results[0].success
     assert _records(nullable_path)[1]["context_fingerprint"] is None
+
+
+@pytest.mark.parametrize("complete", [False, True])
+async def test_art1_resume_repairs_unterminated_tail_before_indexing(tmp_path, complete, caplog):
+    path = tmp_path / "tail.jsonl"
+    await process_prompts(
+        _CountingStrategy(),
+        [("a", "a"), ("b", "b")],
+        config=ProcessorConfig(max_workers=1),
+        artifact_store=JsonlArtifactStore(path, identity=_identity()),
+    )
+    lines = path.read_bytes().splitlines(keepends=True)
+    tail = lines[-1].rstrip(b"\n") if complete else b'{"item_id":"b","result":'
+    path.write_bytes(b"".join(lines[:-1]) + tail)
+    before_inspection = path.read_bytes()
+    assert len(JsonlArtifactStore.read_results(path).results) == 1
+    inspection = JsonlArtifactStore(path)
+    try:
+        assert len([r async for r in inspection.iter_results()]) == 1
+    finally:
+        await inspection.close()
+    assert path.read_bytes() == before_inspection
+    strategy = _CountingStrategy()
+    for _ in range(2):
+        result = await process_prompts(
+            strategy,
+            [("a", "a"), ("b", "b")],
+            artifact_store=JsonlArtifactStore(path, identity=_identity(), fsync=True),
+            resume=ResumePolicy.REUSE_SUCCESSES,
+        )
+        assert result.succeeded == 2
+    assert strategy.calls == ["b"]
+    sequences = [r["record_sequence"] for r in _records(path)[1:]]
+    assert sequences == [0, 1]
+    assert len(JsonlArtifactStore.read_results(path).results) == 2
+    reader = JsonlArtifactStore(path)
+    try:
+        assert len([r async for r in reader.iter_results()]) == 2
+    finally:
+        await reader.close()
+    assert str(len(tail)) in caplog.text
+    assert "incomplete" in caplog.text.lower()
+    if complete:
+        assert "'b'" in caplog.text
+
+
+async def test_art1_write_failure_permanently_rejects_later_appends(tmp_path, monkeypatch):
+    store = JsonlArtifactStore(tmp_path / "failed.jsonl", identity=_identity())
+    item = LLMWorkItem("x", _CountingStrategy(), "x")
+    key = await store.prepare_item(item)
+    writes = 0
+
+    def partial(record):
+        nonlocal writes
+        writes += 1
+        store._handle.write('{"partial":')
+        store._handle.flush()
+        raise OSError("disk stopped")
+
+    monkeypatch.setattr(store, "_write_record_sync", partial)
+    try:
+        with pytest.raises(ArtifactIOError, match="disk stopped"):
+            await store.append(item, key, WorkItemResult("x", True, output="x"))
+        with pytest.raises(ArtifactIOError, match="unusable after a write failure"):
+            await store.append(item, key, WorkItemResult("x", True, output="x"))
+        assert writes == 1
+    finally:
+        await store.close()
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_art2_inspect_then_run_registers_new_identity(tmp_path, store_type, explicit):
+    class Named(_CountingStrategy):
+        def __init__(self, name):
+            super().__init__()
+            self.model = type("Model", (), {"_model": name})()
+
+    path = tmp_path / "identity.artifact"
+    await process_prompts(Named("old"), ["a"], artifact_store=store_type(path))
+    kwargs = {"identity": _identity(model="new")} if explicit else {}
+    store = store_type(path, **kwargs)
+    assert len([r async for r in store.iter_results()]) == 1
+    strategy = Named("new")
+    result = await process_prompts(
+        strategy,
+        ["a", "b"],
+        artifact_store=store,
+        resume=ResumePolicy.REUSE_SUCCESSES,
+    )
+    assert result.succeeded == 2
+    assert strategy.calls == ["a", "b"]
+    reader = store_type(path)
+    try:
+        assert len([r async for r in reader.iter_results()]) == 3
+    finally:
+        await reader.close()
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+@pytest.mark.parametrize("bad", [float("nan"), {1: "value"}, "bad\ud800text"])
+@pytest.mark.parametrize("surface", ["batch", "stream"])
+async def test_art4_invalid_output_is_local_and_cannot_replay(tmp_path, store_type, bad, surface):
+    class Output(_CountingStrategy):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            self.calls.append(prompt)
+            return bad if prompt == "20" else prompt, {"total_tokens": 7}, None
+
+    path = tmp_path / "invalid-output.artifact"
+    strategy = Output()
+    prompts = [(str(i), str(i)) for i in range(1, 22)]
+    kwargs = {
+        "artifact_store": store_type(path, identity=_identity()),
+        "config": ProcessorConfig(max_workers=4),
+    }
+    if surface == "batch":
+        results = (await process_prompts(strategy, prompts, **kwargs)).results
+    else:
+        results = [r async for r in process_stream(strategy, prompts, **kwargs)]
+    assert sum(r.success for r in results) == 20
+    failed = next(r for r in results if r.item_id == "20")
+    assert not failed.success
+    assert failed.output is bad
+    assert failed.error_category == "artifact_serialization_error"
+    assert "$." in failed.error
+    assert failed.token_usage["total_tokens"] == 7
+    reader = store_type(path)
+    try:
+        stored = [r async for r in reader.iter_results()]
+    finally:
+        await reader.close()
+    assert len(stored) == 21
+    stored_bad = next(r for r in stored if r.item_id == "20")
+    assert not stored_bad.success
+    assert stored_bad.output is None
+    strategy.calls.clear()
+    replay = await process_prompts(
+        strategy,
+        prompts,
+        artifact_store=store_type(path, identity=_identity()),
+        resume=ResumePolicy.REUSE_ALL,
+    )
+    assert replay.succeeded == 20
+    assert strategy.calls == ["20"]
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+async def test_art3_surrogate_prompt_reports_prompt_path(tmp_path, store_type):
+    strategy = _CountingStrategy()
+    result = await process_prompts(
+        strategy,
+        ["\ud800"],
+        artifact_store=store_type(tmp_path / "prompt", identity=_identity()),
+    )
+    failed = result.results[0]
+    assert failed.error_category == "artifact_preparation_error"
+    assert "$.prompt" in failed.error
+    assert "Context fingerprinter failed" not in failed.error
+    assert strategy.calls == []
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+async def test_art6_decoders_only_receive_present_successful_outputs(tmp_path, store_type):
+    from pydantic import BaseModel
+
+    class Payload(BaseModel):
+        value: int
+
+    path = tmp_path / "decode.artifact"
+    strategy = _CountingStrategy()
+    store = store_type(path, identity=_identity())
+    for name, success, output in [
+        ("ok", True, {"value": 1}),
+        ("failed", False, None),
+        ("empty", True, None),
+        ("failed-output", False, {"bad": 1}),
+    ]:
+        item = LLMWorkItem(name, strategy, name)
+        key = await store.prepare_item(item)
+        await store.append(item, key, WorkItemResult(name, success, output=output))
+    await store.close()
+    decoded = []
+
+    def decode(value):
+        decoded.append(value)
+        return Payload.model_validate(value)
+
+    kwargs = {"output_decoder": decode}
+    if store_type is JsonlArtifactStore:
+        read = store_type.read_results(path, **kwargs)
+    else:
+        read = await store_type.read_results(path, **kwargs)
+    assert len(read.results) == 4
+    reader = store_type(path, **kwargs)
+    try:
+        assert len([r async for r in reader.iter_results()]) == 4
+    finally:
+        await reader.close()
+    result = await process_prompts(
+        strategy,
+        [(name, name) for name in ["ok", "failed", "empty", "failed-output"]],
+        artifact_store=store_type(path, identity=_identity(), **kwargs),
+        resume=ResumePolicy.REUSE_ALL,
+    )
+    assert all(r.replayed_from_artifact for r in result.results)
+    assert decoded == [{"value": 1}] * 3
+    assert strategy.calls == []
+
+
+@pytest.mark.parametrize("consumer", ["read", "iter", "resume"])
+async def test_art8_jsonl_rejects_boolean_schema(tmp_path, consumer):
+    path = tmp_path / "boolean.jsonl"
+    await process_prompts(
+        _CountingStrategy(), ["a"], artifact_store=JsonlArtifactStore(path, identity=_identity())
+    )
+    records = _records(path)
+    records[1]["artifact_schema_version"] = True
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+    with pytest.raises(ArtifactFormatError, match="schema version True"):
+        if consumer == "read":
+            JsonlArtifactStore.read_results(path)
+        elif consumer == "iter":
+            reader = JsonlArtifactStore(path)
+            try:
+                _ = [r async for r in reader.iter_results()]
+            finally:
+                await reader.close()
+        else:
+            await process_prompts(
+                _CountingStrategy(),
+                ["a"],
+                artifact_store=JsonlArtifactStore(path, identity=_identity()),
+                resume=ResumePolicy.REUSE_ALL,
+            )
+
+
+async def test_art1_torn_manifest_recovers_but_foreign_file_is_untouched(tmp_path):
+    owned = tmp_path / "owned.jsonl"
+    owned.write_bytes(b'{"artifact_schema_version":1,"created_at":"2026')
+    result = await process_prompts(
+        _CountingStrategy(), ["x"], artifact_store=JsonlArtifactStore(owned, identity=_identity())
+    )
+    assert result.succeeded == 1
+    assert len(JsonlArtifactStore.read_results(owned).results) == 1
+    foreign = tmp_path / "foreign.jsonl"
+    original = b'{"unrelated":"unfinished'
+    foreign.write_bytes(original)
+    with pytest.raises(ArtifactFormatError):
+        await process_prompts(
+            _CountingStrategy(),
+            ["x"],
+            artifact_store=JsonlArtifactStore(foreign, identity=_identity()),
+        )
+    assert foreign.read_bytes() == original
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+@pytest.mark.parametrize("mode", ["error", "metadata", "cost"])
+async def test_art3_surrogate_diagnostics_and_bad_metadata_are_isolated(tmp_path, store_type, mode):
+    from async_batch_llm.core import RetryConfig
+
+    class Output(_CountingStrategy):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            if prompt == "bad" and mode == "error":
+                raise RuntimeError("provider said \ud800")
+            return (
+                prompt,
+                {"total_tokens": 7},
+                {"note": "\udc80"} if prompt == "bad" and mode == "metadata" else None,
+            )
+
+    def cost(result):
+        if result.item_id == "bad":
+            raise ValueError("cost hook failed")
+        return 1.0
+
+    path = tmp_path / "surrogates"
+    result = await process_prompts(
+        Output(),
+        [("bad", "bad"), ("good", "good")],
+        config=ProcessorConfig(max_workers=2, retry=RetryConfig(max_attempts=1)),
+        artifact_store=store_type(
+            path, identity=_identity(), cost_calculator=cost if mode == "cost" else None
+        ),
+    )
+    assert result.succeeded == 1
+    bad = next(r for r in result.results if r.item_id == "bad")
+    if mode == "error":
+        assert bad.error_category != "artifact_serialization_error"
+        assert "\ud800" in bad.error
+    else:
+        assert bad.error_category == "artifact_serialization_error"
+        assert bad.output == "bad"
+    reader = store_type(path)
+    try:
+        records = [r async for r in reader.iter_results()]
+    finally:
+        await reader.close()
+    assert len(records) == 2
+    if mode == "error":
+        stored_bad = next(r for r in records if r.item_id == "bad")
+        assert "\\ud800" in stored_bad.error
+        stored_bad.error.encode("utf-8")
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+@pytest.mark.parametrize(
+    "category", ["batch_aborted", "batch_deadline_exceeded", "framework_total_item_timeout"]
+)
+async def test_art4_guardrail_fallback_preserves_category(tmp_path, store_type, category):
+    from async_batch_llm import ParallelBatchProcessor
+
+    path = tmp_path / "audit"
+    async with ParallelBatchProcessor(
+        artifact_store=store_type(path, identity=_identity())
+    ) as processor:
+
+        async def terminal(prepared, worker_id):
+            return WorkItemResult(
+                prepared.effective_item.item_id,
+                False,
+                error="stopped",
+                error_category=category,
+                metadata={"bad": float("nan")},
+            )
+
+        processor._executor.execute_prepared = terminal
+        await processor.add_work(LLMWorkItem("x", _CountingStrategy(), "x"))
+        result = await processor.process_all()
+    assert result.results[0].error_category == category
+    reader = store_type(path)
+    try:
+        records = [r async for r in reader.iter_results()]
+    finally:
+        await reader.close()
+    assert records[0].error_category == category
+    assert records[0].metadata is None
+    strategy = _CountingStrategy()
+    await process_prompts(
+        strategy,
+        [("x", "x")],
+        artifact_store=store_type(path, identity=_identity()),
+        resume=ResumePolicy.REUSE_ALL,
+    )
+    assert strategy.calls == ["x"]
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+async def test_art4_unprepared_key_is_not_a_recoverable_record_error(tmp_path, store_type):
+    from async_batch_llm import ArtifactSerializationError
+    from async_batch_llm.artifacts import _RecordSerializationError
+
+    store = store_type(tmp_path / "unprepared", identity=_identity())
+    try:
+        with pytest.raises(ArtifactSerializationError) as caught:
+            await store.append(
+                LLMWorkItem("x", _CountingStrategy(), "x"),
+                object(),
+                WorkItemResult("x", True, output="x"),
+            )
+        assert not isinstance(caught.value, _RecordSerializationError)
+    finally:
+        await store.close()
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+async def test_art4_custom_store_without_private_fallback_stays_fatal(tmp_path, store_type):
+    from async_batch_llm.artifacts import _RecordSerializationError
+
+    backing = store_type(tmp_path / "custom", identity=_identity())
+
+    class Custom:
+        async def prepare_item(self, item):
+            return await backing.prepare_item(item)
+
+        async def lookup(self, item, key, policy):
+            return None
+
+        async def append(self, item, key, result):
+            raise _RecordSerializationError("custom failure")
+
+        async def close(self):
+            await backing.close()
+
+    with pytest.raises(_RecordSerializationError, match="custom failure"):
+        await process_prompts(_CountingStrategy(), ["x"], artifact_store=Custom())
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+@pytest.mark.parametrize(
+    "category", [None, "batch_aborted", "batch_deadline_exceeded", "framework_total_item_timeout"]
+)
+async def test_art4_fallback_io_keeps_existing_fatal_vs_best_effort_policy(
+    tmp_path, store_type, category
+):
+    from async_batch_llm import ParallelBatchProcessor
+
+    store = store_type(tmp_path / "fallback-io", identity=_identity())
+
+    async def fail_fallback(*args):
+        raise ArtifactIOError("fallback disk failure")
+
+    store._append_serialization_failure = fail_fallback
+    processor = ParallelBatchProcessor(artifact_store=store)
+
+    async def terminal(prepared, worker_id):
+        return WorkItemResult("x", category is None, output=float("nan"), error_category=category)
+
+    processor._executor.execute_prepared = terminal
+    await processor.add_work(LLMWorkItem("x", _CountingStrategy(), "x"))
+    try:
+        if category in {"batch_aborted", "batch_deadline_exceeded"}:
+            result = await processor.process_all()
+            assert result.results[0].error_category == category
+        else:
+            with pytest.raises(ArtifactIOError, match="fallback disk failure"):
+                await processor.process_all()
+    finally:
+        await processor.cleanup()
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+async def test_art4_fail_fast_runs_after_failure_checkpoint(tmp_path, store_type):
+    from async_batch_llm import GuardrailConfig
+
+    class Output(_CountingStrategy):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            self.calls.append(prompt)
+            return float("nan"), {}, None
+
+    path = tmp_path / "abort"
+    strategy = Output()
+    result = await process_prompts(
+        strategy,
+        [("a", "a"), ("b", "b")],
+        artifact_store=store_type(path, identity=_identity()),
+        config=ProcessorConfig(
+            max_workers=1,
+            guardrails=GuardrailConfig(abort_on_error_categories={"artifact_serialization_error"}),
+        ),
+    )
+    assert result.failed == 2
+    assert strategy.calls == ["a"]
+    assert result.termination.triggering_item_id == "a"
+    reader = store_type(path)
+    try:
+        records = [r async for r in reader.iter_results()]
+    finally:
+        await reader.close()
+    assert (
+        next(r for r in records if r.item_id == "a").error_category
+        == "artifact_serialization_error"
+    )
+
+
+async def test_art2_cancelled_identity_registration_remains_owned(tmp_path, monkeypatch):
+    path = tmp_path / "register.sqlite"
+    await process_prompts(
+        _CountingStrategy(), ["old"], artifact_store=SqliteArtifactStore(path, identity=_identity())
+    )
+    store = SqliteArtifactStore(path)
+    assert len([r async for r in store.iter_results()]) == 1
+    entered, release = threading.Event(), threading.Event()
+    original = store._insert_or_verify_identity_sync
+    registrations = 0
+
+    def blocked(connection):
+        nonlocal registrations
+        registrations += 1
+        entered.set()
+        assert release.wait(5)
+        original(connection)
+
+    monkeypatch.setattr(store, "_insert_or_verify_identity_sync", blocked)
+    item = LLMWorkItem("new", _CountingStrategy(), "new")
+    preparing = asyncio.create_task(store.prepare_item(item))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        preparing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await preparing
+        release.set()
+        key = await store.prepare_item(item)
+        await store.append(item, key, WorkItemResult("new", True, output="new"))
+        assert registrations == 1
+    finally:
+        release.set()
+        await asyncio.gather(preparing, return_exceptions=True)
+        await store.close()
+    assert len((await SqliteArtifactStore.read_results(path)).results) == 2
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+@pytest.mark.parametrize("channel", ["context", "item_id"])
+async def test_art3_surrogate_input_has_accurate_path(tmp_path, store_type, channel):
+    prompt = ("x", "x", "\ud800") if channel == "context" else ("\ud800", "x")
+    result = await process_prompts(
+        _CountingStrategy(),
+        [prompt],
+        artifact_store=store_type(tmp_path / "input", identity=_identity()),
+    )
+    assert result.failed == 1
+    assert f"$.{channel}" in result.results[0].error
+    assert "Context fingerprinter failed" not in result.results[0].error
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+@pytest.mark.parametrize("consumer", ["read", "iter"])
+async def test_art8_decode_error_sequence_messages_are_one_based(tmp_path, store_type, consumer):
+    path = tmp_path / "sequence"
+    await process_prompts(
+        _CountingStrategy(), ["x"], artifact_store=store_type(path, identity=_identity())
+    )
+
+    def decoder(value):
+        raise ValueError("cannot decode")
+
+    with pytest.raises(ArtifactFormatError, match="sequence 1 .*item"):
+        if consumer == "read":
+            if store_type is JsonlArtifactStore:
+                store_type.read_results(path, output_decoder=decoder)
+            else:
+                await store_type.read_results(path, output_decoder=decoder)
+        else:
+            reader = store_type(path, output_decoder=decoder)
+            try:
+                _ = [r async for r in reader.iter_results()]
+            finally:
+                await reader.close()
+    if store_type is JsonlArtifactStore:
+        assert _records(path)[1]["record_sequence"] == 0
+
+
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+async def test_art3_manifest_metadata_is_validated_before_open(tmp_path, store_type):
+    from async_batch_llm import ArtifactSerializationError
+
+    path = tmp_path / "manifest"
+    with pytest.raises(ArtifactSerializationError, match="user_metadata"):
+        store_type(path, identity=_identity(), user_metadata={"bad": "\ud800"})
+    assert not path.exists()
+
+
+async def test_art1_cancelled_failed_write_poisoning_survives_error_delivery(tmp_path, monkeypatch):
+    store = JsonlArtifactStore(tmp_path / "detached.jsonl", identity=_identity())
+    item = LLMWorkItem("x", _CountingStrategy(), "x")
+    key = await store.prepare_item(item)
+    entered, release = threading.Event(), threading.Event()
+    writes = 0
+
+    def fail_write(record):
+        nonlocal writes
+        writes += 1
+        entered.set()
+        assert release.wait(5)
+        raise OSError("detached disk failure")
+
+    monkeypatch.setattr(store, "_write_record_sync", fail_write)
+    append = asyncio.create_task(store.append(item, key, WorkItemResult("x", True, output="x")))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        append.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await append
+        release.set()
+        with pytest.raises(ArtifactIOError, match="detached disk failure"):
+            await store.append(item, key, WorkItemResult("x", True, output="x"))
+        with pytest.raises(ArtifactIOError, match="unusable after a write failure"):
+            await store.append(item, key, WorkItemResult("x", True, output="x"))
+        assert writes == 1
+    finally:
+        release.set()
+        await store.close()
+
+
+async def test_art3_sqlite_bad_record_projection_commits_with_good_neighbors(tmp_path, monkeypatch):
+    class Output(_CountingStrategy):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            return "\ud800" if prompt == "bad" else prompt, {}, None
+
+    store = SqliteArtifactStore(
+        tmp_path / "batch.sqlite",
+        identity=_identity(),
+        commit_batch_size=4,
+        commit_interval_seconds=1,
+    )
+    original = store._insert_batch_sync
+    batches = []
+
+    def capture(records):
+        batches.append([(r["item_id"], r["success"]) for r in records])
+        original(records)
+
+    monkeypatch.setattr(store, "_insert_batch_sync", capture)
+    result = await process_prompts(
+        Output(),
+        [(x, x) for x in ["a", "bad", "c", "d"]],
+        config=ProcessorConfig(max_workers=4),
+        artifact_store=store,
+    )
+    assert result.succeeded == 3
+    assert len(batches) == 1
+    assert sorted(batches[0]) == [("a", True), ("bad", False), ("c", True), ("d", True)]
+    assert len((await SqliteArtifactStore.read_results(store.path)).results) == 4

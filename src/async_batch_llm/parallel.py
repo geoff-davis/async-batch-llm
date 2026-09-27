@@ -8,7 +8,11 @@ from dataclasses import dataclass, field
 from typing import Generic, cast
 
 from ._internal.admission import AdmissionRegistry
-from ._internal.artifact_codec import BEST_EFFORT_AUDIT_CATEGORIES, GUARDRAIL_AUDIT_CATEGORIES
+from ._internal.artifact_codec import (
+    BEST_EFFORT_AUDIT_CATEGORIES,
+    GUARDRAIL_AUDIT_CATEGORIES,
+    serialization_failure_result,
+)
 from ._internal.capacity import (
     CapacityLimiter,
     capture_capacity_warning_source,
@@ -23,7 +27,7 @@ from ._internal.guardrails import (
     BatchAdmissionStopped,
     await_with_guardrails,
 )
-from ._internal.item_executor import ItemExecutor
+from ._internal.item_executor import ItemExecutor, _detach_traceback
 from ._internal.rate_limit_coordinator import RateLimitCoordinator
 from ._internal.strategy_lifecycle import StrategyLifecycle
 from .artifacts import (
@@ -32,6 +36,7 @@ from .artifacts import (
     ArtifactSerializationError,
     ArtifactStore,
     ResumePolicy,
+    _RecordSerializationError,
 )
 from .base import (
     BatchProcessor,
@@ -788,7 +793,14 @@ class ParallelBatchProcessor(
             and not result.replayed_from_artifact
         ):
             try:
-                await self.artifact_store.append(work_item, artifact_key, result)
+                try:
+                    await self.artifact_store.append(work_item, artifact_key, result)
+                except _RecordSerializationError as exc:
+                    fallback = getattr(self.artifact_store, "_append_serialization_failure", None)
+                    if fallback is None:
+                        raise
+                    result = serialization_failure_result(result, _detach_traceback(exc))
+                    await fallback(work_item, artifact_key, result, exc)
             except ArtifactError as exc:
                 if not best_effort_audit:
                     raise

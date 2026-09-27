@@ -355,3 +355,24 @@ def test_jsonl_round_trip_preserves_empty_batch_termination(tmp_path: Path) -> N
     assert restored.results == []
     assert restored.termination == batch.termination
     assert len(path.read_text(encoding="utf-8").splitlines()) == 1
+
+
+@pytest.mark.parametrize("success", [False, True])
+@pytest.mark.parametrize("included", [False, True])
+@pytest.mark.parametrize("output", [None, {"value": 1}])
+def test_art6_decoders_respect_success_presence_and_non_null(success, included, output):
+    from async_batch_llm.serialization import work_item_result_from_dict, work_item_result_to_dict
+
+    value = work_item_result_to_dict(WorkItemResult("x", success, output=output))
+    value["output_included"] = included
+    seen = []
+
+    def decode_output(item):
+        seen.append(item)
+        return item
+
+    def decode_context(item):
+        raise AssertionError("None context must not be decoded")
+
+    work_item_result_from_dict(value, output_decoder=decode_output, context_decoder=decode_context)
+    assert seen == ([output] if success and included and output is not None else [])
