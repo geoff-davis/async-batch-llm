@@ -301,3 +301,45 @@ async def test_observer_appended_to_processor_is_delivered_events(initial):
         await p.add_work(LLMWorkItem(item_id="x", prompt="success", strategy=Strategy()))
         await p.process_all()
     assert any(event is ProcessingEvent.ITEM_COMPLETED for event, _ in observer.events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
+@pytest.mark.parametrize("surface", ["batch", "stream"])
+async def test_serialization_fallback_emits_final_failure_before_abort(
+    store_type, surface, tmp_path
+):
+    class Unserializable(Strategy):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            return object(), {"total_tokens": 2}
+
+    metrics, recorder = MetricsObserver(), Recorder()
+    config = ProcessorConfig(
+        guardrails=GuardrailConfig(
+            abort_on_error_categories=frozenset({"artifact_serialization_error"})
+        )
+    )
+    async with ParallelBatchProcessor(
+        artifact_store=store_type(tmp_path / "artifact"),
+        config=config,
+        observers=[metrics, recorder],
+    ) as p:
+        await p.add_work(LLMWorkItem(item_id="bad", prompt="bad", strategy=Unserializable()))
+        if surface == "batch":
+            results = (await p.process_all()).results
+        else:
+            p.start()
+            await p.finish()
+            results = [r async for r in p.results()]
+        stats = await p.get_stats()
+    assert not results[0].success
+    assert results[0].error_category == "artifact_serialization_error"
+    measured = await metrics.get_metrics()
+    assert measured["items_failed"] == stats["failed"] == 1
+    assert measured["items_succeeded"] == stats["succeeded"] == 0
+    assert measured["error_counts"] == stats["error_counts"]
+    assert [(e, d["error_category"]) for e, d in recorder.events if e in TERMINALS] == [
+        (ProcessingEvent.ITEM_FAILED, "artifact_serialization_error")
+    ]
+    kinds = [e for e, _ in recorder.events]
+    assert kinds.index(ProcessingEvent.ITEM_FAILED) < kinds.index(ProcessingEvent.BATCH_ABORTED)
