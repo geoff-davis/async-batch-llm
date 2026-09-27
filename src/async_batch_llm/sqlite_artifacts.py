@@ -20,6 +20,7 @@ from ._internal.artifact_codec import (
     ContextFingerprinter,
     CostCalculator,
     PreparedArtifactItem,
+    _encode_canonical_utf8,
     build_item_record,
     build_manifest_record,
     canonical_json,
@@ -37,6 +38,7 @@ from .artifacts import (
     ArtifactIOError,
     ArtifactSerializationError,
     ResumePolicy,
+    _RecordSerializationError,
     _resolve_artifact_identity,
 )
 from .base import BatchResult, BatchTermination, LLMWorkItem, WorkItemResult
@@ -209,6 +211,7 @@ class SqliteArtifactStore:
 
         try:
             metadata_value = to_json_value(self.user_metadata, path="$.user_metadata")
+            _encode_canonical_utf8(metadata_value, path="$.user_metadata")
         except ResultSerializationError as exc:
             raise ArtifactSerializationError(str(exc)) from exc
         if not isinstance(metadata_value, dict):
@@ -230,6 +233,7 @@ class SqliteArtifactStore:
         self._connection: sqlite3.Connection | None = None
         self._prepare_task: asyncio.Task[None] | None = None
         self._prepare_error_observed = False
+        self._identity_tasks: dict[str, asyncio.Task[None]] = {}
         self._writer_task: asyncio.Task[None] | None = None
         self._active_writer_batch: list[_AppendRequest] = []
         self._writer_queue: asyncio.Queue[_WriterRequest] = asyncio.Queue()
@@ -253,6 +257,13 @@ class SqliteArtifactStore:
         await self._before_operation()
         self._resolve_identity_from(work_item.strategy)
         await self._prepare()
+        _, _, fingerprint = self._require_resolved_identity()
+        registration = self._identity_tasks.get(fingerprint)
+        if registration is None:
+            registration = asyncio.create_task(self._register_identity())
+            registration.add_done_callback(self._consume_task_exception)
+            self._identity_tasks[fingerprint] = registration
+        await self._await_owned_future(registration)
         try:
             return fingerprint_work_item(
                 work_item,
@@ -266,6 +277,23 @@ class SqliteArtifactStore:
             raise ArtifactSerializationError(
                 f"Context fingerprinter failed for item {work_item.item_id!r}: {exc}"
             ) from exc
+
+    async def _register_identity(self) -> None:
+        try:
+            await self._run_db(self._register_identity_sync)
+        except ArtifactError as exc:
+            self._fatal_error = self._fatal_error or exc
+            raise
+
+    def _register_identity_sync(self) -> None:
+        try:
+            self._insert_or_verify_identity_sync(self._require_connection())
+        except ArtifactError:
+            raise
+        except sqlite3.OperationalError as exc:
+            raise ArtifactIOError(f"Could not register artifact identity: {exc}") from exc
+        except sqlite3.DatabaseError as exc:
+            raise ArtifactFormatError(f"Invalid artifact identity record: {exc}") from exc
 
     def _resolve_identity_from(self, strategy: Any) -> None:
         (
@@ -342,11 +370,33 @@ class SqliteArtifactStore:
         prepared_item: Any,
         result: WorkItemResult[Any, Any],
     ) -> None:
+        await self._append_result(work_item, prepared_item, result)
+
+    async def _append_serialization_failure(
+        self,
+        work_item: LLMWorkItem[Any, Any, Any],
+        prepared_item: Any,
+        result: WorkItemResult[Any, Any],
+        error: Exception,
+    ) -> None:
+        """Write a minimal failure projection through normal ownership and I/O."""
+        await self._append_result(work_item, prepared_item, result, error)
+
+    async def _append_result(
+        self,
+        work_item: LLMWorkItem[Any, Any, Any],
+        prepared_item: Any,
+        result: WorkItemResult[Any, Any],
+        serialization_error: Exception | None = None,
+    ) -> None:
         """Enqueue one terminal row and return only after its transaction commits."""
         await self._before_operation()
         prepared = self._coerce_prepared(prepared_item)
         await self._prepare()
         identity, identity_value, identity_fingerprint = self._require_resolved_identity()
+        error_type = (
+            _RecordSerializationError if serialization_error is None else ArtifactSerializationError
+        )
         try:
             record = build_item_record(
                 artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
@@ -362,13 +412,14 @@ class SqliteArtifactStore:
                 include_context=self.include_context,
                 encoder=self.encoder,
                 cost_calculator=self.cost_calculator,
+                serialization_error=serialization_error,
             )
         except (ResultSerializationError, TypeError, ValueError) as exc:
-            raise ArtifactSerializationError(
+            raise error_type(
                 f"Could not serialize artifact result for item {work_item.item_id!r}: {exc}"
             ) from exc
         except Exception as exc:
-            raise ArtifactSerializationError(
+            raise error_type(
                 f"Cost calculator failed for item {work_item.item_id!r}: {exc}"
             ) from exc
 

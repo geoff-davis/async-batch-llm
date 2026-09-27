@@ -78,6 +78,9 @@ payload = result.to_json(
 
 `WorkItemResult.from_dict()` and the `BatchResult.from_*()` methods accept
 `output_decoder` and `context_decoder` hooks for trusted type reconstruction.
+Output decoding runs only for successful results whose output was included and
+is not `None`; failed, omitted, and null outputs bypass it. Context decoding runs
+only for non-null context. Artifact inspection and replay use the same rules.
 Deserialization never imports a class named by untrusted data. Exceptions are
 stored only as module name, class name, and redacted message; the restored
 runtime `exception` is `None`. Tracebacks and raw exception objects are never
@@ -231,8 +234,21 @@ semantics should invalidate replay.
 
 A terminal record is flushed before its result is returned or yielded. Set
 `fsync=True` for an operating-system durability barrier after every record;
-flush-only is the default. A crash-truncated final line is ignored on reopening,
-while malformed complete or middle records fail clearly.
+flush-only is the default. Readers ignore every final line without a newline,
+even if it contains complete JSON, and never modify the file during inspection.
+Writable preparation validates retained records, truncates the incomplete tail,
+and builds replay state only from retained records. A dropped valid item is
+executed again; its zero-based stored sequence may be reused, remaining unique
+among retained records. Warnings report dropped bytes, a SHA-256 and the item ID
+when available, without logging raw payloads. Repair is also fsynced when enabled.
+
+A file containing only a recognizable canonical manifest prefix can be repaired
+and initialized again. Unrecognized files, unsupported versions, and malformed
+complete or middle records fail without truncation. After any write failure,
+the JSONL instance rejects later appends; close it before opening a new instance
+for recovery. JSONL still supports only one writer per file. Cross-process writer
+locking remains outside this release; do not resume a file another process is
+currently writing.
 
 ### Compatibility matching
 
@@ -287,8 +303,52 @@ for transport retries hidden inside an upstream gateway unless the gateway
 reports them.
 
 Setting `include_output=False` makes a success record audit-only and therefore
-ineligible for replay. A failure remains reusable under `REUSE_ALL` because it
-does not need a successful output.
+ineligible for replay. An ordinary provider failure remains reusable under `REUSE_ALL` because it
+does not need a successful output. Guardrail audit, filtered, and artifact
+serialization failures are never replayed.
+
+A JSONL iterator started before the same store's first writable preparation can
+overlap tail truncation and subsequent appends. In that narrow case, it may see
+new records within its original byte range. Finish inspection before starting
+writable use if a strict snapshot is required.
+
+### Item-local artifact serialization failures
+
+Built-in JSONL and SQLite stores validate and UTF-8 encode records before writing.
+An invalid output, metadata, persisted context, or cost-calculator result makes
+that item fail with `artifact_serialization_error` while neighboring items finish.
+The returned result retains its output for salvage and its token usage and timing.
+The checkpoint is a minimal failure record: output, metadata, raw prompt, raw
+context, and calculated cost are omitted. It cannot replay even under `REUSE_ALL`,
+so fixing an encoder or persistence configuration allows the item to run again.
+
+Error messages identify the failing JSON path where applicable. Lone surrogates
+are rejected in application data. Stored diagnostic error and exception text
+escapes them as `\ud800`-style sequences; in-memory error text is preserved.
+Canonical encoding and fingerprints for valid Unicode do not change.
+
+Serialization failures do not invoke middleware `on_error` or retry the provider
+within the same run. `abort_on_error_categories={"artifact_serialization_error"}`
+can stop a run after that item's failure checkpoint. Existing guardrail audit
+results keep their original category if their payload needs the same minimal
+projection. Only batch-abort and batch-deadline audit writes remain best-effort;
+a failed total-item-deadline checkpoint remains fatal. I/O errors, invalid artifact
+format, unprepared store keys, custom-store failures, and failure to serialize or
+write even the minimal checkpoint still propagate under those same rules.
+
+Subclassing the built-in stores is not a supported extension interface. In
+particular, overriding `append` does not intercept their private minimal-failure
+write path. Implement the public `ArtifactStore` protocol for custom write or
+redaction policies.
+
+A provider success event may already have reached lifecycle observers before a
+checkpoint serialization failure is discovered. Until terminal-event handling is
+unified, observer success counts can differ from final result and processor counts
+on this path. No second terminal event is emitted.
+
+Inspection decode-error messages identify one-based record positions on both
+backends. JSONL's stored `record_sequence` still starts at zero; SQLite's starts
+at one. This changes diagnostics only, not stored keys or replay ordering.
 
 ### Privacy controls
 
@@ -420,6 +480,11 @@ Each store-level error is delivered once, and later closes return silently.
 Observing an error never restores a failed store to usability.
 
 ### Inspection
+
+Inspecting an existing SQLite store before its first run does not pin its model
+identity. Its first prepared item registers the resolved identity before appending,
+even if the connection was already opened by inspection. Automatic stores still
+reject mixed effective identities within one run.
 
 Live `store.iter_results()` first settles detached errors, prepares the
 writable store, and flushes its accepted writes. It then streams a finite

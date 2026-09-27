@@ -493,9 +493,20 @@ def work_item_result_from_dict(
         return WorkItemResult(
             item_id=item_id,
             success=success,
-            output=output_decoder(output) if output_decoder is not None else output,
+            output=(
+                output_decoder(output)
+                if output_decoder is not None
+                and success
+                and data.get("output_included", True)
+                and output is not None
+                else output
+            ),
             error=_optional_str(data.get("error")),
-            context=context_decoder(context) if context_decoder is not None else context,
+            context=(
+                context_decoder(context)
+                if context_decoder is not None and context is not None
+                else context
+            ),
             token_usage=tokens,
             metadata=cast(dict[str, Any] | None, metadata),
             exception=None,  # Never instantiate a class named by untrusted JSON.

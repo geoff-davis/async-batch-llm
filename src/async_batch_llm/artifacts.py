@@ -9,7 +9,9 @@ or a transactional backend.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import logging
 import os
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
@@ -23,6 +25,7 @@ from ._internal.artifact_codec import (
     CostCalculator,
     PreparedArtifactItem,
     ReplayKey,
+    _encode_canonical_utf8,
     build_item_record,
     build_manifest_record,
     decode_stored_result,
@@ -43,6 +46,8 @@ from .serialization import (
     to_json_value,
 )
 
+logger = logging.getLogger(__name__)
+
 ARTIFACT_SCHEMA_VERSION = 1
 _ReplayKey: TypeAlias = ReplayKey
 
@@ -57,6 +62,10 @@ class ArtifactIdentityError(ArtifactError):
 
 class ArtifactSerializationError(ArtifactError):
     """An artifact identity/input/result could not be canonically serialized."""
+
+
+class _RecordSerializationError(ArtifactSerializationError):
+    """A prepared item's record failed encoding before any write was attempted."""
 
 
 class ArtifactIOError(ArtifactError):
@@ -243,7 +252,15 @@ def _package_version() -> str:
         return "0.0.0+dev"
 
 
-def _read_artifact_records(path: Path, *, allow_create: bool) -> tuple[list[dict[str, Any]], bool]:
+@dataclass(frozen=True)
+class _ArtifactRead:
+    records: list[dict[str, Any]]
+    needs_manifest: bool
+    retained_size: int = 0
+    tail: bytes = b""
+
+
+def _read_artifact_records(path: Path, *, allow_create: bool) -> _ArtifactRead:
     """Read and validate an artifact, optionally treating missing/empty as new."""
     try:
         exists = path.exists()
@@ -252,16 +269,34 @@ def _read_artifact_records(path: Path, *, allow_create: bool) -> tuple[list[dict
         raise ArtifactIOError(f"Could not inspect artifact {path}: {exc}") from exc
     if not exists:
         if allow_create:
-            return [], True
+            return _ArtifactRead([], True)
         raise ArtifactIOError(f"Artifact does not exist: {path}")
     if size == 0:
         if allow_create:
-            return [], True
+            return _ArtifactRead([], True)
         raise ArtifactFormatError(f"Artifact is empty: {path}")
     try:
         raw = path.read_bytes()
     except OSError as exc:
         raise ArtifactIOError(f"Could not read artifact {path}: {exc}") from exc
+    dropped = b""
+    if not raw.endswith(b"\n"):
+        end = raw.rfind(b"\n") + 1
+        dropped = raw[end:]
+        if end == 0:
+            # Only our canonical manifest prefix is eligible for recovery.
+            # Foreign files must remain untouched even when allow_create=True.
+            prefix = b'{"artifact_schema_version":1,"created_at":'
+            if not raw.startswith(prefix):
+                raise ArtifactFormatError("Artifact has no complete manifest record")
+            try:
+                manifest = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pass
+            else:
+                if not isinstance(manifest, dict) or manifest.get("record_type") != "manifest":
+                    raise ArtifactFormatError("Artifact has no complete manifest record")
+        raw = raw[:end]
     segments = raw.split(b"\n")
     has_trailing_newline = raw.endswith(b"\n")
     records: list[dict[str, Any]] = []
@@ -282,7 +317,7 @@ def _read_artifact_records(path: Path, *, allow_create: bool) -> tuple[list[dict
         if not isinstance(value, dict):
             raise ArtifactFormatError(f"Artifact line {line_number} must be a JSON object")
         schema = value.get("artifact_schema_version")
-        if schema != ARTIFACT_SCHEMA_VERSION:
+        if isinstance(schema, bool) or schema != ARTIFACT_SCHEMA_VERSION:
             if isinstance(schema, int) and schema > ARTIFACT_SCHEMA_VERSION:
                 raise ArtifactFormatError(
                     f"Unsupported future artifact schema version {schema} at line {line_number}"
@@ -301,9 +336,36 @@ def _read_artifact_records(path: Path, *, allow_create: bool) -> tuple[list[dict
                 f"Unsupported artifact record_type {record_type!r} at line {line_number}"
             )
         records.append(value)
-    if not manifest_seen:
+    if not manifest_seen and (not allow_create or raw or not dropped):
         raise ArtifactFormatError("Artifact has no complete manifest record")
-    return records, False
+    return _ArtifactRead(records, not manifest_seen, len(raw), dropped)
+
+
+def _truncate_artifact_tail(path: Path, snapshot: _ArtifactRead, *, fsync: bool) -> None:
+    """Repair only from the writable preparation path, after full validation."""
+    if not snapshot.tail:
+        return
+    try:
+        with path.open("r+b") as handle:
+            handle.truncate(snapshot.retained_size)
+            handle.flush()
+            if fsync:
+                os.fsync(handle.fileno())
+    except OSError as exc:
+        raise ArtifactIOError(f"Could not repair artifact {path}: {exc}") from exc
+    item_id = None
+    try:
+        partial = json.loads(snapshot.tail)
+        if isinstance(partial, dict) and isinstance(partial.get("item_id"), str):
+            item_id = partial["item_id"]
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        pass
+    logger.warning(
+        "Dropped %s bytes from incomplete artifact tail (SHA-256 %s, item %r)",
+        len(snapshot.tail),
+        hashlib.sha256(snapshot.tail).hexdigest(),
+        item_id,
+    )
 
 
 _JSONL_ITER_PAGE_SIZE = 256
@@ -343,10 +405,15 @@ def _read_artifact_page(
                 previous_line_number = line_number
                 segment = handle.readline(snapshot_size - offset)
                 if not segment:
+                    offset = snapshot_size
                     break
                 offset += len(segment)
                 line_number += 1
                 has_trailing_newline = segment.endswith(b"\n")
+                if not has_trailing_newline:
+                    if not manifest_seen:
+                        raise ArtifactFormatError("Artifact has no complete manifest record")
+                    return records, offset, line_number, manifest_seen, True
                 if not segment.strip():
                     continue
                 try:
@@ -367,7 +434,7 @@ def _read_artifact_page(
                             f"Artifact line {line_number} must be a JSON object"
                         )
                     schema = value.get("artifact_schema_version")
-                    if schema != ARTIFACT_SCHEMA_VERSION:
+                    if isinstance(schema, bool) or schema != ARTIFACT_SCHEMA_VERSION:
                         if isinstance(schema, int) and schema > ARTIFACT_SCHEMA_VERSION:
                             raise ArtifactFormatError(
                                 "Unsupported future artifact schema version "
@@ -467,6 +534,7 @@ class JsonlArtifactStore:
                 raise ArtifactSerializationError(str(exc)) from exc
         try:
             metadata_value = to_json_value(self.user_metadata, path="$.user_metadata")
+            _encode_canonical_utf8(metadata_value, path="$.user_metadata")
         except ResultSerializationError as exc:
             raise ArtifactSerializationError(str(exc)) from exc
         if not isinstance(metadata_value, dict):
@@ -476,6 +544,7 @@ class JsonlArtifactStore:
         self._lock = asyncio.Lock()
         self._prepared = False
         self._closed = False
+        self._fatal_write_error: Exception | None = None
         self._handle: TextIO | None = None
         self._records: list[dict[str, Any]] = []
         self._latest_replayable: dict[_ReplayKey, dict[str, Any]] = {}
@@ -629,8 +698,30 @@ class JsonlArtifactStore:
         prepared_item: Any,
         result: WorkItemResult[Any, Any],
     ) -> None:
+        await self._append_result(work_item, prepared_item, result)
+
+    async def _append_serialization_failure(
+        self,
+        work_item: LLMWorkItem[Any, Any, Any],
+        prepared_item: Any,
+        result: WorkItemResult[Any, Any],
+        error: Exception,
+    ) -> None:
+        """Write a minimal failure projection through normal ownership and I/O."""
+        await self._append_result(work_item, prepared_item, result, error)
+
+    async def _append_result(
+        self,
+        work_item: LLMWorkItem[Any, Any, Any],
+        prepared_item: Any,
+        result: WorkItemResult[Any, Any],
+        serialization_error: Exception | None = None,
+    ) -> None:
         fingerprint = self._coerce_fingerprint(prepared_item)
         await self._prepare()
+        error_type = (
+            _RecordSerializationError if serialization_error is None else ArtifactSerializationError
+        )
         try:
             identity_fingerprint = self._require_resolved_fingerprint()
             identity = self.identity
@@ -650,13 +741,14 @@ class JsonlArtifactStore:
                 include_context=self.include_context,
                 encoder=self.encoder,
                 cost_calculator=self.cost_calculator,
+                serialization_error=serialization_error,
             )
         except (ResultSerializationError, TypeError, ValueError) as exc:
-            raise ArtifactSerializationError(
+            raise error_type(
                 f"Could not serialize artifact result for item {work_item.item_id!r}: {exc}"
             ) from exc
         except Exception as exc:
-            raise ArtifactSerializationError(
+            raise error_type(
                 f"Cost calculator failed for item {work_item.item_id!r}: {exc}"
             ) from exc
 
@@ -706,6 +798,7 @@ class JsonlArtifactStore:
     async def _prepare_locked(self) -> None:
         async with self._lock:
             self._raise_detached_io_error()
+            self._raise_write_failure()
             if self._prepared:
                 if self._closed:
                     raise ArtifactIOError(f"Artifact store is closed: {self.path}")
@@ -713,11 +806,12 @@ class JsonlArtifactStore:
             if self._closed:
                 raise ArtifactIOError(f"Artifact store is closed: {self.path}")
             try:
-                records, needs_manifest = await asyncio.to_thread(
+                snapshot = await asyncio.to_thread(
                     _read_artifact_records,
                     self.path,
                     allow_create=True,
                 )
+                records, needs_manifest = snapshot.records, snapshot.needs_manifest
                 self._records = records
                 self._rebuild_replay_index()
                 self._next_sequence = (
@@ -731,6 +825,9 @@ class JsonlArtifactStore:
                         "to JsonlArtifactStore, or run the store through a "
                         "processor so it can be inferred from the strategy."
                     )
+                await asyncio.to_thread(
+                    _truncate_artifact_tail, self.path, snapshot, fsync=self.fsync
+                )
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 self._handle = self.path.open("a", encoding="utf-8", newline="\n")
                 if needs_manifest:
@@ -743,12 +840,23 @@ class JsonlArtifactStore:
                         identity_fingerprint=self.identity_fingerprint,
                         user_metadata=self._user_metadata_value,
                     )
-                    await asyncio.to_thread(self._write_record_sync, manifest)
+                    try:
+                        await asyncio.to_thread(self._write_record_sync, manifest)
+                    except Exception as exc:
+                        self._fatal_write_error = exc
+                        raise
                 self._prepared = True
             except ArtifactError:
                 raise
             except OSError as exc:
                 raise ArtifactIOError(f"Could not prepare artifact {self.path}: {exc}") from exc
+
+    def _raise_write_failure(self) -> None:
+        if self._fatal_write_error is not None:
+            raise ArtifactIOError(
+                f"Artifact store is unusable after a write failure: {self.path}; "
+                f"first failure: {self._fatal_write_error}"
+            ) from self._fatal_write_error
 
     async def _append_record(self, record: dict[str, Any]) -> None:
         await self._run_lock_owner(self._append_record_locked(record))
@@ -756,12 +864,14 @@ class JsonlArtifactStore:
     async def _append_record_locked(self, record: dict[str, Any]) -> None:
         async with self._lock:
             self._raise_detached_io_error()
+            self._raise_write_failure()
             if self._closed or self._handle is None:
                 raise ArtifactIOError(f"Artifact store is not writable: {self.path}")
             record["record_sequence"] = self._next_sequence
             try:
                 await asyncio.to_thread(self._write_record_sync, record)
-            except OSError as exc:
+            except Exception as exc:
+                self._fatal_write_error = exc
                 raise ArtifactIOError(
                     f"Could not append artifact record for item {record.get('item_id')!r}: {exc}"
                 ) from exc
@@ -831,6 +941,8 @@ class JsonlArtifactStore:
                     )
                 except (KeyError, ResultSerializationError) as exc:
                     sequence = record.get("record_sequence")
+                    if isinstance(sequence, int) and not isinstance(sequence, bool):
+                        sequence += 1
                     item_id = record.get("item_id")
                     raise ArtifactFormatError(
                         f"Malformed stored result at sequence {sequence!r} "
@@ -873,7 +985,7 @@ class JsonlArtifactStore:
         context_decoder: ValueDecoder | None = None,
     ) -> BatchResult[Any, Any]:
         """Read stored results without opening a writer or calling a provider."""
-        records, _ = _read_artifact_records(Path(path), allow_create=False)
+        records = _read_artifact_records(Path(path), allow_create=False).records
         results: list[WorkItemResult[Any, Any]] = []
         for record in records:
             if successes_only and not record.get("success"):
@@ -888,6 +1000,8 @@ class JsonlArtifactStore:
                 )
             except (KeyError, ResultSerializationError) as exc:
                 sequence = record.get("record_sequence")
+                if isinstance(sequence, int) and not isinstance(sequence, bool):
+                    sequence += 1
                 item_id = record.get("item_id")
                 raise ArtifactFormatError(
                     f"Malformed stored result at sequence {sequence!r} for item {item_id!r}: {exc}"
