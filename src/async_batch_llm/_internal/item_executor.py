@@ -18,7 +18,7 @@ import asyncio
 import inspect
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from copy import copy
@@ -63,7 +63,12 @@ from .admission import (
 from .backoff import capped_backoff
 from .capacity import CapacityLimiter
 from .classifier_resolver import StrategyClassifierResolver
-from .error_logging import log_retryable_error, log_validation_error
+from .error_logging import (
+    TerminalFailureLogs,
+    log_retryable_error,
+    log_validation_error,
+    terminal_traceback,
+)
 from .execution_state import (
     AttemptFailure,
     AttemptResult,
@@ -152,10 +157,10 @@ def _detach_traceback(exc: _E) -> _E:
     A traceback pins every frame's locals — strategies, clients, raw responses —
     for as long as the result is held, which for a large accumulated batch of
     failures can retain far more memory than before ``WorkItemResult.exception``
-    existed. The full failure (type, message, stack) is already logged at the
-    point it happens, so the stored exception keeps its type/message/args (enough
-    for ``call()`` to re-raise the provider's type) but drops the frame-pinning
-    tracebacks. A re-raise gets a fresh traceback from the raise site.
+    existed. Batch execution logs diagnostic tracebacks before calling this
+    helper. The exception identity, attributes and chain are preserved; only
+    frame references are removed. Queue-less execution retains tracebacks so
+    callers can inspect and re-raise the original failure.
     """
     seen: set[int] = set()
     cur: BaseException | None = exc
@@ -166,7 +171,11 @@ def _detach_traceback(exc: _E) -> _E:
     return exc
 
 
-def _classify_error(exception: Exception, classifier: ErrorClassifier) -> ErrorInfo:
+def _classify_error(
+    exception: Exception,
+    classifier: ErrorClassifier,
+    on_classifier_error: Callable[[Exception], None] | None = None,
+) -> ErrorInfo:
     """Resolve current policy without trusting metadata on a reused exception."""
     if isinstance(exception, (ArtifactIdentityError, ArtifactSerializationError)):
         error_info = ErrorInfo(
@@ -185,8 +194,11 @@ def _classify_error(exception: Exception, classifier: ErrorClassifier) -> ErrorI
     else:
         try:
             error_info = classifier.classify(exception)
-        except Exception:
-            logger.error("Error classifier %s failed", type(classifier).__name__, exc_info=True)
+        except Exception as classifier_error:
+            if on_classifier_error is None:
+                logger.error("Error classifier %s failed", type(classifier).__name__, exc_info=True)
+            else:
+                on_classifier_error(classifier_error)
             error_info = ErrorInfo(
                 is_retryable=False,
                 is_rate_limit=False,
@@ -262,8 +274,31 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
     ``host`` must satisfy :class:`ExecutorHostProtocol`.
     """
 
-    def __init__(self, host: ExecutorHostProtocol[TInput, TOutput, TContext]) -> None:
+    def __init__(
+        self,
+        host: ExecutorHostProtocol[TInput, TOutput, TContext],
+        *,
+        preserve_tracebacks: bool = False,
+    ) -> None:
         self._host = host
+        self._preserve_tracebacks = preserve_tracebacks
+        self._terminal_logs = None if preserve_tracebacks else TerminalFailureLogs()
+
+    def _log_terminal(self, exception: Exception, info: ErrorInfo, message: str) -> None:
+        if info.error_category == "classifier_error":
+            logger.debug(message)  # The classifier failure itself was logged with its traceback.
+            return
+        if self._terminal_logs is None:
+            logger.error(message, exc_info=terminal_traceback(exception, info))
+        else:
+            self._terminal_logs.log(logger, exception, info, message)
+
+    def summarize_failures(self) -> None:
+        if self._terminal_logs is not None:
+            self._terminal_logs.summarize(logger)
+
+    def _result_exception(self, exception: _E) -> _E:
+        return exception if self._preserve_tracebacks else _detach_traceback(exception)
 
     def _current_prepared(self) -> PreparedLogicalItem[TInput, TOutput, TContext] | None:
         active = _prepared_item.get()
@@ -461,7 +496,21 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         cached = attempt.classification if attempt is not None else None
         if cached is not None and cached[0] is exception and cached[1] is classifier:
             return cached[2]
-        info = _classify_error(exception, classifier)
+
+        def log_classifier_failure(error: Exception) -> None:
+            diagnostic = ErrorInfo(
+                is_retryable=False,
+                is_rate_limit=False,
+                is_timeout=False,
+                error_category="classifier_error",
+            )
+            message = f"Error classifier {type(classifier).__name__} failed: {error}"
+            if self._terminal_logs is None:
+                logger.error(message, exc_info=terminal_traceback(error, diagnostic))
+            else:
+                self._terminal_logs.log(logger, error, diagnostic, message)
+
+        info = _classify_error(exception, classifier, log_classifier_failure)
         if attempt is not None:
             attempt.classification = (exception, classifier, info)
         return info
@@ -803,11 +852,6 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         if failed_tokens.get("total_tokens", 0) > 0:
             token_msg = f" (consumed {failed_tokens['total_tokens']} tokens across all attempts)"
 
-        logger.error(
-            f"[FAIL]Worker {worker_id} failed to process {work_item.item_id} after all retries: "
-            f"{type(e).__name__}: {str(e)[:ERROR_MESSAGE_MAX_LENGTH]}{token_msg}"
-        )
-
         # Controlled guardrail termination is already the final framework
         # outcome. Do not let a recovery hook delay or rewrite it.
         middleware_result = (
@@ -831,6 +875,12 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             self._merge_failed_tokens(middleware_result, failed_tokens)
             result = middleware_result
         else:
+            self._log_terminal(
+                e,
+                error_info,
+                f"[FAIL]Worker {worker_id} failed to process {work_item.item_id} after all retries: "
+                f"{type(e).__name__}: {str(e)[:ERROR_MESSAGE_MAX_LENGTH]}{token_msg}",
+            )
             # Annotated above: ty infers unannotated constructions against
             # the PEP 696 defaults ([Any, None]) instead of the executor's
             # type parameters.
@@ -840,7 +890,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 error=f"{type(e).__name__}: {str(e)[:ERROR_MESSAGE_MAX_LENGTH]}",
                 context=work_item.context,
                 token_usage=cast(TokenUsage, failed_tokens),
-                exception=_detach_traceback(e),
+                exception=self._result_exception(e),
                 admission_wait_seconds=admission_wait_seconds,
                 timing=timing,
                 error_category=error_info.error_category,
@@ -980,7 +1030,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"[FAIL]Strategy prepare() failed for {work_item.item_id}: {e}")
+            logger.debug(f"[FAIL]Strategy prepare() failed for {work_item.item_id}: {e}")
             raise
 
         # Two independent counters: `attempt` is the *logical* attempt number
@@ -1062,7 +1112,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     rate_limit_retries += 1
                     if rate_limit_retries > max_rate_limit_retries:
                         token_summary = self._cumulative_token_summary(cumulative_failed_tokens)
-                        logger.error(
+                        logger.debug(
                             f"[FAIL]EXCEEDED {max_rate_limit_retries} RATE-LIMIT RETRIES "
                             f"for {work_item.item_id}:\n"
                             f"  Last error type: {error_type}\n"
@@ -1088,7 +1138,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                 # --- Non-rate-limit retryable error: consumes the budget. ---
                 if attempt >= max_attempts:
                     token_summary = self._cumulative_token_summary(cumulative_failed_tokens)
-                    logger.error(
+                    logger.debug(
                         f"[FAIL]ALL {max_attempts} ATTEMPTS EXHAUSTED "
                         f"for {work_item.item_id}:\n"
                         f"  Final error type: {error_type}\n"
@@ -1848,11 +1898,13 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         if failed_token_usage:
             token_summary = f"\n  Tokens consumed: {failed_token_usage.get('total_tokens', 0)}"
 
-        logger.error(
+        self._log_terminal(
+            exception,
+            error_info,
             f"[FAIL]PERMANENT FAILURE for {work_item.item_id}:\n"
             f"  Error type: {error_name}\n"
             f"  Error message: {error_msg[:ERROR_MESSAGE_DETAILED_LENGTH]}\n"
-            f"  This error will NOT be retried (not retryable){token_summary}"
+            f"  This error will NOT be retried (not retryable){token_summary}",
         )
 
         return WorkItemResult(
@@ -1861,6 +1913,6 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             error=f"{error_name}: {error_msg[:ERROR_MESSAGE_DETAILED_LENGTH]}",
             context=work_item.context,
             token_usage=cast(TokenUsage, failed_token_usage),
-            exception=_detach_traceback(exception),
+            exception=self._result_exception(exception),
             error_category=error_info.error_category,
         )

@@ -71,8 +71,9 @@ nav:
   - Use Your Existing Async Client: callable-integration.md
   - Testing: testing.md
   - Benchmarks: benchmarks.md
-  - SQLite Maintenance Evidence: sqlite-maintenance-evidence.md
-  - v0.22 Scale Evidence: v0.22-scale-evidence.md
+  - Design notes:
+    - SQLite Maintenance Evidence: sqlite-maintenance-evidence.md
+    - v0.22 Scale Evidence: v0.22-scale-evidence.md
   - Provider Integrations:
     - OpenAI-Compatible High Throughput: openai-high-throughput.md
     - Gemini: GEMINI_INTEGRATION.md
@@ -83,17 +84,18 @@ nav:
     - Custom Strategies: examples/custom-strategies.md
     - Advanced Patterns: examples/advanced.md
     - Benchmark Walkthrough: examples/benchmark-walkthrough.md
+  - Release Roadmap: roadmap.md
   - Migration Guides:
     - v0.25 Migration: migration/v0.25.md
+    - v0.24 Migration: migration/v0.24.md
     - v0.22 Migration: MIGRATION_V0_22.md
     - v0.20 Migration: MIGRATION_V0_20.md
     - Historical v0.19 Link: MIGRATION_V0_19.md
     - v0.10 Migration: MIGRATION_V0_10.md
-    - Release Roadmap: roadmap.md
-    - v0.24 Migration: migration/v0.24.md
     - v0.4 Migration: migration/v0.4.md
     - v0.1 Migration: migration/v0.1.md
   - API Reference:
+    - Entry Points and Configuration: api/entrypoints.md
     - Core: api/core.md
     - Artifacts and Serialization: api/artifacts.md
     - Single Call & Shared Call Pool: api/single-gateway.md

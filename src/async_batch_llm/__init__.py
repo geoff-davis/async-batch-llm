@@ -14,25 +14,11 @@ Key features:
 - Configuration-based setup
 
 Example:
-    >>> from async_batch_llm import (
-    ...     ParallelBatchProcessor,
-    ...     ProcessorConfig,
-    ...     LLMWorkItem,
-    ...     PydanticAIStrategy,
-    ... )
-    >>> from pydantic_ai import Agent
-    >>>
-    >>> agent = Agent("openai:gpt-4o-mini", result_type=MyOutput)
-    >>> strategy = PydanticAIStrategy(agent=agent)
-    >>> config = ProcessorConfig(max_workers=5, attempt_timeout=60.0)
-    >>>
-    >>> async with ParallelBatchProcessor(config=config) as processor:
-    ...     await processor.add_work(LLMWorkItem(
-    ...         item_id="item_1",
-    ...         strategy=strategy,
-    ...         prompt="Process this",
-    ...     ))
-    ...     result = await processor.process_all()
+    >>> from async_batch_llm import process_prompts
+    >>> from async_batch_llm.testing import FakeStrategy
+    >>> result = await process_prompts(FakeStrategy("hello"), ["Say hello"])
+    >>> print(result.outputs)
+    ['hello']
 
 Type Aliases:
     For convenience, type aliases are provided to reduce verbosity:

@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, cast
 
+from .._internal.input_validation import suggest_keyword_errors
+
 if TYPE_CHECKING:
     from ..token_estimation import TokenEstimator
 
@@ -565,3 +567,6 @@ def _set_timeout_per_item(self: ProcessorConfig, value: float | None) -> None:
 ProcessorConfig.timeout_per_item = property(  # type: ignore[assignment,method-assign]  # ty:ignore[invalid-assignment]
     _get_timeout_per_item, _set_timeout_per_item
 )
+
+
+ProcessorConfig.__init__ = suggest_keyword_errors(ProcessorConfig.__init__)  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]

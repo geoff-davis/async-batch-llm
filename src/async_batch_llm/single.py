@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import Any, TypeVar
 
 from ._internal.executor_host import ExecutorHost
+from ._internal.input_validation import validate_strategy
 from .base import LLMWorkItem, WorkItemResult
 from .core import ProcessorConfig
 from .llm_strategies import LLMCallStrategy
@@ -80,6 +81,7 @@ async def call_result(
     when you want token accounting or to branch on failure without exceptions;
     for the happy-path one-liner use :func:`call`.
     """
+    validate_strategy(strategy)
     host: ExecutorHost[Any, TOutput, Any] = ExecutorHost(
         config or ProcessorConfig(max_workers=1),
         strategy=strategy,

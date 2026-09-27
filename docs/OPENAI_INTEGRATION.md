@@ -168,7 +168,7 @@ The OpenAI-compatible models (`OpenAIModel`, `OpenRouterModel`,
 `DeepSeekModel`) surface additional structured output under reserved
 `metadata` keys, readable through typed views on each per-item
 `WorkItemResult` (or `LLMResponse`) — not on the batch-level `BatchResult` — see
-[Typed auxiliary output](API.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs)
+[Typed auxiliary output](api/core.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs)
 for the shapes and boundaries (**experimental** — shapes may change while
 they stabilize):
 

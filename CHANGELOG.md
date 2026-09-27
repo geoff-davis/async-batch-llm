@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Include user-code tracebacks in terminal diagnostics; preserve original frames for
+  `call`, `call_result` and `LLMCallPool`. Batch results still detach frames after logging.
+- Collapse repeated batch terminal errors into one diagnostic and a count summary;
+  bound deduplication to 1,000 keys with 200-character message prefixes, keeping
+  additional distinct errors visible without retaining them. Show repeated failures
+  in `BatchResult.summary()`, including restored results.
+- Prefix serialization fallback errors with `ArtifactSerializationError`, so stats
+  and metrics group them by the public error type instead of individual item messages.
+- Reject incompatible `CallableStrategy` callback signatures at construction and
+  suggest valid keywords for processor configuration and convenience entry points.
+
 - Wake bounded producers when processor admission closes, including shutdown and
   batch abort. Reject submissions after closure before configuring strategies or
   running middleware; expose `BatchAdmissionClosedError` for callers.
@@ -89,6 +100,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Warn once per processor when enabled quota scopes exceed `max_workers`.
 
 ### Changed
+
+- **BREAKING**: Public work items and convenience entry points require an
+  `LLMCallStrategy` instance instead of accepting duck-typed strategies. Invalid
+  prompt sources and entries now raise clear `TypeError`s. Integer prompts retain
+  string conversion with a deprecation warning; duplicate collected IDs warn once.
+- `LLMCallPool` is now the class name and capacity-warning surface; `LLMGateway`
+  remains an alias for source compatibility.
+- Accept OpenAI token-counter aliases in `CallOutcome`, rejecting mixed schemes.
+  Add provider-free `testing.FakeStrategy` and `FakeRateLimitError` for local tests.
+- Consolidate API and migration documentation; preserve processor types through
+  async context managers with a `Self` return annotation.
 
 - **BREAKING:** Processor instances enforce one-shot batch/streaming entry. Mixing
   `start()` and `process_all()`, restarting after close, and `finish()` after closing

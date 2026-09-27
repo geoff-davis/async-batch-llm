@@ -168,7 +168,11 @@ async def invoke(prompt, *, attempt, timeout, state):
     response = await existing_client.generate(prompt, timeout=timeout)
     return CallOutcome(
         output=response.text,
-        token_usage=response.usage,
+        token_usage={
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        },
         metadata={"route": response.route},
     )
 

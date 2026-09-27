@@ -72,7 +72,11 @@ async def invoke(prompt, *, attempt, timeout, state):
     response = await existing_client.generate(prompt, timeout=timeout)
     return CallOutcome(
         response.text,
-        token_usage=response.usage,
+        token_usage={
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        },
         metadata={"route": response.route},
     )
 
@@ -118,7 +122,7 @@ backpressure to the producer:
 from async_batch_llm import ProcessorConfig, process_stream
 
 config = ProcessorConfig(
-    max_workers=50,
+    concurrency=50,
     max_queue_size=200,
     max_result_queue_size=100,
 )
@@ -246,7 +250,7 @@ store = JsonlArtifactStore(
     fsync=True,
 )
 config = ProcessorConfig(
-    max_workers=20,
+    concurrency=20,
     attempt_timeout=30,  # one provider attempt
     guardrails=GuardrailConfig(
         total_timeout_per_item=180,  # admission, waits, calls, and retries
@@ -382,7 +386,20 @@ and [core API](https://geoff-davis.github.io/async-batch-llm/api/core/).
 
 ## Testing without provider calls
 
-Use the included fake strategies and `MockAgent` to exercise latency, rate
+Use `FakeStrategy` without provider extras or credentials:
+
+```python
+from async_batch_llm import process_prompts
+from async_batch_llm.testing import FakeStrategy
+
+batch = await process_prompts(
+    FakeStrategy(lambda prompt: prompt.upper(), token_usage={"input_tokens": 2, "output_tokens": 1}),
+    ["hello", "world"],
+)
+assert batch.outputs == ["HELLO", "WORLD"]
+```
+
+Use `FakeStrategy` and `MockAgent` to exercise latency, rate
 limits, retryable failures, and terminal failures without spending API quota.
 The project test suite makes no live provider calls. See the
 [testing guide](https://geoff-davis.github.io/async-batch-llm/testing/).

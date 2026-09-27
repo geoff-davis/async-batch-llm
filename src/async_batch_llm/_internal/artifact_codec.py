@@ -125,7 +125,7 @@ def serialization_failure_result(
     return replace(
         result,
         success=False,
-        error=str(error),
+        error=f"ArtifactSerializationError: {error}",
         error_category="artifact_serialization_error",
         exception=error.with_traceback(None),
     )

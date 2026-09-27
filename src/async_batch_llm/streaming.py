@@ -20,13 +20,23 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import inspect
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Iterable
+import warnings
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterable,
+    AsyncIterator,
+    Callable,
+    Iterable,
+    Mapping,
+)
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from ._internal.capacity import capture_capacity_warning_source
 from ._internal.cleanup import CleanupStep
+from ._internal.input_validation import validate_keywords, validate_strategy
 from .artifacts import ArtifactStore, ResumePolicy
 from .base import (
     BatchAdmissionClosedError,
@@ -94,6 +104,11 @@ def _to_work_item(
         raise TypeError(
             "prompt tuple must be (item_id, prompt) or (item_id, prompt, context); "
             f"got a tuple of length {len(parts)} at index {index}."
+        )
+    if not isinstance(entry, (str, int)) or isinstance(entry, bool):
+        raise TypeError(
+            f"Prompt at index {index} must be a string or a 2- or 3-tuple; "
+            f"got {type(entry).__name__}."
         )
     return LLMWorkItem(item_id=f"item_{index}", strategy=strategy, prompt=str(entry))
 
@@ -294,6 +309,16 @@ async def _process_stream_impl(
         propagates to the consumer after already-queued results drain; breaking
         out of the loop early cancels the producer and tears down the workers.
     """
+    validate_strategy(strategy)
+    if isinstance(prompts, (str, bytes, Mapping)):
+        raise TypeError(
+            "prompts must be an iterable of prompt entries, not a string, bytes, or mapping. "
+            "For one prompt, use call(strategy, prompt) or pass [prompt]."
+        )
+    validate_keywords(
+        processor_kwargs,
+        set(inspect.signature(ParallelBatchProcessor).parameters) | {"concurrency", "progress"},
+    )
     config = _apply_concurrency_shorthand(config, concurrency) or ProcessorConfig()
     reporter = _resolve_progress(
         progress,
@@ -326,7 +351,15 @@ async def _process_stream_impl(
     async def _feed() -> None:
         try:
             index = 0
+            warned_integer = False
             async for entry in _aiter(prompts):
+                if isinstance(entry, int) and not isinstance(entry, bool) and not warned_integer:
+                    warnings.warn(
+                        f"Integer prompt at index {index} is deprecated; pass a string instead.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+                    warned_integer = True
                 await processor.add_work(_to_work_item(entry, index, strategy))  # backpressure here
                 index += 1
         except asyncio.CancelledError:
@@ -470,6 +503,17 @@ async def process_prompts(
             **processor_kwargs,
         )
     ]
+    seen_ids: set[str] = set()
+    for result in results:
+        if result.item_id in seen_ids:
+            warnings.warn(
+                f"Duplicate item ID {result.item_id!r} in process_prompts; "
+                "use unique IDs or submission_index to distinguish results.",
+                UserWarning,
+                stacklevel=2,
+            )
+            break
+        seen_ids.add(result.item_id)
     batch = BatchResult(
         results=results,
         termination=termination[0] if termination else BatchTermination(),

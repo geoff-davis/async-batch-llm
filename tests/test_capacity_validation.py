@@ -85,5 +85,5 @@ async def test_processor_does_not_warn_for_unknown_or_sufficient_capacity() -> N
 
 
 def test_gateway_warns_when_workers_exceed_strategy_capacity() -> None:
-    with pytest.warns(UserWarning, match=r"LLMGateway max_workers=4.*max_concurrency=2"):
+    with pytest.warns(UserWarning, match=r"LLMCallPool max_workers=4.*max_concurrency=2"):
         LLMGateway(_CapacityStrategy(2), config=ProcessorConfig(max_workers=4))

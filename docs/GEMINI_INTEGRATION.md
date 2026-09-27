@@ -316,7 +316,7 @@ Request grounding (the `google_search` tool) via `generation_config`, and the
 built-in Gemini models surface the citations **by default** under
 `metadata['grounding']` — no extractor needed. Read them through the typed
 views on the result (see the [typed auxiliary output section in the API
-reference](API.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs);
+reference](api/core.md#typed-auxiliary-output-grounding-reasoning-tool-calls-logprobs);
 **experimental** — the shapes may change while they stabilize):
 
 ```python
@@ -787,7 +787,7 @@ Ensure all fields match the required schema exactly."""
 - **Models**: <https://ai.google.dev/gemini-api/docs/models/gemini>
 - **Get API Key**: <https://aistudio.google.com/apikey>
 - **Quickstart**: <https://ai.google.dev/gemini-api/docs/quickstart>
-- **async-batch-llm API Docs**: [docs/API.md](API.md)
+- **async-batch-llm API Docs**: [API reference](api/entrypoints.md)
 
 ## Support
 
