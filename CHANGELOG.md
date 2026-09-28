@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-09-27
+
+See the [v0.26 migration guide](docs/migration/v0.26.md) for breaking changes and
+explicitly deferred compatibility follow-ups.
+
 ### Fixed
 
 - Include user-code tracebacks in terminal diagnostics; preserve original frames for

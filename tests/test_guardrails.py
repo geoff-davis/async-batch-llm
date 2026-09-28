@@ -276,28 +276,114 @@ class _CapacityStrategy(LLMCallStrategy[str]):
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.release_cancelled_call = asyncio.Event()
+        self.active = 0
+        self.max_active = 0
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
     ) -> tuple[str, TokenUsage, None]:
         self.calls.append(prompt)
-        await asyncio.sleep(0.2)
-        return prompt, _TOKENS, None
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # Keep capacity occupied until the waiting item has actually expired.
+            # Per-item deadlines start separately; immediate cancellation cleanup
+            # could otherwise let the second item start before its own deadline.
+            await asyncio.wait_for(self.release_cancelled_call.wait(), timeout=2)
+            raise
+        finally:
+            self.active -= 1
+        raise AssertionError("provider wait should only finish through cancellation")
 
 
 @pytest.mark.asyncio
 async def test_total_item_deadline_covers_capacity_and_starts_no_late_call() -> None:
     strategy = _CapacityStrategy()
+    failed_items: list[str] = []
+
+    class ReleaseAfterWaitingItemExpires(BaseObserver):
+        async def on_event(self, event: ProcessingEvent, data: dict[str, Any]) -> None:
+            if event is ProcessingEvent.ITEM_FAILED:
+                failed_items.append(data["item_id"])
+                if data["item_id"] == "b":
+                    strategy.release_cancelled_call.set()
+
+    try:
+        result = await process_prompts(
+            strategy,
+            [("a", "a"), ("b", "b")],
+            config=ProcessorConfig(
+                max_workers=2,
+                guardrails=GuardrailConfig(total_timeout_per_item=0.04),
+            ),
+            observers=[ReleaseAfterWaitingItemExpires()],
+            preserve_order=True,
+        )
+    finally:
+        strategy.release_cancelled_call.set()
+    assert strategy.calls == ["a"]
+    assert failed_items == ["b", "a"]
+    assert strategy.max_active == 1
+    assert result.failed == 2
+    assert all(item.error_category == "framework_total_item_timeout" for item in result.results)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pickup_skew", [0, 0.01])
+async def test_capacity_admits_only_before_each_items_own_deadline(pickup_skew: float) -> None:
+    from async_batch_llm._internal.execution_state import runtime_state
+
+    class RecordStarts(LLMCallStrategy[str]):
+        max_concurrency = 1
+
+        def __init__(self) -> None:
+            self.entered = asyncio.Event()
+            self.calls: list[str] = []
+            self.remaining: list[float] = []
+            self.active = 0
+            self.max_active = 0
+
+        async def execute(
+            self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+        ) -> tuple[str, TokenUsage, None]:
+            import time
+
+            assert state is not None
+            deadline = runtime_state(state).total_deadline
+            assert deadline is not None
+            self.remaining.append(deadline - time.perf_counter())
+            self.calls.append(prompt)
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.active -= 1
+            raise AssertionError("provider wait should only finish through cancellation")
+
+    strategy = RecordStarts()
+
+    async def prompts():
+        yield "a", "a"
+        await strategy.entered.wait()
+        await asyncio.sleep(pickup_skew)
+        yield "b", "b"
+
     result = await process_prompts(
         strategy,
-        [("a", "a"), ("b", "b")],
+        prompts(),
         config=ProcessorConfig(
             max_workers=2,
-            guardrails=GuardrailConfig(total_timeout_per_item=0.04),
+            guardrails=GuardrailConfig(total_timeout_per_item=0.1),
         ),
-        preserve_order=True,
     )
-    assert len(strategy.calls) == 1
+    assert strategy.calls[0] == "a"
+    assert all(remaining > 0 for remaining in strategy.remaining)
+    assert strategy.max_active == 1
     assert result.failed == 2
     assert all(item.error_category == "framework_total_item_timeout" for item in result.results)
 
