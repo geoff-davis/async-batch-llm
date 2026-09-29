@@ -197,15 +197,16 @@ class TestOpenAICompatibleGenerate:
         assert kwargs["extra_body"] == {"max_tokens": 200, "top_p": 0.9}
 
     @pytest.mark.asyncio
-    async def test_temperature_sent_by_default(self):
+    async def test_temperature_omitted_by_default_and_sent_when_explicit(self):
         response = _build_response()
         client = _build_client(response)
 
         model = OpenAIModel("gpt-4o-mini", client)
         await model.generate("hi")
+        assert "temperature" not in client.chat.completions.create.call_args.kwargs
 
-        kwargs = client.chat.completions.create.call_args.kwargs
-        assert kwargs["temperature"] == 0.0
+        await model.generate("hi", temperature=0.0)
+        assert client.chat.completions.create.call_args.kwargs["temperature"] == 0.0
 
     @pytest.mark.asyncio
     async def test_temperature_none_omits_param(self):

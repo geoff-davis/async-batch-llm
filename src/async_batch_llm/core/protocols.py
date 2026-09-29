@@ -24,7 +24,7 @@ class LLMModel(Protocol):
         self,
         prompt: str | list[Any],
         *,
-        temperature: float | None = 0.0,
+        temperature: float | None = None,
         system_instruction: str | None = None,
         config: dict[str, Any] | None = None,
     ) -> LLMResponse:
@@ -33,10 +33,10 @@ class LLMModel(Protocol):
 
         Args:
             prompt: Text prompt, or list of content parts for multimodal input.
-            temperature: Sampling temperature (0.0 = deterministic). Pass ``None``
-                to omit the parameter entirely and use the provider default —
-                required for models that reject an explicit temperature (e.g.
-                OpenAI reasoning models like o1/o3).
+            temperature: Sampling temperature. The default ``None`` omits the
+                parameter so the provider's own default applies; some models
+                or reasoning modes reject an explicit value. Pass a number,
+                e.g. ``0.0``, for more repeatable output where supported.
             system_instruction: System instruction override (None = use default).
             config: Provider-specific configuration (e.g., response_mime_type).
 
