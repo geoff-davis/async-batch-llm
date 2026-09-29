@@ -74,6 +74,7 @@ from .execution_state import (
     AttemptFailure,
     AttemptResult,
     ItemFailure,
+    ItemRuntimeState,
     current_try_number,
     reset_attempt_runtime,
     runtime_state,
@@ -1368,6 +1369,17 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             reservation = await admission_state.quota_gate.reserve(estimate)
         return reservation
 
+    @staticmethod
+    def _record_capacity_admission(
+        item_runtime: ItemRuntimeState | None, wait_seconds: float, ramp_wait_seconds: float
+    ) -> None:
+        """Add one capacity wait to the attempt and to the item's running total."""
+        if item_runtime is None:
+            return
+        item_runtime.cumulative_admission_wait_seconds += wait_seconds
+        item_runtime.current_attempt.admission_wait_seconds += wait_seconds
+        item_runtime.current_attempt.startup_ramp_wait_seconds += ramp_wait_seconds
+
     @asynccontextmanager
     async def _admit_physical_attempt(
         self,
@@ -1409,38 +1421,46 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                     attempt_number,
                     retry_state,
                 )
-            async with self._capacity_limiter.admit(
-                strategy,
-                deadline=deadline,
-                abort_controller=self._abort_controller,
-                item_id=work_item.item_id,
-            ) as admission:
-                previous_wait = (
-                    item_runtime.cumulative_admission_wait_seconds
-                    if item_runtime is not None
-                    else 0.0
-                )
-                total_admission_wait = previous_wait + admission.wait_seconds
-                if item_runtime is not None:
-                    item_runtime.cumulative_admission_wait_seconds = total_admission_wait
-                    item_runtime.current_attempt.admission_wait_seconds += admission.wait_seconds
-                    item_runtime.current_attempt.startup_ramp_wait_seconds += (
-                        admission.startup_ramp_wait_seconds
+            capacity_wait_started = time.perf_counter()
+            admitted = False
+            try:
+                async with self._capacity_limiter.admit(
+                    strategy,
+                    deadline=deadline,
+                    abort_controller=self._abort_controller,
+                    item_id=work_item.item_id,
+                ) as admission:
+                    admitted = True
+                    self._record_capacity_admission(
+                        item_runtime, admission.wait_seconds, admission.startup_ramp_wait_seconds
                     )
-                if self._events.observers:
-                    await self._emit_event(
-                        ProcessingEvent.ITEM_ADMITTED,
-                        {
-                            "item_id": work_item.item_id,
-                            "worker_id": worker_id,
-                            "attempt": attempt_number,
-                            "wait_seconds": admission.wait_seconds,
-                            "capacity": admission.capacity,
-                            "startup_ramp_wait_seconds": (admission.startup_ramp_wait_seconds),
-                        },
-                    )
+                    if self._events.observers:
+                        await self._emit_event(
+                            ProcessingEvent.ITEM_ADMITTED,
+                            {
+                                "item_id": work_item.item_id,
+                                "worker_id": worker_id,
+                                "attempt": attempt_number,
+                                "wait_seconds": admission.wait_seconds,
+                                "capacity": admission.capacity,
+                                "startup_ramp_wait_seconds": (admission.startup_ramp_wait_seconds),
+                            },
+                        )
 
-                yield reservation
+                    yield reservation
+            except BaseException as exc:
+                # Capacity acquisition raised (deadline, abort, cancellation)
+                # before admit() could report its wait: record the elapsed wait
+                # so the attempt and item timing still show it. Always re-raise.
+                if not admitted:
+                    self._record_capacity_admission(
+                        item_runtime, max(0.0, time.perf_counter() - capacity_wait_started), 0.0
+                    )
+                    if item_runtime is not None and isinstance(
+                        exc, (ItemDeadlineExceeded, BatchDeadlineExceeded)
+                    ):
+                        item_runtime.current_attempt.timeout_category = "admission_timeout"
+                raise
         finally:
             if not reservation.finalized:
                 finalization = reservation.finalize_unknown()
