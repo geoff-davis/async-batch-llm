@@ -1,6 +1,7 @@
 """Processing strategies."""
 
 from .errors import (
+    AsyncBatchLLMError,
     BatchAbortedError,
     BatchAdmissionClosedError,
     BatchBudgetExceeded,
@@ -29,6 +30,7 @@ from .rate_limit import (
 )
 
 __all__ = [
+    "AsyncBatchLLMError",
     "BatchAbortedError",
     "BatchAdmissionClosedError",
     "BatchBudgetExceeded",

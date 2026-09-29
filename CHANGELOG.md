@@ -70,6 +70,16 @@ See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
   on macOS does not guarantee durability against an OS crash or power loss. The
   scale-soak benchmark's token scenario skips its memory check with a caveat where
   current RSS is unavailable (no `/proc`).
+- `AsyncBatchLLMError`, a common base for every exception type the library exports.
+  Each keeps its existing built-in base (`TimeoutError`, `RuntimeError`,
+  `ValueError`), so current `except` clauses still match.
+- `SECURITY.md` with private vulnerability reporting through GitHub.
+- Artifact stores and serialized results written by v0.18.0, v0.21.0, v0.24.1 and
+  v0.26.0 are kept as test fixtures; CI checks that they still load, replay and
+  accept new records.
+- CI builds the package and runs `twine check --strict` and `check-wheel-contents`
+  on every PR and before publishing (`make package-check`). Workflow actions are
+  pinned to exact release tags.
 
 ### Deprecated
 

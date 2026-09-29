@@ -1,0 +1,179 @@
+{
+  "record_type": "batch_result",
+  "results": [
+    {
+      "admission_wait_seconds": 0.0,
+      "context": null,
+      "context_included": true,
+      "error": null,
+      "error_category": null,
+      "exception": null,
+      "item_id": "ok1",
+      "metadata": {
+        "fixture": true
+      },
+      "metadata_included": true,
+      "output": "old:alpha",
+      "output_included": true,
+      "record_type": "work_item_result",
+      "replayed_from_artifact": false,
+      "schema": "async-batch-llm-result",
+      "schema_version": 1,
+      "submission_index": 0,
+      "success": true,
+      "timing": {
+        "attempts": [
+          {
+            "admission_wait_seconds": 0.0,
+            "attempt": 1,
+            "cooldown_wait_seconds": 8.988002082332969e-05,
+            "error_category": null,
+            "error_type": null,
+            "estimated_input_tokens": null,
+            "estimated_output_tokens": null,
+            "execution_seconds": 0.0002236529835499823,
+            "provider_seconds": null,
+            "quota_scope_id": null,
+            "quota_wait_seconds": 0.0,
+            "reconciliation_delta_tokens": null,
+            "reported_tokens": null,
+            "reserved_tokens": 0,
+            "retry_backoff_seconds": 0.0,
+            "startup_ramp_wait_seconds": 0.0,
+            "success": true,
+            "timeout_category": null,
+            "total_seconds": 0.0004426469677127898,
+            "try_number": 1
+          }
+        ],
+        "timeout_category": null,
+        "total_seconds": 0.002895746030844748
+      },
+      "token_usage": {
+        "input_tokens": 3,
+        "output_tokens": 2,
+        "total_tokens": 5
+      }
+    },
+    {
+      "admission_wait_seconds": 0.0,
+      "context": null,
+      "context_included": true,
+      "error": null,
+      "error_category": null,
+      "exception": null,
+      "item_id": "ok2",
+      "metadata": {
+        "fixture": true
+      },
+      "metadata_included": true,
+      "output": "old:beta",
+      "output_included": true,
+      "record_type": "work_item_result",
+      "replayed_from_artifact": false,
+      "schema": "async-batch-llm-result",
+      "schema_version": 1,
+      "submission_index": 1,
+      "success": true,
+      "timing": {
+        "attempts": [
+          {
+            "admission_wait_seconds": 0.0,
+            "attempt": 1,
+            "cooldown_wait_seconds": 7.425097282975912e-05,
+            "error_category": null,
+            "error_type": null,
+            "estimated_input_tokens": null,
+            "estimated_output_tokens": null,
+            "execution_seconds": 0.00028514902805909514,
+            "provider_seconds": null,
+            "quota_scope_id": null,
+            "quota_wait_seconds": 0.0,
+            "reconciliation_delta_tokens": null,
+            "reported_tokens": null,
+            "reserved_tokens": 0,
+            "retry_backoff_seconds": 0.0,
+            "startup_ramp_wait_seconds": 0.0,
+            "success": true,
+            "timeout_category": null,
+            "total_seconds": 0.0004780939780175686,
+            "try_number": 1
+          }
+        ],
+        "timeout_category": null,
+        "total_seconds": 0.0027821309631690383
+      },
+      "token_usage": {
+        "input_tokens": 3,
+        "output_tokens": 2,
+        "total_tokens": 5
+      }
+    },
+    {
+      "admission_wait_seconds": 0.0,
+      "context": null,
+      "context_included": true,
+      "error": "ValueError: fixture failure",
+      "error_category": "logic_error",
+      "exception": {
+        "class_name": "ValueError",
+        "message": "fixture failure",
+        "module": "builtins"
+      },
+      "item_id": "bad",
+      "metadata": null,
+      "metadata_included": true,
+      "output": null,
+      "output_included": true,
+      "record_type": "work_item_result",
+      "replayed_from_artifact": false,
+      "schema": "async-batch-llm-result",
+      "schema_version": 1,
+      "submission_index": 2,
+      "success": false,
+      "timing": {
+        "attempts": [
+          {
+            "admission_wait_seconds": 0.0,
+            "attempt": 1,
+            "cooldown_wait_seconds": 6.349000614136457e-05,
+            "error_category": "logic_error",
+            "error_type": "ValueError",
+            "estimated_input_tokens": null,
+            "estimated_output_tokens": null,
+            "execution_seconds": 0.0002907900488935411,
+            "provider_seconds": null,
+            "quota_scope_id": null,
+            "quota_wait_seconds": 0.0,
+            "reconciliation_delta_tokens": null,
+            "reported_tokens": null,
+            "reserved_tokens": 0,
+            "retry_backoff_seconds": 0.0,
+            "startup_ramp_wait_seconds": 0.0,
+            "success": false,
+            "timeout_category": null,
+            "total_seconds": 0.001780165999662131,
+            "try_number": 1
+          }
+        ],
+        "timeout_category": null,
+        "total_seconds": 0.0034161710063926876
+      },
+      "token_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    }
+  ],
+  "schema": "async-batch-llm-result",
+  "schema_version": 1,
+  "termination": {
+    "error_category": null,
+    "kind": "completed",
+    "reason": null,
+    "triggering_item_id": null
+  },
+  "wall_time_seconds": 0.006656728975940496
+}

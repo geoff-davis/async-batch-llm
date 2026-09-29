@@ -73,11 +73,15 @@ repos:
       # (stages pinned: these upstream hooks declare pre-push in their own
       # definitions, which would override default_stages and re-run them on
       # every push)
+      # Fixtures under tests/fixtures/ are kept byte-for-byte as the release that
+      # wrote them, so these two fixers skip them.
       - id: end-of-file-fixer
         stages: [pre-commit]
+        exclude: ^tests/fixtures/
       # Trim trailing whitespace
       - id: trailing-whitespace
         stages: [pre-commit]
+        exclude: ^tests/fixtures/
       # Check for accidentally committed large files
       - id: check-added-large-files
         args: [--maxkb=1000]

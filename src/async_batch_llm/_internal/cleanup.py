@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from ..strategies.errors import AsyncBatchLLMError
+
 # Diagnostic only. Cleanup is never cancelled when this elapses: resource
 # owners have different durability requirements, so a universal teardown
 # deadline cannot preserve their dependency order.
@@ -38,7 +40,7 @@ CLEANUP_SLOW_WARNING_SECONDS = 30.0
 _PROCESS_CONTROL_ERRORS = (KeyboardInterrupt, SystemExit)
 
 
-class CleanupInterruptedError(RuntimeError):
+class CleanupInterruptedError(RuntimeError, AsyncBatchLLMError):
     """A cleanup step was interrupted without the closing caller being cancelled.
 
     Raised when a step's private task was cancelled by a third party, or when

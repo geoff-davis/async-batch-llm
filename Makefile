@@ -1,4 +1,7 @@
-.PHONY: help test test-ci coverage lint typecheck typecheck-ty format check-all pre-commit clean
+TWINE_VERSION ?= 7.0.0
+CHECK_WHEEL_CONTENTS_VERSION ?= 0.6.3
+
+.PHONY: help test test-ci coverage lint typecheck typecheck-ty format check-all pre-commit package-check clean
 
 help:  ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -86,6 +89,12 @@ scale-100k:  ## Run the 100k reference scale-soak profile (minutes)
 
 scale-1m:  ## Run the 1m scale-soak profile, large scenarios only (long)
 	uv run python -m benchmarks.scale_soak --profile 1m --output benchmark-results/scale-1m.json
+
+package-check:  ## Build the sdist/wheel and check metadata and wheel contents
+	rm -rf dist
+	uv build
+	uvx twine@$(TWINE_VERSION) check --strict dist/*
+	uvx check-wheel-contents@$(CHECK_WHEEL_CONTENTS_VERSION) dist/*.whl
 
 clean:  ## Clean up cache files
 	find . -type d -name "__pycache__" -exec rm -rf {} +
