@@ -43,7 +43,11 @@ or a gateway and ABL are both retrying the same transport failure.
 **How to confirm.** Check provider quota dashboards and response headers. Look
 for coordinated-cooldown logs, repeated logical attempt numbers, suggested
 waits, and `RateLimitConfig.max_rate_limit_retries` exhaustion. Inspect gateway
-logs for hidden retries beneath each ABL attempt.
+logs for hidden retries beneath each ABL attempt. If cooldowns follow
+application exceptions rather than provider responses, check how they are
+classified: an untyped exception whose message contains `429` or
+`rate limit` is treated as a rate limit. Raise a built-in error type or pass
+an explicit `error_classifier`.
 
 **Fix.** Reduce concurrency or set a conservative
 `max_requests_per_minute`; request higher provider quota when appropriate.

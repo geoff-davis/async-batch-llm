@@ -5,12 +5,16 @@ import asyncio
 from ..strategies.errors import (
     ErrorClassifier,
     ErrorInfo,
+    _insufficient_quota,
+    _insufficient_quota_info,
     _retry_after_seconds,
+    http_status,
     matches_any_pattern,
 )
 
-# Error pattern constants
-RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota", "rate limit")
+# Error pattern constants. A bare "quota" would also match billing exhaustion
+# and application text; require the provider phrase.
+RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota exceeded", "rate limit")
 TIMEOUT_PATTERNS = ("timeout", "504", "deadline")
 # 503 Service Unavailable / model overload — a transient server-side capacity
 # blip (distinct from a 429 quota rate limit). Retried with per-item exponential
@@ -111,17 +115,18 @@ class GeminiErrorClassifier(ErrorClassifier):
         except ImportError:
             pass
 
-        # Fallback: Check error message for common patterns
-        error_str = str(exception)
+        # A non-genai exception carrying HTTP 429, then validation and
+        # programming-error types, all outrank message text.
+        info = self._structured_rate_limit(exception) or self._typed_failure(exception)
+        if info is not None:
+            return info
 
-        # Check if it looks like a rate limit error (for mocks and other providers)
-        if self._matches_any_pattern(error_str, RATE_LIMIT_PATTERNS):
-            return ErrorInfo(
-                is_retryable=True,
-                is_rate_limit=True,
-                is_timeout=False,
-                error_category="rate_limit",
-            )
+        # Fallback for untyped exceptions: billing exhaustion, then rate-limit
+        # text (mocks and other providers).
+        error_str = str(exception)
+        info = self._message_rate_limit(exception, RATE_LIMIT_PATTERNS)
+        if info is not None:
+            return info
 
         # Check if it looks like a timeout
         if isinstance(exception, (TimeoutError, asyncio.TimeoutError)) or self._matches_any_pattern(
@@ -133,20 +138,6 @@ class GeminiErrorClassifier(ErrorClassifier):
                 is_timeout=True,
                 error_category="timeout",
             )
-
-        # Check for Pydantic validation errors (retryable - LLM might generate valid output on retry)
-        try:
-            from pydantic import ValidationError
-
-            if isinstance(exception, ValidationError):
-                return ErrorInfo(
-                    is_retryable=True,
-                    is_rate_limit=False,
-                    is_timeout=False,
-                    error_category="validation_error",
-                )
-        except ImportError:
-            pass
 
         return self._generic_tail(exception)
 
@@ -162,6 +153,8 @@ class GeminiErrorClassifier(ErrorClassifier):
 
         code = getattr(exception, "code", None)
 
+        if _insufficient_quota(exception):
+            return _insufficient_quota_info()
         if code == 429 and _daily_quota_exhausted(exception):
             return ErrorInfo(False, False, False, "quota_exhausted")
         if code == 429:
@@ -221,9 +214,12 @@ class GeminiErrorClassifier(ErrorClassifier):
             )
 
         # Unrecognized or missing status code — fall back to message patterns
-        # (mirrors the SDK-less path), defaulting to conservative retry.
+        # (mirrors the SDK-less path), defaulting to conservative retry. An
+        # unrecognized status is still authoritative: never a rate limit by text.
         error_str = str(exception)
-        if self._matches_any_pattern(error_str, RATE_LIMIT_PATTERNS):
+        if http_status(exception) is None and self._matches_any_pattern(
+            error_str, RATE_LIMIT_PATTERNS
+        ):
             return ErrorInfo(
                 is_retryable=True,
                 is_rate_limit=True,

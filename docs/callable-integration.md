@@ -88,6 +88,13 @@ CallableStrategy(
 - `identity`: stable `ArtifactIdentity` for checkpoint compatibility.
 - `error_classifier`: optional application/provider classifier recommended to
   execution surfaces. An explicit processor classifier takes precedence.
+  Without one, the default classifier decides in this order: framework
+  errors; an HTTP 429 carried by the exception (`status_code`, `status`,
+  `code`, or `response.status_code`); validation and programming errors
+  (`ValueError`, `TypeError`, `KeyError` and similar are `logic_error`, whatever
+  their message); then message heuristics for other exceptions. An exception
+  carrying any other HTTP status is never a rate limit by message, and
+  `insufficient_quota` is a non-retryable `insufficient_balance`.
 - `prepare` / `cleanup`: synchronous or async no-argument lifecycle callbacks.
   The existing lifecycle manager prepares once per unique strategy instance
   and cleans up every successfully prepared strategy once, including failure

@@ -123,7 +123,8 @@ class MockAgent(Generic[TOutput]):
             class MockRateLimitError(Exception):
                 """Mock rate limit error that mimics Gemini ClientError."""
 
-                pass
+                # Classifiers trust a structured HTTP status over message text.
+                code = 429
 
             # Make it look like a ClientError for the classifier
             error = MockRateLimitError("429 RESOURCE_EXHAUSTED")

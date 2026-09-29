@@ -6,9 +6,16 @@ from pydantic import BaseModel
 from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, PydanticAIStrategy
 from async_batch_llm.base import RetryState, TokenUsage
 from async_batch_llm.classifiers.gemini import GeminiErrorClassifier
+from async_batch_llm.classifiers.openai import OpenAIErrorClassifier
+from async_batch_llm.classifiers.openrouter import OpenRouterErrorClassifier
+from async_batch_llm.classifiers.pydantic_ai import PydanticAIErrorClassifier
 from async_batch_llm.core import RateLimitConfig, RetryConfig
 from async_batch_llm.llm_strategies import LLMCallStrategy
-from async_batch_llm.strategies.errors import DefaultErrorClassifier, FrameworkTimeoutError
+from async_batch_llm.strategies.errors import (
+    DefaultErrorClassifier,
+    FrameworkTimeoutError,
+    ProviderResponseError,
+)
 from async_batch_llm.testing import MockAgent
 
 
@@ -1223,3 +1230,253 @@ def test_sc5_unknown_status_does_not_imply_rate_limit():
     info = OpenAIErrorClassifier().classify(error)
     assert info.error_category == "api_error"
     assert not info.is_rate_limit
+
+
+# --- Issue #177: typed and structured signals outrank message text ---------
+
+_ISSUE_177_CLASSIFIERS = [
+    pytest.param(DefaultErrorClassifier, id="default"),
+    pytest.param(OpenAIErrorClassifier, id="openai"),
+    pytest.param(OpenRouterErrorClassifier, id="openrouter"),
+    pytest.param(GeminiErrorClassifier, id="gemini"),
+    pytest.param(PydanticAIErrorClassifier, id="pydantic_ai"),
+]
+
+
+class _Response:
+    def __init__(self, *, status_code=None, status=None, headers=None):
+        if status_code is not None:
+            self.status_code = status_code
+        if status is not None:
+            self.status = status
+        self.headers = headers or {}
+
+
+class _SdkStyleError(Exception):
+    """An exception from an SDK without a built-in classifier (e.g. Anthropic)."""
+
+    def __init__(self, message, **attributes):
+        super().__init__(message)
+        for name, value in attributes.items():
+            setattr(self, name, value)
+
+
+@pytest.mark.parametrize("classifier_type", _ISSUE_177_CLASSIFIERS)
+@pytest.mark.parametrize(
+    "error",
+    [
+        ValueError("429: invalid item"),
+        ValueError("quota field missing"),
+        ValueError("insufficient_quota"),
+        TypeError("timeout must be float"),
+        AssertionError("rate limit reached"),
+        KeyError("RESOURCE_EXHAUSTED"),
+    ],
+    ids=repr,
+)
+def test_issue177_programming_errors_outrank_message_patterns(classifier_type, error):
+    info = classifier_type().classify(error)
+    assert info.error_category == "logic_error"
+    assert not info.is_retryable
+    assert not info.is_rate_limit
+
+
+@pytest.mark.parametrize("classifier_type", _ISSUE_177_CLASSIFIERS)
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {"status_code": 429},
+        {"status": 429},
+        {"code": 429},
+        {"response": _Response(status_code=429, headers={"Retry-After": "3"})},
+        {"response": _Response(status=429, headers={"Retry-After": "3"})},
+    ],
+    ids=["status_code", "status", "code", "response.status_code", "response.status"],
+)
+def test_issue177_structured_429_is_rate_limit_without_message(classifier_type, attributes):
+    attributes.setdefault("response", _Response(headers={"Retry-After": "3"}))
+    info = classifier_type().classify(_SdkStyleError("request failed", **attributes))
+    assert info.error_category == "rate_limit"
+    assert info.is_rate_limit and info.is_retryable
+    assert info.suggested_wait == 3
+
+
+@pytest.mark.parametrize("classifier_type", _ISSUE_177_CLASSIFIERS)
+def test_issue177_other_status_is_not_rate_limit_by_message(classifier_type):
+    error = _SdkStyleError("Error code: 400 - rate limit fields invalid", status_code=400)
+    assert not classifier_type().classify(error).is_rate_limit
+
+
+@pytest.mark.parametrize("classifier_type", _ISSUE_177_CLASSIFIERS)
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("Error code: 429 - {'code': 'insufficient_quota'}"),
+        _SdkStyleError(
+            "You exceeded your current quota", status_code=429, code="insufficient_quota"
+        ),
+        _SdkStyleError("exceeded", status_code=429, body={"error": {"code": "insufficient_quota"}}),
+    ],
+    ids=["untyped-text", "status+code", "status+body"],
+)
+def test_issue177_insufficient_quota_is_not_a_retried_rate_limit(classifier_type, error):
+    info = classifier_type().classify(error)
+    assert info.error_category == "insufficient_balance"
+    assert not info.is_retryable
+    assert not info.is_rate_limit
+
+
+@pytest.mark.parametrize("classifier_type", _ISSUE_177_CLASSIFIERS)
+@pytest.mark.parametrize(
+    ("message", "rate_limited"),
+    [
+        ("quota field missing", False),
+        ("Quota exceeded for metric generate_requests", True),
+        ("Error code: 429 - Too Many Requests", True),
+    ],
+)
+def test_issue177_untyped_message_fallback_is_preserved_without_bare_quota(
+    classifier_type, message, rate_limited
+):
+    # Untyped exceptions (custom clients, test doubles) keep the heuristic.
+    assert classifier_type().classify(RuntimeError(message)).is_rate_limit is rate_limited
+
+
+@pytest.mark.asyncio
+async def test_issue177_mock_agent_rate_limit_is_structured():
+    agent = MockAgent(response_factory=lambda prompt: "ok", latency=0, rate_limit_on_call=1)
+    with pytest.raises(Exception) as caught:
+        await agent.run("x")
+    assert getattr(caught.value, "code", None) == 429
+    for classifier_type in (DefaultErrorClassifier, GeminiErrorClassifier):
+        assert classifier_type().classify(caught.value).is_rate_limit
+
+
+class _ResponseUnavailable(Exception):
+    status_code = 429
+
+    @property
+    def response(self):
+        raise RuntimeError("response unavailable")
+
+
+def _structured_billing_error() -> Exception:
+    error = _SdkStyleError("request failed")
+    error.code = "insufficient_quota"
+    return error
+
+
+@pytest.mark.parametrize("classifier_type", _ISSUE_177_CLASSIFIERS)
+@pytest.mark.parametrize(
+    "error_factory",
+    [
+        lambda: RuntimeError("insufficient_quota: connection rejected"),
+        lambda: RuntimeError("insufficient_quota: request timeout"),
+        _structured_billing_error,
+        lambda: ProviderResponseError("insufficient_quota", code=429),
+    ],
+    ids=["billing+connection-text", "billing+timeout-text", "code-only", "provider-response-429"],
+)
+def test_issue177_billing_exhaustion_outranks_transient_heuristics(classifier_type, error_factory):
+    info = classifier_type().classify(error_factory())
+    assert info.error_category == "insufficient_balance"
+    assert not info.is_retryable
+    assert not info.is_rate_limit
+
+
+@pytest.mark.parametrize("classifier_type", _ISSUE_177_CLASSIFIERS)
+def test_issue177_provider_response_status_outranks_rate_limit_text(classifier_type):
+    error = ProviderResponseError("rate limit field invalid", code=400)
+    assert not classifier_type().classify(error).is_rate_limit
+    assert classifier_type().classify(ProviderResponseError("rate limited", code=429)).is_rate_limit
+
+
+def test_issue177_gemini_unrecognized_status_outranks_rate_limit_text():
+    from google.genai.errors import APIError
+
+    error = APIError(418, {"error": {"message": "rate limit field invalid", "code": 418}})
+    info = GeminiErrorClassifier().classify(error)
+    assert not info.is_rate_limit
+    assert info.error_category == "api_error"
+
+
+@pytest.mark.parametrize("classifier_type", _ISSUE_177_CLASSIFIERS)
+def test_issue177_failing_response_property_keeps_rate_limit_without_hint(classifier_type):
+    info = classifier_type().classify(_ResponseUnavailable("request failed"))
+    assert info.error_category == "rate_limit"
+    assert info.is_rate_limit
+    assert info.suggested_wait is None
+
+
+def _sdk_billing_cases():
+    import httpx
+    from google.genai.errors import APIError
+    from openai import APIStatusError, RateLimitError
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    request = httpx.Request("POST", "https://example.invalid")
+
+    def response(status: int) -> httpx.Response:
+        return httpx.Response(status, request=request)
+
+    return [
+        (
+            "openai-429-text",
+            OpenAIErrorClassifier,
+            lambda: RateLimitError("insufficient_quota", response=response(429), body=None),
+        ),
+        (
+            "openai-500-body",
+            OpenAIErrorClassifier,
+            lambda: APIStatusError(
+                "request failed", response=response(500), body={"code": "insufficient_quota"}
+            ),
+        ),
+        (
+            "pydantic-ai-429-string-body",
+            PydanticAIErrorClassifier,
+            lambda: ModelHTTPError(429, "test", body="insufficient_quota"),
+        ),
+        (
+            "openrouter-provider-route",
+            OpenRouterErrorClassifier,
+            lambda: ProviderResponseError("no provider available: insufficient_quota", code=429),
+        ),
+        (
+            "openrouter-status-route",
+            OpenRouterErrorClassifier,
+            lambda: APIStatusError(
+                "no allowed providers: insufficient_quota", response=response(503), body=None
+            ),
+        ),
+        (
+            "gemini-apierror-429",
+            GeminiErrorClassifier,
+            lambda: APIError(429, {"error": {"message": "insufficient_quota", "code": 429}}),
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("classifier_type", "error_factory"),
+    [pytest.param(c, f, id=label) for label, c, f in _sdk_billing_cases()],
+)
+def test_issue177_sdk_billing_exhaustion_outranks_status_and_routing(
+    classifier_type, error_factory
+):
+    info = classifier_type().classify(error_factory())
+    assert info.error_category == "insufficient_balance"
+    assert not info.is_retryable
+    assert not info.is_rate_limit
+
+
+def test_issue177_sdk_rate_limit_without_billing_is_unchanged():
+    import httpx
+    from openai import RateLimitError
+
+    response = httpx.Response(429, request=httpx.Request("POST", "https://example.invalid"))
+    info = OpenAIErrorClassifier().classify(
+        RateLimitError("Rate limit reached", response=response, body=None)
+    )
+    assert info.error_category == "rate_limit"
+    assert info.is_rate_limit

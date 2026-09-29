@@ -14,6 +14,7 @@ from async_batch_llm import (
     CallableStrategy,
     CallOutcome,
     JsonlArtifactStore,
+    LLMCallPool,
     LLMGateway,
     LLMWorkItem,
     ParallelBatchProcessor,
@@ -563,3 +564,38 @@ async def test_attempt_timeout_and_external_cancellation_propagate() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["batch", "stream", "call_result", "pool"])
+async def test_issue177_user_error_with_429_text_is_not_a_rate_limit(surface: str) -> None:
+    calls = 0
+
+    async def invoke(
+        prompt: str, *, attempt: int, timeout: float, state: RetryState | None
+    ) -> CallOutcome[str]:
+        nonlocal calls
+        calls += 1
+        raise ValueError(f"429: invalid item {prompt}")
+
+    strategy = CallableStrategy(invoke)
+    # A misclassified rate limit would fail as rate_limit_retries_exceeded here.
+    config = ProcessorConfig(
+        max_workers=1,
+        retry=RetryConfig(max_attempts=3, max_rate_limit_retries=0, initial_wait=0.001),
+        rate_limit=RateLimitConfig(cooldown_seconds=0.001, slow_start_items=0),
+    )
+    if surface == "batch":
+        async with ParallelBatchProcessor(config=config) as processor:
+            await processor.add_work(LLMWorkItem(item_id="x", strategy=strategy, prompt="x"))
+            result = (await processor.process_all()).results[0]
+            assert (await processor.get_stats())["rate_limit_count"] == 0
+    elif surface == "stream":
+        result = [item async for item in process_stream(strategy, ["x"], config=config)][0]
+    elif surface == "call_result":
+        result = await call_result(strategy, "x", config=config)
+    else:
+        async with LLMCallPool(strategy, config=config) as pool:
+            result = await pool.submit_result("x")
+    assert result.error_category == "logic_error"
+    assert calls == 1

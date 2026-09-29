@@ -15,7 +15,10 @@ import asyncio
 from ..strategies.errors import (
     ErrorClassifier,
     ErrorInfo,
+    _insufficient_quota,
+    _insufficient_quota_info,
     _retry_after_seconds,
+    http_status,
     matches_any_pattern,
 )
 
@@ -24,7 +27,7 @@ RATE_LIMIT_PATTERNS = (
     "rate limit",
     "rate_limit_exceeded",
     "too many requests",
-    "quota",
+    "quota exceeded",
 )
 TIMEOUT_PATTERNS = ("timeout", "504", "deadline", "request timed out")
 NETWORK_PATTERNS = ("connection", "network", "econnreset", "broken pipe")
@@ -71,23 +74,30 @@ class OpenAIErrorClassifier(ErrorClassifier):
         if info is not None:
             return info
 
-        # Pydantic validation — the LLM produced output that failed schema.
-        try:
-            from pydantic import ValidationError
+        # A non-OpenAI exception carrying HTTP 429, then validation and
+        # programming-error types, all outrank message text.
+        info = self._structured_rate_limit(exception) or self._typed_failure(exception)
+        if info is not None:
+            return info
 
-            if isinstance(exception, ValidationError):
-                return ErrorInfo(
-                    is_retryable=True,
-                    is_rate_limit=False,
-                    is_timeout=False,
-                    error_category="validation_error",
-                )
-        except ImportError:
-            pass
-
-        # Generic timeout/connection by exception type or message.
         error_str = str(exception)
 
+        # Insufficient balance / payment required (structured code or string
+        # fallback for when the SDK isn't installed or for mocked exceptions).
+        # Billing exhaustion is deterministic, so it outranks the transient
+        # timeout/network/rate-limit heuristics below.
+        if _insufficient_quota(exception) or self._matches_any_pattern(
+            error_str, INSUFFICIENT_BALANCE_PATTERNS
+        ):
+            return ErrorInfo(
+                is_retryable=False,
+                is_rate_limit=False,
+                is_timeout=False,
+                error_category="insufficient_balance",
+                hint=_INSUFFICIENT_BALANCE_HINT,
+            )
+
+        # Generic timeout/connection by exception type or message.
         if isinstance(exception, (TimeoutError, asyncio.TimeoutError)) or self._matches_any_pattern(
             error_str, TIMEOUT_PATTERNS
         ):
@@ -108,22 +118,13 @@ class OpenAIErrorClassifier(ErrorClassifier):
                 error_category="network_error",
             )
 
-        # Insufficient balance / payment required (string fallback for when the
-        # SDK isn't installed or for mocked exceptions). Checked before the
-        # rate-limit fallback so "402" doesn't get swept up by a stray pattern.
-        if self._matches_any_pattern(error_str, INSUFFICIENT_BALANCE_PATTERNS):
-            return ErrorInfo(
-                is_retryable=False,
-                is_rate_limit=False,
-                is_timeout=False,
-                error_category="insufficient_balance",
-                hint=_INSUFFICIENT_BALANCE_HINT,
-            )
-
         # String-pattern fallback for rate limits when the SDK isn't installed
-        # or for mocked test exceptions. No response object to parse a
+        # or for mocked test exceptions. An exception with any other HTTP status
+        # is not a rate limit by message. No response object to parse a
         # Retry-After from, so no server-suggested wait.
-        if self._matches_any_pattern(error_str, RATE_LIMIT_PATTERNS):
+        if http_status(exception) is None and self._matches_any_pattern(
+            error_str, RATE_LIMIT_PATTERNS
+        ):
             return ErrorInfo(
                 is_retryable=True,
                 is_rate_limit=True,
@@ -183,19 +184,9 @@ class OpenAIErrorClassifier(ErrorClassifier):
                 if isinstance(exception, RateLimitError):
                     status_code = 429
 
-        body = getattr(exception, "body", None)
-        error = body.get("error", body) if isinstance(body, dict) else {}
-        if status_code == 429 and (
-            getattr(exception, "code", None) == "insufficient_quota"
-            or (isinstance(error, dict) and error.get("code") == "insufficient_quota")
-        ):
-            return ErrorInfo(
-                False,
-                False,
-                False,
-                "insufficient_balance",
-                hint="Provider quota or credits exhausted; check account billing and limits.",
-            )
+        # Billing exhaustion outranks every status: retrying cannot succeed.
+        if _insufficient_quota(exception):
+            return _insufficient_quota_info()
 
         if status_code == 429:
             return ErrorInfo(
