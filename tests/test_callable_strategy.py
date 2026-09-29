@@ -15,7 +15,6 @@ from async_batch_llm import (
     CallOutcome,
     JsonlArtifactStore,
     LLMCallPool,
-    LLMGateway,
     LLMWorkItem,
     ParallelBatchProcessor,
     ProcessorConfig,
@@ -436,7 +435,7 @@ async def test_batch_stream_single_and_gateway_surfaces() -> None:
     assert set(streamed) == {"c:1", "d:1"}
     assert await call(strategy, "e", config=_config()) == "e:1"
 
-    async with LLMGateway(strategy, config=_config()) as pool:
+    async with LLMCallPool(strategy, config=_config()) as pool:
         assert await pool.submit("f") == "f:1"
 
 

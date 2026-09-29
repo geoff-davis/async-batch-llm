@@ -95,7 +95,7 @@ class ModelEscalationStrategy(LLMCallStrategy[Analysis]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[Analysis, TokenUsage]:
+    ) -> tuple[Analysis, TokenUsage, None]:
         # Select model based on attempt number
         model = self.MODELS[min(attempt - 1, len(self.MODELS) - 1)]
 
@@ -130,7 +130,7 @@ class ModelEscalationStrategy(LLMCallStrategy[Analysis]):
             "total_tokens": usage.total_token_count or 0,
         }
 
-        return output, tokens
+        return output, tokens, None
 
 
 # ============================================================================
@@ -162,7 +162,7 @@ class ModelAndTempEscalationStrategy(LLMCallStrategy[Analysis]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[Analysis, TokenUsage]:
+    ) -> tuple[Analysis, TokenUsage, None]:
         # Select model and temperature based on attempt
         model, temp = self.MODELS[min(attempt - 1, len(self.MODELS) - 1)]
 
@@ -190,7 +190,7 @@ class ModelAndTempEscalationStrategy(LLMCallStrategy[Analysis]):
             "total_tokens": usage.total_token_count or 0,
         }
 
-        return output, tokens
+        return output, tokens, None
 
 
 # ============================================================================
@@ -308,7 +308,7 @@ async def example_cost_comparison():
                 "output_tokens": usage.candidates_token_count or 0,
                 "total_tokens": usage.total_token_count or 0,
             }
-            return output, tokens
+            return output, tokens, None
 
     always_pro = AlwaysProStrategy(client=client)
     async with ParallelBatchProcessor[str, Analysis, None](config=config) as processor:

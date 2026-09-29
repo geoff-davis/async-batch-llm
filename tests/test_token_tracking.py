@@ -135,7 +135,7 @@ async def test_effective_input_tokens_calculation():
     # discount = cached * (1 - 0.10) = 4500 * 0.9 = 4050
     # effective = 5000 - 4050 = 950
     # Relying on the implicit default with cached tokens present warns.
-    with pytest.warns(UserWarning, match="cached_token_rate"):
+    with pytest.warns(UserWarning, match="required in 1.0.*Gemini rate"):
         assert result.effective_input_tokens() == 950
     # Passing the rate explicitly is silent and gives the same answer.
     assert result.effective_input_tokens(CachedTokenRates.GEMINI) == 950
@@ -174,10 +174,9 @@ async def test_effective_input_tokens_provider_aware():
 
 
 @pytest.mark.asyncio
-async def test_effective_input_tokens_default_no_warning_without_cache():
-    """The implicit-default nudge stays silent when there are no cached tokens,
-    so the common no-cache case doesn't get a spurious warning.
-    """
+async def test_effective_input_tokens_default_without_cache_is_deprecated():
+    """With no cached tokens the default gives the right answer, so omitting the
+    rate is only a DeprecationWarning (the rate becomes required in 1.0)."""
     import warnings
 
     strategy = CachedTokenStrategy(input_tokens=500, output_tokens=100, cached_tokens=0)
@@ -187,9 +186,12 @@ async def test_effective_input_tokens_default_no_warning_without_cache():
         await processor.add_work(LLMWorkItem(item_id="item_0", strategy=strategy, prompt="Test"))
         result = await processor.process_all()
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")  # any warning becomes an error
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         assert result.effective_input_tokens() == 500
+    assert [w.category for w in caught] == [DeprecationWarning]
+    assert "required in 1.0" in str(caught[0].message)
+    assert caught[0].filename == __file__
 
 
 @pytest.mark.asyncio
@@ -261,7 +263,7 @@ async def test_no_cached_tokens():
 
     assert result.total_cached_tokens == 0
     assert result.cache_hit_rate == 0.0
-    assert result.effective_input_tokens() == 100  # No caching discount
+    assert result.effective_input_tokens(CachedTokenRates.GEMINI) == 100  # No discount
 
 
 @pytest.mark.asyncio
@@ -335,7 +337,7 @@ async def test_cache_hit_rate_with_zero_input_tokens():
 
     # Should handle division by zero gracefully
     assert result.cache_hit_rate == 0.0
-    assert result.effective_input_tokens() == 0
+    assert result.effective_input_tokens(CachedTokenRates.GEMINI) == 0
 
 
 @pytest.mark.asyncio

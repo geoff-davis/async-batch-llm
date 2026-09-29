@@ -71,6 +71,22 @@ See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
   scale-soak benchmark's token scenario skips its memory check with a caveat where
   current RSS is unavailable (no `/proc`).
 
+### Deprecated
+
+These emit a warning in v0.27 and will be removed in 1.0.
+
+- Returning the 2-tuple `(output, tokens)` from `LLMCallStrategy.execute()`. Return
+  `(output, tokens, metadata)`, with `None` for no metadata. The
+  `DeprecationWarning` points at the strategy's `execute()`.
+- Calling `effective_input_tokens()` or `estimated_cost()` without
+  `cached_token_rate`; it becomes required. The fallback is still the Gemini rate. With
+  cached tokens present the warning stays a `UserWarning`, since the answer can be
+  wrong; otherwise it's a `DeprecationWarning`.
+- `LLMGateway`. Use `LLMCallPool`, the same class. Importing or accessing the old name
+  warns, including through `from async_batch_llm import *`, which keeps the name until
+  1.0. A plain `import async_batch_llm` stays silent. Cleanup task names now use
+  `LLMCallPool`.
+
 ### Fixed
 
 - A capacity wait ended by an item deadline, batch deadline or abort keeps its

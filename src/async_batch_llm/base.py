@@ -622,6 +622,28 @@ class BatchResult(Generic[TOutput, TContext]):
             return _CallableRate(0.0)
         return _CallableRate((self.total_cached_tokens / self.total_input_tokens) * 100.0)
 
+    def _default_cached_token_rate(self, method: str) -> float:
+        """Resolve an omitted ``cached_token_rate`` (deprecated) to the Gemini rate.
+
+        Warns from the public method's caller (``stacklevel=3``). With cached
+        tokens present the Gemini default can give a wrong answer, so that case
+        stays a visible ``UserWarning``; otherwise it's a ``DeprecationWarning``.
+        """
+        omitted = (
+            f"{method}() called without cached_token_rate. Omitting it is deprecated "
+            "and it will be required in 1.0; pass a CachedTokenRates constant."
+        )
+        if self.total_cached_tokens > 0:
+            warnings.warn(
+                f"{omitted} Defaulting to the Gemini rate (CachedTokenRates.GEMINI = "
+                "0.10), which is wrong for other providers (OpenAI is ~0.50).",
+                UserWarning,
+                stacklevel=3,
+            )
+        else:
+            warnings.warn(omitted, DeprecationWarning, stacklevel=3)
+        return CachedTokenRates.GEMINI
+
     def effective_input_tokens(self, cached_token_rate: float | None = None) -> int:
         """
         Estimate billable input tokens after the cache discount.
@@ -641,13 +663,11 @@ class BatchResult(Generic[TOutput, TContext]):
 
         Args:
             cached_token_rate: Fraction (0.0–1.0) of the normal input price
-                paid for cached tokens. When omitted (``None``) it defaults to
-                ``CachedTokenRates.GEMINI`` (0.10) for backward compatibility —
-                pre-v0.9.0 versions hardcoded this value. **Pass an explicit
-                rate when working with non-Gemini providers** to get accurate
-                numbers; relying on the implicit default while cached tokens
-                are present emits a ``UserWarning``, since the Gemini rate is
-                wrong for e.g. OpenAI (~0.50).
+                paid for cached tokens. Omitting it is deprecated and it will
+                be required in 1.0. When omitted it defaults to
+                ``CachedTokenRates.GEMINI`` (0.10) and warns: a ``UserWarning``
+                when cached tokens are present (the Gemini rate is wrong for
+                e.g. OpenAI, ~0.50), otherwise a ``DeprecationWarning``.
 
         Returns:
             Effective input tokens billed. The discount is computed by
@@ -661,22 +681,7 @@ class BatchResult(Generic[TOutput, TContext]):
             ValueError: If ``cached_token_rate`` is not in [0.0, 1.0].
         """
         if cached_token_rate is None:
-            # Implicit default. Only nudge when it actually changes the answer
-            # (i.e. there are cached tokens to discount) — silent for the common
-            # no-cache case so we don't cry wolf.
-            if self.total_cached_tokens > 0:
-                import warnings
-
-                warnings.warn(
-                    "effective_input_tokens() called without an explicit "
-                    "cached_token_rate; defaulting to the Gemini rate "
-                    "(CachedTokenRates.GEMINI = 0.10). This is wrong for other "
-                    "providers (OpenAI is ~0.50). Pass an explicit "
-                    "CachedTokenRates constant to silence this warning.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-            cached_token_rate = CachedTokenRates.GEMINI
+            cached_token_rate = self._default_cached_token_rate("effective_input_tokens")
 
         if not 0.0 <= cached_token_rate <= 1.0:
             raise ValueError(
@@ -994,22 +999,55 @@ class BatchResult(Generic[TOutput, TContext]):
             input_per_mtok: Price per 1,000,000 input tokens (in your currency).
             output_per_mtok: Price per 1,000,000 output tokens.
             cached_token_rate: Fraction of the normal input price paid for
-                cached tokens (see :class:`CachedTokenRates`). When ``None`` it
-                defaults to the Gemini rate and emits a ``UserWarning`` if cached
-                tokens are present — pass an explicit rate for other providers.
+                cached tokens (see :class:`CachedTokenRates`). Omitting it is
+                deprecated and it will be required in 1.0; see
+                :meth:`effective_input_tokens` for the default and warnings.
 
         Returns:
             Estimated total cost: ``effective_input / 1e6 * input_per_mtok +
             output / 1e6 * output_per_mtok``.
         """
+        if cached_token_rate is None:
+            cached_token_rate = self._default_cached_token_rate("estimated_cost")
         billable_input = self.effective_input_tokens(cached_token_rate)
         input_cost = billable_input / 1_000_000 * input_per_mtok
         output_cost = self.total_output_tokens / 1_000_000 * output_per_mtok
         return input_cost + output_cost
 
 
+def _warn_two_tuple_return(strategy: Any) -> None:
+    """Deprecation warning attributed to the strategy's own ``execute``.
+
+    The call happens inside a worker task, so a stack level would point into
+    the library. Attributing it to the strategy's module lets the default
+    filters and the per-location registry treat it like a direct warning:
+    shown once per strategy class, including for strategies in ``__main__``.
+    """
+    message = (
+        f"{type(strategy).__name__}.execute() returned a 2-tuple (output, tokens). "
+        "This form is deprecated and will be removed in 1.0; return "
+        "(output, tokens, metadata), using None for metadata."
+    )
+    code = getattr(getattr(type(strategy), "execute", None), "__code__", None)
+    module_name = type(strategy).__module__
+    if code is None:
+        warnings.warn(message, DeprecationWarning, stacklevel=3)
+        return
+    module = sys.modules.get(module_name)
+    registry = vars(module).setdefault("__warningregistry__", {}) if module is not None else None
+    warnings.warn_explicit(
+        message,
+        DeprecationWarning,
+        filename=code.co_filename,
+        lineno=code.co_firstlineno,
+        module=module_name,
+        registry=registry,
+    )
+
+
 def _unpack_strategy_result(
     result: Any,
+    strategy: Any = None,
 ) -> tuple[Any, "TokenUsage", dict[str, Any] | None]:
     """Compat-shim for the LLMCallStrategy.execute() return contract.
 
@@ -1022,8 +1060,8 @@ def _unpack_strategy_result(
     Returns the normalized 3-tuple. Raises ``ValueError`` for any other shape
     (clearer than letting Python's tuple-unpacking error reach the caller).
 
-    The 2-tuple path will be removed in a future release; custom strategies
-    should migrate to the 3-tuple shape.
+    The 2-tuple path is deprecated (``DeprecationWarning`` since v0.27) and
+    will be removed in 1.0; custom strategies should return the 3-tuple shape.
     """
     if not isinstance(result, tuple):
         raise ValueError(
@@ -1034,6 +1072,7 @@ def _unpack_strategy_result(
         output, tokens, metadata = result
         return output, tokens, metadata
     if len(result) == 2:
+        _warn_two_tuple_return(strategy)
         output, tokens = result
         return output, tokens, None
     raise ValueError(

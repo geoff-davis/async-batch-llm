@@ -171,7 +171,7 @@ default to unbounded. `process_prompts()` retains every result by design.
 | Collect a finite run | `process_prompts()` |
 | Handle results incrementally | `process_stream()` |
 | Execute one resilient request | `call()` / `call_result()` |
-| Share limits across service requests | `LLMCallPool` (`LLMGateway` compatibility alias) |
+| Share limits across service requests | `LLMCallPool` |
 | Customize queueing and lifecycle | `ParallelBatchProcessor` |
 
 Batch, streaming, single-call, and shared-call execution share the same retry,

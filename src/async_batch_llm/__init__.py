@@ -43,7 +43,7 @@ Type Aliases:
         ...     ))
 """
 
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from ._internal.cleanup import CleanupInterruptedError
 from .artifacts import (
@@ -106,7 +106,7 @@ from .factory import llm
 
 # Queue-less convenience surfaces (single call + shared call pool), built on the
 # same per-item resilience pipeline as the batch processor.
-from .gateway import LLMCallPool, LLMGateway
+from .gateway import LLMCallPool
 
 # LLM call strategies
 from .llm_strategies import (
@@ -265,7 +265,7 @@ __all__ = [
     "call_result",
     "LLMCallError",
     "LLMCallPool",
-    "LLMGateway",
+    "LLMGateway",  # deprecated; resolved by __getattr__ below, removed in 1.0
     # String-based strategy factory
     "llm",
     # LLM Strategies
@@ -349,3 +349,19 @@ try:
 except PackageNotFoundError:
     # Package not installed (e.g., running from source in development)
     __version__ = "0.0.0+dev"
+
+
+def __getattr__(name: str) -> Any:
+    # Deprecated names resolve lazily so importing the package stays silent.
+    if name == "LLMGateway":
+        import sys
+        import warnings
+
+        from .gateway import _LLM_GATEWAY_DEPRECATION
+
+        # ``from async_batch_llm import LLMGateway`` first probes the name from
+        # inside importlib; warn once, from the caller's own lookup.
+        if sys._getframe(1).f_globals.get("__name__") != "importlib._bootstrap":
+            warnings.warn(_LLM_GATEWAY_DEPRECATION, DeprecationWarning, stacklevel=2)
+        return LLMCallPool
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -1645,7 +1645,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                     )
                                     raise framework_timeout from timeout_exc
                                 output, token_usage, response_metadata = _unpack_strategy_result(
-                                    raw_result
+                                    raw_result, strategy
                                 )
                                 usage_observation = self._token_extractor.observe_result(
                                     token_usage

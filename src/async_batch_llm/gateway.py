@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 from typing import Any, Generic, TypeVar, cast
 
 from ._internal.capacity import warn_if_worker_capacity_exceeded
@@ -115,7 +116,7 @@ class LLMCallPool(Generic[TOutput]):
         self._idle = asyncio.Event()
         self._idle.set()
         # Concurrent aclose() callers share one ordered close attempt.
-        self._closer = SharedCloser(self._cleanup_steps, name="LLMGateway", logger=logger)
+        self._closer = SharedCloser(self._cleanup_steps, name="LLMCallPool", logger=logger)
 
     async def __aenter__(self) -> LLMCallPool[TOutput]:
         return self
@@ -231,8 +232,20 @@ class LLMCallPool(Generic[TOutput]):
             await self._idle.wait()
 
 
-# Preferred v0.20 name. This is deliberately an exact alias: both imports use
-# the same queue-less class and the same shared ItemExecutor path.
-LLMGateway = LLMCallPool
+_LLM_GATEWAY_DEPRECATION = (
+    "LLMGateway is deprecated and will be removed in 1.0; use LLMCallPool, "
+    "the same class under its current name."
+)
 
-__all__ = ["LLMCallPool", "LLMGateway"]
+
+def __getattr__(name: str) -> Any:
+    # LLMGateway was the pre-v0.20 name of LLMCallPool (an exact alias).
+    if name == "LLMGateway":
+        warnings.warn(_LLM_GATEWAY_DEPRECATION, DeprecationWarning, stacklevel=2)
+        return LLMCallPool
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+# LLMGateway stays listed through 0.27 so wildcard imports keep the name (with the
+# deprecation warning); it is removed with the alias in 1.0.
+__all__ = ["LLMCallPool", "LLMGateway"]  # noqa: F822  (resolved by __getattr__)

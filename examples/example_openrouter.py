@@ -124,7 +124,7 @@ async def example_anthropic_prompt_caching() -> None:
             attempt: int,
             timeout: float,
             state: RetryState | None = None,
-        ) -> tuple[str, TokenUsage]:
+        ) -> tuple[str, TokenUsage, None]:
             messages = [
                 {
                     "role": "system",
@@ -139,7 +139,7 @@ async def example_anthropic_prompt_caching() -> None:
                 {"role": "user", "content": prompt},
             ]
             response: LLMResponse = await self.model.generate(messages)
-            return response.text, response.token_usage
+            return response.text, response.token_usage, None
 
     model = OpenRouterModel.from_api_key(
         "anthropic/claude-haiku-4-5",

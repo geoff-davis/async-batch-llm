@@ -54,7 +54,7 @@ class AnthropicStrategy(LLMCallStrategy[str]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[str, TokenUsage]:
+    ) -> tuple[str, TokenUsage, None]:
         """Execute Anthropic API call.
 
         Note: timeout parameter is provided for information but timeout enforcement
@@ -85,7 +85,7 @@ class AnthropicStrategy(LLMCallStrategy[str]):
             "total_tokens": (usage.input_tokens + usage.output_tokens) if usage else 0,
         }
 
-        return output, tokens
+        return output, tokens, None
 
 
 # Example 1: Simple text generation with Claude
@@ -286,7 +286,7 @@ async def example_anthropic_progressive_temperature():
 
         async def execute(
             self, prompt: str, attempt: int, timeout: float, state=None
-        ) -> tuple[str, TokenUsage]:
+        ) -> tuple[str, TokenUsage, None]:
             # Use progressively higher temperature for retries
             temp = self.base_temps[min(attempt - 1, len(self.base_temps) - 1)]
 
@@ -307,7 +307,7 @@ async def example_anthropic_progressive_temperature():
                 "total_tokens": (usage.input_tokens + usage.output_tokens) if usage else 0,
             }
 
-            return output, tokens
+            return output, tokens, None
 
     # Initialize client and strategy
     client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))

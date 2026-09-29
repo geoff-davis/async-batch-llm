@@ -151,7 +151,7 @@ from async_batch_llm import LLMCallStrategy
 class MyProviderStrategy(LLMCallStrategy[str]):
     async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
         # Your implementation
-        return output, tokens
+        return output, tokens, None
 ```
 
 ## Questions?

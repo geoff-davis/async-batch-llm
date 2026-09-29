@@ -129,7 +129,7 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
-    ) -> tuple[PersonData, TokenUsage]:
+    ) -> tuple[PersonData, TokenUsage, None]:
         """
         Select model based on validation failure count (not total attempts).
 
@@ -177,7 +177,7 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
             "total_tokens": usage.total_token_count or 0,
         }
 
-        return output, tokens
+        return output, tokens, None
 
     def _is_validation_error(self, error: Exception) -> bool:
         """Check if error is a validation error (vs network/rate limit)."""
@@ -225,7 +225,7 @@ class BlindEscalationStrategy(LLMCallStrategy[PersonData]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[PersonData, TokenUsage]:
+    ) -> tuple[PersonData, TokenUsage, None]:
         """Always escalate model on retry."""
         model = self.MODELS[min(attempt - 1, len(self.MODELS) - 1)]
 
@@ -252,7 +252,7 @@ class BlindEscalationStrategy(LLMCallStrategy[PersonData]):
             "total_tokens": usage.total_token_count or 0,
         }
 
-        return output, tokens
+        return output, tokens, None
 
 
 # ============================================================================

@@ -25,7 +25,7 @@ class OpenAIStrategy(LLMCallStrategy[str]):
             "total_tokens": response.usage.total_tokens
         }
 
-        return output, tokens
+        return output, tokens, None
 ```
 
 ## Resource Management
@@ -51,7 +51,7 @@ class CachedStrategy(LLMCallStrategy[str]):
             prompt=prompt,
             cache_name=self.cache_name
         )
-        return response.text, response.usage
+        return response.text, response.usage, None
 
     async def cleanup(self):
         """Delete cache after processing."""
@@ -91,7 +91,7 @@ class SmartRetryStrategy(LLMCallStrategy[dict]):
             model = "expensive-model"
 
         response = await self.client.generate(prompt, model=model)
-        return response.output, response.tokens
+        return response.output, response.tokens, None
 ```
 
 ## Progressive Temperature
@@ -114,7 +114,7 @@ class ProgressiveTempStrategy(LLMCallStrategy[str]):
             temperature=temperature
         )
 
-        return response.text, response.usage
+        return response.text, response.usage, None
 ```
 
 ## Anthropic Example
@@ -141,7 +141,7 @@ class AnthropicStrategy(LLMCallStrategy[str]):
             "total_tokens": response.usage.input_tokens + response.usage.output_tokens
         }
 
-        return output, tokens
+        return output, tokens, None
 ```
 
 ## Usage

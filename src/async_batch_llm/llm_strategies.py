@@ -150,8 +150,8 @@ class LLMCallStrategy(ABC, Generic[TOutput]):
             ``WorkItemResult.metadata`` — typically ``finish_reason``,
             ``model``, ``provider`` (OpenRouter), ``safety_ratings`` (Gemini);
             pass ``None`` if you have nothing to surface. The 2-tuple shape is
-            supported for backward compatibility but will be removed in a
-            future release; built-in strategies all return the 3-tuple shape.
+            deprecated since v0.27 (``DeprecationWarning``) and will be
+            rejected in 1.0; built-in strategies all return the 3-tuple shape.
 
         Raises:
             Exception: Any exception propagated to trigger a retry (if

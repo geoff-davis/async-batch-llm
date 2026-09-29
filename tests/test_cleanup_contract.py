@@ -36,7 +36,7 @@ from async_batch_llm import (
     BatchInterruptedError,
     CleanupInterruptedError,
     JsonlArtifactStore,
-    LLMGateway,
+    LLMCallPool,
     LLMWorkItem,
     ParallelBatchProcessor,
     ProcessingEvent,
@@ -294,7 +294,7 @@ async def test_c1_sync_progress_cannot_starve_sync_post_processors() -> None:
 
 async def test_c4_gateway_admitted_request_can_prepare_after_close_starts() -> None:
     strategy = _Strategy()
-    gateway = LLMGateway(strategy, config=ProcessorConfig(max_workers=1))
+    gateway = LLMCallPool(strategy, config=ProcessorConfig(max_workers=1))
     await gateway._sem.acquire()
     request = asyncio.create_task(gateway.submit("prompt"))
     await asyncio.sleep(0)
@@ -336,7 +336,7 @@ async def test_c3_cancelled_cooldown_releases_admitted_work(
         registry = owner._admission_registry
         close = owner.shutdown
     else:
-        owner = LLMGateway(strategy, config=config)
+        owner = LLMCallPool(strategy, config=config)
         running = asyncio.create_task(owner.submit("prompt"))
         registry = owner._host._admission_registry
         close = owner.aclose
@@ -445,7 +445,7 @@ async def test_c4_gateway_closes_strategy_prepared_during_drain() -> None:
             await release.wait()
 
     strategy = PreparingStrategy()
-    gateway = LLMGateway(strategy, config=ProcessorConfig(max_workers=1))
+    gateway = LLMCallPool(strategy, config=ProcessorConfig(max_workers=1))
     request = asyncio.create_task(gateway.submit("prompt"))
     await entered.wait()
     closing = asyncio.create_task(gateway.aclose())
@@ -467,7 +467,7 @@ async def test_c1_interrupted_gateway_drain_keeps_strategy_open() -> None:
             return "prompt", _TOKENS
 
     strategy = ExecutingStrategy()
-    gateway = LLMGateway(strategy, config=ProcessorConfig(max_workers=1))
+    gateway = LLMCallPool(strategy, config=ProcessorConfig(max_workers=1))
     request = asyncio.create_task(gateway.submit("prompt"))
     await entered.wait()
     closing = asyncio.create_task(gateway.aclose())
@@ -477,7 +477,7 @@ async def test_c1_interrupted_gateway_drain_keeps_strategy_open() -> None:
                 (
                     t
                     for t in asyncio.all_tasks()
-                    if t.get_name() == "cleanup:LLMGateway:gateway in-flight drain"
+                    if t.get_name() == "cleanup:LLMCallPool:gateway in-flight drain"
                 ),
                 None,
             )
@@ -857,7 +857,7 @@ async def test_c1_gateway_drain_waits_for_inflight_and_warns_when_slow(
     monkeypatch.setattr(cleanup_module, "CLEANUP_SLOW_WARNING_SECONDS", 0.02)
     caplog.set_level(logging.WARNING)
     strategy = _Strategy(execute_delay=0.15)
-    gateway = LLMGateway(strategy, config=ProcessorConfig(max_workers=1))
+    gateway = LLMCallPool(strategy, config=ProcessorConfig(max_workers=1))
     running = asyncio.create_task(gateway.submit_result("slow"))
     await asyncio.sleep(0.01)
 
@@ -1660,7 +1660,7 @@ async def test_high_level_apis_raise_artifact_close_failure() -> None:
 async def test_gateway_body_error_is_primary_and_close_is_idempotent() -> None:
     strategy = _Strategy(cleanup_error=ValueError("cleanup boom"))
     with pytest.raises(LookupError):
-        async with LLMGateway(strategy, config=ProcessorConfig(max_workers=1)) as pool:
+        async with LLMCallPool(strategy, config=ProcessorConfig(max_workers=1)) as pool:
             await pool.submit("p")
             raise LookupError("body")
     assert strategy.cleanup_calls == 1

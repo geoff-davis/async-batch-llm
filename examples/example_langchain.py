@@ -33,7 +33,7 @@ class LangChainStrategy(LLMCallStrategy[str]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[str, TokenUsage]:
+    ) -> tuple[str, TokenUsage, None]:
         """Execute LangChain chain.
 
         Note: timeout parameter is provided for information but timeout enforcement
@@ -50,7 +50,7 @@ class LangChainStrategy(LLMCallStrategy[str]):
             "total_tokens": 0,
         }
 
-        return result, tokens
+        return result, tokens, None
 
 
 # Example 1: Simple LangChain chain with OpenAI
@@ -202,7 +202,7 @@ async def example_langchain_rag():
 
         async def execute(
             self, prompt: str, attempt: int, timeout: float, state=None
-        ) -> tuple[str, TokenUsage]:
+        ) -> tuple[str, TokenUsage, None]:
             # Run the RAG chain
             result = await self.qa_chain.arun(prompt)
 
@@ -212,7 +212,7 @@ async def example_langchain_rag():
                 "total_tokens": 0,
             }
 
-            return result, tokens
+            return result, tokens, None
 
     # Sample documents for our knowledge base
     documents = [
