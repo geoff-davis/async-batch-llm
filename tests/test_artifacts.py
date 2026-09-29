@@ -1140,7 +1140,8 @@ async def test_art2_inspect_then_run_registers_new_identity(tmp_path, store_type
         resume=ResumePolicy.REUSE_SUCCESSES,
     )
     assert result.succeeded == 2
-    assert strategy.calls == ["a", "b"]
+    # Both items run concurrently; only the set of executed prompts is stable.
+    assert sorted(strategy.calls) == ["a", "b"]
     reader = store_type(path)
     try:
         assert len([r async for r in reader.iter_results()]) == 3

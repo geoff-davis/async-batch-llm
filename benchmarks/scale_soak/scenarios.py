@@ -1508,11 +1508,14 @@ async def run_token_quota_mixed(settings: ScenarioSettings) -> ScenarioResult:
     memory_limit_mib = settings.max_post_warmup_rss_growth_mib or 128.0
     growth = monitor.post_warmup_growth_bytes()
     result.resources["token_scenario_post_warmup_growth_limit_mib"] = memory_limit_mib
-    result.check(
-        "token_scenario_post_warmup_memory_bounded",
-        growth is not None and growth <= memory_limit_mib * 1024 * 1024,
-        f"growth {growth} limit {memory_limit_mib} MiB",
-    )
+    if growth is not None:
+        result.check(
+            "token_scenario_post_warmup_memory_bounded",
+            growth <= memory_limit_mib * 1024 * 1024,
+            f"growth {growth} limit {memory_limit_mib} MiB",
+        )
+    else:
+        result.caveats.append("current RSS unavailable; token-scenario memory check skipped")
     return result
 
 

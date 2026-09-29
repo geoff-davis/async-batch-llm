@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Message heuristics still apply to other untyped exceptions. `MockAgent`'s simulated
   rate limit now carries `code = 429`.
 
+### Added
+
+- macOS is a supported platform: CI runs the test suite on `macos-latest`
+  (Python 3.13). Windows remains untested. The artifact docs now note that `fsync`
+  on macOS does not guarantee power-loss durability. The scale-soak benchmark's
+  token scenario skips its memory check with a caveat where current RSS is
+  unavailable (no `/proc`).
+
 [#177]: https://github.com/geoff-davis/async-batch-llm/issues/177
 
 ## [0.26.0] - 2026-09-27
