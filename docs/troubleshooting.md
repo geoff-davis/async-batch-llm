@@ -171,10 +171,11 @@ or cancelled according to `abort_mode`.
 **Symptom.** A provider returns HTTP success but there is no usable text, or an
 item fails with `EmptyResponseError`.
 
-**Likely cause.** Content filtering or a Gemini safety block, length
-termination, a response containing only tool calls, or an actually empty
-choice. Text-oriented built-in strategies do not silently treat tool-only
-responses as text.
+**Likely cause.** Content filtering, a Gemini safety block or OpenAI refusal,
+length termination with no text, a Chat Completions response containing only
+tool calls, or an actually empty choice. On `OpenAIModel`'s Responses API
+(the default since v0.27), a function-call-only reply instead succeeds with
+empty text and `result.tool_calls`, so check for `text == ""` in a parser.
 
 **How to confirm.** Inspect `result.exception`, provider finish/stop reason,
 typed provider metadata, safety ratings, tool-call views, and token usage. A
@@ -314,6 +315,45 @@ Persist outputs required for replay and repair/replace malformed artifacts.
 Do not weaken identity compatibility to force reuse.
 
 **Related guide.** [Results, Artifacts, and Resume](results-and-artifacts.md#resume-policies).
+
+## OpenAIModel rejects a request field or can't reach its server
+
+**Symptom.** After upgrading to v0.27, `OpenAIModel` raises
+`ValueError: OpenAI Responses: ...` before any request, or calls to a custom
+`base_url` fail with 404.
+
+**Likely cause.** `OpenAIModel` now uses the Responses API. Chat-only fields
+(`n`, `stop`, `seed`, penalties, `logit_bias`, legacy `functions`) have no
+Responses equivalent, and servers other than OpenAI often don't implement
+`/responses`.
+
+**How to confirm.** The `ValueError` names the field. For a 404, check whether
+the model's `base_url` (or `OPENAI_BASE_URL`) points somewhere other than OpenAI.
+
+**Fix.** Pass `api_surface="chat_completions"` to keep Chat Completions. For
+non-OpenAI servers, use `OpenAICompatibleModel` or
+`llm("openai-compatible:<model>", base_url=...)`.
+
+**Related guide.** [OpenAI Integration](OPENAI_INTEGRATION.md#responses-api-the-default-since-v027)
+and the [v0.27 migration guide](migration/v0.27.md).
+
+## A run stopped with `budget_exceeded`
+
+**Symptom.** `batch.termination.kind == "budget_exceeded"` and some items end
+with `batch_budget_exceeded`.
+
+**Likely cause.** A configured `max_total_tokens` or `max_total_cost` was
+reached, or the `cost_function` raised or returned an invalid value (the
+termination reason says which).
+
+**How to confirm.** Read `batch.termination.reason` and, from a processor,
+`get_stats()`: `budget_tokens_used`, `budget_cost_used`, and
+`budget_cost_complete` (`False` means pricing failed).
+
+**Fix.** Raise the cap, fix the cost function, or resume from a checkpoint:
+completed items replay without being counted again. Unfinished items re-run.
+
+**Related guide.** [Token and cost budgets](guardrails.md#token-and-cost-budgets).
 
 ## Memory use grows
 
