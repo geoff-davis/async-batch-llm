@@ -332,6 +332,19 @@ async def test_token_quota_report_has_machine_readable_evidence(tmp_path: Path) 
     assert result.provider["unknown_usage_failures"] == 1
 
 
+async def test_token_quota_memory_check_skipped_without_current_rss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # macOS has no /proc: the scenario records a caveat instead of failing.
+    monkeypatch.setattr(monitor_module, "_PROC_STATUS", Path("/nonexistent/status"))
+    settings = _settings("token_quota_mixed", tmp_path, items=40)
+    result = await SCENARIO_RUNNERS["token_quota_mixed"](settings)
+    assert result.status == "passed"
+    names = {check.name for check in result.assertions}
+    assert "token_scenario_post_warmup_memory_bounded" not in names
+    assert "current RSS unavailable; token-scenario memory check skipped" in result.caveats
+
+
 def test_cleanup_after_scenario_exception(tmp_path: Path) -> None:
     config = HarnessConfig(
         profile="custom",
