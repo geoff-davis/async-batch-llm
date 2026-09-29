@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 
 from async_batch_llm import (
+    LLMCallPool,
     LLMCallStrategy,
-    LLMGateway,
     LLMWorkItem,
     MetricsObserver,
     ParallelBatchProcessor,
@@ -128,7 +128,7 @@ async def test_admission_wait_does_not_consume_execution_timeout() -> None:
     )
 
     with pytest.warns(UserWarning, match="max_concurrency=1"):
-        gateway = LLMGateway(strategy, config=config)
+        gateway = LLMCallPool(strategy, config=config)
     first = asyncio.create_task(gateway.submit_result("first"))
     await strategy.started.wait()
     second = asyncio.create_task(gateway.submit_result("second"))

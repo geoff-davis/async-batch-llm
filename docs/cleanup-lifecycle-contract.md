@@ -1,7 +1,7 @@
 # Cleanup and stream-terminal contract
 
 This is the behavioral specification for resource cleanup and stream
-finalization in `ParallelBatchProcessor`, `LLMGateway`, `ExecutorHost`, and
+finalization in `ParallelBatchProcessor`, `LLMCallPool`, `ExecutorHost`, and
 the high-level `call_result()` / `process_prompts()` / `process_stream()`
 surfaces. `tests/test_cleanup_contract.py` holds one executable test per
 clause; a change to this document without a matching test change is a bug.

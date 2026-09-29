@@ -30,7 +30,7 @@ from async_batch_llm import (
 )
 from async_batch_llm._internal.guardrails import AbortCause
 from async_batch_llm.base import LLMWorkItem, RetryState, TokenUsage, WorkItemResult
-from async_batch_llm.gateway import LLMGateway
+from async_batch_llm.gateway import LLMCallPool
 from async_batch_llm.middleware import BaseMiddleware
 from async_batch_llm.observers import BaseObserver, ProcessingEvent
 
@@ -232,7 +232,7 @@ async def test_total_item_deadline_spans_coordinated_cooldown() -> None:
 @pytest.mark.asyncio
 async def test_total_item_deadline_applies_to_gateway_execution() -> None:
     strategy = _SlowStrategy(0.2)
-    async with LLMGateway(
+    async with LLMCallPool(
         strategy,
         config=ProcessorConfig(
             max_workers=1,

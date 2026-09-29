@@ -214,12 +214,11 @@ print(f"cache hit rate: {result.cache_hit_rate:.1f}%")
 print(f"billable tokens: {result.effective_input_tokens(CachedTokenRates.OPENAI)}")
 ```
 
-`effective_input_tokens()` defaults to `CachedTokenRates.GEMINI` (10% rate)
-for backward compatibility with pre-v0.9.0 versions — **always pass an
-explicit rate when working with OpenAI** to get accurate numbers. As of
-v0.10.0, calling it without an explicit rate while cached tokens are present
-emits a `UserWarning` for exactly this reason; passing
-`CachedTokenRates.OPENAI` silences it. Note that Anthropic charges a 25%
+Always pass an explicit rate. Omitting it is deprecated since v0.27 and the
+argument becomes required in 1.0. Until then an omitted rate falls back to
+`CachedTokenRates.GEMINI` (10%) and warns: a `UserWarning` when cached tokens
+are present, since the Gemini rate is wrong for OpenAI, and a
+`DeprecationWarning` otherwise. Note that Anthropic charges a 25%
 premium on cache *writes* over the normal input price; that write premium is
 not modeled by this helper.
 

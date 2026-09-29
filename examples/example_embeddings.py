@@ -129,7 +129,7 @@ class OpenAIEmbeddingStrategy(LLMCallStrategy[list[list[float]]]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[list[list[float]], TokenUsage]:
+    ) -> tuple[list[list[float]], TokenUsage, None]:
         texts: list[str] = json.loads(prompt)
 
         kwargs: dict[str, Any] = {"model": self.model, "input": texts}
@@ -146,7 +146,7 @@ class OpenAIEmbeddingStrategy(LLMCallStrategy[list[list[float]]]):
             "output_tokens": 0,  # embeddings have no completion tokens
             "total_tokens": response.usage.total_tokens,
         }
-        return vectors, tokens
+        return vectors, tokens, None
 
 
 class GeminiEmbeddingStrategy(LLMCallStrategy[list[list[float]]]):
@@ -180,7 +180,7 @@ class GeminiEmbeddingStrategy(LLMCallStrategy[list[list[float]]]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[list[list[float]], TokenUsage]:
+    ) -> tuple[list[list[float]], TokenUsage, None]:
         texts: list[str] = json.loads(prompt)
 
         config = None
@@ -210,7 +210,7 @@ class GeminiEmbeddingStrategy(LLMCallStrategy[list[list[float]]]):
             "output_tokens": 0,
             "total_tokens": input_tokens,
         }
-        return vectors, tokens
+        return vectors, tokens, None
 
 
 async def embed_corpus(

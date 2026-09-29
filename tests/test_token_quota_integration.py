@@ -24,7 +24,6 @@ from async_batch_llm import (
     JsonlArtifactStore,
     LLMCallPool,
     LLMCallStrategy,
-    LLMGateway,
     LLMWorkItem,
     MetricsObserver,
     ParallelBatchProcessor,
@@ -1182,7 +1181,7 @@ async def test_stream_single_and_call_pool_share_token_aware_executor() -> None:
     assert pooled.timing.attempts[0].reconciliation_delta_tokens == -1
 
     gateway_strategy = _SequenceStrategy([{"total_tokens": 2}])
-    async with LLMGateway(gateway_strategy, config=config) as gateway:
+    async with LLMCallPool(gateway_strategy, config=config) as gateway:
         gateway_result = await gateway.submit_result("x")
     assert gateway_result.timing.attempts[0].reserved_tokens == 3
 

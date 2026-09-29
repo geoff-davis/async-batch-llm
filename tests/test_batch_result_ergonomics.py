@@ -58,8 +58,10 @@ def test_by_id_last_wins_on_duplicate():
 def test_estimated_cost_no_cache():
     batch = BatchResult(results=[_result("a", success=True, inp=1_000_000, out=500_000)])
     # 1M input @ $2/M + 0.5M output @ $6/M = 2.0 + 3.0
-    cost = batch.estimated_cost(input_per_mtok=2.0, output_per_mtok=6.0)
+    with pytest.warns(DeprecationWarning, match="estimated_cost.*required in 1.0"):
+        cost = batch.estimated_cost(input_per_mtok=2.0, output_per_mtok=6.0)
     assert cost == pytest.approx(5.0)
+    assert batch.estimated_cost(2.0, 6.0, CachedTokenRates.GEMINI) == pytest.approx(5.0)
 
 
 def test_estimated_cost_applies_cache_discount():
@@ -72,5 +74,6 @@ def test_estimated_cost_applies_cache_discount():
 
 def test_estimated_cost_warns_without_rate_when_cached_present():
     batch = BatchResult(results=[_result("a", success=True, inp=1000, out=500, cached=800)])
-    with pytest.warns(UserWarning, match="cached_token_rate"):
+    with pytest.warns(UserWarning, match="estimated_cost.*required in 1.0") as caught:
         batch.estimated_cost(10.0, 20.0)
+    assert len(caught) == 1 and caught[0].filename == __file__

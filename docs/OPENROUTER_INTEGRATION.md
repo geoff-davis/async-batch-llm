@@ -236,7 +236,7 @@ class CachedAnthropicStrategy(LLMCallStrategy[str]):
         attempt: int,
         timeout: float,
         state: RetryState | None = None,
-    ) -> tuple[str, TokenUsage]:
+    ) -> tuple[str, TokenUsage, None]:
         messages = [
             {
                 "role": "system",
@@ -251,7 +251,7 @@ class CachedAnthropicStrategy(LLMCallStrategy[str]):
             {"role": "user", "content": prompt},
         ]
         response: LLMResponse = await self.model.generate(messages)
-        return response.text, response.token_usage
+        return response.text, response.token_usage, None
 ```
 
 The first call writes the cache (paid at 1.25× normal input rate). Calls

@@ -404,11 +404,11 @@ frequent for an external metrics backend.
 **Symptom.** Code expects `LLMCallPool` to provide an HTTP endpoint, credential
 store, provider routing, model catalog, or centralized policy plane.
 
-**Likely cause.** Its compatibility name, `LLMGateway`, historically suggested
-a network gateway. Both names refer to the same in-process shared executor.
+**Likely cause.** Its former name, `LLMGateway` (deprecated since v0.27),
+suggested a network gateway. It is an in-process shared executor.
 
-**How to confirm.** `LLMCallPool is LLMGateway`; calls use the shared executor
-directly and there is no background dispatcher or service.
+**How to confirm.** Calls use the shared executor directly and there is no
+background dispatcher or service.
 
 **Fix.** Use LiteLLM or another real gateway for central routing/governance.
 Place ABL above it when an application run also needs ABL's bounded execution,

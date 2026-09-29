@@ -73,7 +73,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[PersonData]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[PersonData, TokenUsage]:
+    ) -> tuple[PersonData, TokenUsage, None]:
         temp = self.temps[min(attempt - 1, len(self.temps) - 1)]
 
         config = GenerateContentConfig(
@@ -98,7 +98,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[PersonData]):
             "total_tokens": usage.total_token_count or 0,
         }
 
-        return output, tokens
+        return output, tokens, None
 
 
 # ============================================================================
@@ -141,7 +141,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
-    ) -> tuple[PersonData, TokenUsage]:
+    ) -> tuple[PersonData, TokenUsage, None]:
         # Adjust prompt based on attempt
         if attempt == 1:
             # First attempt: use original prompt
@@ -173,7 +173,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
                 "output_tokens": usage.candidates_token_count or 0,
                 "total_tokens": usage.total_token_count or 0,
             }
-            return output, tokens
+            return output, tokens, None
 
         except ValidationError as e:
             # Save the response text for retry prompt generation

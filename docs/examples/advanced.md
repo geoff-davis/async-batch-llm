@@ -31,7 +31,7 @@ class SmartModelEscalation(LLMCallStrategy[dict]):
         model = self.MODELS[model_index]
 
         response = await self.client.generate(prompt, model=model)
-        return response.output, response.tokens
+        return response.output, response.tokens, None
 ```
 
 **Cost savings: 60-80% vs. always using the best model.**
@@ -59,7 +59,7 @@ class SmartRetryStrategy(LLMCallStrategy[PersonData]):
         try:
             response = await self.client.generate(final_prompt)
             output = PersonData.model_validate_json(response.text)
-            return output, tokens
+            return output, tokens, None
         except ValidationError as e:
             if state is not None:
                 state.set("last_response", response.text)
@@ -243,7 +243,7 @@ class ProgressiveTempStrategy(LLMCallStrategy[str]):
         failures = state.get("validation_failures", 0)
         temp = self.temps[min(failures, len(self.temps) - 1)]
         response = await self.client.generate(prompt, temperature=temp)
-        return response.text, extract_tokens(response)
+        return response.text, extract_tokens(response), None
 
     async def on_error(
         self, exception: Exception, attempt: int, state: RetryState | None = None
@@ -292,7 +292,7 @@ class PartialRecoveryStrategy(LLMCallStrategy[dict]):
             state.set("failed_fields", missing)
             raise ValueError(f"Missing fields: {missing}")
 
-        return result, extract_tokens(response)
+        return result, extract_tokens(response), None
 ```
 
 Retries focus only on the fields that failed validation, so the follow-up

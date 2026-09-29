@@ -87,7 +87,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[SummaryOutput, TokenUsage]:
+    ) -> tuple[SummaryOutput, TokenUsage, None]:
         """
         Execute Gemini call with temperature based on attempt.
 
@@ -128,7 +128,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
             "total_tokens": usage_metadata.total_token_count or 0,
         }
 
-        return output, token_usage
+        return output, token_usage, None
 
 
 async def main():

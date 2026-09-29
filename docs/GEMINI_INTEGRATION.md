@@ -210,7 +210,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[SummaryOutput, dict[str, int]]:
+    ) -> tuple[SummaryOutput, dict[str, int], None]:
         # Use higher temperature for retries
         temp = self.temps[min(attempt - 1, len(self.temps) - 1)]
 
@@ -235,7 +235,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
             "total_tokens": usage.total_token_count or 0,
         }
 
-        return output, tokens
+        return output, tokens, None
 
 # Use it
 strategy = ProgressiveTempGeminiStrategy(client=client, temps=[0.0, 0.5, 1.0])
@@ -432,7 +432,7 @@ class GeminiVisionStrategy(LLMCallStrategy[str]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[str, dict[str, int]]:
+    ) -> tuple[str, dict[str, int], None]:
         # Read image
         with open(self.image_path, "rb") as f:
             image_bytes = f.read()
@@ -459,7 +459,7 @@ class GeminiVisionStrategy(LLMCallStrategy[str]):
             "total_tokens": usage.total_token_count or 0,
         }
 
-        return response.text, tokens
+        return response.text, tokens, None
 
 # Use it
 strategy = GeminiVisionStrategy(client=client, image_path="photo.jpg")
@@ -638,7 +638,7 @@ class SmartGeminiStrategy(LLMCallStrategy[PersonData]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[PersonData, TokenUsage]:
+    ) -> tuple[PersonData, TokenUsage, None]:
         # Select model based on validation failures (not total attempts)
         failures = state.get("validation_failures", 0) if state is not None else 0
         safety_blocks = state.get("safety_blocks", 0) if state is not None else 0
@@ -671,7 +671,7 @@ class SmartGeminiStrategy(LLMCallStrategy[PersonData]):
             "total_tokens": usage.total_token_count or 0,
         }
 
-        return output, tokens
+        return output, tokens, None
 ```
 
 **Cost Savings:**
@@ -703,7 +703,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[PersonData, TokenUsage]:
+    ) -> tuple[PersonData, TokenUsage, None]:
         if attempt == 1:
             final_prompt = prompt
         else:
@@ -730,7 +730,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
                 "output_tokens": usage.candidates_token_count or 0,
                 "total_tokens": usage.total_token_count or 0,
             }
-            return output, tokens
+            return output, tokens, None
         except ValidationError as e:
             if state is not None:
                 state.set("last_response", response.text)

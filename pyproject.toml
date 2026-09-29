@@ -209,6 +209,9 @@ addopts = "-m 'not slow and not integration and not benchmark'"  # Skip slow, in
 timeout = 60
 filterwarnings = [
     "ignore::pytest.PytestCollectionWarning",
+    # Many test strategies still return the deprecated 2-tuple from execute();
+    # tests/test_deprecations.py asserts the warning itself.
+    "ignore:.*returned a 2-tuple \\(output, tokens\\):DeprecationWarning",
 ]
 
 [tool.coverage.run]

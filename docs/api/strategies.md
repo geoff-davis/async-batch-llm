@@ -114,7 +114,13 @@ Initialize resources before making LLM calls (e.g., create caches, initialize cl
 
 **Default:** No-op
 
-#### `async def execute(prompt: str, attempt: int, timeout: float, state: RetryState | None = None) -> tuple[TOutput, TokenUsage]`
+#### `async def execute(prompt, attempt, timeout, state=None)`
+
+```python
+async def execute(
+    prompt: str, attempt: int, timeout: float, state: RetryState | None = None
+) -> tuple[TOutput, TokenUsage, dict[str, Any] | None]: ...
+```
 
 Execute an LLM call.
 
@@ -127,11 +133,16 @@ Execute an LLM call.
 - `state` (RetryState | None): Mutable per-work-item state provided by the framework
   so strategies can track partial progress across retries
 
-**Returns:** Tuple of `(output, token_usage)`
+**Returns:** Tuple of `(output, token_usage, metadata)`
 
 - `output` (TOutput): The LLM response
 - `token_usage` ([TokenUsage](core.md#tokenusage)): Token usage dict with optional keys: `input_tokens`,
   `output_tokens`, `total_tokens`, `cached_input_tokens`
+- `metadata` (`dict[str, Any] | None`): Provider metadata forwarded to `WorkItemResult.metadata`;
+  `None` when there is none
+
+Returning the 2-tuple `(output, token_usage)` is deprecated since v0.27 and emits a
+`DeprecationWarning` pointing at your `execute()`; it will be rejected in 1.0.
 
 **Raises:** Any exception to trigger retry (if retryable) or failure
 
@@ -272,7 +283,7 @@ from async_batch_llm import LLMCallStrategy, TokenUsage
 class MyCustomStrategy(LLMCallStrategy[str]):
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
-    ) -> tuple[str, TokenUsage]:
+    ) -> tuple[str, TokenUsage, None]:
         # Your custom LLM API call
         response = await my_llm_api.generate(prompt)
 
@@ -282,7 +293,7 @@ class MyCustomStrategy(LLMCallStrategy[str]):
             "total_tokens": response.total_tokens,
         }
 
-        return response.text, tokens
+        return response.text, tokens, None
 ```
 
 ---
@@ -344,7 +355,7 @@ A JSON Schema mapping is also accepted; the default strategy output is then
 the decoded JSON value. `schema_name=` overrides the Pydantic class name or
 schema `title` used in the provider request.
 
-This mode runs through the ordinary `LLMGateway` and batch strategy path, so
+This mode runs through the ordinary `LLMCallPool` and batch strategy path, so
 capacity admission, proactive quotas, retries, timing, token/cache accounting,
 and cost calculation remain active. Result metadata includes `api_surface`,
 `provider_request_id`, and `response_schema` (`name`, Python/schema identity,

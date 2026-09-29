@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 
 from async_batch_llm import (
+    LLMCallPool,
     LLMCallStrategy,
-    LLMGateway,
     LLMWorkItem,
     ParallelBatchProcessor,
     ProcessorConfig,
@@ -86,7 +86,7 @@ async def test_ramp_wait_is_outside_execution_timeout_in_gateway() -> None:
             max_concurrency=2,
         ),
     )
-    gateway = LLMGateway(strategy, config=config)
+    gateway = LLMCallPool(strategy, config=config)
     first = asyncio.create_task(gateway.submit_result("first"))
     await asyncio.sleep(0.01)
     second = asyncio.create_task(gateway.submit_result("second"))
