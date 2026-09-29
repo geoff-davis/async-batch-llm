@@ -254,13 +254,22 @@ processor per request:
 For a single ad-hoc call, [`call()` / `call_result()`](api/single-gateway.md)
 run one prompt through the same resilience pipeline with no pool at all.
 
-## 9. Cleanup
+## 9. Spend limits
+
+Set `GuardrailConfig(max_total_tokens=...)` on large or unattended runs, and
+`max_total_cost` with your own `cost_function` when a dollar ceiling matters.
+Caps are soft: calls already running when the cap is reached can overshoot it by
+at most one call per worker, so pair a cap with a per-call output limit
+(`max_tokens`) if the overshoot must stay small. See
+[Token and cost budgets](guardrails.md#token-and-cost-budgets).
+
+## 10. Cleanup
 
 Use the processor as an `async with` context manager so workers, caches, and
 HTTP clients are released. If you can't, call `await processor.shutdown()` when
 done.
 
-## 10. Artifact storage (checkpoint/resume runs)
+## 11. Artifact storage (checkpoint/resume runs)
 
 - **Backend choice.** JSONL for portable, human-inspectable audit logs;
   `SqliteArtifactStore` for 100k+ restartable runs needing indexed replay.

@@ -40,7 +40,8 @@ asyncio.run(main())
 ```
 
 The factory also supports `gemini:`, `openrouter:`, and `deepseek:` model
-specifications. It reads each provider's normal environment variable.
+specifications, and `openai-compatible:` for any other OpenAI-compatible server
+(pass `base_url=`). It reads each provider's normal environment variable.
 
 ## 3. Read successes and failures
 
