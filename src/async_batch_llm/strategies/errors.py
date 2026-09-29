@@ -13,8 +13,25 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from async_batch_llm.base import TokenUsage
 
-# Common error pattern constants
-RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota", "rate limit")
+# Common error pattern constants. A bare "quota" also matches billing
+# exhaustion and arbitrary application text, so require the provider phrase.
+RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota exceeded", "rate limit")
+# Billing exhaustion is checked before rate limits: retrying cannot succeed.
+INSUFFICIENT_QUOTA_PATTERNS = ("insufficient_quota",)
+_INSUFFICIENT_QUOTA_HINT = "Provider quota or credits exhausted; check account billing and limits."
+
+# Deterministic programming failures. Their type outranks message text: a
+# user ``ValueError("429: invalid item")`` is a bug, not a provider rate limit.
+LOGIC_ERROR_TYPES: tuple[type[Exception], ...] = (
+    ValueError,
+    TypeError,
+    AttributeError,
+    KeyError,
+    IndexError,
+    NameError,
+    ZeroDivisionError,
+    AssertionError,
+)
 
 
 @lru_cache(maxsize=64)
@@ -42,6 +59,58 @@ def matches_any_pattern(text: str, patterns: tuple[str, ...]) -> bool:
     return any(pattern_in(lowered, pattern) for pattern in patterns)
 
 
+def _http_status_value(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
+        return value
+    return None
+
+
+def _safe_attribute(target: object, name: str) -> object:
+    # SDK exception properties can raise when an optional request/response is absent.
+    try:
+        return getattr(target, name, None)
+    except Exception:
+        return None
+
+
+def http_status(exception: Exception) -> int | None:
+    """Return an HTTP status carried by an SDK-style exception, if any.
+
+    Recognizes ``status_code`` (OpenAI, Anthropic, PydanticAI), ``status``
+    (aiohttp), ``code`` (google-genai, urllib, :class:`ProviderResponseError`)
+    and ``response.status_code``/``response.status`` (httpx, requests). Only
+    integers in the HTTP range count, so string error codes are ignored.
+    """
+    for name in ("status_code", "status", "code"):
+        status = _http_status_value(_safe_attribute(exception, name))
+        if status is not None:
+            return status
+    response = _safe_attribute(exception, "response")
+    if response is not None:
+        for name in ("status_code", "status"):
+            status = _http_status_value(_safe_attribute(response, name))
+            if status is not None:
+                return status
+    return None
+
+
+def _insufficient_quota_info() -> ErrorInfo:
+    return ErrorInfo(False, False, False, "insufficient_balance", hint=_INSUFFICIENT_QUOTA_HINT)
+
+
+def _insufficient_quota(exception: Exception) -> bool:
+    if _safe_attribute(exception, "code") == "insufficient_quota":
+        return True
+    body = _safe_attribute(exception, "body")
+    error = body.get("error", body) if isinstance(body, dict) else None
+    if isinstance(error, dict) and error.get("code") == "insufficient_quota":
+        return True
+    # Some SDKs (e.g. PydanticAI's ModelHTTPError) keep the raw body out of str().
+    if isinstance(body, str) and matches_any_pattern(body, INSUFFICIENT_QUOTA_PATTERNS):
+        return True
+    return matches_any_pattern(str(exception), INSUFFICIENT_QUOTA_PATTERNS)
+
+
 def _retry_after_seconds(exception: Exception) -> float | None:
     """Parse a ``Retry-After`` header off an SDK exception, if present.
 
@@ -51,18 +120,22 @@ def _retry_after_seconds(exception: Exception) -> float | None:
     handle both and return the delay in seconds, or ``None`` when no usable
     header is present (including malformed or non-positive values).
     """
-    response = getattr(exception, "response", None)
-    headers = getattr(response, "headers", None)
-    if not headers:
+    # The header is an optional hint: a missing or failing response must not
+    # turn a recognized rate limit into a classifier failure.
+    headers: Any = _safe_attribute(_safe_attribute(exception, "response"), "headers")
+    try:
+        if not headers:
+            return None
+        milliseconds = headers.get("retry-after-ms") or headers.get("Retry-After-Ms")
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+    except Exception:
         return None
-    milliseconds = headers.get("retry-after-ms") or headers.get("Retry-After-Ms")
     if milliseconds is not None:
         try:
             delay = float(milliseconds) / 1000
             return delay if math.isfinite(delay) and delay >= 0 else None
         except (TypeError, ValueError, OverflowError):
             return None
-    raw = headers.get("retry-after") or headers.get("Retry-After")
     if raw is None:
         return None
     try:
@@ -415,9 +488,24 @@ class ErrorClassifier(ABC):
             return ErrorInfo(False, False, False, "empty_response")
         return None
 
-    def _generic_tail(self, exception: Exception) -> ErrorInfo:
-        """Classify validation and deterministic programming failures."""
-        # Check for Pydantic validation errors (retryable - LLM might generate valid output on retry)
+    def _structured_rate_limit(self, exception: Exception) -> ErrorInfo | None:
+        """Classify an explicit HTTP 429 carried by a non-dispatched exception."""
+        if http_status(exception) != 429:
+            return None
+        if _insufficient_quota(exception):
+            return _insufficient_quota_info()
+        return ErrorInfo(
+            is_retryable=True,
+            is_rate_limit=True,
+            is_timeout=False,
+            error_category="rate_limit",
+            suggested_wait=_retry_after_seconds(exception),
+        )
+
+    def _typed_failure(self, exception: Exception) -> ErrorInfo | None:
+        """Classify validation and programming failures by type, before message text."""
+        # Pydantic's ValidationError subclasses ValueError; the LLM may produce
+        # valid output on retry, so it is checked before logic errors.
         try:
             from pydantic import ValidationError
 
@@ -431,25 +519,42 @@ class ErrorClassifier(ABC):
         except ImportError:
             pass
 
-        # Check for logic bugs (deterministic errors that won't be fixed by retrying)
-        # These are usually programming errors, not transient failures
-        logic_bug_types = (
-            ValueError,
-            TypeError,
-            AttributeError,
-            KeyError,
-            IndexError,
-            NameError,
-            ZeroDivisionError,
-            AssertionError,
-        )
-        if isinstance(exception, logic_bug_types):
+        # Deterministic errors that won't be fixed by retrying.
+        if isinstance(exception, LOGIC_ERROR_TYPES):
             return ErrorInfo(
-                is_retryable=False,  # Don't retry logic bugs (deterministic failures)
+                is_retryable=False,
                 is_rate_limit=False,
                 is_timeout=False,
                 error_category="logic_error",
             )
+        return None
+
+    def _message_rate_limit(
+        self, exception: Exception, patterns: tuple[str, ...] = RATE_LIMIT_PATTERNS
+    ) -> ErrorInfo | None:
+        """Heuristic for untyped exceptions: billing exhaustion, then rate-limit text.
+
+        An exception that carries an HTTP status is never a rate limit by message:
+        its status was already classified, so only status-less exceptions reach
+        the rate-limit patterns.
+        """
+        error_str = str(exception)
+        if _insufficient_quota(exception):
+            return _insufficient_quota_info()
+        if http_status(exception) is None and matches_any_pattern(error_str, patterns):
+            return ErrorInfo(
+                is_retryable=True,
+                is_rate_limit=True,
+                is_timeout=False,
+                error_category="rate_limit",
+            )
+        return None
+
+    def _generic_tail(self, exception: Exception) -> ErrorInfo:
+        """Classify validation and deterministic programming failures."""
+        info = self._typed_failure(exception)
+        if info is not None:
+            return info
 
         # Default: treat unknown generic exceptions as retryable
         # This allows custom transient errors and test mocks to work
@@ -488,7 +593,12 @@ class DefaultErrorClassifier(ErrorClassifier):
         return matches_any_pattern(error_str, RATE_LIMIT_PATTERNS)
 
     def classify(self, exception: Exception) -> ErrorInfo:
-        """Classify common errors with conservative defaults."""
+        """Classify common errors with conservative defaults.
+
+        Precedence: framework errors, an HTTP 429 carried by the exception,
+        validation and programming-error types, then message heuristics for
+        untyped exceptions.
+        """
         error_str = str(exception).lower()
 
         info = self._framework_prelude(exception)
@@ -511,8 +621,15 @@ class DefaultErrorClassifier(ErrorClassifier):
         except ImportError:
             pass
 
-        # Detect rate limit errors from message patterns (works for simple Exception mocks)
-        if self._matches_rate_limit(error_str):
+        info = self._structured_rate_limit(exception) or self._typed_failure(exception)
+        if info is not None:
+            return info
+
+        # Message heuristics apply only to exceptions not classified by type or
+        # status above (e.g. SDKs without a built-in classifier, test doubles).
+        if _insufficient_quota(exception):
+            return _insufficient_quota_info()
+        if http_status(exception) is None and self._matches_rate_limit(error_str):
             return ErrorInfo(
                 is_retryable=True,  # Rate limits are retryable - framework handles cooldown
                 is_rate_limit=True,

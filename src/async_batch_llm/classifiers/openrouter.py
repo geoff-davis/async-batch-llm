@@ -15,7 +15,13 @@ Added in v0.9.0.
 
 from __future__ import annotations
 
-from ..strategies.errors import ErrorInfo, ProviderResponseError
+from ..strategies.errors import (
+    ErrorInfo,
+    ProviderResponseError,
+    _insufficient_quota,
+    _insufficient_quota_info,
+    http_status,
+)
 from .openai import RATE_LIMIT_PATTERNS, OpenAIErrorClassifier
 
 # OpenRouter-specific body markers we look for on APIStatusError responses.
@@ -39,6 +45,9 @@ class OpenRouterErrorClassifier(OpenAIErrorClassifier):
         # rate limits so the coordinated cooldown engages.
         if isinstance(exception, ProviderResponseError):
             error_str = str(exception)
+            # Billing exhaustion outranks routing and rate-limit signals.
+            if _insufficient_quota(exception):
+                return _insufficient_quota_info()
             if self._matches_any_pattern(error_str, NO_PROVIDER_PATTERNS):
                 transient = "no allowed providers" not in error_str.lower() or exception.code in (
                     502,
@@ -50,7 +59,12 @@ class OpenRouterErrorClassifier(OpenAIErrorClassifier):
                     is_timeout=False,
                     error_category="network_error" if transient else "client_error",
                 )
-            if exception.code == 429 or self._matches_any_pattern(error_str, RATE_LIMIT_PATTERNS):
+            # An embedded status is authoritative: only 429, or rate-limit text
+            # without any status, is a rate limit.
+            status = http_status(exception)
+            if status == 429 or (
+                status is None and self._matches_any_pattern(error_str, RATE_LIMIT_PATTERNS)
+            ):
                 return ErrorInfo(
                     is_retryable=True,
                     is_rate_limit=True,
@@ -77,6 +91,8 @@ class OpenRouterErrorClassifier(OpenAIErrorClassifier):
         return super()._classify_openai_exception(exception)
 
     def _classify_status_error(self, exception: Exception) -> ErrorInfo:
+        if _insufficient_quota(exception):
+            return _insufficient_quota_info()
         # OpenRouter wraps "no upstream available" as a 502 with a specific
         # error body. Treat it as transient/network rather than server_error.
         body = str(exception).lower()

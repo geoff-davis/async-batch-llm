@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING**: Error classification trusts types and structured status before
+  message text ([#177]). `ValueError`, `TypeError`, `KeyError` and the other
+  built-in programming errors are `logic_error` even when their message mentions
+  `429`, `quota`, a timeout or a connection, so an application bug no longer starts
+  a coordinated cooldown. An exception carrying HTTP 429 (`status_code`, `status`,
+  `code` or `response.status_code`) is a rate limit without message matching, with
+  `Retry-After` honored; one carrying any other status is never a rate limit by message.
+  `insufficient_quota` is a non-retryable `insufficient_balance` in every built-in
+  classifier. Bare `"quota"` no longer signals a rate limit; `"quota exceeded"` does.
+  Message heuristics still apply to other untyped exceptions. `MockAgent`'s simulated
+  rate limit now carries `code = 429`.
+
+[#177]: https://github.com/geoff-davis/async-batch-llm/issues/177
+
 ## [0.26.0] - 2026-09-27
 
 See the [v0.26 migration guide](docs/migration/v0.26.md) for breaking changes and
