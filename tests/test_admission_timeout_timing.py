@@ -18,7 +18,7 @@ from async_batch_llm import (
 from async_batch_llm.base import RetryState, TokenUsage, WorkItemResult
 from async_batch_llm.observers import BaseObserver, ProcessingEvent
 
-WAIT_FLOOR = 0.02  # every scenario holds capacity for well over this
+WAIT_FLOOR = 0.02  # every scenario holds capacity for 0.15 s or more
 
 
 class Holder(LLMCallStrategy[str]):
@@ -66,7 +66,7 @@ class FailAfter(LLMCallStrategy[str]):
     """Unlimited-capacity strategy that fails with an abort category."""
 
     async def execute(self, prompt, attempt, timeout, state=None):
-        await asyncio.sleep(0.04)
+        await asyncio.sleep(0.15)
         raise ValueError("abort trigger")
 
 
@@ -89,7 +89,7 @@ async def test_item_deadline_in_capacity_wait_keeps_wait_and_category() -> None:
             strategy,
             [("hold", "hold"), ("wait", "wait")],
             config=ProcessorConfig(
-                max_workers=2, guardrails=GuardrailConfig(total_timeout_per_item=0.06)
+                max_workers=2, guardrails=GuardrailConfig(total_timeout_per_item=0.3)
             ),
             observers=[ReleaseWhenFailed(strategy, "wait")],
         )
@@ -116,7 +116,7 @@ async def test_batch_deadline_in_capacity_wait_keeps_wait_and_category() -> None
             [("hold", "hold"), ("wait", "wait")],
             config=ProcessorConfig(
                 max_workers=2,
-                guardrails=GuardrailConfig(batch_timeout=0.06, abort_mode=AbortMode.CANCEL_ACTIVE),
+                guardrails=GuardrailConfig(batch_timeout=0.3, abort_mode=AbortMode.CANCEL_ACTIVE),
             ),
             observers=[ReleaseWhenFailed(strategy, "wait")],
         )
@@ -186,7 +186,7 @@ async def test_capacity_waits_accumulate_across_attempts() -> None:
             config=ProcessorConfig(
                 max_workers=3,
                 retry=RetryConfig(max_attempts=3, initial_wait=0.02, max_wait=0.02, jitter=False),
-                guardrails=GuardrailConfig(total_timeout_per_item=0.2),
+                guardrails=GuardrailConfig(total_timeout_per_item=0.5),
             ),
             observers=[SignalFirstFailure(), ReleaseWhenFailed(strategy, "wait")],
         )

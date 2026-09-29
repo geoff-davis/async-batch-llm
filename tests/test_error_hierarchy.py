@@ -14,7 +14,7 @@ EXPORTED = sorted(
     (
         (name, obj)
         for name in async_batch_llm.__all__
-        if name != "LLMGateway"
+        if name not in async_batch_llm._DEPRECATED_NAMES
         and inspect.isclass(obj := getattr(async_batch_llm, name))
         and issubclass(obj, BaseException)
     ),

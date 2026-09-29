@@ -12,11 +12,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from async_batch_llm import MetadataExtractor, grounding_metadata_extractor
+from async_batch_llm import MetadataExtractor
 from async_batch_llm.models import (
     GeminiModel,
     OpenAIModel,
     _run_extractors,
+    grounding_metadata_extractor,
 )
 
 # ── _run_extractors ──────────────────────────────────────────────────────────

@@ -292,9 +292,9 @@ def grounding_metadata_extractor(response: Any) -> dict[str, Any] | None:
     Since v0.16.0 the built-in Gemini models emit ``metadata['grounding']``
     **by default** whenever the response carries grounding metadata, so
     passing this extractor to ``GeminiModel``/``GeminiCachedModel`` is
-    redundant (harmless — it re-emits the same key with the same value). It
-    remains exported for custom models and for callers who prefer the
-    explicit opt-in in their configuration.
+    redundant (harmless — it re-emits the same key with the same value).
+    Importing it from ``async_batch_llm`` is deprecated since v0.27; it leaves
+    the public API in 1.0.
 
     Returns ``{"grounding": {...}}`` with ``sources`` (``[{"uri",
     "title"}]``), ``queries`` (the ``web_search_queries`` the model issued),
@@ -387,7 +387,7 @@ class GeminiModel:
             safety_settings: Default safety settings for all calls.
             system_instruction: Default system instruction (overridable per-call).
             metadata_extractors: Optional hooks that contribute extra keys to
-                ``LLMResponse.metadata`` (e.g. ``grounding_metadata_extractor``).
+                ``LLMResponse.metadata``.
                 Merged on top of the built-in ``safety_ratings``/``finish_reason``;
                 user keys win. Added in v0.15.0.
         """
@@ -575,7 +575,7 @@ class GeminiCachedModel:
                 short — Gemini's ``display_name`` has a 128-character limit.
             safety_settings: Default safety settings for all calls.
             metadata_extractors: Optional hooks that contribute extra keys to
-                ``LLMResponse.metadata`` (e.g. ``grounding_metadata_extractor``).
+                ``LLMResponse.metadata``.
                 Merged on top of the built-in metadata; user keys win.
                 Added in v0.15.0.
         """

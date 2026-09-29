@@ -51,9 +51,8 @@ lists its deprecations.
 ## Classification of the current API
 
 **Stable** names are covered by the promise above. **Provisional** names can still
-change in a minor release. **Deprecated** names warn now and are removed in 1.0.
-**Proposed private** names would be deprecated and dropped from the public API; see
-the open questions below.
+change in a minor release. **Deprecated** names warn now and leave the public API in
+1.0.
 
 ### Entry points and configuration
 
@@ -72,7 +71,8 @@ the open questions below.
 | `ErrorCategory`, `TimeoutCategory` | Stable |
 | `AttemptUsage` | Provisional (new in 0.27, with the token and cost budget) |
 | `LLMGateway` | Deprecated (use `LLMCallPool`) |
-| `BatchProcessor`, `ProcessingStats` | Proposed private |
+| `BatchProcessor` | Deprecated (use `ParallelBatchProcessor`) |
+| `ProcessingStats` | Deprecated (use the dict from `get_stats()`) |
 
 ### Strategies, models and classifiers
 
@@ -88,7 +88,7 @@ the open questions below.
 | `TokenEstimate`, `TokenEstimator`, `CharacterTokenEstimator` | Stable |
 | `pydantic_json_parser`, `strip_code_fences` | Stable |
 | `Grounding`, `GroundingSource`, `ToolCall` | Provisional (typed provider-output views) |
-| `grounding_metadata_extractor` | Proposed private (built-in Gemini models already emit grounding) |
+| `grounding_metadata_extractor` | Deprecated (built-in Gemini models already emit grounding) |
 
 Provider metadata keys and the typed provider-output views (`.grounding`,
 `.reasoning`, `.tool_calls`, `.logprobs`) are provisional until real-provider runs
@@ -118,14 +118,10 @@ Every exception type below subclasses `AsyncBatchLLMError`.
 | `ArtifactError`, `ArtifactIdentityError`, `ArtifactFormatError`, `ArtifactIOError`, `ArtifactSerializationError` | Stable |
 | `ResultSerializationError` | Stable |
 
-## Open questions before 1.0
+## Provisional through 1.0
 
-- **Proposed private names.** `BatchProcessor` (the abstract base of
-  `ParallelBatchProcessor`, with no other implementation), `ProcessingStats` (only
-  held in a private attribute; `get_stats()` returns a dict) and
-  `grounding_metadata_extractor` (redundant since built-in Gemini models emit
-  grounding) are undocumented or redundant. Making them private needs a deprecation
-  warning in 0.27.
-- **Budget API.** `AttemptUsage` and the `max_total_tokens` / `max_total_cost` /
-  `cost_function` fields are new in 0.27. They could be declared stable at rc1 or
-  kept provisional for one more minor release.
+- **Budget API.** `AttemptUsage` and the `GuardrailConfig` fields `max_total_tokens`,
+  `max_total_cost` and `cost_function` are new in 0.27 and stay provisional in 1.0,
+  so their shape can still change in a minor release once they have seen real use.
+- **Provider-output views.** See above; `logprobs` is the most likely to stay
+  provisional.
