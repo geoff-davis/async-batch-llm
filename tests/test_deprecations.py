@@ -59,7 +59,9 @@ def test_plain_import_is_silent_and_star_import_keeps_the_alias():
         "with warnings.catch_warnings(record=True) as caught:\n"
         "    warnings.simplefilter('always')\n"
         "    import async_batch_llm\n"
-        "    plain = [w for w in caught if 'LLMGateway' in str(w.message)]\n"
+        "    ours = ('LLMGateway', 'BatchProcessor', 'ProcessingStats',\n"
+        "            'grounding_metadata_extractor')\n"
+        "    plain = [w for w in caught if str(w.message).startswith(ours)]\n"
         "    from async_batch_llm import *\n"
         "    from async_batch_llm.gateway import *\n"
         "assert plain == [], plain\n"
@@ -67,6 +69,11 @@ def test_plain_import_is_silent_and_star_import_keeps_the_alias():
         "assert [(w.category, w.filename) for w in star] == [(DeprecationWarning, '<string>')] * 2\n"
         "assert LLMGateway is LLMCallPool\n"
         "assert 'LLMGateway' in async_batch_llm.__all__\n"
+        "names = ('BatchProcessor', 'ProcessingStats', 'grounding_metadata_extractor')\n"
+        "for name in names:\n"
+        "    assert name in dir() and name in async_batch_llm.__all__\n"
+        "    hits = [w for w in caught if str(w.message).startswith(name + ' is deprecated')]\n"
+        "    assert [(w.category, w.filename) for w in hits] == [(DeprecationWarning, '<string>')]\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
 
@@ -111,3 +118,37 @@ async def test_three_tuple_return_does_not_warn():
         batch = await process_prompts(Current(), ["a"])
     assert batch.results[0].success
     assert not [w for w in caught if "2-tuple" in str(w.message)]
+
+
+@pytest.mark.parametrize(
+    ("name", "module", "attribute"),
+    [
+        ("BatchProcessor", "async_batch_llm.base", "BatchProcessor"),
+        ("ProcessingStats", "async_batch_llm.base", "ProcessingStats"),
+        ("grounding_metadata_extractor", "async_batch_llm.models", "grounding_metadata_extractor"),
+    ],
+)
+def test_names_leaving_the_public_api_warn_from_caller(name, module, attribute):
+    expected = getattr(importlib.import_module(module), attribute)
+
+    def import_root():
+        namespace: dict[str, object] = {}
+        exec(f"from async_batch_llm import {name}", namespace)  # noqa: S102
+        return namespace[name]
+
+    for access in (lambda: getattr(async_batch_llm, name), import_root):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            value = access()
+        assert value is expected
+        hits = [w for w in caught if str(w.message).startswith(f"{name} is deprecated")]
+        assert [w.category for w in hits] == [DeprecationWarning]
+        assert "public API in 1.0" in str(hits[0].message)
+
+
+def test_submodule_access_stays_silent():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        from async_batch_llm.base import BatchProcessor, ProcessingStats  # noqa: F401
+        from async_batch_llm.models import grounding_metadata_extractor  # noqa: F401
+    assert not [w for w in caught if "deprecated" in str(w.message)]

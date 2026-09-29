@@ -343,8 +343,8 @@ for item in result.successes:
 Grounding data only exists when you requested the tool, so the default
 metadata payload is unchanged for non-grounded calls — mixing grounded and
 non-grounded calls through the same model is fine. (`grounding_metadata_extractor`
-is still exported for custom models and explicit opt-in configurations;
-passing it to the built-in models is redundant but harmless.)
+is redundant with the built-in models and deprecated since v0.27; remove it from
+`metadata_extractors`.)
 
 To surface *other* provider-specific output through the same channel without
 subclassing the model, pass **metadata extractors**: hooks that receive the

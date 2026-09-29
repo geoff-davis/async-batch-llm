@@ -103,6 +103,10 @@ These emit a warning in v0.27 and will be removed in 1.0.
   warns, including through `from async_batch_llm import *`, which keeps the name until
   1.0. A plain `import async_batch_llm` stays silent. Cleanup task names now use
   `LLMCallPool`.
+- `BatchProcessor`, `ProcessingStats` and `grounding_metadata_extractor` as public
+  names. Importing them from `async_batch_llm` warns; they leave the public API in
+  1.0. Use `ParallelBatchProcessor`, the dict from `get_stats()`, and the built-in
+  Gemini models' default `metadata['grounding']` respectively.
 
 ### Fixed
 

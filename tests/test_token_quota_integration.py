@@ -28,7 +28,6 @@ from async_batch_llm import (
     MetricsObserver,
     ParallelBatchProcessor,
     ProcessingEvent,
-    ProcessingStats,
     ProcessorConfig,
     RateLimitConfig,
     ResumePolicy,
@@ -45,6 +44,7 @@ from async_batch_llm import (
     process_stream,
 )
 from async_batch_llm._internal.executor_host import ExecutorHost
+from async_batch_llm.base import ProcessingStats
 
 
 @pytest.mark.parametrize("shape", [dict, SimpleNamespace])
