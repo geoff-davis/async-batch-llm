@@ -1357,7 +1357,13 @@ async def test_art3_surrogate_diagnostics_and_bad_metadata_are_isolated(tmp_path
 
 @pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
 @pytest.mark.parametrize(
-    "category", ["batch_aborted", "batch_deadline_exceeded", "framework_total_item_timeout"]
+    "category",
+    [
+        "batch_aborted",
+        "batch_deadline_exceeded",
+        "batch_budget_exceeded",
+        "framework_total_item_timeout",
+    ],
 )
 async def test_art4_guardrail_fallback_preserves_category(tmp_path, store_type, category):
     from async_batch_llm import ParallelBatchProcessor
@@ -1440,7 +1446,14 @@ async def test_art4_custom_store_without_private_fallback_stays_fatal(tmp_path, 
 
 @pytest.mark.parametrize("store_type", [JsonlArtifactStore, SqliteArtifactStore])
 @pytest.mark.parametrize(
-    "category", [None, "batch_aborted", "batch_deadline_exceeded", "framework_total_item_timeout"]
+    "category",
+    [
+        None,
+        "batch_aborted",
+        "batch_deadline_exceeded",
+        "batch_budget_exceeded",
+        "framework_total_item_timeout",
+    ],
 )
 async def test_art4_fallback_io_keeps_existing_fatal_vs_best_effort_policy(
     tmp_path, store_type, category
@@ -1461,7 +1474,7 @@ async def test_art4_fallback_io_keeps_existing_fatal_vs_best_effort_policy(
     processor._executor.execute_prepared = terminal
     await processor.add_work(LLMWorkItem("x", _CountingStrategy(), "x"))
     try:
-        if category in {"batch_aborted", "batch_deadline_exceeded"}:
+        if category in {"batch_aborted", "batch_deadline_exceeded", "batch_budget_exceeded"}:
             result = await processor.process_all()
             assert result.results[0].error_category == category
         else:

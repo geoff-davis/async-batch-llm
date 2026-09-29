@@ -554,7 +554,9 @@ class _CallableRate(float):
 class BatchTermination:
     """Serializable reason a batch stopped accepting or executing work."""
 
-    kind: Literal["completed", "batch_timeout", "fail_fast", "artifact_error"] = "completed"
+    kind: Literal[
+        "completed", "batch_timeout", "fail_fast", "budget_exceeded", "artifact_error"
+    ] = "completed"
     reason: str | None = None
     error_category: str | None = None
     triggering_item_id: str | None = None

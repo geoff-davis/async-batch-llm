@@ -307,7 +307,7 @@ Important operational details:
 
 Read [Results, Artifacts, and Resume](https://geoff-davis.github.io/async-batch-llm/results-and-artifacts/),
 [Large Runs](https://geoff-davis.github.io/async-batch-llm/large-runs/),
-and [Deadlines and Fail-Fast Guardrails](https://geoff-davis.github.io/async-batch-llm/guardrails/)
+and [Deadlines, Budgets and Fail-Fast Guardrails](https://geoff-davis.github.io/async-batch-llm/guardrails/)
 for schema compatibility, privacy controls, abort modes, and deadline details.
 
 ## Provider-neutral execution
@@ -426,7 +426,7 @@ benchmark walkthroughs.
 - [Production Checklist](https://geoff-davis.github.io/async-batch-llm/production-checklist/)
 - [Troubleshooting and FAQ](https://geoff-davis.github.io/async-batch-llm/troubleshooting/)
 - [Results, Artifacts, and Resume](https://geoff-davis.github.io/async-batch-llm/results-and-artifacts/)
-- [Deadlines and Fail-Fast Guardrails](https://geoff-davis.github.io/async-batch-llm/guardrails/)
+- [Deadlines, Budgets and Fail-Fast Guardrails](https://geoff-davis.github.io/async-batch-llm/guardrails/)
 - [Bounded Work and Backpressure](https://geoff-davis.github.io/async-batch-llm/bounded-work/)
 - [API Reference](https://geoff-davis.github.io/async-batch-llm/api/core/)
 

@@ -6,6 +6,7 @@ import logging
 import math
 import sys
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, cast
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING, cast
 from .._internal.input_validation import suggest_keyword_errors
 
 if TYPE_CHECKING:
+    from ..budget import AttemptUsage
     from ..token_estimation import TokenEstimator
 
 logger = logging.getLogger(__name__)
@@ -218,12 +220,30 @@ class AbortMode(str, Enum):
 
 @dataclass
 class GuardrailConfig:
-    """Optional end-to-end deadlines and terminal-category fail-fast policy."""
+    """Optional deadlines, fail-fast policy, and a total token/cost budget.
+
+    ``max_total_tokens`` and ``max_total_cost`` are soft caps on provider usage
+    for one processor run. Usage is counted per physical provider attempt,
+    including failed attempts and retries, as each attempt finishes; replayed
+    results are not counted. Reaching a cap stops the run like a batch deadline:
+    no new provider call starts, ``abort_mode`` decides whether calls already
+    running drain or are cancelled, and unstarted items finish with
+    ``batch_budget_exceeded``. Calls already running when the cap is reached can
+    overshoot it; see the guardrails documentation for the bound.
+
+    ``max_total_cost`` requires ``cost_function``, a synchronous callable that
+    prices one :class:`~async_batch_llm.AttemptUsage`. A ``cost_function``
+    without ``max_total_cost`` only tracks cost. Budgets apply to processor
+    runs; ``call()``, ``call_result()`` and ``LLMCallPool`` reject them.
+    """
 
     total_timeout_per_item: float | None = None
     batch_timeout: float | None = None
     abort_on_error_categories: frozenset[str] = field(default_factory=frozenset)
     abort_mode: AbortMode = AbortMode.DRAIN_ACTIVE
+    max_total_tokens: int | None = None
+    max_total_cost: float | None = None
+    cost_function: Callable[[AttemptUsage], float] | None = None
 
     def __post_init__(self) -> None:
         self.abort_mode = AbortMode(self.abort_mode)
@@ -241,6 +261,33 @@ class GuardrailConfig:
             for category in self.abort_on_error_categories
         ):
             raise ValueError("abort_on_error_categories must contain only non-empty strings")
+        if self.max_total_tokens is not None and (
+            isinstance(self.max_total_tokens, bool)
+            or not isinstance(self.max_total_tokens, int)
+            or self.max_total_tokens <= 0
+        ):
+            raise ValueError(
+                f"max_total_tokens must be a positive int or None (got {self.max_total_tokens!r})"
+            )
+        if self.max_total_cost is not None:
+            _validate_number(self.max_total_cost, name="max_total_cost")
+            if self.max_total_cost <= 0:
+                raise ValueError(
+                    f"max_total_cost must be finite and > 0 or None (got {self.max_total_cost!r})"
+                )
+        if self.cost_function is not None and not callable(self.cost_function):
+            raise ValueError("cost_function must be callable or None")
+        if self.max_total_cost is not None and self.cost_function is None:
+            raise ValueError("max_total_cost requires cost_function")
+
+    @property
+    def budget_configured(self) -> bool:
+        """Whether a token cap, cost cap, or cost tracking is configured."""
+        return (
+            self.max_total_tokens is not None
+            or self.max_total_cost is not None
+            or self.cost_function is not None
+        )
 
 
 @dataclass

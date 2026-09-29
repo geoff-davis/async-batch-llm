@@ -368,6 +368,19 @@ class BatchAbortedError(RuntimeError):
         self.item_id = item_id
 
 
+class BatchBudgetExceeded(BatchAbortedError):
+    """The run's token or cost budget stopped an accepted item before completion."""
+
+
+# Terminal categories of items stopped by a controlled batch abort. The single
+# source for stats, metrics, and artifact audit policy.
+ABORT_RESULT_CATEGORIES = (
+    "batch_aborted",
+    "batch_deadline_exceeded",
+    "batch_budget_exceeded",
+)
+
+
 class RateLimitRetriesExceeded(Exception):
     """A work item was retried after rate limits more than ``max_rate_limit_retries``.
 
@@ -455,6 +468,13 @@ class ErrorClassifier(ABC):
                 is_rate_limit=False,
                 is_timeout=True,
                 error_category="batch_deadline_exceeded",
+            )
+        if isinstance(exception, BatchBudgetExceeded):
+            return ErrorInfo(
+                is_retryable=False,
+                is_rate_limit=False,
+                is_timeout=False,
+                error_category="batch_budget_exceeded",
             )
         if isinstance(exception, BatchAbortedError):
             return ErrorInfo(

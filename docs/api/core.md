@@ -32,6 +32,14 @@
 
 ::: async_batch_llm.AbortMode
 
+## AttemptUsage
+
+::: async_batch_llm.AttemptUsage
+
+## BatchBudgetExceeded
+
+::: async_batch_llm.BatchBudgetExceeded
+
 ## StartupRampConfig
 
 ::: async_batch_llm.StartupRampConfig

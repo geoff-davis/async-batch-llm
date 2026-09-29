@@ -164,7 +164,7 @@ logical item, and `GuardrailConfig.batch_timeout` for the run. Size them in
 that order; a batch deadline can stop admission while active work is drained
 or cancelled according to `abort_mode`.
 
-**Related guide.** [Deadlines and Fail-Fast Guardrails](guardrails.md).
+**Related guide.** [Deadlines, Budgets and Fail-Fast Guardrails](guardrails.md).
 
 ## Empty, blocked, or tool-only responses
 

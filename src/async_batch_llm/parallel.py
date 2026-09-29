@@ -13,6 +13,7 @@ from ._internal.artifact_codec import (
     GUARDRAIL_AUDIT_CATEGORIES,
     serialization_failure_result,
 )
+from ._internal.budget import BudgetTracker
 from ._internal.capacity import (
     CapacityLimiter,
     capture_capacity_warning_source,
@@ -64,6 +65,7 @@ from .strategies import (
     QuotaScopeError,
     RateLimitStrategy,
 )
+from .strategies.errors import ABORT_RESULT_CATEGORIES
 from .token_extractor import TokenExtractor
 
 logger = logging.getLogger(__name__)
@@ -251,6 +253,16 @@ class ParallelBatchProcessor(
         )
         self._guardrails_started = False
         self._batch_timeout_task: asyncio.Task[None] | None = None
+        # One tracker per processor run; a reused config gets a fresh budget.
+        self._budget_tracker: BudgetTracker | None = (
+            BudgetTracker(
+                config.guardrails,
+                trip_now=self._trip_abort_now,
+                announce=self._announce_abort,
+            )
+            if config.guardrails.budget_configured
+            else None
+        )
 
         # Diagnostic: high max_workers can outrun the OS open-file limit.
         _warn_if_fd_limit_low(resolved_max_workers)
@@ -406,19 +418,36 @@ class ParallelBatchProcessor(
         assert controller is not None
         tripped = await controller.trip(cause)
         if tripped:
-            self._admission_closed.set()
-            self.termination = controller.termination()
-            await self._emit_event(
-                ProcessingEvent.BATCH_ABORTED,
-                {
-                    "kind": cause.kind,
-                    "reason": cause.reason,
-                    "error_category": cause.error_category,
-                    "triggering_item_id": cause.triggering_item_id,
-                    "abort_mode": self.config.guardrails.abort_mode.value,
-                },
-            )
+            self._after_abort_tripped()
+            await self._announce_abort(cause)
         return tripped
+
+    def _trip_abort_now(self, cause: AbortCause) -> bool:
+        """Synchronously stop the run (budget guardrail); announce separately."""
+        controller = self._abort_controller
+        assert controller is not None
+        tripped = controller.trip_now(cause)
+        if tripped:
+            self._after_abort_tripped()
+        return tripped
+
+    def _after_abort_tripped(self) -> None:
+        controller = self._abort_controller
+        assert controller is not None
+        self._admission_closed.set()
+        self.termination = controller.termination()
+
+    async def _announce_abort(self, cause: AbortCause) -> None:
+        await self._emit_event(
+            ProcessingEvent.BATCH_ABORTED,
+            {
+                "kind": cause.kind,
+                "reason": cause.reason,
+                "error_category": cause.error_category,
+                "triggering_item_id": cause.triggering_item_id,
+                "abort_mode": self.config.guardrails.abort_mode.value,
+            },
+        )
 
     async def wait_for_abort(self) -> None:
         """Wait until a configured batch deadline or fail-fast abort trips."""
@@ -485,7 +514,10 @@ class ParallelBatchProcessor(
             - start_time: Timestamp when processing started
         """
         async with self._stats_lock:
-            return self._stats.copy()
+            stats = self._stats.copy()
+        if self._budget_tracker is not None:
+            stats.update(self._budget_tracker.stats())
+        return stats
 
     async def add_work(self, work_item: LLMWorkItem[TInput, TOutput, TContext]) -> None:
         """Queue a work item and register its identity-scoped admission state."""
@@ -915,7 +947,7 @@ class ParallelBatchProcessor(
                     )
             if result.replayed_from_artifact:
                 self._stats.replayed += 1
-            if result.error_category in {"batch_aborted", "batch_deadline_exceeded"}:
+            if result.error_category in ABORT_RESULT_CATEGORIES:
                 self._stats.aborted += 1
 
             # Replayed tokens remain on the result for historical audit but are

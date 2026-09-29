@@ -70,6 +70,8 @@ callback timeouts are logged without failing the item.
 
 Each finalized item emits exactly one of `ITEM_COMPLETED`, `ITEM_FAILED`, or
 `ITEM_REPLAYED`, after its checkpoint and before any fail-fast `BATCH_ABORTED` event.
+A budget stop is different: the provider attempt that reaches the budget emits
+`BATCH_ABORTED` (`kind="budget_exceeded"`) before that item's own terminal event.
 Middleware-filtered items count as failed; middleware recovery and `after_process`
 changes determine the final event. Fatal checkpoint failures and cancellation before
 finalization produce no terminal item event or processed-stat increment. Early

@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Opt-in total token and cost budgets for processor runs ([#183]):
+  `GuardrailConfig(max_total_tokens=..., max_total_cost=..., cost_function=...)`.
+  Every provider attempt with reported usage counts, including failures and retries;
+  replayed results don't. Reaching a cap stops the run like a batch deadline, with
+  `termination.kind == "budget_exceeded"`, and unfinished items get
+  `BatchBudgetExceeded` / `batch_budget_exceeded`. Caps are soft: calls already
+  running can overshoot (see the guardrails guide for the bound). `cost_function`
+  receives the new `AttemptUsage`; a failing cost function stops the run. `call()`,
+  `call_result()` and `LLMCallPool` reject budget settings. A `BatchResult`
+  serialized with the new termination kind can't be read by v0.26 or earlier.
 - macOS is a supported platform: CI runs the test suite on `macos-latest`
   (Python 3.13). Windows remains untested. The artifact docs now note that `fsync`
   on macOS does not guarantee durability against an OS crash or power loss. The
@@ -30,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current RSS is unavailable (no `/proc`).
 
 [#177]: https://github.com/geoff-davis/async-batch-llm/issues/177
+[#183]: https://github.com/geoff-davis/async-batch-llm/issues/183
 
 ## [0.26.0] - 2026-09-27
 
