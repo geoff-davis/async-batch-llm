@@ -1,13 +1,16 @@
 # async-batch-llm
 
-**Run independent LLM calls concurrently with production-grade retries,
-coordinated rate-limit cooldowns, bounded input buffering, resumable
-checkpoints, deadlines, spend caps, and complete token accounting.**
+**Run thousands of LLM calls concurrently without babysitting them.** When one
+call hits a rate limit, every worker sharing that quota holds off on new calls
+until the cooldown ends. Failures retry with the
+right strategy for their cause. After a crash, a rerun resumes from its
+checkpoint instead of starting over. Deadlines and spend caps stop a run cleanly,
+and token counts include the attempts that failed.
 
-The execution pipeline is provider-neutral: wrap your existing async client or
-use the built-in OpenAI-compatible, Gemini, or PydanticAI conveniences. Use it
-when you need results during the current workflow; latency-tolerant jobs may be
-better suited to a provider's native batch API.
+It works with any async client: wrap your own, or use the built-in OpenAI,
+Gemini, OpenRouter, DeepSeek, or PydanticAI support. Use it when you need results
+during the current workflow; for latency-tolerant jobs, a provider's native batch
+API may be cheaper.
 
 [![PyPI version](https://badge.fury.io/py/async-batch-llm.svg)](https://badge.fury.io/py/async-batch-llm)
 [![Python 3.10-3.14](https://img.shields.io/badge/python-3.10--3.14-blue.svg)](https://www.python.org/downloads/)
@@ -21,29 +24,9 @@ better suited to a provider's native batch API.
 [Examples](https://github.com/geoff-davis/async-batch-llm/tree/main/examples) ·
 [Changelog](https://github.com/geoff-davis/async-batch-llm/blob/main/CHANGELOG.md)
 
-Upgrading from v0.26? Read the [v0.27 migration guide](https://geoff-davis.github.io/async-batch-llm/migration/v0.27/):
-`OpenAIModel` now uses the Responses API, built-in models no longer send a
-default temperature, and application errors are no longer mistaken for rate limits.
-Several names are deprecated ahead of 1.0, the next release; run your tests with
-`-W error::DeprecationWarning` to find them (on Python 3.14 with google-genai installed,
-also pass `-W "ignore::DeprecationWarning:google.genai.types"`). The
-[API stability page](https://geoff-davis.github.io/async-batch-llm/stability/) lists what 1.0 keeps stable.
-
-> **Python 3.10:** v0.27 is the last release that supports Python 3.10. 1.0 requires
-> Python 3.11 or newer.
-
-## What it adds over plain `asyncio`
-
-| Capability | Behavior |
-| --- | --- |
-| Error-aware retries | Separate budgets for content/transport failures and rate limits |
-| Coordinated cooldowns | One worker's rate limit pauses the shared execution scope |
-| Token-aware admission | Atomic per-scope RPM+TPM reservation with usage reconciliation |
-| Bounded streaming | Lazy sources and slow result consumers apply backpressure independently |
-| Durable resume | Versioned JSONL or indexed SQLite checkpoints replay only compatible prior results |
-| Guardrails | End-to-end item deadlines, batch deadlines, token/cost budgets, and category-based fail-fast |
-| Accounting | Attempt timing and tokens include retries and failed provider calls |
-| Observability | Typed lifecycle events, metrics, middleware, and progress callbacks |
+> **v0.27 is the last release before 1.0.** Upgrading? Read the
+> [v0.27 migration guide](https://geoff-davis.github.io/async-batch-llm/migration/v0.27/)
+> and see [Upgrading](#upgrading) below.
 
 ## Quick start
 
@@ -82,13 +65,52 @@ Wall time: 1.42s
   execution       p50 1.21s  p95 1.38s  p99 1.40s
 ```
 
-[Run the credential-free embedded-application demo](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_callable_application.py),
+No API key? [Run the credential-free demo](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_callable_application.py)
 or [open the no-key notebook in Colab](https://colab.research.google.com/github/geoff-davis/async-batch-llm/blob/main/notebooks/async_batch_llm_quickstart.ipynb).
 
-![Credential-free v0.20 terminal demo](https://raw.githubusercontent.com/geoff-davis/async-batch-llm/main/docs/assets/v0.20-quickstart.gif)
+![Credential-free terminal demo](https://raw.githubusercontent.com/geoff-davis/async-batch-llm/main/docs/assets/v0.20-quickstart.gif)
 
-The core package depends only on `pydantic>=2.0` and `typing-extensions`, with
-no provider SDK. Install extras for the providers you use:
+## Why not just `asyncio.gather`?
+
+A semaphore plus `asyncio.gather()` caps concurrency, and for a small script
+that is enough. Production batches need more:
+
+| Problem | What async-batch-llm does |
+| --- | --- |
+| A 429 hits one call while 50 more are in flight | Coordinated cooldown: workers sharing the quota scope start no new calls or retries until it ends, then ramp back up; calls already in flight finish |
+| Rate limits and bad outputs need different handling | Separate retry budgets for rate limits and for content/transport failures; `on_error()` lets a strategy escalate models |
+| Request **and** token quotas (RPM + TPM) | Atomic per-scope admission with usage reconciliation and refunds |
+| The input is a million rows, or the consumer is slow | Bounded input and result queues apply backpressure in both directions |
+| The process dies at item 80,000 | JSONL or indexed SQLite checkpoints; resume replays only compatible results |
+| A run must not exceed a time or money budget | Item deadlines, batch deadlines, token/cost caps, and category-based fail-fast |
+| "How many tokens did that cost?" | Tokens and timing include retries and failed attempts |
+| Exceptions mixed into a result list | Typed per-item results, lifecycle events, metrics, middleware, and progress callbacks |
+
+For delayed, discounted processing, use a provider's native batch API. The
+[scenario-based comparison](https://geoff-davis.github.io/async-batch-llm/comparison/)
+covers Bespoke Curator, gateways, native batch APIs, and workflow engines.
+
+## Benchmarks
+
+Dated measurements from the GSM8K math benchmark, not provider guarantees:
+
+- **Wall time** (June 2026). 30 serial calls took 39–65 seconds; with a worker pool they
+  took 2.1–4.2 seconds on the two unthrottled providers.
+- **Throughput** (June 2026). At the same concurrency over 1,000 items, the worker pool
+  processed 72–108 items/s, against 55–58 items/s for a hand-written
+  semaphore pool.
+- **Model bake-off** (all 1,319 items, August 2026): DeepSeek V4 Flash scored
+  96.9% for **$0.11**, Gemini 3.5 Flash-Lite 96.6% for **$0.71**, and GLM 5.3 Flash
+  via OpenRouter 96.3% for **$0.03**.
+
+The [benchmarks page](https://geoff-davis.github.io/async-batch-llm/benchmarks/)
+has the methodology, model IDs, pricing snapshot, the throttled-provider case
+where a bare `gather` was faster, and complete tables.
+
+## Install
+
+The core package depends only on `pydantic>=2.0` and `typing-extensions`. Add
+extras for the providers you use:
 
 | Extra | Enables | Installs |
 | --- | --- | --- |
@@ -103,7 +125,32 @@ no provider SDK. Install extras for the providers you use:
 `CallableStrategy`, `FakeStrategy`, and custom `LLMCallStrategy` subclasses need
 no extra. Supported on Python 3.10–3.14, tested on Linux and macOS.
 
-### Use your existing async client
+## Providers
+
+`llm("provider:model")` covers `openai:`, `gemini:`, `openrouter:`, `deepseek:`,
+and `openai-compatible:` (any other OpenAI-compatible server, with `base_url=`).
+Keyword arguments forward to the model constructor, for example
+`llm("deepseek:deepseek-v4-flash", thinking=False, max_connections=150)`.
+
+- **OpenAI** uses the Responses API by default (`api_surface="chat_completions"`
+  opts out). OpenRouter, DeepSeek, and `OpenAICompatibleModel` share the same
+  model layer; subclass it for Together, Fireworks, vLLM, and similar servers.
+- **Gemini** supports structured response parsing and shared context caching.
+- **PydanticAI** agents run through `PydanticAIStrategy` with typed output.
+- **Anthropic** and anything else work through PydanticAI, `CallableStrategy`, or
+  an `LLMCallStrategy` subclass.
+
+For custom clients or cached models, use the explicit two-object form,
+`OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))`. See the
+[provider guides](https://geoff-davis.github.io/async-batch-llm/),
+[custom strategy guide](https://geoff-davis.github.io/async-batch-llm/examples/custom-strategies/),
+and [OpenAI-compatible high-throughput guide](https://geoff-davis.github.io/async-batch-llm/openai-high-throughput/).
+Model IDs and service limits change independently of this package, so check the
+provider's documentation when choosing them.
+
+## Use your existing async client
+
+If your application already has an async client or gateway, wrap one call:
 
 ```python
 from async_batch_llm import (
@@ -142,116 +189,40 @@ async for result in process_stream(strategy, database_prompt_source(), config=co
     await save_result(result)
 ```
 
-`CallableStrategy` is an adapter to the same execution path used by built-in
-strategies—not a second runtime. It adds bounded input/output handoff,
-concurrency admission, coordinated cooldowns, LLM-aware retries, per-item retry
-state, deadlines, checkpoint/replay, accounting, and observers around one
-existing async operation. See [Use Your Existing Async Client](https://geoff-davis.github.io/async-batch-llm/callable-integration/).
+`CallableStrategy` runs on the same execution path as the built-in strategies,
+so the call gets retries, cooldowns, deadlines, checkpoints, accounting, and
+observers. `max_queue_size` bounds accepted input waiting for workers and
+`max_result_queue_size` bounds finished results waiting for your loop; both
+default to unbounded. See
+[Use Your Existing Async Client](https://geoff-davis.github.io/async-batch-llm/callable-integration/).
 
-### Built-in providers and result handling
-
-`llm("provider:model")` covers `openai:`, `gemini:`, `openrouter:`,
-`deepseek:`, and `openai-compatible:` (any other OpenAI-compatible server, with
-`base_url=`). Keyword arguments forward to the model constructor, e.g.
-`llm("deepseek:deepseek-v4-flash", thinking=False, max_connections=150)`.
-For custom clients, cached models, or custom strategies, use the explicit
-two-object form — `OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))` —
-described in the [provider guides](https://geoff-davis.github.io/async-batch-llm/).
-
-Pass `(item_id, prompt)` pairs to control IDs, or `(item_id, prompt, context)`
-triples to carry application data into each result. Collected results remain in
-completion order by default. Pass `preserve_order=True`, or call
-`batch.in_input_order()`, when stable submission order is required.
-
-For incremental handling, stream results while a bounded work queue applies
-backpressure to the producer:
-
-```python
-from async_batch_llm import ProcessorConfig, process_stream
-
-config = ProcessorConfig(
-    concurrency=50,
-    max_queue_size=200,
-    max_result_queue_size=100,
-)
-
-async for item in process_stream(strategy, huge_prompt_source, config=config):
-    await save(item)  # completion order
-```
-
-`max_queue_size` bounds accepted input waiting for workers;
-`max_result_queue_size` bounds completed results waiting for the consumer. Both
-default to unbounded. `process_prompts()` retains every result by design.
-
-### Choose an execution surface
+## Choose an execution surface
 
 | Need | API |
 | --- | --- |
 | Collect a finite run | `process_prompts()` |
-| Handle results incrementally | `process_stream()` |
-| Execute one resilient request | `call()` / `call_result()` |
+| Handle results as they finish | `process_stream()` |
+| Make one resilient request | `call()` / `call_result()` |
 | Share limits across service requests | `LLMCallPool` |
 | Customize queueing and lifecycle | `ParallelBatchProcessor` |
 
-Batch, streaming, single-call, and shared-call execution share the same retry,
-timing, provider-admission, and token-accounting pipeline. See the
+All five share the same retry, timing, admission, and token-accounting
+pipeline. Pass `(item_id, prompt)` pairs to control IDs, or
+`(item_id, prompt, context)` triples to carry application data into each result.
+Results arrive in completion order; pass `preserve_order=True` to
+`process_prompts()`, or call `batch.in_input_order()`, for submission order.
+Exceptions the library defines subclass `AsyncBatchLLMError` and keep their
+built-in bases (for example, `ItemDeadlineExceeded` is still a `TimeoutError`);
+provider SDK errors are not wrapped. See the
 [single-call and shared-call guide](https://geoff-davis.github.io/async-batch-llm/api/single-gateway/)
-and [core API](https://geoff-davis.github.io/async-batch-llm/api/core/) for the
-lower-level surfaces. Exceptions the library defines subclass
-`AsyncBatchLLMError` and keep their built-in bases (for example,
-`ItemDeadlineExceeded` is still a `TimeoutError`); provider SDK errors are not wrapped.
+and [core API](https://geoff-davis.github.io/async-batch-llm/api/core/).
 
-## Token-aware admission
-
-For providers with both request and token quotas, enable token-aware admission
-explicitly (it is intentionally not part of the minimal quick start):
-
-```python
-from async_batch_llm import CharacterTokenEstimator, ProcessorConfig
-
-config = ProcessorConfig(
-    concurrency=32,
-    max_requests_per_minute=500,
-    max_tokens_per_minute=200_000,
-    token_estimator=CharacterTokenEstimator(expected_output_tokens=400),
-)
-```
-
-The [Token-Aware Admission guide](https://geoff-davis.github.io/async-batch-llm/token-aware-admission/)
-explains estimators, shared quota scopes, refunds, underestimation debt, retries,
-and known-zero versus unknown usage.
-
-## Why not just use `gather`?
-
-A semaphore plus `asyncio.gather()` is enough when all you need is a concurrency
-cap. It does not provide coordinated 429 cooldowns, validation-aware retries,
-lazy producer backpressure, checkpoint-before-publication durability, or token
-accounting for failed attempts. `return_exceptions=True` also leaves application
-code to interpret exception objects mixed into the result list.
-
-Use `gather()` for a small script when those operational guarantees do not
-matter. Use a provider's native batch API when delayed results are acceptable
-and its current pricing or throughput is a better fit. See the
-[scenario-based comparison](https://geoff-davis.github.io/async-batch-llm/comparison/)
-for Bespoke Curator, gateways, native batch APIs, and workflow engines.
-
-## Benchmarks
-
-A GSM8K benchmark (June 2026, v0.12-era build) cut 30 serial calls from 39–65
-seconds to 2.1–4.2 seconds with bounded worker pools, and processed 72–108
-items/s at equal concurrency, ahead of a hand-written semaphore pool (55–58
-items/s). An August 2026 bake-off over all 1,319 items compared DeepSeek V4
-Flash (96.9%, **$0.11**), Gemini 3.5 Flash-Lite (96.6%, **$0.71**) and GLM 5.3 Flash via
-OpenRouter (96.3%, **$0.03**). These are dated measurements, not provider
-guarantees; see the
-[methodology, model IDs, pricing snapshot, and complete tables](https://geoff-davis.github.io/async-batch-llm/benchmarks/).
-
-## Production checkpoints and guardrails
+## Production runs: checkpoints, deadlines, and budgets
 
 The complete
 [production resume example](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_production_resume.py)
-is runnable. The core configuration looks like this once your `strategy` and
-`prompts` are defined:
+is runnable. With your `strategy` and `prompts` defined, the core configuration
+looks like this:
 
 ```python
 from pathlib import Path
@@ -303,31 +274,34 @@ if batch.termination.kind != "completed":
 Path("summary.json").write_text(batch.to_json(), encoding="utf-8")
 ```
 
-Important operational details:
+What to know before relying on it:
 
-- Check `batch.termination`. Batch deadlines, budget stops, and configured
-  fail-fast stops return completed and collateral terminal results rather than
-  disguising the controlled stop as an unexpected exception.
-- Budgets are soft caps: calls already running when the cap is reached finish
-  (or are cancelled, with `CANCEL_ACTIVE`), so usage can overshoot by at most one
-  call per worker.
-- Each newly executed terminal result is appended and flushed before it is
-  returned or streamed. `fsync=True` requests stronger durability; the default
-  is flush-only.
-- `JsonlArtifactStore` serializes concurrent writes within one process. It does
-  not claim cross-process append safety.
-- Replay compatibility includes item ID, prompt, participating context, and the
-  complete artifact identity—not merely `item_id`.
-- `REUSE_SUCCESSES` reruns prior failures. `REUSE_ALL` also replays compatible
-  terminal provider failures. Deadline, abort, and budget stops, and
-  configuration failures (token-estimation or quota-scope errors), always
-  re-execute.
-- Raw prompts and contexts are excluded by default. Outputs and metadata are
-  included by default and may contain sensitive application data.
-- Historical replay tokens remain on each result for audit, while live
-  processor statistics exclude them from current-run consumption.
-- For 100k+ restartable runs, swap in the indexed SQLite backend (v0.21) —
-  same records, same replay semantics, no history decode on reopen:
+- **Controlled stops return results.** Batch deadlines, budget stops, and
+  fail-fast stops end the run with a `BatchResult` instead of an exception; check
+  `batch.termination`. A fail-fast category triggers only once an item fails for
+  good, not on a retryable attempt. Checkpoint write failures and cancellation by
+  your own code still raise.
+- **Budgets are soft caps.** Calls already running when the cap is reached
+  finish (or are cancelled with `AbortMode.CANCEL_ACTIVE`), so usage can
+  overshoot by at most one call per worker.
+- **Checkpoints come before publication.** A result from a normal execution is
+  appended and flushed before it is returned or streamed; `fsync=True` adds
+  durability. Audit records for batch deadline, abort, and budget stops are
+  best-effort, and items rejected before execution may have no record; see the
+  [checkpoint failure rules](https://geoff-davis.github.io/async-batch-llm/results-and-artifacts/#item-local-artifact-serialization-failures).
+  `JsonlArtifactStore` is safe for concurrent writes within one process, not
+  across processes.
+- **Replay is strict.** A stored result is reused only when the item ID, prompt,
+  participating context, and the whole artifact identity match.
+  `REUSE_SUCCESSES` reruns failures; `REUSE_ALL` also replays terminal provider
+  failures. Deadline, abort, and budget stops, and configuration failures,
+  always re-execute.
+- **Privacy.** Raw prompts and contexts are not stored by default. Outputs and
+  metadata are, and may contain sensitive application data.
+- **Large runs.** `process_prompts()` keeps every result in memory. For bounded
+  memory, use `process_stream()` with a lazy source and bounded queues. For 100k+
+  items, also use the indexed SQLite backend: same records, same replay rules, no
+  history decode on reopen. Pass the same `identity`:
 
   ```python
   from async_batch_llm import SqliteArtifactStore
@@ -335,74 +309,42 @@ Important operational details:
   store = SqliteArtifactStore("runs/invoice-extraction.sqlite", identity=identity)
   ```
 
-  Pass the same `identity` as before, or replay keys fall back to the inferred
-  identity and lose the version pins.
-
-  JSONL remains the portable, human-inspectable option.
-
-Read [Results, Artifacts, and Resume](https://geoff-davis.github.io/async-batch-llm/results-and-artifacts/),
+`attempt_timeout` limits one provider attempt;
+`GuardrailConfig.total_timeout_per_item` limits the whole item, including
+cooldowns, admission, retries, and backoff. The
+[Choosing Your Limits guide](https://geoff-davis.github.io/async-batch-llm/choosing-your-limits/)
+walks every limit in decision order with a worked 10k-item sizing example. See
+also [Results, Artifacts, and Resume](https://geoff-davis.github.io/async-batch-llm/results-and-artifacts/),
 [Large Runs](https://geoff-davis.github.io/async-batch-llm/large-runs/),
-and [Deadlines, Budgets and Fail-Fast Guardrails](https://geoff-davis.github.io/async-batch-llm/guardrails/)
-for schema compatibility, privacy controls, abort modes, and deadline details.
+[Deadlines, Budgets and Fail-Fast Guardrails](https://geoff-davis.github.io/async-batch-llm/guardrails/),
+and the [production checklist](https://geoff-davis.github.io/async-batch-llm/production-checklist/).
 
-## Provider-neutral execution
+## Token-aware admission
 
-Built-in strategies cover:
+For providers with both request and token quotas, enable token-aware admission
+explicitly:
 
-- `OpenAIStrategy`, `OpenRouterStrategy`, and `DeepSeekStrategy` through the
-  shared OpenAI-compatible model layer. `OpenAIModel` uses OpenAI's Responses
-  API by default (`api_surface="chat_completions"` opts out);
-  `OpenAICompatibleModel` targets any other Chat Completions server.
-- `GeminiStrategy`, including structured response parsing and shared context
-  caching.
-- `PydanticAIStrategy` for PydanticAI agents and typed output.
+```python
+from async_batch_llm import CharacterTokenEstimator, ProcessorConfig
 
-Anthropic can be used through PydanticAI or `CallableStrategy`. Other
-OpenAI-compatible services work through `OpenAICompatibleModel` or
-`llm("openai-compatible:<model>", base_url=...)`, or can be wrapped as an
-existing async client. Subclassing `LLMCallStrategy` remains available for more
-specialized integrations; built-in provider models are not required.
+config = ProcessorConfig(
+    concurrency=32,
+    max_requests_per_minute=500,
+    max_tokens_per_minute=200_000,
+    token_estimator=CharacterTokenEstimator(expected_output_tokens=400),
+)
+```
 
-Model identifiers and service limits change independently of this package.
-Confirm current provider documentation when choosing a model, connection pool,
-or concurrency limit. See the
-[custom strategy guide](https://geoff-davis.github.io/async-batch-llm/examples/custom-strategies/)
-and [OpenAI-compatible high-throughput guide](https://geoff-davis.github.io/async-batch-llm/openai-high-throughput/).
+The [Token-Aware Admission guide](https://geoff-davis.github.io/async-batch-llm/token-aware-admission/)
+explains estimators, shared quota scopes, refunds, underestimation debt, retries,
+and known-zero versus unknown usage.
 
-## Timing, retry, and ordering semantics
+## Tokens and cost
 
-The [Choosing Your Limits guide](https://geoff-davis.github.io/async-batch-llm/choosing-your-limits/)
-walks every limit below in decision order — from `concurrency=` through
-connection pools, admission, timeouts, deadlines, ramp, and cooldown — with a
-worked 10k-item sizing example.
-
-- `attempt_timeout` limits one provider execution attempt (renamed from
-  `timeout_per_item` in v0.20; the old name is a deprecated alias, removed in 1.0).
-- `GuardrailConfig.total_timeout_per_item` limits the complete logical item,
-  including coordinated cooldown, startup ramp, proactive rate limiting,
-  provider-capacity admission, calls, retry cooldowns, and backoff.
-- `GuardrailConfig.batch_timeout` starts when the processor run starts.
-- A fail-fast category triggers only after an item reaches terminal failure;
-  retryable intermediate attempts do not abort the batch.
-- `AbortMode.DRAIN_ACTIVE` lets an in-progress provider call finish.
-  `AbortMode.CANCEL_ACTIVE` cancels unfinished accepted work while preserving
-  external caller-cancellation semantics.
-- Collected and streamed results remain completion ordered by default.
-  `process_prompts(..., preserve_order=True)` orders a collected batch by its
-  stable submission index. Streaming intentionally remains completion ordered
-  to avoid blocking behind a slow early item and buffering later results.
-
-See the [production checklist](https://geoff-davis.github.io/async-batch-llm/production-checklist/)
-and [bounded-work guide](https://geoff-davis.github.io/async-batch-llm/bounded-work/)
-for queue, connection-pool, and lifecycle guidance.
-
-## Results, serialization, and accounting
-
-`BatchResult` aggregates input, cached, output, and total tokens across retries,
-including usage recovered from failed attempts. Token accounting covers attempts
-visible to ABL, including recoverable failed-attempt usage. Retries hidden inside
-an upstream gateway require gateway-reported usage to be visible. Cost remains
-caller-supplied; the package does not bundle a provider price table:
+`BatchResult` totals input, cached, output, and total tokens across retries,
+including usage recovered from failed attempts. Retries hidden inside an
+upstream gateway are counted only if the gateway reports their usage. The
+package has no built-in price table; you supply the rates:
 
 ```python
 cost = batch.estimated_cost(
@@ -416,15 +358,9 @@ To stop a run at a dollar amount, pass your pricing as
 `GuardrailConfig(max_total_cost=..., cost_function=...)`; see the
 [guardrails guide](https://geoff-davis.github.io/async-batch-llm/guardrails/#token-and-cost-budgets).
 
-`WorkItemResult` and `BatchResult` support strict, versioned JSON and JSONL
-serialization. Unsupported values raise instead of silently falling back to
-`repr()`. Dataclasses, Pydantic models, enums, dates, UUIDs, paths, tuples, and
-sets serialize to JSON-safe values; use an encoder/decoder pair when typed
-reconstruction is required. Exception descriptors never restore arbitrary
-classes or tracebacks.
-
-See the [artifact and serialization API](https://geoff-davis.github.io/async-batch-llm/api/artifacts/)
-and [core API](https://geoff-davis.github.io/async-batch-llm/api/core/).
+`WorkItemResult` and `BatchResult` serialize to strict, versioned JSON and JSONL;
+unsupported values raise rather than fall back to `repr()`. See the
+[artifact and serialization API](https://geoff-davis.github.io/async-batch-llm/api/artifacts/).
 
 ## Testing without provider calls
 
@@ -441,9 +377,9 @@ batch = await process_prompts(
 assert list(batch.in_input_order().outputs()) == ["HELLO", "WORLD"]
 ```
 
-Use `FakeStrategy` and `MockAgent` to exercise latency, rate
-limits, retryable failures, and terminal failures without spending API quota.
-The project test suite makes no live provider calls. See the
+`FakeStrategy` and `MockAgent` also simulate latency, rate limits, retryable
+failures, and terminal failures without spending API quota. The project's own
+test suite makes no live provider calls. See the
 [testing guide](https://geoff-davis.github.io/async-batch-llm/testing/).
 
 ## Examples
@@ -457,14 +393,15 @@ Start with these runnable examples:
 - [Validation-aware model escalation](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_smart_model_escalation.py)
 - [Custom embedding strategies](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_embeddings.py)
 
-Browse the [complete examples directory](https://github.com/geoff-davis/async-batch-llm/tree/main/examples)
-for Gemini, DeepSeek, OpenRouter, Anthropic, LangChain, caching, grounding, and
-benchmark walkthroughs.
+The [examples directory](https://github.com/geoff-davis/async-batch-llm/tree/main/examples)
+also covers Gemini, DeepSeek, OpenRouter, Anthropic, LangChain, caching,
+grounding, and the benchmark.
 
 ## Documentation
 
 - [Getting Started](https://geoff-davis.github.io/async-batch-llm/getting-started/)
 - [Compare Alternatives](https://geoff-davis.github.io/async-batch-llm/comparison/)
+- [Choosing Your Limits](https://geoff-davis.github.io/async-batch-llm/choosing-your-limits/)
 - [Production Checklist](https://geoff-davis.github.io/async-batch-llm/production-checklist/)
 - [Troubleshooting and FAQ](https://geoff-davis.github.io/async-batch-llm/troubleshooting/)
 - [Results, Artifacts, and Resume](https://geoff-davis.github.io/async-batch-llm/results-and-artifacts/)
@@ -472,7 +409,23 @@ benchmark walkthroughs.
 - [Bounded Work and Backpressure](https://geoff-davis.github.io/async-batch-llm/bounded-work/)
 - [API Reference](https://geoff-davis.github.io/async-batch-llm/api/core/)
 - [API Stability (draft for 1.0)](https://geoff-davis.github.io/async-batch-llm/stability/)
-- [Migration guides](https://geoff-davis.github.io/async-batch-llm/migration/v0.27/)
+
+## Upgrading
+
+From v0.26, read the
+[v0.27 migration guide](https://geoff-davis.github.io/async-batch-llm/migration/v0.27/).
+In short: `OpenAIModel` now uses the Responses API, built-in models no longer
+send a default temperature, application errors are no longer mistaken for rate
+limits, and several names are deprecated ahead of 1.0. Run your tests with
+`-W error::DeprecationWarning` to find them (on Python 3.14 with google-genai
+installed, also pass `-W "ignore::DeprecationWarning:google.genai.types"`). The
+[API stability page](https://geoff-davis.github.io/async-batch-llm/stability/)
+lists what 1.0 keeps stable.
+
+v0.27 is the last release that supports Python 3.10; 1.0 requires Python 3.11
+or newer. Guides for earlier versions are in the
+[migration section](https://geoff-davis.github.io/async-batch-llm/migration/v0.27/)
+of the documentation.
 
 ## Contributing
 
@@ -486,9 +439,10 @@ make ci
 ```
 
 See the [contributing guide](https://geoff-davis.github.io/async-batch-llm/contributing/)
-or open an [issue](https://github.com/geoff-davis/async-batch-llm/issues). For
-operational help, start with the
-[troubleshooting guide](https://geoff-davis.github.io/async-batch-llm/troubleshooting/).
+or open an [issue](https://github.com/geoff-davis/async-batch-llm/issues). To
+report a security vulnerability, follow the
+[security policy](https://github.com/geoff-davis/async-batch-llm/blob/main/SECURITY.md)
+rather than opening a public issue.
 
 ## License
 
