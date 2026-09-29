@@ -242,10 +242,10 @@ executed again; its zero-based stored sequence may be reused, remaining unique
 among retained records. Warnings report dropped bytes, a SHA-256 and the item ID
 when available, without logging raw payloads. Repair is also fsynced when enabled.
 
-On macOS, `fsync()` hands data to the drive but does not force the drive to
-write its cache to stable storage (that needs `F_FULLFSYNC`, which the store
-does not issue). `fsync=True` there protects against process and OS crashes but
-not against sudden power loss.
+On macOS, `fsync()` flushes host buffers to the drive but does not force the
+drive to write its cache to stable storage (that needs `F_FULLFSYNC`, which the
+store does not issue). `fsync=True` there does not guarantee against data loss
+from an OS crash or power loss.
 
 A file containing only a recognizable canonical manifest prefix can be repaired
 and initialized again. Unrecognized files, unsupported versions, and malformed
