@@ -68,7 +68,7 @@ dependencies = [
 
 [project.optional-dependencies]
 pydantic-ai = [
-    "pydantic-ai>=1.0.0",
+    "pydantic-ai>=1.32.0",
 ]
 gemini = [
     "google-genai>=1.49.0",
@@ -77,16 +77,16 @@ openai = [
     "openai>=1.66.2",
 ]
 openrouter = [
-    "openai>=1.50.0",
+    "openai>=1.66.2",
 ]
 deepseek = [
-    "openai>=1.66.0",
+    "openai>=1.66.2",
 ]
 progress = [
     "tqdm>=4.66",
 ]
 all = [
-    "pydantic-ai>=1.0.0",
+    "pydantic-ai>=1.32.0",
     "google-genai>=1.49.0",
     "openai>=1.66.2",
     "tqdm>=4.66",
@@ -106,7 +106,7 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0.0",
     "ty>=0.0.1a16",
-    "pydantic-ai>=1.0.0",  # Required for tests
+    "pydantic-ai>=1.32.0",  # Required for tests
     "google-genai>=1.49.0",  # Required for Gemini tests
     "openai>=1.66.2",  # Required for OpenAI/OpenRouter tests
     "tqdm>=4.66",  # Required for progress=True tests

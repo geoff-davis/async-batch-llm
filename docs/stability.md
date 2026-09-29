@@ -43,9 +43,11 @@ lists its deprecations.
 
 - **Python:** each supported version until its upstream end of life. 1.0 requires
   Python 3.11 or newer; v0.27 is the last release for 3.10.
-- **Provider SDKs:** minimum versions are tested in CI. A minimum can rise in a minor
-  release when an older SDK can't support a documented feature; the changelog says
-  so.
+- **Provider SDKs:** CI tests each SDK at its declared minimum and at the latest
+  release of every supported major line. A new major line is supported once a CI
+  leg covers it; until then it may install but is untested. A minimum can rise in a
+  minor release when an older SDK can no longer be installed and used, or can't
+  support a documented feature; the changelog says so.
 - **Fixes:** security and bug fixes go into the latest release.
 
 ## Classification of the current API

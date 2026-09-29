@@ -365,7 +365,7 @@ results from being replayed as compatible strict outputs.
 
 ABL validates the surface and schema locally and passes model IDs through to
 DeepSeek for validation. See the [provider Responses reference](https://api-docs.deepseek.com/api/create-response/)
-for available models. The `deepseek` extra requires OpenAI SDK 1.66.0 or newer;
+for available models. The `deepseek` extra requires OpenAI SDK 1.66.2 or newer;
 caller-supplied clients must expose callable `responses.create`. This does not
 add multimodal work-item support or an automatic surface fallback. The explicit fallback is Chat Completions
 with `json_mode=True` plus `pydantic_json_parser(...)`; it requests valid JSON

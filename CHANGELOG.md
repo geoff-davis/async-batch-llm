@@ -50,6 +50,12 @@ See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
   both JSONL and SQLite, and an older compatible success is reused if one exists.
   Checkpoint errors for these results still propagate. The artifact schema is
   unchanged.
+- **BREAKING**: SDK minimums rise to tested floors ([#179], [#180]).
+  The `[openrouter]` and `[deepseek]` extras now require `openai>=1.66.2`, the same as
+  `[openai]`, so every OpenAI-family extra shares one tested floor. `openai`
+  1.50–1.55.2 fails against current httpx (it passes the removed `proxies` argument).
+  The `[pydantic-ai]` extra requires `pydantic-ai>=1.32.0`: earlier releases fail to
+  import with current opentelemetry. `google-genai>=1.49.0` is unchanged.
 
 ### Added
 
@@ -84,6 +90,9 @@ See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
 - Artifact stores and serialized results written by v0.18.0, v0.21.0, v0.24.1 and
   v0.26.0 are kept as test fixtures; CI checks that they still load, replay and
   accept new records.
+- CI tests each provider SDK (`openai`, `google-genai`, `pydantic-ai`) at its declared
+  floor and at the latest release of every supported major line, and logs the resolved
+  versions.
 - CI builds the package and runs `twine check --strict` and `check-wheel-contents`
   on every PR and before publishing (`make package-check`). Workflow actions are
   pinned to exact release tags.
@@ -118,6 +127,8 @@ These emit a warning in v0.27 and will be removed in 1.0.
 
 [#177]: https://github.com/geoff-davis/async-batch-llm/issues/177
 [#178]: https://github.com/geoff-davis/async-batch-llm/issues/178
+[#179]: https://github.com/geoff-davis/async-batch-llm/issues/179
+[#180]: https://github.com/geoff-davis/async-batch-llm/issues/180
 [#181]: https://github.com/geoff-davis/async-batch-llm/issues/181
 [#183]: https://github.com/geoff-davis/async-batch-llm/issues/183
 
