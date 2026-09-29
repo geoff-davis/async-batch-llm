@@ -89,7 +89,7 @@ class TestOpenAICompatibleGenerate:
         response = _build_response(content="output text")
         client = _build_client(response)
 
-        model = OpenAIModel("gpt-4o-mini", client)
+        model = OpenAIModel("gpt-4o-mini", client, api_surface="chat_completions")
         result = await model.generate("hello")
 
         assert result.text == "output text"
@@ -105,7 +105,7 @@ class TestOpenAICompatibleGenerate:
         response = _build_response()
         client = _build_client(response)
 
-        model = OpenAIModel("gpt-4o-mini", client)
+        model = OpenAIModel("gpt-4o-mini", client, api_surface="chat_completions")
         await model.generate("hello")
 
         kwargs = client.chat.completions.create.call_args.kwargs
@@ -119,7 +119,7 @@ class TestOpenAICompatibleGenerate:
         msgs = [
             {"role": "user", "content": [{"type": "text", "text": "hi"}]},
         ]
-        model = OpenAIModel("gpt-4o-mini", client)
+        model = OpenAIModel("gpt-4o-mini", client, api_surface="chat_completions")
         await model.generate(msgs)
 
         kwargs = client.chat.completions.create.call_args.kwargs
@@ -130,7 +130,9 @@ class TestOpenAICompatibleGenerate:
         response = _build_response()
         client = _build_client(response)
 
-        model = OpenAIModel("gpt-4o-mini", client, system_instruction="be brief")
+        model = OpenAIModel(
+            "gpt-4o-mini", client, system_instruction="be brief", api_surface="chat_completions"
+        )
         await model.generate("hello")
 
         kwargs = client.chat.completions.create.call_args.kwargs
@@ -142,7 +144,9 @@ class TestOpenAICompatibleGenerate:
         response = _build_response()
         client = _build_client(response)
 
-        model = OpenAIModel("gpt-4o-mini", client, system_instruction="default")
+        model = OpenAIModel(
+            "gpt-4o-mini", client, system_instruction="default", api_surface="chat_completions"
+        )
         await model.generate("hello", system_instruction="override")
 
         kwargs = client.chat.completions.create.call_args.kwargs
@@ -153,7 +157,9 @@ class TestOpenAICompatibleGenerate:
         response = _build_response()
         client = _build_client(response)
 
-        model = OpenAIModel("gpt-4o-mini", client, system_instruction="default")
+        model = OpenAIModel(
+            "gpt-4o-mini", client, system_instruction="default", api_surface="chat_completions"
+        )
         msgs = [
             {"role": "system", "content": "from caller"},
             {"role": "user", "content": "hi"},
@@ -171,9 +177,7 @@ class TestOpenAICompatibleGenerate:
         client = _build_client(response)
 
         model = OpenAIModel(
-            "gpt-4o-mini",
-            client,
-            extra_headers={"X-Foo": "bar"},
+            "gpt-4o-mini", client, extra_headers={"X-Foo": "bar"}, api_surface="chat_completions"
         )
         await model.generate("hi")
 
@@ -189,6 +193,7 @@ class TestOpenAICompatibleGenerate:
             "gpt-4o-mini",
             client,
             extra_body={"max_tokens": 100, "top_p": 0.9},
+            api_surface="chat_completions",
         )
         await model.generate("hi", config={"max_tokens": 200})
 
@@ -201,7 +206,7 @@ class TestOpenAICompatibleGenerate:
         response = _build_response()
         client = _build_client(response)
 
-        model = OpenAIModel("gpt-4o-mini", client)
+        model = OpenAIModel("gpt-4o-mini", client, api_surface="chat_completions")
         await model.generate("hi")
         assert "temperature" not in client.chat.completions.create.call_args.kwargs
 
@@ -214,7 +219,7 @@ class TestOpenAICompatibleGenerate:
         response = _build_response()
         client = _build_client(response)
 
-        model = OpenAIModel("o1-mini", client)
+        model = OpenAIModel("o1-mini", client, api_surface="chat_completions")
         await model.generate("hi", temperature=None)
 
         kwargs = client.chat.completions.create.call_args.kwargs
@@ -225,7 +230,7 @@ class TestOpenAICompatibleGenerate:
         response = _build_response(cached_tokens=42)
         client = _build_client(response)
 
-        model = OpenAIModel("gpt-4o-mini", client)
+        model = OpenAIModel("gpt-4o-mini", client, api_surface="chat_completions")
         result = await model.generate("hi")
 
         assert result.cached_input_tokens == 42
@@ -236,7 +241,7 @@ class TestOpenAICompatibleGenerate:
         response.usage = None
         client = _build_client(response)
 
-        model = OpenAIModel("gpt-4o-mini", client)
+        model = OpenAIModel("gpt-4o-mini", client, api_surface="chat_completions")
         result = await model.generate("hi")
 
         assert result.input_tokens == 0
@@ -249,7 +254,7 @@ class TestOpenAICompatibleGenerate:
         response = _build_response(content=None, finish_reason="length")
         client = _build_client(response)
 
-        model = OpenAIModel("gpt-4o-mini", client)
+        model = OpenAIModel("gpt-4o-mini", client, api_surface="chat_completions")
         with pytest.raises(ValueError, match="finish_reason='length'") as exc_info:
             await model.generate("hi")
 
@@ -266,7 +271,7 @@ class TestOpenAICompatibleGenerate:
         response.choices = []
         client = _build_client(response)
 
-        model = OpenAIModel("gpt-4o-mini", client)
+        model = OpenAIModel("gpt-4o-mini", client, api_surface="chat_completions")
         with pytest.raises(ValueError, match="No choices returned") as exc_info:
             await model.generate("hi")
 
@@ -428,7 +433,9 @@ class TestJsonMode:
         response = _build_response()
         client = _build_client(response)
         with patch("async_batch_llm.models.AsyncOpenAI", return_value=client):
-            model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-x", json_mode=True)
+            model = OpenAIModel.from_api_key(
+                "gpt-4o-mini", api_key="sk-x", json_mode=True, api_surface="chat_completions"
+            )
         await model.generate("return json")
 
         kwargs = client.chat.completions.create.call_args.kwargs
@@ -524,8 +531,54 @@ class TestConnectionPoolSizing:
         assert kwargs["http_client"] is mock_http_client.return_value
 
 
+def _sdk_json(request) -> dict:
+    """A minimal successful body for whichever OpenAI endpoint was called."""
+    if request.url.path.endswith("/responses"):
+        return {
+            "id": "resp_x",
+            "object": "response",
+            "created_at": 0,
+            "model": "fake",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "id": "msg_x",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "ok", "annotations": []}],
+                }
+            ],
+            "parallel_tool_calls": True,
+            "tool_choice": "auto",
+            "tools": [],
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "total_tokens": 2,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens_details": {"reasoning_tokens": 0},
+            },
+        }
+    return {
+        "id": "x",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "fake",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "ok"},
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+
+@pytest.mark.parametrize("api_surface", ["responses", "chat_completions"])
 @pytest.mark.parametrize("surface", ["call", "batch", "direct"])
-async def test_prov1_owned_model_reopens_after_cleanup(surface, monkeypatch):
+async def test_prov1_owned_model_reopens_after_cleanup(surface, api_surface, monkeypatch):
     import httpx
     from openai import AsyncOpenAI as SDKClient
 
@@ -533,22 +586,7 @@ async def test_prov1_owned_model_reopens_after_cleanup(surface, monkeypatch):
     from async_batch_llm import OpenAIStrategy, call, process_prompts
 
     def handler(request):
-        return httpx.Response(
-            200,
-            json={
-                "id": "r",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "fake",
-                "choices": [
-                    {
-                        "index": 0,
-                        "finish_reason": "stop",
-                        "message": {"role": "assistant", "content": "ok"},
-                    }
-                ],
-            },
-        )
+        return httpx.Response(200, json=_sdk_json(request))
 
     created = []
 
@@ -559,7 +597,7 @@ async def test_prov1_owned_model_reopens_after_cleanup(surface, monkeypatch):
         return client
 
     monkeypatch.setattr(models, "AsyncOpenAI", construct)
-    model = OpenAIModel.from_api_key("fake", api_key="key", max_retries=0)
+    model = OpenAIModel.from_api_key("fake", api_key="key", max_retries=0, api_surface=api_surface)
     strategy = OpenAIStrategy(model)
     for _ in range(2):
         if surface == "call":
@@ -589,7 +627,8 @@ async def test_prov1_caller_transport_survives_model_cleanup():
         await transport.aclose()
 
 
-async def test_prov1_two_strategies_share_owned_model_until_last_release(monkeypatch):
+@pytest.mark.parametrize("api_surface", ["responses", "chat_completions"])
+async def test_prov1_two_strategies_share_owned_model_until_last_release(api_surface, monkeypatch):
     import asyncio
 
     import httpx
@@ -610,23 +649,7 @@ async def test_prov1_two_strategies_share_owned_model_until_last_release(monkeyp
                 await fast_closed.wait()
             else:
                 await slow_started.wait()
-            return httpx.Response(
-                200,
-                json={
-                    "id": "x",
-                    "object": "chat.completion",
-                    "created": 0,
-                    "model": "m",
-                    "choices": [
-                        {
-                            "index": 0,
-                            "finish_reason": "stop",
-                            "message": {"role": "assistant", "content": "ok"},
-                        }
-                    ],
-                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-                },
-            )
+            return httpx.Response(200, json=_sdk_json(request))
         finally:
             in_flight -= 1
 
@@ -644,7 +667,7 @@ async def test_prov1_two_strategies_share_owned_model_until_last_release(monkeyp
         return client
 
     monkeypatch.setattr(models, "AsyncOpenAI", factory)
-    model = OpenAIModel.from_api_key("m", api_key="test", max_retries=0)
+    model = OpenAIModel.from_api_key("m", api_key="test", max_retries=0, api_surface=api_surface)
     config = ProcessorConfig(max_workers=1, retry=RetryConfig(max_attempts=1))
     slow = asyncio.create_task(call_result(OpenAIStrategy(model), "slow", config=config))
     await slow_started.wait()

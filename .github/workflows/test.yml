@@ -134,16 +134,19 @@ jobs:
 
   openai-compat:
     # The locked SDK exercises the current httpx2 transport in the main test
-    # matrix. Keep focused coverage for current releases in both older,
-    # httpx-backed SDK major lines allowed by openai>=1.50.0.
+    # matrix. Keep focused coverage for the exact supported floor (the first
+    # release that parses Responses reasoning summaries) and for current
+    # releases in both httpx-backed SDK major lines allowed by openai>=1.66.2.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         include:
+        - label: "floor"
+          requirement: "openai==1.66.2"
         - label: "1.x"
-          requirement: "openai>=1.50,<2"
+          requirement: "openai>=1.66.2,<2"
         - label: "2.x"
           requirement: "openai>=2,<3"
 
@@ -166,7 +169,8 @@ jobs:
           --with pytest \
           --with pytest-asyncio \
           --with pytest-timeout \
-          pytest tests/test_openai_compatible.py tests/test_concurrency_knob.py -q
+          pytest tests/test_openai_compatible.py tests/test_openai_responses.py \
+            tests/test_concurrency_knob.py -q
 
   scale-smoke:
     # Reduced deterministic scale-soak profile (benchmarks/scale_soak): exact

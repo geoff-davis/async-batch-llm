@@ -63,11 +63,71 @@ avoid retries inside a framework attempt. See the
 
 ## Choosing a model
 
-`OpenAIModel` accepts any model id the OpenAI chat completions endpoint
-serves: `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini`, etc. Reasoning models
-(`o1`, `o3`) work, but if you need reasoning summaries or server-side tools,
-the [Responses API](https://platform.openai.com/docs/api-reference/responses)
-is a better fit; that's a future addition (`OpenAIResponsesModel`).
+`OpenAIModel` accepts any OpenAI model id: `gpt-4o`, `gpt-4o-mini`, `o3`,
+`o4-mini`, and so on.
+
+## Responses API (the default since v0.27)
+
+`OpenAIModel` calls OpenAI's
+[Responses API](https://platform.openai.com/docs/api-reference/responses) by
+default and sends `store=False`, so requests aren't kept for later retrieval.
+Set `store` in `generation_config` or `extra_body` to change that. For the
+previous Chat Completions behavior, pass `api_surface="chat_completions"`:
+
+```python
+model = OpenAIModel.from_api_key("gpt-4o-mini", api_surface="chat_completions")
+```
+
+Chat-style request fields are translated, so most existing configurations
+keep working:
+
+| You pass | Sent to the Responses API |
+| --- | --- |
+| `max_tokens` / `max_completion_tokens` | `max_output_tokens` |
+| `response_format` (JSON object or JSON schema), `json_mode=True` | `text.format` |
+| `reasoning_effort` | `reasoning.effort` |
+| `logprobs=True`, `top_logprobs` | `include=["message.output_text.logprobs"]`, `top_logprobs` |
+| Chat `tools` / `tool_choice` | Responses function tools. An omitted `strict` becomes `false`, matching Chat. |
+| Chat message lists, including image parts, assistant `tool_calls` and `tool` replies | Responses input items |
+
+Fields with no Responses equivalent (`n`, `stop`, `seed`,
+`presence_penalty`, `frequency_penalty`, `logit_bias`, legacy
+`functions`/`function_call`), unsupported content parts (audio, files in Chat
+form), and `stream`/`background` raise `ValueError` before any request is
+sent. Use the Chat Completions opt-out for those.
+
+Results keep the Chat Completions vocabulary for `metadata["finish_reason"]`:
+
+- `"stop"` for a completed response;
+- `"tool_calls"` when the model called functions;
+- `"length"` when it stopped at the token limit;
+- `"content_filter"` when a filter cut it off.
+
+The raw Responses status is in `metadata["response_status"]`.
+`metadata["reasoning_tokens"]` reports reasoning tokens. They're already
+included in `output_tokens`, so cost math is unchanged.
+
+Some outcomes differ from Chat Completions:
+
+- A completed response that contains **only function calls** succeeds with
+  `text=""`, `finish_reason="tool_calls"`, and the calls in
+  `result.tool_calls`. The Chat Completions surface still raises
+  `EmptyResponseError` for a textless reply.
+- A response cut off at the token limit succeeds with the partial text and
+  `finish_reason="length"`, as on Chat Completions. Without any text, it raises
+  `EmptyResponseError`.
+- A refusal raises `EmptyResponseError`.
+- A failed response raises `ProviderResponseError` with the usage attached.
+  Billing (`insufficient_quota`) and rate-limit failures classify as usual.
+
+**Other endpoints.** The Responses default applies only to `OpenAIModel`. For
+vLLM, Together, proxies, or any other OpenAI-compatible server, use
+`OpenAICompatibleModel`, which stays on Chat Completions (see
+[Other OpenAI-compatible providers](#other-openai-compatible-providers)).
+`OpenRouterModel` is unaffected. There's no automatic fallback: pointing
+`OpenAIModel` at a server without a `/responses` endpoint fails at request
+time. The same goes for `OPENAI_BASE_URL` and a client that exposes
+`responses.create` but talks to a server without the endpoint.
 
 > **Temperature is omitted by default.** Built-in models send no `temperature`
 > unless you pass one, so each model uses its provider default. Some models or
@@ -173,19 +233,25 @@ The OpenAI-compatible models (`OpenAIModel`, `OpenRouterModel`,
 for the shapes and boundaries (**experimental** — shapes may change while
 they stabilize):
 
-- **`reasoning`** — the model's reasoning/thinking trace, read from
-  `message.reasoning_content` (DeepSeek reasoner models) with a fallback to
-  `message.reasoning` (OpenRouter). Access via `item_result.reasoning`.
-- **`tool_calls`** — tool/function calls the model requested, as
+- **`reasoning`** — the model's reasoning/thinking trace. On Chat
+  Completions it comes from `message.reasoning_content` (DeepSeek reasoner
+  models), falling back to `message.reasoning` (OpenRouter). On the Responses
+  API it comes from reasoning-item text when the provider returns it, else the
+  joined reasoning summaries. OpenAI returns summaries only when you ask for
+  them, e.g. `generation_config={"reasoning": {"summary": "auto"}}`.
+  Encrypted reasoning is never read. Access via `item_result.reasoning`.
+- **`tool_calls`** — function calls the model requested, as
   `[{"id", "name", "arguments"}]` with `arguments` kept as the raw JSON
   string. Access via `item_result.tool_calls` (a `list[ToolCall] | None`).
-  Visibility only — the framework never executes tools; note that a pure
-  tool-call turn (`content=null`) raises `EmptyResponseError`, so calls
-  surface only alongside returned text.
-- **`logprobs`** — the provider logprobs object (as a plain dict via
-  `model_dump()`), when you requested it, e.g.
-  `OpenAIStrategy(model, generation_config={"logprobs": True})`. Access via
-  `item_result.logprobs`.
+  Visibility only: the framework never executes tools. On the Responses API a
+  function-call-only turn succeeds with empty text. On Chat Completions a pure
+  tool-call turn (`content=null`) raises `EmptyResponseError`, so calls surface
+  only alongside returned text. Built-in Responses tools such as web search are
+  not function calls and aren't included.
+- **`logprobs`** — the provider's logprobs as plain JSON, when you requested
+  them, e.g. `OpenAIStrategy(model, generation_config={"logprobs": True})`. On
+  Chat Completions this is the logprobs object; on the Responses API it's a list
+  of per-token entries. Access via `item_result.logprobs`.
 
 Each key is emitted only when present on the response, so default payloads
 are unchanged unless you asked the model for these features.
@@ -290,10 +356,29 @@ for the full boundary.
 > **Post-rate-limit slow-start:** `RateLimitConfig.slow_start_*` applies only
 > after a rate-limit cooldown. It does not ramp the initial batch startup.
 
-## Subclassing for other OpenAI-compatible providers
+## Other OpenAI-compatible providers
 
-`OpenAICompatibleModel` is exported so you can target Together, Fireworks,
-local vLLM, etc. with a few lines:
+`OpenAICompatibleModel` targets any Chat Completions server (vLLM, Together,
+Fireworks, proxies) without subclassing:
+
+```python
+from async_batch_llm import OpenAICompatibleModel, OpenAIStrategy, llm
+
+model = OpenAICompatibleModel.from_api_key(
+    "meta-llama/Llama-3.1-8B-Instruct",
+    base_url="http://localhost:8000/v1",
+    api_key="token",  # falls back to OPENAI_API_KEY
+)
+strategy = OpenAIStrategy(model)
+
+# Or through the factory; base_url is required for this prefix.
+strategy = llm(
+    "openai-compatible:meta-llama/Llama-3.1-8B-Instruct",
+    base_url="http://localhost:8000/v1",
+)
+```
+
+For a provider you use often, a small subclass keeps the URL in one place:
 
 ```python
 from async_batch_llm import OpenAICompatibleModel
@@ -303,9 +388,9 @@ class TogetherModel(OpenAICompatibleModel):
     _install_extras = "openai"
 ```
 
-The built-in `DeepSeekModel` is exactly this pattern — it additionally
-overrides `_extract_tokens` to read DeepSeek's native cache-hit field. Read
-its source for a worked example of customizing token extraction.
+The built-in `DeepSeekModel` is exactly this pattern. It also overrides
+`_extract_tokens` to read DeepSeek's native cache-hit field; read its source for
+a worked example of customizing token extraction.
 
 ## See also
 

@@ -58,10 +58,14 @@ def _chat_client() -> MagicMock:
 @pytest.mark.asyncio
 async def test_openai_strategy_default_omits_and_explicit_zero_is_sent() -> None:
     client = _chat_client()
-    await OpenAIStrategy(OpenAIModel("gpt-4o-mini", client)).execute("hi", 1, 10.0)
+    await OpenAIStrategy(
+        OpenAIModel("gpt-4o-mini", client, api_surface="chat_completions")
+    ).execute("hi", 1, 10.0)
     assert "temperature" not in client.chat.completions.create.call_args.kwargs
 
-    await OpenAIStrategy(OpenAIModel("gpt-4o-mini", client), temperature=0.0).execute("hi", 1, 10.0)
+    await OpenAIStrategy(
+        OpenAIModel("gpt-4o-mini", client, api_surface="chat_completions"), temperature=0.0
+    ).execute("hi", 1, 10.0)
     assert client.chat.completions.create.call_args.kwargs["temperature"] == 0.0
 
 

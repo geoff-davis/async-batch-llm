@@ -134,6 +134,7 @@ def infer_artifact_identity(strategy: Any) -> ArtifactIdentity:
 
     provider: str | None = None
     model_id: str | None = None
+    extra: dict[str, Any] = {}
 
     model_obj = getattr(strategy, "model", None)
     if model_obj is not None:
@@ -143,6 +144,13 @@ def infer_artifact_identity(strategy: Any) -> ArtifactIdentity:
         provider = _PROVIDER_BY_MODEL_CLASS.get(type(model_obj).__name__)
         if provider is None:
             provider = type(model_obj).__name__
+        # Only OpenAIModel's API surface joins inferred identity (v0.27). It is
+        # empty on Chat Completions, so v0.26 checkpoints still match there.
+        # Other models, including DeepSeekModel, keep their v0.26 identities.
+        from .models import OpenAIModel
+
+        if isinstance(model_obj, OpenAIModel):
+            extra = dict(model_obj.artifact_identity_extra)
     else:
         # PydanticAIStrategy and similar wrappers expose an agent.
         agent = getattr(strategy, "agent", None)
@@ -163,6 +171,7 @@ def infer_artifact_identity(strategy: Any) -> ArtifactIdentity:
         prompt_version=_UNVERSIONED,
         parser_version=_UNVERSIONED,
         application_version=_UNVERSIONED,
+        extra=extra,
     )
 
 
