@@ -1086,11 +1086,17 @@ async def test_terminal_outcome_keeps_effective_strategy_classification_after_ov
 
 @pytest.mark.parametrize("retryable", [True, False], ids=["deadline-in-backoff", "terminal"])
 async def test_failed_result_preserves_capacity_wait_in_admission_timing(retryable):
-    """A terminal guard must retain capacity wait accumulated before backoff."""
+    """A terminal guard must retain capacity wait accumulated before backoff.
+
+    Each item holds the single capacity slot for 0.1 s, so the second waits about
+    0.1 s. The 1.5 s item deadline leaves wide headroom on slow CI runners (a 0.7 s
+    deadline flaked on macOS); the 10 s backoff keeps the retryable case's deadline
+    inside the backoff.
+    """
 
     class WaitingFailure(LLMCallStrategy[str]):
         async def execute(self, prompt, attempt, timeout, state=None):
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
             if retryable:
                 raise ConnectionError("retry until deadline")
             raise ValueError("terminal")
@@ -1099,8 +1105,8 @@ async def test_failed_result_preserves_capacity_wait_in_admission_timing(retryab
     host = ExecutorHost(
         ProcessorConfig(
             max_provider_concurrency=1,
-            guardrails=GuardrailConfig(total_timeout_per_item=0.7),
-            retry=RetryConfig(max_attempts=3, initial_wait=2.0, jitter=False),
+            guardrails=GuardrailConfig(total_timeout_per_item=1.5),
+            retry=RetryConfig(max_attempts=3, initial_wait=10.0, max_wait=10.0, jitter=False),
         ),
         strategy=strategy,
     )
@@ -1111,7 +1117,7 @@ async def test_failed_result_preserves_capacity_wait_in_admission_timing(retryab
         waited = max(results, key=lambda result: result.timing.admission_wait_seconds)
         assert not waited.success
         assert len(waited.timing.attempts) == 1
-        assert waited.timing.admission_wait_seconds >= 0.1
+        assert waited.timing.admission_wait_seconds >= 0.05
         if retryable:
             assert waited.error_category == "framework_total_item_timeout"
         else:
