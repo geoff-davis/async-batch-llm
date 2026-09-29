@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING**: Built-in models, strategies, `llm()` and the `LLMModel` protocol
+  now default to `temperature=None`, which omits the parameter so each provider's
+  default applies. Previously they sent `temperature=0.0`, which some models or
+  reasoning modes reject and which Google advises against for Gemini 3. Pass
+  `temperature=0.0` to keep the old behavior.
 - **BREAKING**: Error classification trusts types and structured status before
   message text ([#177]). `ValueError`, `TypeError`, `KeyError` and the other
   built-in programming errors are `logic_error` even when their message mentions

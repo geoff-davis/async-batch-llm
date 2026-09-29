@@ -69,13 +69,14 @@ serves: `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini`, etc. Reasoning models
 the [Responses API](https://platform.openai.com/docs/api-reference/responses)
 is a better fit; that's a future addition (`OpenAIResponsesModel`).
 
-> **Reasoning models reject an explicit `temperature`.** Pass
-> `temperature=None` (on the strategy or per `generate()` call) to omit the
-> parameter entirely so the model uses its default — otherwise the call fails:
+> **Temperature is omitted by default.** Built-in models send no `temperature`
+> unless you pass one, so each model uses its provider default. Some models or
+> reasoning modes reject an explicit value, so leave it unset for them. For more repeatable output
+> on models that accept it, pass one explicitly:
 >
 > ```python
-> model = OpenAIModel.from_api_key("o1-mini")
-> strategy = OpenAIStrategy(model, temperature=None)
+> model = OpenAIModel.from_api_key("gpt-4o-mini")
+> strategy = OpenAIStrategy(model, temperature=0.0)
 > ```
 
 ## Structured output

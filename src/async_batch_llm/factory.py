@@ -101,7 +101,7 @@ def llm(
     spec: str,
     *,
     response_parser: None = None,
-    temperature: float | None = 0.0,
+    temperature: float | None = None,
     generation_config: dict[str, Any] | None = None,
     **model_kwargs: Any,
 ) -> ModelStrategy[str]: ...
@@ -112,7 +112,7 @@ def llm(
     spec: str,
     *,
     response_parser: Callable[[LLMResponse], TOutput],
-    temperature: float | None = 0.0,
+    temperature: float | None = None,
     generation_config: dict[str, Any] | None = None,
     **model_kwargs: Any,
 ) -> ModelStrategy[TOutput]: ...
@@ -122,7 +122,7 @@ def llm(
     spec: str,
     *,
     response_parser: Callable[[LLMResponse], Any] | None = None,
-    temperature: float | None = 0.0,
+    temperature: float | None = None,
     generation_config: dict[str, Any] | None = None,
     **model_kwargs: Any,
 ) -> ModelStrategy[Any]:

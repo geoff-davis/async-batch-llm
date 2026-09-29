@@ -447,7 +447,7 @@ class GeminiModel:
         self,
         prompt: str | list[Any],
         *,
-        temperature: float | None = 0.0,
+        temperature: float | None = None,
         system_instruction: str | None = None,
         config: dict[str, Any] | None = None,
     ) -> LLMResponse:
@@ -731,7 +731,7 @@ class GeminiCachedModel:
         self,
         prompt: str | list[Any],
         *,
-        temperature: float | None = 0.0,
+        temperature: float | None = None,
         system_instruction: str | None = None,
         config: dict[str, Any] | None = None,
     ) -> LLMResponse:
@@ -1136,7 +1136,7 @@ class OpenAICompatibleModel:
         self,
         prompt: str | list[Any],
         *,
-        temperature: float | None = 0.0,
+        temperature: float | None = None,
         system_instruction: str | None = None,
         config: dict[str, Any] | None = None,
     ) -> LLMResponse:
@@ -2056,7 +2056,7 @@ class DeepSeekModel(OpenAICompatibleModel):
         self,
         prompt: str | list[Any],
         *,
-        temperature: float | None = 0.0,
+        temperature: float | None = None,
         system_instruction: str | None = None,
         config: dict[str, Any] | None = None,
     ) -> LLMResponse:
