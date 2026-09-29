@@ -29,13 +29,14 @@ from ._internal.input_validation import validate_strategy
 from .base import LLMWorkItem, WorkItemResult
 from .core import ProcessorConfig
 from .llm_strategies import LLMCallStrategy
+from .strategies.errors import AsyncBatchLLMError
 
 TOutput = TypeVar("TOutput")
 
 _SINGLE_CALL_ITEM_ID = "single"
 
 
-class LLMCallError(RuntimeError):
+class LLMCallError(RuntimeError, AsyncBatchLLMError):
     """Raised by :func:`call` / ``LLMCallPool.submit`` when a request fails and no
     originating provider exception was preserved.
 

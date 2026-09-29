@@ -30,7 +30,7 @@ from ._internal.cleanup import (
 )
 from ._internal.input_validation import validate_strategy
 from .provider_output import ProviderOutputViews
-from .strategies.errors import BatchAdmissionClosedError
+from .strategies.errors import AsyncBatchLLMError, BatchAdmissionClosedError
 
 # Conditional imports for type checking
 if TYPE_CHECKING:
@@ -1247,7 +1247,7 @@ def _percentile(samples: list[float], percentile: int) -> float:
     return ordered[index]
 
 
-class BatchInterruptedError(RuntimeError):
+class BatchInterruptedError(RuntimeError, AsyncBatchLLMError):
     """A batch worker was cancelled before all accepted work drained.
 
     Raised by ``process_all()`` when another task shuts down the processor or
@@ -1256,7 +1256,7 @@ class BatchInterruptedError(RuntimeError):
     """
 
 
-class StreamFinalizationError(RuntimeError):
+class StreamFinalizationError(RuntimeError, AsyncBatchLLMError):
     """The result stream could not finish normally.
 
     Raised by :meth:`BatchProcessor.results` when finalization was cancelled
