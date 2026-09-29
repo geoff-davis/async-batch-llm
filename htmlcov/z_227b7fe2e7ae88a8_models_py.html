@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_3241b0a112256a0b___init___py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-09-29 22:11 +0000
+            created at 2026-09-29 22:17 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -376,9 +376,9 @@
     <p class="pln"><span class="n"><a id="t292" href="#t292">292</a></span><span class="t"><span class="str">    Since v0.16.0 the built-in Gemini models emit ``metadata[&#x27;grounding&#x27;]``</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t293" href="#t293">293</a></span><span class="t"><span class="str">    **by default** whenever the response carries grounding metadata, so</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t294" href="#t294">294</a></span><span class="t"><span class="str">    passing this extractor to ``GeminiModel``/``GeminiCachedModel`` is</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t295" href="#t295">295</a></span><span class="t"><span class="str">    redundant (harmless &#8212; it re-emits the same key with the same value). It</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t296" href="#t296">296</a></span><span class="t"><span class="str">    remains exported for custom models and for callers who prefer the</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t297" href="#t297">297</a></span><span class="t"><span class="str">    explicit opt-in in their configuration.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t295" href="#t295">295</a></span><span class="t"><span class="str">    redundant (harmless &#8212; it re-emits the same key with the same value).</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t296" href="#t296">296</a></span><span class="t"><span class="str">    Importing it from ``async_batch_llm`` is deprecated since v0.27; it leaves</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t297" href="#t297">297</a></span><span class="t"><span class="str">    the public API in 1.0.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t298" href="#t298">298</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t299" href="#t299">299</a></span><span class="t"><span class="str">    Returns ``{&quot;grounding&quot;: {...}}`` with ``sources`` (``[{&quot;uri&quot;,</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t300" href="#t300">300</a></span><span class="t"><span class="str">    &quot;title&quot;}]``), ``queries`` (the ``web_search_queries`` the model issued),</span>&nbsp;</span><span class="r"></span></p>
@@ -471,7 +471,7 @@
     <p class="pln"><span class="n"><a id="t387" href="#t387">387</a></span><span class="t"><span class="str">            safety_settings: Default safety settings for all calls.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t388" href="#t388">388</a></span><span class="t"><span class="str">            system_instruction: Default system instruction (overridable per-call).</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t389" href="#t389">389</a></span><span class="t"><span class="str">            metadata_extractors: Optional hooks that contribute extra keys to</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t390" href="#t390">390</a></span><span class="t"><span class="str">                ``LLMResponse.metadata`` (e.g. ``grounding_metadata_extractor``).</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t390" href="#t390">390</a></span><span class="t"><span class="str">                ``LLMResponse.metadata``.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t391" href="#t391">391</a></span><span class="t"><span class="str">                Merged on top of the built-in ``safety_ratings``/``finish_reason``;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t392" href="#t392">392</a></span><span class="t"><span class="str">                user keys win. Added in v0.15.0.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t393" href="#t393">393</a></span><span class="t"><span class="str">        &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
@@ -659,7 +659,7 @@
     <p class="pln"><span class="n"><a id="t575" href="#t575">575</a></span><span class="t"><span class="str">                short &#8212; Gemini&#x27;s ``display_name`` has a 128-character limit.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t576" href="#t576">576</a></span><span class="t"><span class="str">            safety_settings: Default safety settings for all calls.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t577" href="#t577">577</a></span><span class="t"><span class="str">            metadata_extractors: Optional hooks that contribute extra keys to</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t578" href="#t578">578</a></span><span class="t"><span class="str">                ``LLMResponse.metadata`` (e.g. ``grounding_metadata_extractor``).</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t578" href="#t578">578</a></span><span class="t"><span class="str">                ``LLMResponse.metadata``.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t579" href="#t579">579</a></span><span class="t"><span class="str">                Merged on top of the built-in metadata; user keys win.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t580" href="#t580">580</a></span><span class="t"><span class="str">                Added in v0.15.0.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t581" href="#t581">581</a></span><span class="t"><span class="str">        &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
@@ -2766,7 +2766,7 @@
             <a class="nav" href="z_3241b0a112256a0b___init___py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-09-29 22:11 +0000
+            created at 2026-09-29 22:17 +0000
         </p>
     </div>
 </footer>
