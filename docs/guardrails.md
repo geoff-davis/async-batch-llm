@@ -61,6 +61,11 @@ Total expiry is terminal and non-retryable:
 The existing per-attempt framework timeout remains distinct as
 `framework_execution_timeout`.
 
+`timing.timeout_category` records where the time ran out. A deadline reached
+while the item waited for provider capacity is `admission_timeout`, for both item
+and batch deadlines. The elapsed capacity wait still counts toward
+`admission_wait_seconds`, and it's kept when an abort ends the wait too.
+
 ## Batch deadlines
 
 `batch_timeout` starts when `process_all()` or streaming execution starts, not

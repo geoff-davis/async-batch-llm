@@ -71,8 +71,17 @@ See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
   scale-soak benchmark's token scenario skips its memory check with a caveat where
   current RSS is unavailable (no `/proc`).
 
+### Fixed
+
+- A capacity wait ended by an item deadline, batch deadline or abort keeps its
+  timing ([#181]). `admission_wait_seconds` and the attempt's
+  `admission_wait_seconds` include the elapsed wait instead of reporting 0, and
+  a deadline reached during that wait sets `timing.timeout_category` to the new
+  `"admission_timeout"`. The error category is unchanged.
+
 [#177]: https://github.com/geoff-davis/async-batch-llm/issues/177
 [#178]: https://github.com/geoff-davis/async-batch-llm/issues/178
+[#181]: https://github.com/geoff-davis/async-batch-llm/issues/181
 [#183]: https://github.com/geoff-davis/async-batch-llm/issues/183
 
 ## [0.26.0] - 2026-09-27
