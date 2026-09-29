@@ -155,11 +155,11 @@ if ratings and ratings.get("HARM_CATEGORY_HATE_SPEECH") == "HIGH":
 
 ### Typed auxiliary output (grounding, reasoning, tool calls, logprobs)
 
-> **Experimental.** This surface is new (v0.16.0) and hasn't seen much
-> real-world use yet — the reserved-key dict shapes and the typed views may
-> change in a future minor release while they stabilize. The `metadata`
-> dict channel itself is stable; if you persist these shapes, read them
-> back defensively.
+> **Experimental until 1.0.** The shapes were adjusted in v0.27 for OpenAI's
+> Responses API. They're declared stable in 1.0.0rc1 if real-provider runs fill
+> them in correctly; `logprobs` is likely to stay provisional. The `metadata`
+> dict channel itself is stable. If you persist these shapes, read them back
+> defensively.
 
 Provider-specific structured output travels through `metadata` under four
 **reserved keys** with documented plain-dict shapes (JSON-serializable, so
@@ -168,9 +168,9 @@ persisting `metadata` as-is works):
 | Key | Shape | Emitted by |
 | --- | ----- | ---------- |
 | `grounding` | `{"sources": [{"uri", "title"}], "queries": [str], "supports": [dict]}` | Gemini models, when the response carries `google_search` grounding |
-| `reasoning` | `str` — the model's reasoning/thinking trace | OpenAI-compatible models (`reasoning_content`, e.g. DeepSeek, falling back to `reasoning`, e.g. OpenRouter) |
-| `tool_calls` | `[{"id": str\|None, "name": str, "arguments": str}]` — `arguments` is the raw JSON string | OpenAI-compatible models |
-| `logprobs` | provider-shaped `dict`/`list` (via `model_dump()`) | OpenAI-compatible models, when requested |
+| `reasoning` | `str`: the model's reasoning/thinking trace | Chat Completions: `reasoning_content` (e.g. DeepSeek), falling back to `reasoning` (e.g. OpenRouter). Responses API: reasoning-item text, else the joined reasoning summaries (OpenAI, when requested) |
+| `tool_calls` | `[{"id": str\|None, "name": str, "arguments": str}]`, with `arguments` as the raw JSON string | OpenAI-compatible models: Chat `tool_calls`, or Responses `function_call` items (`id` is the `call_id`) |
+| `logprobs` | provider-shaped `dict`/`list` (plain JSON) | OpenAI-compatible models, when requested: the Chat logprobs object, or a list of Responses per-token entries |
 
 Both `LLMResponse` and `WorkItemResult` expose **lazy read-only typed
 views** over these keys — parsed from `metadata` on each access, never
@@ -202,9 +202,11 @@ change degrades to `None` views rather than errors.
   Feed them to your own dispatch loop (or use an agent framework via
   `PydanticAIStrategy`). Covered for OpenAI-compatible providers only this
   phase (Gemini function-call parts are not extracted yet).
-- A response whose `content` is `null` (e.g. a pure tool-call turn) still
-  raises `EmptyResponseError` before any result exists, so `tool_calls`
-  surfaces only when the model returned text alongside the calls.
+- On Chat Completions, a response whose `content` is `null` (for example a
+  pure tool-call turn) raises `EmptyResponseError` before any result exists,
+  so `tool_calls` surfaces only when the model returned text alongside the
+  calls. On `OpenAIModel`'s Responses surface, a function-call-only reply
+  succeeds with empty text and `tool_calls` populated.
 - Auxiliary output does not survive empty/safety-blocked responses — the
   call fails first.
 

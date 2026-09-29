@@ -23,7 +23,13 @@ from .llm_strategies import (
     OpenAIStrategy,
     OpenRouterStrategy,
 )
-from .models import DeepSeekModel, GeminiModel, OpenAIModel, OpenRouterModel
+from .models import (
+    DeepSeekModel,
+    GeminiModel,
+    OpenAICompatibleModel,
+    OpenAIModel,
+    OpenRouterModel,
+)
 
 TOutput = TypeVar("TOutput")
 
@@ -33,6 +39,7 @@ _PROVIDER_EXTRAS = {
     "openai": "openai",
     "openrouter": "openrouter",
     "deepseek": "deepseek",
+    "openai-compatible": "openai",
 }
 
 
@@ -48,6 +55,7 @@ def _validate_model_kwargs(provider: str, kwargs: dict[str, Any]) -> None:
         "openai": OpenAIModel,
         "openrouter": OpenRouterModel,
         "deepseek": DeepSeekModel,
+        "openai-compatible": OpenAICompatibleModel,
     }[provider]
     constructors = (
         [model_cls.__init__]
@@ -134,10 +142,17 @@ def llm(
         >>> strategy = llm("gemini:gemini-2.5-flash")       # reads GOOGLE_API_KEY
         >>> strategy = llm("deepseek:deepseek-v4-flash", thinking=False, max_connections=150)
         >>> strategy = llm("openrouter:anthropic/claude-haiku-4-5")
+        >>> strategy = llm(
+        ...     "openai-compatible:meta-llama/Llama-3.1-8B-Instruct",
+        ...     base_url="http://localhost:8000/v1",
+        ... )
 
     Args:
         spec: ``"provider:model"`` — one of ``gemini:``, ``openai:``,
-            ``openrouter:``, ``deepseek:``. Everything after the first colon
+            ``openrouter:``, ``deepseek:``, ``openai-compatible:``. The last
+            targets any other OpenAI-compatible server (vLLM, Together,
+            proxies) over Chat Completions and requires ``base_url=``; its
+            ``api_key`` falls back to ``OPENAI_API_KEY``. Everything after the first colon
             is the provider's model id (which may itself contain colons, e.g.
             ``"openrouter:meta-llama/llama-3.1-8b-instruct:free"``).
         response_parser: Optional function parsing :class:`LLMResponse` into
@@ -199,6 +214,15 @@ def llm(
     elif provider == "openrouter":
         strategy = OpenRouterStrategy(
             OpenRouterModel.from_api_key(model_id, **model_kwargs), **strategy_kwargs
+        )
+    elif provider == "openai-compatible":
+        if not model_kwargs.get("base_url"):
+            raise ValueError(
+                'llm("openai-compatible:...") requires base_url=, the server\'s '
+                "OpenAI-compatible endpoint (e.g. http://localhost:8000/v1)."
+            )
+        strategy = OpenAIStrategy(
+            OpenAICompatibleModel.from_api_key(model_id, **model_kwargs), **strategy_kwargs
         )
     else:  # deepseek — the registry above is exhaustive
         strategy = DeepSeekStrategy(

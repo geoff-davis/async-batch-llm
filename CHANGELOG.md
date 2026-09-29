@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
+
 ### Changed
 
+- **BREAKING**: `OpenAIModel` uses the Responses API by default, with `store=False`.
+  - Chat-style request fields (`max_tokens`, `response_format`, `reasoning_effort`,
+    `logprobs`, tools, tool choice, message lists) are translated.
+  - Fields with no equivalent raise `ValueError` before the request.
+  - `finish_reason` keeps the Chat vocabulary. The raw status is in
+    `metadata["response_status"]`, and `metadata["reasoning_tokens"]` reports reasoning
+    tokens.
+  - A completed function-call-only reply now succeeds with empty text and
+    `tool_calls`.
+  - `api_surface="chat_completions"` restores the previous behavior. Its automatic
+    artifact identity is unchanged, so v0.26 checkpoints replay; with the Responses
+    default, they re-run.
+  - The `[openai]` extra requires `openai>=1.66.2`.
+  - `OpenAICompatibleModel`, `OpenRouterModel` and `DeepSeekModel` are unchanged.
 - **BREAKING**: Built-in models, strategies, `llm()` and the `LLMModel` protocol
   now default to `temperature=None`, which omits the parameter so each provider's
   default applies. Previously they sent `temperature=0.0`, which some models or
@@ -28,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `llm("openai-compatible:<model>", base_url=...)` builds an `OpenAICompatibleModel`
+  strategy for any OpenAI-compatible Chat Completions server.
 - Opt-in total token and cost budgets for processor runs ([#183]):
   `GuardrailConfig(max_total_tokens=..., max_total_cost=..., cost_function=...)`.
   Every provider attempt with reported usage counts, including failures and retries;

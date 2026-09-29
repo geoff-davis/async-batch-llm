@@ -288,7 +288,12 @@ async def test_openai_model_user_extractor_merges_with_builtin():
         rc = getattr(resp.choices[0].message, "reasoning_content", None)
         return {"reasoning_content": rc} if rc else None
 
-    model = OpenAIModel("gpt-4o-mini", client, metadata_extractors=[reasoning_extractor])
+    model = OpenAIModel(
+        "gpt-4o-mini",
+        client,
+        metadata_extractors=[reasoning_extractor],
+        api_surface="chat_completions",
+    )
     llm_response = await model.generate("prompt")
 
     assert llm_response.metadata is not None
@@ -321,7 +326,7 @@ async def test_openai_reasoning_content_emitted_by_default():
     """DeepSeek-style reasoning_content lands in metadata['reasoning']."""
     message = SimpleNamespace(content="hi", reasoning_content="because")
     response = _openai_response(message)
-    model = OpenAIModel("gpt-4o-mini", _openai_client(response))
+    model = OpenAIModel("gpt-4o-mini", _openai_client(response), api_surface="chat_completions")
     llm_response = await model.generate("prompt")
 
     assert llm_response.metadata is not None
@@ -334,7 +339,7 @@ async def test_openai_reasoning_fallback_field():
     """OpenRouter-style message.reasoning is the fallback."""
     message = SimpleNamespace(content="hi", reasoning="thought about it")
     response = _openai_response(message)
-    model = OpenAIModel("gpt-4o-mini", _openai_client(response))
+    model = OpenAIModel("gpt-4o-mini", _openai_client(response), api_surface="chat_completions")
     llm_response = await model.generate("prompt")
 
     assert llm_response.metadata is not None
@@ -349,7 +354,7 @@ async def test_openai_tool_calls_emitted_as_plain_dicts():
     )
     message = SimpleNamespace(content="calling a tool", tool_calls=[tool_call])
     response = _openai_response(message)
-    model = OpenAIModel("gpt-4o-mini", _openai_client(response))
+    model = OpenAIModel("gpt-4o-mini", _openai_client(response), api_surface="chat_completions")
     llm_response = await model.generate("prompt")
 
     assert llm_response.metadata is not None
@@ -371,7 +376,7 @@ async def test_openai_logprobs_emitted_via_model_dump():
 
     message = SimpleNamespace(content="hi")
     response = _openai_response(message, logprobs=FakeLogprobs())
-    model = OpenAIModel("gpt-4o-mini", _openai_client(response))
+    model = OpenAIModel("gpt-4o-mini", _openai_client(response), api_surface="chat_completions")
     llm_response = await model.generate("prompt")
 
     assert llm_response.metadata is not None
@@ -393,7 +398,7 @@ async def test_magicmock_response_emits_no_reserved_keys():
     response.usage.completion_tokens = 4
     response.usage.total_tokens = 7
     response.usage.prompt_tokens_details = None
-    model = OpenAIModel("gpt-4o-mini", _openai_client(response))
+    model = OpenAIModel("gpt-4o-mini", _openai_client(response), api_surface="chat_completions")
     llm_response = await model.generate("prompt")
 
     assert llm_response.metadata is not None
