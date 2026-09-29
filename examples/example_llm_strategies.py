@@ -18,6 +18,7 @@ from typing import Any
 from google import genai
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.models.google import GoogleModel
 
 from async_batch_llm import (
     GeminiCachedModel,
@@ -48,8 +49,9 @@ async def example_pydantic_ai_strategy():
     print("=" * 60 + "\n")
 
     # Create a PydanticAI agent
+    # A model object works on pydantic-ai 1.x and 2.x; 2.x rejects bare names.
     agent = Agent(
-        "gemini-2.5-flash",
+        GoogleModel("gemini-2.5-flash"),
         output_type=SummaryOutput,
         system_prompt="You are a helpful assistant that summarizes text.",
     )

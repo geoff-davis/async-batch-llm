@@ -1,8 +1,67 @@
 # Basic Usage Examples
 
+The first two examples use the high-level `process_prompts()` API, which covers most
+batches. The rest drive `ParallelBatchProcessor` directly for full control over
+queueing and lifecycle.
+
 ## Simple Batch Processing
 
 Process multiple prompts in parallel:
+
+```python
+import asyncio
+from async_batch_llm import llm, process_prompts
+
+async def main():
+    prompts = ["What is Python?", "What is async/await?", "What is asyncio?"]
+    batch = await process_prompts(llm("openai:gpt-4o-mini"), prompts, concurrency=5)
+
+    for result in batch.results:  # completion order
+        if result.success:
+            print(f"{result.item_id}: {result.output}")
+        else:
+            print(f"{result.item_id}: Failed - {result.error}")
+
+asyncio.run(main())
+```
+
+## Context Passing
+
+Pass `(item_id, prompt, context)` triples to carry application data into each result:
+
+```python
+from dataclasses import dataclass
+
+from async_batch_llm import llm, process_prompts
+
+@dataclass
+class FileContext:
+    filepath: str
+    original_content: str
+
+async def process_with_context():
+    files = [("file1.py", "content1"), ("file2.py", "content2")]
+    batch = await process_prompts(
+        llm("openai:gpt-4o-mini"),
+        [
+            (path, f"Summarize: {content}", FileContext(path, content))
+            for path, content in files
+        ],
+    )
+
+    for result in batch.results:
+        if result.success and result.context:
+            print(f"File: {result.context.filepath}")
+            print(f"Summary: {result.output}")
+```
+
+## Full control: ParallelBatchProcessor
+
+The remaining examples build work items and drive the processor yourself. They use a
+PydanticAI agent (`pip install 'async-batch-llm[pydantic-ai,gemini]'`).
+`GoogleModel` reads `GOOGLE_API_KEY` when it is constructed. Pass a model object,
+as here, rather than a bare model name: pydantic-ai 2.x rejects bare names, and the
+provider prefixes differ between the 1.x and 2.x lines.
 
 ```python
 import asyncio
@@ -13,12 +72,13 @@ from async_batch_llm import (
     PydanticAIStrategy,
 )
 from pydantic_ai import Agent
+from pydantic_ai.models.google import GoogleModel
 
 async def main():
-    agent = Agent("gemini-2.5-flash", output_type=str)
+    agent = Agent(GoogleModel("gemini-2.5-flash"), output_type=str)
     strategy = PydanticAIStrategy(agent=agent)
 
-    config = ProcessorConfig(max_workers=5)
+    config = ProcessorConfig(concurrency=5)
 
     async with ParallelBatchProcessor(config=config) as processor:
         prompts = [
@@ -60,10 +120,10 @@ class CodeReview(BaseModel):
     rating: int
 
 async def review_code():
-    agent = Agent("gemini-2.5-flash", output_type=CodeReview)
+    agent = Agent(GoogleModel("gemini-2.5-flash"), output_type=CodeReview)
     strategy = PydanticAIStrategy(agent=agent)
 
-    config = ProcessorConfig(max_workers=3)
+    config = ProcessorConfig(concurrency=3)
 
     async with ParallelBatchProcessor(config=config) as processor:
         code_snippets = ["def foo(): pass", "def bar(): return 42"]
@@ -86,48 +146,6 @@ async def review_code():
                 print(f"Issues: {review.issues}")
 ```
 
-## Context Passing
-
-Pass context through the processing pipeline:
-
-```python
-from dataclasses import dataclass
-
-@dataclass
-class FileContext:
-    filepath: str
-    original_content: str
-
-async def process_with_context():
-    agent = Agent("gemini-2.5-flash", output_type=str)
-    strategy = PydanticAIStrategy(agent=agent)
-
-    config = ProcessorConfig(max_workers=5)
-
-    async with ParallelBatchProcessor[str, str, FileContext](config=config) as processor:
-        files = [
-            ("file1.py", "content1"),
-            ("file2.py", "content2"),
-        ]
-
-        for filepath, content in files:
-            await processor.add_work(
-                LLMWorkItem(
-                    item_id=filepath,
-                    strategy=strategy,
-                    prompt=f"Summarize: {content}",
-                    context=FileContext(filepath=filepath, original_content=content)
-                )
-            )
-
-        result = await processor.process_all()
-
-        for work_result in result.results:
-            if work_result.success and work_result.context:
-                print(f"File: {work_result.context.filepath}")
-                print(f"Summary: {work_result.output}")
-```
-
 ## Post-Processing
 
 Use post-processors to handle results as they complete:
@@ -141,10 +159,10 @@ async def save_result(result):
         print(f"Saved {result.item_id}")
 
 async def process_with_post_processor():
-    agent = Agent("gemini-2.5-flash", output_type=str)
+    agent = Agent(GoogleModel("gemini-2.5-flash"), output_type=str)
     strategy = PydanticAIStrategy(agent=agent)
 
-    config = ProcessorConfig(max_workers=5)
+    config = ProcessorConfig(concurrency=5)
 
     async with ParallelBatchProcessor(
         config=config,
@@ -164,10 +182,10 @@ from async_batch_llm.observers import MetricsObserver
 async def process_with_metrics():
     metrics = MetricsObserver()
 
-    agent = Agent("gemini-2.5-flash", output_type=str)
+    agent = Agent(GoogleModel("gemini-2.5-flash"), output_type=str)
     strategy = PydanticAIStrategy(agent=agent)
 
-    config = ProcessorConfig(max_workers=5)
+    config = ProcessorConfig(concurrency=5)
 
     async with ParallelBatchProcessor(
         config=config,

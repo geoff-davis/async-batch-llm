@@ -2,12 +2,23 @@
 
 Learn how to create custom strategies for any LLM provider.
 
+Two shortcuts come first. OpenAI, Gemini, OpenRouter, and DeepSeek have built-in
+strategies (`llm("openai:gpt-4o-mini")`, or `OpenAIStrategy(OpenAIModel(...))`), so you
+don't need a custom one for them. To wrap an async client you already have, a single
+function passed to [`CallableStrategy`](../callable-integration.md) is usually enough.
+Subclass `LLMCallStrategy`, as below, when you need lifecycle hooks (`prepare()`,
+`cleanup()`, `on_error()`) or per-attempt logic.
+
 ## Basic Custom Strategy
+
+This raw Chat Completions strategy shows the shape of `execute()`. It is named
+`RawChatStrategy` so it doesn't shadow the built-in `OpenAIStrategy`, which uses the
+Responses API by default.
 
 ```python
 from async_batch_llm import LLMCallStrategy
 
-class OpenAIStrategy(LLMCallStrategy[str]):
+class RawChatStrategy(LLMCallStrategy[str]):
     def __init__(self, client, model: str):
         self.client = client
         self.model = model
@@ -96,26 +107,11 @@ class SmartRetryStrategy(LLMCallStrategy[dict]):
 
 ## Progressive Temperature
 
-Increase temperature on retry for better success rates:
-
-```python
-class ProgressiveTempStrategy(LLMCallStrategy[str]):
-    def __init__(self, client, temperatures=None):
-        self.client = client
-        self.temperatures = temperatures or [0.0, 0.5, 1.0]
-
-    async def execute(self, prompt: str, attempt: int, timeout: float, state=None):
-        # Use progressively higher temperature on retries
-        temp_index = min(attempt - 1, len(self.temperatures) - 1)
-        temperature = self.temperatures[temp_index]
-
-        response = await self.client.generate(
-            prompt=prompt,
-            temperature=temperature
-        )
-
-        return response.text, response.usage, None
-```
+To raise the temperature only after validation failures, count them in `RetryState`
+from `on_error()`, as in the example above. Keying off `attempt` would also raise it
+after a transport error or timeout. See
+[Progressive Temperature on Retries](advanced.md#progressive-temperature-on-retries)
+for the full pattern.
 
 ## Anthropic Example
 
@@ -123,7 +119,7 @@ class ProgressiveTempStrategy(LLMCallStrategy[str]):
 from anthropic import AsyncAnthropic
 
 class AnthropicStrategy(LLMCallStrategy[str]):
-    def __init__(self, client: AsyncAnthropic, model: str = "claude-3-5-sonnet-20241022"):
+    def __init__(self, client: AsyncAnthropic, model: str = "claude-sonnet-4-6"):
         self.client = client
         self.model = model
 
@@ -151,9 +147,9 @@ from async_batch_llm import ParallelBatchProcessor, LLMWorkItem, ProcessorConfig
 
 async def main():
     # Use your custom strategy
-    strategy = OpenAIStrategy(client=openai_client, model="gpt-4")
+    strategy = RawChatStrategy(client=openai_client, model="gpt-4o-mini")
 
-    config = ProcessorConfig(max_workers=5)
+    config = ProcessorConfig(concurrency=5)
 
     async with ParallelBatchProcessor(config=config) as processor:
         await processor.add_work(

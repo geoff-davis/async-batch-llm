@@ -1,6 +1,9 @@
-# Contributing to Batch LLM
+# Contributing to async-batch-llm
 
-Thank you for your interest in contributing to Batch LLM! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to async-batch-llm! This document provides guidelines and instructions for
+contributing.
+
+To report a security vulnerability, don't open a public issue; follow [SECURITY.md](SECURITY.md).
 
 ## Development Setup
 
@@ -23,10 +26,10 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync --all-extras
 ```
 
-1. **Install markdown lint tooling** (requires Node 18+)
+1. **Install markdown lint tooling** (requires Node 20+; installs the version pinned in `package-lock.json`)
 
 ```bash
-npm install --save-dev markdownlint-cli2
+npm ci
 ```
 
 1. **Install git hooks via prek** (recommended)
@@ -90,29 +93,32 @@ prek will automatically run these checks before each commit:
 #### Manual Code Quality Checks
 
 ```bash
-# Format code
-uv run ruff format src/ tests/ examples/
+# Format code (same as `make format`)
+uv run ruff format src/ tests/
 
-# Lint code
-uv run ruff check src/ tests/ examples/ --fix
+# Lint code (same as `make lint-fix`)
+uv run ruff check src/ tests/ --fix
 
 # Type check
 uv run mypy src/async_batch_llm/ --ignore-missing-imports
 
-# Markdown lint (requires npm install first)
-npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md" --fix
+# Markdown lint, all tracked .md files except docs/archive/ (requires npm ci first)
+make markdown-lint-fix
 
 # Run all checks at once
 make ci
 ```
 
+`examples/` is excluded from ruff on purpose: example scripts check environment
+variables before importing optional dependencies, which ruff reports as E402.
+
 ### Running Examples
 
 ```bash
-# Run the main example (requires API key)
+# Run the main example (its default MockAgent example needs no API key)
 uv run python examples/example.py
 
-# Set API key first if needed
+# The Gemini examples in it (commented out in main()) and most other examples need a key
 export GOOGLE_API_KEY="your-api-key"  # GEMINI_API_KEY is also accepted
 ```
 
@@ -172,24 +178,45 @@ uv run mypy src/async_batch_llm/
 run `uv publish` manually; the workflow uses PyPI trusted publishing (OIDC)
 and a manual upload would race or fail on auth.
 
-1. **Prepare** (the `/release-prep` skill automates this): retitle the
-   CHANGELOG `[Unreleased]` section to `[X.Y.Z] - YYYY-MM-DD` and add a
-   fresh empty `[Unreleased]` above it; bump `version` in `pyproject.toml`;
-   run `uv lock` so the lockfile picks up the new project version; update
-   the "Current version" line in `CLAUDE.md`. Open a
+1. **Prepare** (the `/release-prep` skill automates this): move the body of
+   the CHANGELOG `[Unreleased]` section, including its reference-link
+   definitions, under a new `[X.Y.Z] - YYYY-MM-DD` heading and leave an empty
+   `[Unreleased]` above it; check that every link in the section (migration
+   guide, issues) resolves. Bump `version` in `pyproject.toml`; run `uv lock`
+   so the lockfile picks up the new project version; update the "Current
+   version" line in `CLAUDE.md`; add a one-line row for the release to
+   `docs/roadmap.md`, linking its migration guide if there is one. Run
+   `make package-check` locally (the publish workflow runs it too). Open a
    "Prepare release vX.Y.Z" PR from a `release/vX.Y.Z` branch and merge it
    once CI is green.
-2. **Tag** (the `/release-tag` skill automates this): from the updated
-   `main`, `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag push
+2. **Tag** (the `/release-tag` skill automates this and steps 3–4): from the
+   updated `main`, `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag push
    triggers `.github/workflows/publish.yml`, which re-runs the test gate,
-   verifies the tag matches `pyproject.toml`, builds, and publishes to
-   PyPI.
-3. **GitHub release**: `gh release create vX.Y.Z --title "vX.Y.Z" --latest`
-   with the `[X.Y.Z]` CHANGELOG section as the notes (inline any
-   reference-style links such as `[#52]` — their definitions live at the
-   bottom of CHANGELOG.md and won't be copied automatically).
-4. **Verify**: the publish workflow run is green, PyPI shows the new
-   version, and the docs site redeployed (happens on the merge to `main`).
+   verifies the tag matches `pyproject.toml`, builds the package and runs
+   `make package-check` (`twine check --strict` and `check-wheel-contents`),
+   and publishes to PyPI. Either gate can fail the release.
+3. **Confirm the publish** before announcing anything: the publish workflow
+   run for the tag is green (`gh run watch`), and
+   `https://pypi.org/pypi/async-batch-llm/X.Y.Z/json` resolves.
+4. **GitHub release**, only after step 3: `gh release create vX.Y.Z --title "vX.Y.Z" --latest`
+   with the `[X.Y.Z]` CHANGELOG section as the notes. Inline reference-style
+   links such as `[#52]` (their definitions aren't part of the pasted text)
+   and rewrite relative links such as `docs/migration/vX.Y.md` to absolute
+   `https://github.com/geoff-davis/async-batch-llm/blob/vX.Y.Z/...` URLs;
+   both render as broken text in a release body.
+5. **Verify**: the GitHub release exists and the docs site redeployed
+   (happens on the merge to `main`).
+6. **Legacy fixtures** (next PR after the release): record what the new
+   release writes, so later releases keep reading it:
+
+    ```bash
+    uv run --no-project --python 3.12 --with async-batch-llm==X.Y.Z \
+        python scripts/write_legacy_fixtures.py tests/fixtures/vX_Y
+    ```
+
+    Then add `"vX_Y": "X.Y.Z"` to `RELEASES` in `tests/test_legacy_fixtures.py`
+    and its entry to the expected counts in `test_every_release_has_its_fixtures`.
+    Never regenerate a committed fixture directory.
 
 ## Questions?
 

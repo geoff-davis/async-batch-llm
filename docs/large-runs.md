@@ -80,8 +80,9 @@ commit itself.
 ## Restart workflow
 
 1. Run with an artifact store and `resume=ResumePolicy.REUSE_SUCCESSES`.
-2. On crash or controlled stop (deadline, fail-fast), fix the cause.
-3. Re-run the **same source** with a fresh store instance on the same path.
+2. On crash or controlled stop (deadline, fail-fast, token/cost budget), fix the cause.
+3. Re-run the **same source** with a fresh store instance on the same path (a
+   run closes its store when it finishes, so an instance can't be reused).
    Compatible successes replay without provider calls; failures and
    never-accepted items execute normally.
 4. Replayed items carry `replayed_from_artifact=True`; live token stats

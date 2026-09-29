@@ -12,7 +12,7 @@ token accounting — without constructing a
   semaphore.
 
 For large bulk jobs, keep using `ParallelBatchProcessor` /
-[`process_prompts`](core.md); these surfaces are for single calls, not batches.
+[`process_prompts`](entrypoints.md#process_prompts); these surfaces are for single calls, not batches.
 
 ## Example
 
@@ -81,9 +81,10 @@ network service, or provider-routing layer. The strategy beneath it may use a
 direct SDK, `CallableStrategy`, or a real third-party gateway client.
 
 `LLMGateway`, the pre-v0.20 name, still resolves to `LLMCallPool` but is deprecated
-since v0.27: importing or accessing it, including through
-`from async_batch_llm import *`, emits a `DeprecationWarning`, and it will be removed
-in 1.0. Replace it with `LLMCallPool`; nothing else changes.
+since v0.27: importing or accessing it emits a `DeprecationWarning`, and it will be
+removed in 1.0. Replace it with `LLMCallPool`; nothing else changes.
+`from async_batch_llm import *` also warns, once for each deprecated name, even if you
+never use it (see [API stability](../stability.md#deprecation-policy)).
 
 ## call
 

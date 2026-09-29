@@ -12,13 +12,10 @@
 
 ::: async_batch_llm.llm
 
-## call
+## call and call_result
 
-::: async_batch_llm.call
-
-## call_result
-
-::: async_batch_llm.call_result
+One-shot calls are documented with the shared call pool on
+[Single Call & Shared Call Pool](single-gateway.md#call).
 
 ## RetryState
 
@@ -32,14 +29,25 @@
 
 ::: async_batch_llm.core.RateLimitConfig
 
-## ErrorClassifier
-
-::: async_batch_llm.strategies.ErrorClassifier
-
 ## Middleware
 
 ::: async_batch_llm.middleware.Middleware
 
+## BaseMiddleware
+
+::: async_batch_llm.BaseMiddleware
+
 ## TokenEstimator
 
 ::: async_batch_llm.TokenEstimator
+
+## TokenEstimate
+
+::: async_batch_llm.TokenEstimate
+
+## CharacterTokenEstimator
+
+::: async_batch_llm.CharacterTokenEstimator
+
+`ErrorClassifier`, the built-in classifiers and the rate-limit strategies are on
+[Errors and Classification](errors.md).

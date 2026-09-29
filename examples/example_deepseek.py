@@ -24,8 +24,9 @@ export DEEPSEEK_API_KEY=sk-...
 1. ``DeepSeekModel.from_api_key`` (reads ``DEEPSEEK_API_KEY``).
 2. ``thinking=False`` to force non-thinking mode (cheaper/faster for batch
    classification; V4 models default to thinking).
-3. ``max_connections`` to size the httpx pool to ``max_workers`` so high
-   concurrency isn't bottlenecked at httpx's ~100 default.
+3. ``max_connections`` to size the httpx pool to ``max_workers``, so ABL knows
+   the pool's capacity and every worker keeps its connection alive (the openai
+   SDK's default pool keeps only 100 connections alive).
 4. ``DeepSeekStrategy`` with the default text-passthrough parser.
 5. Native cache-hit token tracking + provider-aware billing via
    ``CachedTokenRates.DEEPSEEK``.
@@ -54,7 +55,7 @@ async def main() -> None:
         return
 
     model = DeepSeekModel.from_api_key(
-        "deepseek-chat",
+        "deepseek-v4-flash",
         thinking=False,  # non-thinking: cheaper and faster for this workload
         max_connections=3,  # match max_workers below (scale both together)
     )
@@ -86,7 +87,7 @@ async def main() -> None:
         f"output={result.total_output_tokens} "
         f"cached={result.total_cached_tokens}"
     )
-    # DeepSeek cache reads cost 10% of normal — use the matching rate.
+    # DeepSeek cache reads cost ~2% of normal (CachedTokenRates.DEEPSEEK).
     print(f"Billable input tokens: {result.effective_input_tokens(CachedTokenRates.DEEPSEEK)}")
 
 

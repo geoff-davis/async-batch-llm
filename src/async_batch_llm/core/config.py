@@ -254,7 +254,10 @@ class GuardrailConfig:
             ("total_timeout_per_item", self.total_timeout_per_item),
             ("batch_timeout", self.batch_timeout),
         ):
-            if value is not None and (not math.isfinite(value) or value <= 0):
+            if value is None:
+                continue
+            _validate_number(value, name=name)
+            if value <= 0:
                 raise ValueError(f"{name} must be finite and > 0 or None (got {value!r})")
         if any(
             not isinstance(category, str) or not category
@@ -415,7 +418,7 @@ class ProcessorConfig:
             warnings.warn(
                 "ProcessorConfig(timeout_per_item=...) is deprecated; use "
                 "attempt_timeout=... (same per-attempt semantics). "
-                "timeout_per_item will be removed in the next major release.",
+                "timeout_per_item will be removed in 1.0.",
                 DeprecationWarning,
                 stacklevel=3,
             )
@@ -583,7 +586,8 @@ def _get_timeout_per_item(self: ProcessorConfig) -> float | None:
     if sys._getframe(1).f_globals.get("__name__") == "dataclasses":
         return self.__dict__.get("timeout_per_item")
     warnings.warn(
-        "ProcessorConfig.timeout_per_item is deprecated; read config.attempt_timeout instead.",
+        "ProcessorConfig.timeout_per_item is deprecated and will be removed in 1.0; "
+        "read config.attempt_timeout instead.",
         DeprecationWarning,
         stacklevel=2,
     )
@@ -600,7 +604,8 @@ def _set_timeout_per_item(self: ProcessorConfig, value: float | None) -> None:
         self.__dict__["timeout_per_item"] = value
         return
     warnings.warn(
-        "ProcessorConfig.timeout_per_item is deprecated; set config.attempt_timeout instead.",
+        "ProcessorConfig.timeout_per_item is deprecated and will be removed in 1.0; "
+        "set config.attempt_timeout instead.",
         DeprecationWarning,
         stacklevel=2,
     )

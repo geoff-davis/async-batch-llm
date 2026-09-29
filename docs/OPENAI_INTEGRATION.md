@@ -78,6 +78,11 @@ previous Chat Completions behavior, pass `api_surface="chat_completions"`:
 model = OpenAIModel.from_api_key("gpt-4o-mini", api_surface="chat_completions")
 ```
 
+Switching surfaces changes automatic artifact identity: Responses results aren't
+replayed as Chat Completions results, and the reverse. v0.26 checkpoints replay only
+with `api_surface="chat_completions"`. See
+[the v0.27 migration guide](migration/v0.27.md#openaimodel-uses-the-responses-api).
+
 Chat-style request fields are translated, so most existing configurations
 keep working:
 
@@ -106,6 +111,15 @@ Results keep the Chat Completions vocabulary for `metadata["finish_reason"]`:
 The raw Responses status is in `metadata["response_status"]`.
 `metadata["reasoning_tokens"]` reports reasoning tokens. They're already
 included in `output_tokens`, so cost math is unchanged.
+
+Other metadata keys, each emitted only when the response has a value:
+
+- Responses surface: `api_surface` (always `"responses"`), `provider_request_id`
+  (the response id), `model`, `refusal` (refusal text returned alongside output),
+  plus the reserved `reasoning`, `tool_calls`, and `logprobs` keys described below.
+- Chat Completions surface: the shared OpenAI-compatible keys (`model`,
+  `finish_reason`, and so on) plus `reasoning_tokens` from
+  `completion_tokens_details`.
 
 Some outcomes differ from Chat Completions:
 
@@ -193,10 +207,41 @@ sets `result.structured_output_recovered`,
 `MetricsObserver` aggregate the same signal. Leave the option off when trailing
 content should always be treated as a hard validation failure.
 
-For OpenAI specifically, `client.chat.completions.parse(response_format=...)`
-also works — wrap it in a custom strategy that calls `parse()` directly. Kept
-out of `OpenAIModel.generate()` so the same class can serve every
-OpenAI-compatible provider.
+For strict schema output, pass a `json_schema` `response_format`. No custom
+strategy is needed; on the Responses surface it's sent as `text.format` with the
+same `name`, `schema`, and `strict` fields:
+
+```python
+from pydantic import BaseModel
+
+from async_batch_llm import OpenAIModel, OpenAIStrategy, pydantic_json_parser
+
+class Sentiment(BaseModel):
+    model_config = {"extra": "forbid"}  # strict mode needs additionalProperties: false
+
+    sentiment: str
+    confidence: float
+
+model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-...")
+strategy = OpenAIStrategy(
+    model,
+    pydantic_json_parser(Sentiment),
+    generation_config={
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "sentiment",
+                "schema": Sentiment.model_json_schema(),
+                "strict": True,
+            },
+        }
+    },
+)
+```
+
+The SDK's own parse helpers (`client.responses.parse(...)`, or
+`client.chat.completions.parse(...)` with `api_surface="chat_completions"`) also
+work from a custom strategy if you want the SDK to build the schema.
 
 ## Prompt caching
 
@@ -210,7 +255,8 @@ from async_batch_llm import CachedTokenRates
 result = await processor.process_all()
 print(f"input={result.total_input_tokens} cached={result.total_cached_tokens}")
 print(f"cache hit rate: {result.cache_hit_rate:.1f}%")
-# OpenAI charges 50% of normal for cached tokens — pass the matching rate.
+# CachedTokenRates.OPENAI is 50% (gpt-4o-era pricing); newer models often
+# charge less for cached input. Check your model's pricing and pass that rate.
 print(f"billable tokens: {result.effective_input_tokens(CachedTokenRates.OPENAI)}")
 ```
 
@@ -235,8 +281,8 @@ they stabilize):
 - **`reasoning`** — the model's reasoning/thinking trace. On Chat
   Completions it comes from `message.reasoning_content` (DeepSeek reasoner
   models), falling back to `message.reasoning` (OpenRouter). On the Responses
-  API it comes from reasoning-item text when the provider returns it, else the
-  joined reasoning summaries. OpenAI returns summaries only when you ask for
+  API it comes from reasoning-item text when the provider returns it; `OpenAIModel`
+  falls back to the joined reasoning summaries (`DeepSeekModel` doesn't). OpenAI returns summaries only when you ask for
   them, e.g. `generation_config={"reasoning": {"summary": "auto"}}`.
   Encrypted reasoning is never read. Access via `item_result.reasoning`.
 - **`tool_calls`** — function calls the model requested, as
@@ -269,11 +315,15 @@ are unchanged unless you asked the model for these features.
 - `APIStatusError` → branches on `status_code`:
   - 429 → rate limit.
   - 402 → not retryable, `insufficient_balance` category, with a remediation
-    hint ("top up your prepaid DeepSeek balance"). Auth has passed, so this
+    hint. The hint is shared across providers and currently names DeepSeek as
+    its example ("top up your prepaid DeepSeek balance"). Auth has passed, so this
     otherwise looks like a generic bug; the hint is logged at WARNING when the
     item gives up. Stops a dead balance from silently burning every retry.
   - 408/425/500/502/503/504 → retryable server error.
-  - 400/401/403/404/422 → not retryable (client error / auth / config).
+  - 400/401/403/404/405/409/410/422 → not retryable (client error / auth / config).
+- An explicit `insufficient_quota` code (for example on a 429, or on a failed
+  Responses `ProviderResponseError`) → `insufficient_balance`, not retryable, and
+  no coordinated cooldown.
 - Pydantic `ValidationError` → retryable (LLM may produce valid output on
   retry).
 - `ValueError`/`TypeError`/etc. → not retryable (logic bug).
@@ -297,18 +347,34 @@ OpenAIModel.from_api_key(
     system_instruction="...",     # default system message
     extra_headers={...},          # forwarded on every request
     extra_body={"response_format": {...}},  # default per-request kwargs
+    json_mode=False,              # True adds response_format={"type": "json_object"}
     max_connections=50,           # size the httpx pool to match max_workers
-    timeout=30.0,                 # forwarded to AsyncOpenAI
+    metadata_extractors=None,     # extra metadata keys (see api/core.md)
+    api_surface="responses",      # or "chat_completions"
+    timeout=30.0,                 # other kwargs are forwarded to AsyncOpenAI
 )
 ```
 
+`OpenAICompatibleModel`, `OpenRouterModel`, and `DeepSeekModel` take the same
+arguments except `api_surface`; `DeepSeekModel` adds its own `api_surface` and
+`thinking` options.
+
 ## Connection pool sizing (`max_connections`)
 
-The openai SDK uses httpx's default connection pool (~100 connections). If you
-raise `ProcessorConfig(max_workers=...)` above an unknown pool capacity, extra
-workers can block waiting for a connection. This
-bites high-concurrency providers like DeepSeek hardest (it allows thousands of
-concurrent connections, so the ~100 default — not the API — is your ceiling).
+Without `max_connections`, the openai SDK builds its own httpx client with
+`max_connections=1000` and `max_keepalive_connections=100` (the SDK's
+`DEFAULT_CONNECTION_LIMITS`; the same values in openai 1.66.2, the minimum ABL
+supports, and in current 3.x releases). That has two effects at high concurrency:
+
+- Above 100 concurrent requests, connections beyond the keep-alive limit are
+  closed after each response and reopened for the next one, so you pay extra
+  TCP/TLS handshakes.
+- Above 1000 concurrent requests, extra workers block waiting for a connection,
+  and that wait counts against `attempt_timeout`.
+
+ABL can't see the SDK's default pool, so it doesn't warn or gate on it. The
+exception is `ProcessorConfig(concurrency=N)`: before the first request it
+rebuilds an owned default-pool client with a pool of `N`.
 
 Pass `max_connections` to size the pool to your worker count:
 
@@ -400,7 +466,3 @@ a worked example of customizing token extraction.
   [`examples/example_deepseek.py`](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_deepseek.py).
 - [`examples/example_openai.py`](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_openai.py)
   — runnable example.
-
-Explicit `insufficient_quota` responses use `insufficient_balance` and stop
-without coordinated cooldown. OpenRouter's "No allowed providers" is transient
-only for 502/503; other statuses use the non-retryable `client_error` category.

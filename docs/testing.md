@@ -11,8 +11,9 @@ from async_batch_llm.testing import FakeStrategy
 batch = await process_prompts(
     FakeStrategy(lambda prompt: prompt.upper(), token_usage={"input_tokens": 2, "output_tokens": 1}),
     ["hello", "world"],
+    preserve_order=True,  # results otherwise arrive in completion order
 )
-assert batch.outputs == ["HELLO", "WORLD"]
+assert list(batch.outputs()) == ["HELLO", "WORLD"]
 ```
 
 `FakeStrategy` accepts a fixed response or synchronous `response(prompt)` function,
@@ -58,7 +59,8 @@ strategy = PydanticAIStrategy(agent=mock_agent)
 ```
 
 For a custom strategy, write a tiny `LLMCallStrategy` subclass whose `execute()`
-returns canned `(output, tokens, metadata)` — see the framework's own
+returns canned `(output, tokens, metadata)`; the older `(output, tokens)` 2-tuple is
+deprecated and removed in 1.0. See the framework's own
 `tests/` for many examples (rate-limit exemption, token accounting, streaming,
 backpressure, etc.).
 
@@ -69,7 +71,7 @@ Before a 1,000-item run, validate the real pipeline on a handful of items:
 ```python
 test_items = full_dataset[:5]
 
-config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
+config = ProcessorConfig(concurrency=2, attempt_timeout=30.0)
 result = await process_prompts(strategy, test_items, config=config)
 
 assert result.succeeded == len(test_items)
@@ -78,3 +80,27 @@ assert result.succeeded == len(test_items)
 
 Real API calls in the framework's own suite live behind the `integration`
 pytest marker and are skipped by default.
+
+## 4. Preparing for 1.0
+
+v0.27 deprecates names and behaviors that 1.0 removes. Each emits a
+`DeprecationWarning`, which Python hides outside `__main__`, so turn them into
+errors in your test run:
+
+```bash
+pytest -W error::DeprecationWarning
+```
+
+This fails on, among others:
+
+- a custom `execute()` that returns the `(output, tokens)` 2-tuple;
+- `effective_input_tokens()` or `estimated_cost()` called without `cached_token_rate`;
+- `LLMGateway`, `BatchProcessor`, `ProcessingStats`, and `grounding_metadata_extractor`.
+
+`from async_batch_llm import *` warns once for each deprecated name, so it also fails
+under this filter; import the names you use explicitly. Other packages can emit their
+own `DeprecationWarning`s (google-genai does at import on Python 3.14); add an
+`ignore` filter for those modules, for example
+`-W "ignore::DeprecationWarning:google.genai.types"`. The
+[v0.27 migration guide](migration/v0.27.md#deprecations) lists every deprecation and
+its replacement.

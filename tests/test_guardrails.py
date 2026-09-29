@@ -657,6 +657,15 @@ def test_guardrail_timeout_validation(field: str, value: float) -> None:
         GuardrailConfig(**{field: value})
 
 
+@pytest.mark.parametrize("value", [True, False, "1", b"1", [1]], ids=repr)
+@pytest.mark.parametrize("field", ["total_timeout_per_item", "batch_timeout"])
+def test_guardrail_timeout_rejects_non_numbers(field: str, value: object) -> None:
+    # bool is an int subclass; like every other numeric config field, a
+    # guardrail timeout must reject it (and non-numbers) with ValueError.
+    with pytest.raises(ValueError, match=f"{field} must be a finite number"):
+        GuardrailConfig(**{field: value})
+
+
 def test_openai_classifier_distinguishes_authentication_and_permission() -> None:
     classifier = OpenAIErrorClassifier()
     for status, category in ((401, "authentication"), (403, "permission_denied")):

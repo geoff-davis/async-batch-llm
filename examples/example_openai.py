@@ -19,7 +19,9 @@ export OPENAI_API_KEY=sk-...
 
 ## Features demonstrated
 
-1. ``OpenAIModel.from_api_key`` convenience constructor.
+1. ``OpenAIModel.from_api_key`` convenience constructor. Since v0.27
+   ``OpenAIModel`` calls the Responses API with ``store=False``; pass
+   ``api_surface="chat_completions"`` for the previous Chat Completions behavior.
 2. ``OpenAIStrategy`` with the default text-passthrough parser.
 3. ``OpenAIStrategy`` with a structured-output ``response_parser``.
 4. ``OpenAIErrorClassifier`` wired into the processor.
@@ -89,10 +91,9 @@ async def example_structured_output() -> None:
     """Structured output via a custom response_parser.
 
     We ask the model to return JSON in a fixed shape, then parse the
-    response text into a Pydantic model. For OpenAI specifically, you can
-    also use ``client.chat.completions.parse(...)`` (response_format=...) by
-    writing a thin custom strategy — left to the reader to keep this example
-    portable across OpenAI-compatible providers.
+    response text into a Pydantic model. For schema-enforced output, pass a
+    ``json_schema`` ``response_format`` in ``generation_config`` instead; see
+    "Structured output" in docs/OPENAI_INTEGRATION.md.
     """
     print("\n=== Example 2: Structured output ===\n")
 
@@ -105,8 +106,9 @@ async def example_structured_output() -> None:
             '{"sentiment": "positive"|"negative"|"neutral", '
             '"confidence": <0.0-1.0>}. No preamble, no code fence.'
         ),
-        # OpenAI JSON mode reduces stray prose; not strictly required.
-        extra_body={"response_format": {"type": "json_object"}},
+        # JSON mode reduces stray prose; not strictly required. On the
+        # Responses API it's sent as text.format={"type": "json_object"}.
+        json_mode=True,
     )
 
     strategy = OpenAIStrategy(
@@ -141,6 +143,7 @@ async def example_structured_output() -> None:
             print(
                 f"{r.item_id}: sentiment={r.output.sentiment} "
                 f"confidence={r.output.confidence:.2f} "
+                f"finish_reason={(r.metadata or {}).get('finish_reason')} "
                 f"text={json.dumps(r.context['original'])[:60]}..."
             )
         else:

@@ -53,6 +53,27 @@ hook. A missing estimator fails before provider work with
 per-minute token limit fails immediately with `TokenEstimateExceedsLimit`; it cannot become
 admissible by waiting.
 
+### Configuration failures
+
+These failures describe the run's configuration, not the item. Each is
+non-retryable and happens before any provider call:
+
+| Exception | `error_category` |
+| --- | --- |
+| `TokenEstimatorRequired` | `ErrorCategory.TOKEN_ESTIMATOR_REQUIRED` |
+| `TokenEstimationError` (estimator raised or returned an invalid estimate) | `ErrorCategory.TOKEN_ESTIMATION_ERROR` |
+| `TokenEstimateExceedsLimit` | `ErrorCategory.TOKEN_ESTIMATE_EXCEEDS_LIMIT` |
+| `QuotaScopeError` (a strategy's `quota_scope` could not be resolved) | `ErrorCategory.QUOTA_SCOPE_ERROR` |
+
+Since v0.27 they are never replayed from artifacts, even under
+`ResumePolicy.REUSE_ALL`. The first three are checkpointed with
+`replay_eligible=False`; `quota_scope_error` fails before an artifact key exists and
+is not checkpointed. Fix the configuration and resume, and those items execute
+again. Because a missing estimator or a broken quota scope usually affects every
+item, `TOKEN_ESTIMATOR_REQUIRED` and `QUOTA_SCOPE_ERROR` are good
+[`abort_on_error_categories`](guardrails.md#configurable-fail-fast) candidates. See
+[`ErrorCategory`](api/core.md#errorcategory) for every category.
+
 `CharacterTokenEstimator` uses a character-ratio heuristic and a fixed
 expected output allowance. It is approximate and is never enabled
 automatically. Prefer a provider tokenizer and a workload-specific output
@@ -80,7 +101,10 @@ Cancellation before provider start refunds both the RPM unit and token
 reservation. Cancellation after provider start follows the same known/unknown
 usage rules as any other started attempt. An item or batch deadline may expire
 while waiting; the waiting attempt makes no provider call and leaves no live
-reservation.
+reservation. A deadline reached during the provider-capacity wait records
+`timing.timeout_category="admission_timeout"` and keeps the elapsed wait in
+`admission_wait_seconds`; a deadline during the RPM/TPM quota wait does not set
+`admission_timeout`. See [guardrails](guardrails.md#per-attempt-timeout-versus-total-item-deadline).
 
 Dry-run, compatible artifact replay, and middleware-filtered items bypass live
 quota admission. They emit no quota-admission events and mutate no RPM/TPM
@@ -182,12 +206,12 @@ from async_batch_llm import ArtifactIdentity, CallableStrategy, TokenEstimate
 shared_quota = object()
 
 
-async def call_model_a(prompt, attempt, state):
-    ...
+async def call_model_a(prompt, *, attempt, timeout, state):
+    ...  # call model A and return a CallOutcome
 
 
-async def call_model_b(prompt, attempt, state):
-    ...
+async def call_model_b(prompt, *, attempt, timeout, state):
+    ...  # call model B and return a CallOutcome
 
 
 def estimate_a(prompt, *, strategy, attempt, state):
@@ -302,9 +326,11 @@ reported tokens, refunds, debt, known-zero/unknown attempts, estimator
 failures, and scope count. `QUOTA_ADMITTED` and `QUOTA_RECONCILED` events expose
 attempt-level evidence without using item or scope IDs as metric labels.
 
-If an estimate exceeds the limit, either increase the configured bucket,
-reduce expected output, or route that workload to its real independent quota
-scope. Waiting cannot fix a request larger than the bucket. If timeouts or 429s
+If one estimate exceeds `max_tokens_per_minute`, raise the limit to the real
+account budget, reduce expected output, or route that workload to its real
+independent quota scope. Waiting can't fix it, and `quota_burst_seconds` doesn't
+affect this check. If timeouts or 429s
+
 make admission look conservative, inspect `unknown_usage_attempts`: without a
 reliable provider total, retaining the reservation is intentional.
 

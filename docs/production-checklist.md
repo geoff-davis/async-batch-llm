@@ -6,16 +6,23 @@ Each item links to the deeper reference where one exists.
 When a run is already failing or appears stuck, use the
 [Troubleshooting and FAQ](troubleshooting.md) alongside this preflight list.
 
-## 1. Worker count (`max_workers`)
+## 1. Concurrency (`concurrency` / `max_workers`)
 
-LLM calls are **I/O-bound**, so `max_workers` is "how many calls in flight at
+LLM calls are **I/O-bound**, so concurrency is "how many calls in flight at
 once", not a CPU count. Do **not** use `os.cpu_count()`.
+
+Prefer the single `concurrency=N` knob. It sets `max_workers` and
+`max_provider_concurrency` to `N` and, for factory-built OpenAI-compatible
+models, sizes the connection pool too (see
+[Choosing Your Limits](choosing-your-limits.md#1-concurrency-concurrencyn)).
+Set `max_workers` separately only when you want the framework wider or narrower
+than the provider; an explicit value wins.
 
 | Situation | Starting point |
 | --- | --- |
 | General I/O-bound (most providers) | `5`–`10` |
 | Rate-limited / low-quota endpoint | `3`–`5`, lean on the coordinated cooldown |
-| High-concurrency provider (e.g. DeepSeek) | `50`–`250`+ — but size the connection pool to match (below) |
+| High-concurrency provider (e.g. DeepSeek, self-hosted vLLM) | `50`–`200` — with `concurrency=N` the pool is sized to match (below) |
 
 Throughput from added workers flattens out well before you exhaust sockets/fds,
 so raising `max_workers` past the point where you're latency-bound just adds
@@ -23,10 +30,18 @@ contention. Measure with `examples/benchmark_worker_overhead.py` (no network).
 
 ## 2. Connection pool (`max_connections`) vs `max_workers`
 
-For the OpenAI-compatible models (`OpenAIModel` / `OpenRouterModel` /
-`DeepSeekModel`), the SDK uses httpx's **default ~100-connection pool**. If
-`max_workers` exceeds that without an ABL capacity signal, the extra workers
-block inside httpx — no extra throughput. **Set `max_connections` explicitly:**
+With `concurrency=N` and a factory-built OpenAI-compatible model (`llm("...")`
+or `from_api_key()` without `max_connections`), the pool is sized for you: `N`
+connections, all kept alive, before the first request.
+
+Otherwise the openai SDK default applies to `OpenAIModel` / `OpenRouterModel` /
+`DeepSeekModel`: **1000 connections, of which 100 are kept alive**. Above 100
+concurrent requests, extra connections are opened and torn down for each
+request (a fresh handshake per call). Above 1000, extra workers wait inside
+httpx for a connection; that wait counts against `attempt_timeout` but isn't
+reported as a capacity wait. When you set `max_workers` yourself, or want a
+pool size other than `concurrency`, **set `max_connections` explicitly** (it
+sets both the connection and keep-alive limits):
 
 ```python
 model = DeepSeekModel.from_api_key(
@@ -146,15 +161,20 @@ and execution p50, p95, and p99 values.
 
 ## 5. Rate-limit configuration
 
-When one worker hits a 429/quota/overload, the framework runs a **coordinated
-cooldown** — all workers pause, then slow-start back up — instead of each worker
-hammering a throttled endpoint. Tune via `RateLimitConfig`:
+When one worker hits a rate limit (HTTP 429 or an equivalent such as
+`RESOURCE_EXHAUSTED`, `error_category="rate_limit"`), the framework runs a
+**coordinated cooldown** — all workers pause, then slow-start back up — instead
+of each worker hammering a throttled endpoint. Overload (503) and other 5xx
+errors use per-item retry backoff instead. Billing and daily-quota exhaustion
+(`insufficient_balance`, `quota_exhausted`) fail without retry; see
+[`ErrorCategory`](api/core.md#errorcategory). Tune the cooldown via `RateLimitConfig`:
 
 | Field | What it does |
 | --- | --- |
 | `cooldown_seconds` | Base pause after a rate limit (a server `Retry-After` raises it as a floor) |
 | `backoff_multiplier` | Grows the cooldown on consecutive rate limits |
 | `slow_start_items` / `slow_start_initial_delay` / `slow_start_final_delay` | Ramp delays as workers resume after a cooldown |
+| `max_cooldown_seconds` | Cap on the escalated cooldown (default 600s) |
 
 Pair with proactive limiting (`ProcessorConfig(max_requests_per_minute=...)`) to
 stay under quota before you trip a 429 at all.
@@ -188,6 +208,10 @@ Before enabling `max_tokens_per_minute`, verify all of the following:
   failure, and cancellation both before and after provider start.
 - Verify replay and dry-run emit no quota events and do not consume live
   admission state.
+- Know that configuration failures (`token_estimator_required`,
+  `token_estimation_error`, `token_estimate_exceeds_limit`, `quota_scope_error`)
+  are never replayed on resume; fix the configuration and they re-execute. See
+  [configuration failures](token-aware-admission.md#configuration-failures).
 
 See [Token-Aware Admission](token-aware-admission.md) for reservation,
 reconciliation, FIFO, and visibility semantics.
@@ -237,7 +261,8 @@ processor per request:
   means one shared rate-limit cooldown — when one caller hits a 429, all callers
   briefly pause and then slow-start, instead of a thundering herd.
 - **Set `max_pending` and `submit_timeout` for web paths.** `max_pending` caps
-  in-flight requests (running + waiting) so an overload sheds load instantly
+  how many requests may wait beyond the `max_workers` running ones (total in
+  flight ≤ `max_workers + max_pending`), so an overload sheds load instantly
   (rejecting with a failed result) rather than growing an unbounded waiter list;
   `submit_timeout` bounds per-caller latency so a request stuck behind a cooldown
   returns instead of hanging the handler. Both are off by default.
@@ -260,8 +285,9 @@ Set `GuardrailConfig(max_total_tokens=...)` on large or unattended runs, and
 `max_total_cost` with your own `cost_function` when a dollar ceiling matters.
 Caps are soft: calls already running when the cap is reached can overshoot it by
 at most one call per worker, so pair a cap with a per-call output limit
-(`max_tokens`) if the overshoot must stay small. See
-[Token and cost budgets](guardrails.md#token-and-cost-budgets).
+(`max_tokens`) if the overshoot must stay small. The budget API is provisional
+and may change in a minor release ([API stability](stability.md#provisional-through-10)).
+See [Token and cost budgets](guardrails.md#token-and-cost-budgets).
 
 ## 10. Cleanup
 

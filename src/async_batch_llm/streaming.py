@@ -355,7 +355,8 @@ async def _process_stream_impl(
             async for entry in _aiter(prompts):
                 if isinstance(entry, int) and not isinstance(entry, bool) and not warned_integer:
                     warnings.warn(
-                        f"Integer prompt at index {index} is deprecated; pass a string instead.",
+                        f"Integer prompt at index {index} is deprecated and will be removed in 1.0; "
+                        "pass a string instead.",
                         DeprecationWarning,
                         stacklevel=2,
                     )

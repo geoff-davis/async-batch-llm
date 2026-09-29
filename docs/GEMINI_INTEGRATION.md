@@ -59,6 +59,9 @@ async-batch-llm provides one built-in Gemini strategy (`GeminiStrategy`) plus
 two models — `GeminiModel` (direct) and `GeminiCachedModel` (context caching).
 You pick caching by choosing the model; the strategy is the same either way.
 
+For the simple case, `llm("gemini:gemini-2.5-flash")` builds the client, model,
+and strategy in one call. It reads `GOOGLE_API_KEY`, then `GEMINI_API_KEY`.
+
 ### 1. GeminiModel (Simple API Calls)
 
 For direct Gemini API calls without caching:
@@ -204,9 +207,9 @@ from async_batch_llm.llm_strategies import LLMCallStrategy
 class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
     """Gemini strategy with progressive temperature."""
 
-    def __init__(self, client: genai.Client, temps=[0.0, 0.5, 1.0]):
+    def __init__(self, client: genai.Client, temps=None):
         self.client = client
-        self.temps = temps
+        self.temps = temps if temps is not None else [0.0, 0.5, 1.0]
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
@@ -231,8 +234,11 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
         usage = response.usage_metadata
         tokens = {
             "input_tokens": usage.prompt_token_count or 0,
-            "output_tokens": usage.candidates_token_count or 0,
+            # Thinking tokens are billed as output; count them like GeminiModel does.
+            "output_tokens": (usage.candidates_token_count or 0)
+            + (usage.thoughts_token_count or 0),
             "total_tokens": usage.total_token_count or 0,
+            "cached_input_tokens": usage.cached_content_token_count or 0,
         }
 
         return output, tokens, None
@@ -241,7 +247,9 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
 strategy = ProgressiveTempGeminiStrategy(client=client, temps=[0.0, 0.5, 1.0])
 ```
 
-**Why progressive temperature?**
+**Why progressive temperature?** This pattern suits Gemini 2.5 models. For Gemini 3
+models Google recommends keeping the default temperature, which is what built-in
+models do when you don't pass one.
 
 - Attempt 1 (temp=0.0): Deterministic, most likely to succeed
 - Attempt 2 (temp=0.5): More creative if first attempt had validation errors
@@ -249,21 +257,21 @@ strategy = ProgressiveTempGeminiStrategy(client=client, temps=[0.0, 0.5, 1.0])
 
 ### Model Selection
 
+Pass any Gemini model ID. IDs used in this repo's examples and benchmarks:
+
 ```python
-# Fast, experimental (free tier)
-model="gemini-2.0-flash-exp"
+# Gemini 3.x Flash-Lite: cheapest and fastest
+model = "gemini-3.5-flash-lite"
+model = "gemini-3.1-flash-lite"
 
-# Production-ready, fast
-model="gemini-2.5-flash-lite"
-
-# Most capable, slower
-model="gemini-2.5-flash"
-
-# With extended thinking
-model="gemini-2.5-pro"
+# Gemini 2.5, cheapest to most capable
+model = "gemini-2.5-flash-lite"
+model = "gemini-2.5-flash"
+model = "gemini-2.5-pro"
 ```
 
-See: <https://ai.google.dev/gemini-api/docs/models/gemini>
+Model availability changes often; check Google's
+[model list](https://ai.google.dev/gemini-api/docs/models) for current IDs.
 
 ### Generation Config Options
 
@@ -271,7 +279,7 @@ See: <https://ai.google.dev/gemini-api/docs/models/gemini>
 from google.genai.types import GenerateContentConfig
 
 config = GenerateContentConfig(
-    # Temperature: 0.0 (deterministic) to 1.0 (creative)
+    # Temperature: 0.0 (deterministic) to 2.0 (most random)
     temperature=0.7,
 
     # Nucleus sampling: Consider tokens with cumulative probability top_p
@@ -333,6 +341,8 @@ strategy = GeminiStrategy(
 # per-item WorkItemResult (the views live on WorkItemResult/LLMResponse,
 # not on the BatchResult):
 for item in result.successes:
+    if item.grounding is None:  # the model chose not to search
+        continue
     for source in item.grounding.sources:  # typed view over metadata["grounding"]
         print(source.uri, source.title)
     print(item.grounding.queries)          # the web_search_queries the model ran
@@ -353,13 +363,22 @@ anything (it's any `Callable[[Any], dict | None]`):
 
 ```python
 def reasoning_extractor(response):
-    """Surface a thinking/reasoning trace under metadata['reasoning']."""
+    """Surface Gemini's thought summaries under metadata['reasoning']."""
     candidate = (response.candidates or [None])[0]
-    thought = getattr(candidate, "thought", None) if candidate else None
-    return {"reasoning": thought} if thought else None
+    parts = (candidate.content.parts if candidate and candidate.content else None) or []
+    text = "".join(p.text for p in parts if p.thought and p.text)
+    return {"reasoning": text} if text else None
 
 model = GeminiModel("gemini-2.5-flash", client, metadata_extractors=[reasoning_extractor])
+strategy = GeminiStrategy(
+    model,
+    # Gemini returns thought parts only when you ask for them.
+    generation_config={"thinking_config": {"include_thoughts": True}},
+)
 ```
+
+The built-in Gemini models report thinking usage as `metadata["reasoning_tokens"]`
+but don't read thought text, so the extractor is how you get it.
 
 Extractors merge on top of the built-in metadata (your keys win on collision),
 run independently, and a failing extractor is logged and skipped rather than
@@ -455,8 +474,11 @@ class GeminiVisionStrategy(LLMCallStrategy[str]):
         usage = response.usage_metadata
         tokens = {
             "input_tokens": usage.prompt_token_count or 0,
-            "output_tokens": usage.candidates_token_count or 0,
+            # Thinking tokens are billed as output; count them like GeminiModel does.
+            "output_tokens": (usage.candidates_token_count or 0)
+            + (usage.thoughts_token_count or 0),
             "total_tokens": usage.total_token_count or 0,
+            "cached_input_tokens": usage.cached_content_token_count or 0,
         }
 
         return response.text, tokens, None
@@ -540,7 +562,8 @@ work_item = LLMWorkItem(
 ## Best Practices
 
 1. **Use structured output**: Set `response_schema` for reliable parsing
-2. **Implement progressive temperature**: Start low (0.0), increase on retries
+2. **Consider progressive temperature** on Gemini 2.5: start low (0.0) and
+   increase on retries. On Gemini 3, leave temperature at the default.
 3. **Set reasonable timeouts**: 30s for simple, 120s for complex queries
 4. **Handle errors gracefully**: Use `GeminiErrorClassifier` for Gemini errors
 5. **Monitor token usage**: Track costs using `item.token_usage`
@@ -552,8 +575,11 @@ work_item = LLMWorkItem(
 
 ### API Key Not Found
 
+`genai.Client()` with no key raises a `ValueError` asking for one (the exact
+text depends on your google-genai version). `llm("gemini:...")` raises:
+
 ```text
-Error: GOOGLE_API_KEY environment variable not set
+ValueError: No API key for llm("gemini:..."): pass api_key= or set the GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable.
 ```
 
 **Fix**: Export your API key before running:
@@ -586,14 +612,17 @@ pydantic.ValidationError: response doesn't match schema
 **Fix**:
 
 1. Check your Pydantic model matches expected output
-2. Use progressive temperature strategy (increases temp on retries)
+2. On Gemini 2.5, try a progressive temperature strategy (increases temp on retries)
 3. Add examples in your prompt
 
 ### Timeout Errors
 
 ```text
-asyncio.TimeoutError
+FrameworkTimeoutError: ...
 ```
+
+The framework enforces `attempt_timeout` and reports an attempt that runs past
+it as `FrameworkTimeoutError` (retryable, category `framework_timeout`).
 
 **Fix**: Increase timeout:
 
@@ -667,8 +696,11 @@ class SmartGeminiStrategy(LLMCallStrategy[PersonData]):
         usage = response.usage_metadata
         tokens: TokenUsage = {
             "input_tokens": usage.prompt_token_count or 0,
-            "output_tokens": usage.candidates_token_count or 0,
+            # Thinking tokens are billed as output; count them like GeminiModel does.
+            "output_tokens": (usage.candidates_token_count or 0)
+            + (usage.thoughts_token_count or 0),
             "total_tokens": usage.total_token_count or 0,
+            "cached_input_tokens": usage.cached_content_token_count or 0,
         }
 
         return output, tokens, None
@@ -722,18 +754,25 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
             config=config,
         )
 
+        # Count tokens before parsing: a response that fails validation was
+        # still billed.
+        usage = response.usage_metadata
+        tokens: TokenUsage = {
+            "input_tokens": usage.prompt_token_count or 0,
+            "output_tokens": (usage.candidates_token_count or 0)
+            + (usage.thoughts_token_count or 0),
+            "total_tokens": usage.total_token_count or 0,
+            "cached_input_tokens": usage.cached_content_token_count or 0,
+        }
         try:
             output = PersonData.model_validate_json(response.text)
-            usage = response.usage_metadata
-            tokens: TokenUsage = {
-                "input_tokens": usage.prompt_token_count or 0,
-                "output_tokens": usage.candidates_token_count or 0,
-                "total_tokens": usage.total_token_count or 0,
-            }
             return output, tokens, None
         except ValidationError as e:
             if state is not None:
                 state.set("last_response", response.text)
+            # Keep the billed tokens in the item's totals. The exception stays a
+            # ValidationError, so on_error and the classifier still see it.
+            e._failed_token_usage = tokens
             raise  # Framework calls on_error, then retries
 
     def _create_retry_prompt(self, original_prompt: str, state) -> str:
@@ -770,7 +809,9 @@ Ensure all fields match the required schema exactly."""
 - Gemini knows exactly what went wrong
 - Focused on fixing specific fields
 - Higher success rate on retries
-- Lower token usage (shorter prompts)
+- Can need fewer retries, and so fewer tokens, than blind retries. Compare
+  totals only when failed attempts report their usage, as above; otherwise the
+  attempts that differ between the two approaches drop out of the count.
 
 **Complete Examples:**
 
@@ -793,7 +834,7 @@ Ensure all fields match the required schema exactly."""
 
 For issues with:
 
-- **batch-llm**: <https://github.com/geoff-davis/async-batch-llm/issues>
+- **async-batch-llm**: <https://github.com/geoff-davis/async-batch-llm/issues>
 - **Gemini API**: <https://developers.google.com/support>
 - **google-genai SDK**: <https://github.com/googleapis/python-genai/issues>
 

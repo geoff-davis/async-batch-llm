@@ -19,11 +19,12 @@ The implementation lives in `src/async_batch_llm/_internal/cleanup.py`.
 - A still-running resource is an ordering barrier. A dependent resource is
   never closed while the resource it depends on is still running.
 - Resource phases are discovered after preceding barriers finish, including
-  strategies whose preparation started or completed during the gateway drain.
+  strategies whose preparation started or completed during the `LLMCallPool`
+  in-flight drain.
   If a private barrier wait is interrupted, dependent steps wait for the next
   explicit close; an ordinary failure reported by an already-settled owned
   task does not itself leave a live barrier.
-- The gateway in-flight drain and the artifact-store close run to completion.
+- The `LLMCallPool` in-flight drain and the artifact-store close run to completion.
 - Batch `process_all()` leaves resource teardown, including artifact-store
   close, to context exit or an explicit close. Streaming finalization runs
   the ordered close before deciding its terminal, including waiting for
@@ -61,7 +62,8 @@ Cancellation of the task that is closing a resource is counted explicitly.
   therefore always a caller cancellation.
 - A `CancelledError` raised inside a step, or a step task cancelled by a
   third party before it ran, is a cleanup-step interruption. It is reported
-  as `CleanupInterruptedError` (an ordinary `Exception`), the step is not
+  as `CleanupInterruptedError` (a `RuntimeError` and `AsyncBatchLLMError`, not a
+  cancellation), the step is not
   checkpointed, and a later explicit close retries it.
 - `Task.cancelling()`, `Task.uncancel()`, and exception attributes are not
   used. Behavior is identical on every supported Python version.
@@ -142,8 +144,12 @@ Cancellation of the task that is closing a resource is counted explicitly.
 
 - A batch whose workers are cancelled before its queue drains, including by
   concurrent shutdown, raises `BatchInterruptedError` from `process_all()`.
-  It is an ordinary `RuntimeError` subclass; cancellation of the calling task
-  itself remains `asyncio.CancelledError`.
+  It is a `RuntimeError` (and `AsyncBatchLLMError`) subclass, not a cancellation;
+  cancellation of the calling task itself remains `asyncio.CancelledError`.
+- `except AsyncBatchLLMError` catches every exception type the library defines,
+  including these lifecycle errors. Provider SDK exceptions and exceptions raised
+  by your own strategies are not wrapped.
+
 - When a close call has no pre-existing exception, the first ordinary cleanup
   failure is raised after every step has been attempted; later failures are
   logged with tracebacks.

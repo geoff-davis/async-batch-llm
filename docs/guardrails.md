@@ -21,7 +21,8 @@ config = ProcessorConfig(
 )
 ```
 
-Timeouts must be finite and greater than zero. All deadline calculations use a
+Timeouts must be finite numbers (not booleans) greater than zero, or `None`.
+All deadline calculations use a
 monotonic clock.
 
 ## Per-attempt timeout versus total item deadline
@@ -58,10 +59,13 @@ Total expiry is terminal and non-retryable:
 - exception: `ItemDeadlineExceeded`;
 - `error_category`: `framework_total_item_timeout`.
 
-The existing per-attempt framework timeout remains distinct as
-`framework_execution_timeout`.
+A per-attempt `attempt_timeout` expiry is distinct: it is retryable, with
+`error_category="framework_timeout"` and
+`timing.timeout_category="framework_execution_timeout"`. Put `framework_timeout`,
+not `framework_execution_timeout`, in `abort_on_error_categories`.
 
-`timing.timeout_category` records where the time ran out. A deadline reached
+`timing.timeout_category` records where the time ran out (see
+[`TimeoutCategory`](api/core.md#timeoutcategory) for the values). A deadline reached
 while the item waited for provider capacity is `admission_timeout`, for both item
 and batch deadlines. The elapsed capacity wait still counts toward
 `admission_wait_seconds`, and it's kept when an abort ends the wait too.
@@ -109,9 +113,16 @@ provider and receive `BatchAbortedError` with
 Choose categories that indicate a batch-wide condition. Good candidates when
 your provider classifier supplies reliable status information include:
 
-- `authentication` (HTTP 401);
-- `permission_denied` (HTTP 403), when permission is account/model-wide; and
-- `insufficient_balance`.
+- `ErrorCategory.AUTHENTICATION` (HTTP 401);
+- `ErrorCategory.PERMISSION_DENIED` (HTTP 403), when permission is
+  account/model-wide; and
+- `ErrorCategory.INSUFFICIENT_BALANCE`.
+
+Depending on your setup, these are also batch-wide:
+
+- `ErrorCategory.QUOTA_EXHAUSTED` (Gemini daily quota);
+- `ErrorCategory.TOKEN_ESTIMATOR_REQUIRED` and `ErrorCategory.QUOTA_SCOPE_ERROR`
+  (configuration failures that affect every item).
 
 Do not use `client_error` as a blanket default: malformed input or validation
 can be item-specific. The provider-neutral classifier does not invent auth or
@@ -120,7 +131,10 @@ permission categories when reliable status data is unavailable.
 ## Token and cost budgets
 
 `max_total_tokens` and `max_total_cost` cap what one processor run spends. Both
-are opt-in soft caps:
+are opt-in soft caps.
+
+Provisional: this API is new in v0.27 and may change in a minor release; see
+[API stability](stability.md#provisional-through-10).
 
 ```python
 from async_batch_llm import AttemptUsage, GuardrailConfig, ProcessorConfig
@@ -210,6 +224,7 @@ from pathlib import Path
 from async_batch_llm import (
     AbortMode,
     ArtifactIdentity,
+    ErrorCategory,
     GuardrailConfig,
     JsonlArtifactStore,
     ProcessorConfig,
@@ -235,9 +250,10 @@ config = ProcessorConfig(
         total_timeout_per_item=180,
         batch_timeout=3600,
         abort_on_error_categories=frozenset({
-            "authentication",
-            "insufficient_balance",
+            ErrorCategory.AUTHENTICATION,
+            ErrorCategory.INSUFFICIENT_BALANCE,
         }),
+
         abort_mode=AbortMode.DRAIN_ACTIVE,
     ),
 )

@@ -15,6 +15,10 @@ pip install 'async-batch-llm[openrouter]'
 (Internally this installs the `openai` SDK; OpenRouter speaks the OpenAI
 chat-completions wire format with a different `base_url`.)
 
+`OpenRouterModel` always uses Chat Completions. It has no `api_surface`
+parameter, and the v0.27 switch of `OpenAIModel` to the Responses API doesn't
+affect it.
+
 ## Authentication
 
 Set `OPENROUTER_API_KEY`, or pass `api_key=` to
@@ -272,7 +276,7 @@ reads those native fields into `cached_input_tokens`:
 ```python
 from async_batch_llm import DeepSeekModel, DeepSeekStrategy
 
-model = DeepSeekModel.from_api_key("deepseek-chat")  # reads DEEPSEEK_API_KEY
+model = DeepSeekModel.from_api_key("deepseek-v4-flash", thinking=False)  # reads DEEPSEEK_API_KEY
 strategy = DeepSeekStrategy(model)
 ```
 
@@ -310,6 +314,17 @@ async with ParallelBatchProcessor(...) as processor:
 - 502 with body containing `no_provider_available` (no upstream host could
   serve the request) → retryable, `network_error`. Without the override
   these would otherwise look like generic server errors.
+- "No allowed providers" (your provider routing settings exclude every host) →
+  retryable `network_error` only on 502/503; any other status is the
+  non-retryable `client_error` category, since retrying the same routing
+  won't help.
+- An HTTP-200 body that carries an `error` object instead of choices →
+  `OpenRouterModel` raises `ProviderResponseError`. The classifier treats it as
+  retryable `upstream_error`, or as `rate_limit` when the embedded status is 429
+  (or, with no status, when the message reads like a rate limit). See
+  [OpenRouter reports an error inside HTTP 200](troubleshooting.md#openrouter-reports-an-error-inside-http-200).
+- An explicit `insufficient_quota` code → non-retryable `insufficient_balance`,
+  whether it arrives as a status error or inside an HTTP-200 body.
 
 Everything else (rate limits, timeouts, 4xx vs 5xx) inherits from the OpenAI
 classifier.

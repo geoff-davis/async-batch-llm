@@ -1,56 +1,58 @@
 """Example demonstrating async-batch-llm with LangChain integration.
 
-This example shows how to create custom strategies that integrate with LangChain,
-including chains, agents, and RAG (Retrieval-Augmented Generation) pipelines.
+This example shows how to create custom strategies that integrate with LangChain
+runnables (LCEL chains such as ``prompt | llm``), including a small RAG
+(Retrieval-Augmented Generation) pipeline. It targets LangChain 1.x.
 
 Install dependencies:
-    pip install 'async-batch-llm' 'langchain' 'langchain-openai' 'langchain-anthropic' 'langchain-community' 'faiss-cpu'
+    pip install 'async-batch-llm' 'langchain-core>=1' 'langchain-openai' 'langchain-anthropic'
 """
 
 import asyncio
 import os
 
-from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import AIMessage
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
 
 from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig, TokenUsage
 from async_batch_llm.llm_strategies import LLMCallStrategy
 
 
-class LangChainStrategy(LLMCallStrategy[str]):
-    """Strategy for using LangChain chains with async-batch-llm."""
+def _message_tokens(message: AIMessage) -> TokenUsage:
+    """Read token counts from a chat model's ``usage_metadata`` when present."""
+    usage = message.usage_metadata or {}
+    return {
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+    }
 
-    def __init__(self, chain: LLMChain):
+
+class LangChainStrategy(LLMCallStrategy[str]):
+    """Strategy for running a LangChain ``prompt | chat_model`` chain."""
+
+    def __init__(self, chain: Runnable):
         """
         Initialize LangChain strategy.
 
         Args:
-            chain: Configured LangChain chain
+            chain: A runnable that takes ``{"input": ...}`` and returns an AIMessage
         """
         self.chain = chain
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state=None
     ) -> tuple[str, TokenUsage, None]:
-        """Execute LangChain chain.
+        """Execute the LangChain chain.
 
         Note: timeout parameter is provided for information but timeout enforcement
         is handled by the framework wrapping this call in asyncio.wait_for().
         """
-        # Run the chain
-        result = await self.chain.arun(input=prompt)
-
-        # LangChain doesn't always provide token usage in a standard way
-        # For production use, you'd want to extract this from the LLM callbacks
-        tokens: TokenUsage = {
-            "input_tokens": 0,  # Would need callback handler to track
-            "output_tokens": 0,
-            "total_tokens": 0,
-        }
-
-        return result, tokens, None
+        message = await self.chain.ainvoke({"input": prompt})
+        return message.text, _message_tokens(message), None
 
 
 # Example 1: Simple LangChain chain with OpenAI
@@ -61,11 +63,7 @@ async def example_langchain_openai_chain():
     print("=" * 60 + "\n")
 
     # Create LangChain LLM
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.7,
-        openai_api_key=os.environ.get("OPENAI_API_KEY"),
-    )
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)  # reads OPENAI_API_KEY
 
     # Create prompt template
     template = """You are a helpful assistant that answers questions concisely.
@@ -74,16 +72,16 @@ Question: {input}
 
 Answer:"""
 
-    prompt = PromptTemplate(template=template, input_variables=["input"])
+    prompt = PromptTemplate.from_template(template)
 
     # Create chain
-    chain = LLMChain(llm=llm, prompt=prompt)
+    chain = prompt | llm
 
     # Create strategy
     strategy = LangChainStrategy(chain=chain)
 
     # Configure processor
-    config = ProcessorConfig(max_workers=3, attempt_timeout=30.0)
+    config = ProcessorConfig(concurrency=3, attempt_timeout=30.0)
 
     # Process items
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:
@@ -121,11 +119,7 @@ async def example_langchain_anthropic():
     print("=" * 60 + "\n")
 
     # Create LangChain LLM
-    llm = ChatAnthropic(
-        model="claude-3-5-haiku-20241022",
-        temperature=1.0,
-        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    llm = ChatAnthropic(model="claude-haiku-4-5", temperature=1.0)  # reads ANTHROPIC_API_KEY
 
     # Create prompt template for summarization
     template = """Please summarize the following text in 2-3 sentences:
@@ -134,14 +128,14 @@ async def example_langchain_anthropic():
 
 Summary:"""
 
-    prompt = PromptTemplate(template=template, input_variables=["input"])
-    chain = LLMChain(llm=llm, prompt=prompt)
+    prompt = PromptTemplate.from_template(template)
+    chain = prompt | llm
 
     # Create strategy
     strategy = LangChainStrategy(chain=chain)
 
     # Configure processor
-    config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
+    config = ProcessorConfig(concurrency=2, attempt_timeout=30.0)
 
     # Process items
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:
@@ -182,37 +176,30 @@ Summary:"""
             print(f"  {item_result.output}")
 
 
-# Example 3: RAG with LangChain and FAISS
+# Example 3: RAG with LangChain and an in-memory vector store
 async def example_langchain_rag():
-    """Example using LangChain RAG pipeline with batch processing."""
+    """Example using a LangChain RAG pipeline with batch processing."""
     print("\n" + "=" * 60)
     print("Example 3: LangChain RAG Pipeline")
     print("=" * 60 + "\n")
 
-    from langchain.chains import RetrievalQA
-    from langchain.text_splitter import CharacterTextSplitter
-    from langchain_community.vectorstores import FAISS
+    from langchain_core.vectorstores import InMemoryVectorStore
     from langchain_openai import OpenAIEmbeddings
 
     class RAGStrategy(LLMCallStrategy[str]):
-        """Custom strategy for RAG with LangChain."""
+        """Retrieve context, then answer with a ``prompt | llm`` chain."""
 
-        def __init__(self, qa_chain: RetrievalQA):
-            self.qa_chain = qa_chain
+        def __init__(self, retriever: Runnable, answer_chain: Runnable):
+            self.retriever = retriever
+            self.answer_chain = answer_chain
 
         async def execute(
             self, prompt: str, attempt: int, timeout: float, state=None
         ) -> tuple[str, TokenUsage, None]:
-            # Run the RAG chain
-            result = await self.qa_chain.arun(prompt)
-
-            tokens: TokenUsage = {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-            }
-
-            return result, tokens, None
+            docs = await self.retriever.ainvoke(prompt)
+            context = "\n".join(doc.page_content for doc in docs)
+            message = await self.answer_chain.ainvoke({"context": context, "question": prompt})
+            return message.text, _message_tokens(message), None
 
     # Sample documents for our knowledge base
     documents = [
@@ -223,36 +210,24 @@ async def example_langchain_rag():
         "Deep learning uses multiple layers of neural networks for complex pattern recognition.",
     ]
 
-    # Split documents
-    text_splitter = CharacterTextSplitter(chunk_size=100, chunk_overlap=0)
-    texts = text_splitter.create_documents(documents)
-
-    # Create embeddings and vector store
-    embeddings = OpenAIEmbeddings(openai_api_key=os.environ.get("OPENAI_API_KEY"))
-    vectorstore = FAISS.from_documents(texts, embeddings)
+    # Create embeddings and vector store (the documents are short, so no splitting)
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    vectorstore = await InMemoryVectorStore.afrom_texts(documents, embeddings)
 
     # Create retriever
     retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
 
-    # Create LLM
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.5,
-        openai_api_key=os.environ.get("OPENAI_API_KEY"),
-    )
-
-    # Create RAG chain
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=retriever,
+    # Create LLM and answer chain
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
+    answer_prompt = PromptTemplate.from_template(
+        "Answer the question using only this context:\n{context}\n\nQuestion: {question}\nAnswer:"
     )
 
     # Create strategy
-    strategy = RAGStrategy(qa_chain=qa_chain)
+    strategy = RAGStrategy(retriever=retriever, answer_chain=answer_prompt | llm)
 
     # Configure processor
-    config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
+    config = ProcessorConfig(concurrency=2, attempt_timeout=30.0)
 
     # Process questions
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:
@@ -290,17 +265,8 @@ async def example_langchain_multi_chain():
     print("=" * 60 + "\n")
 
     # Create different LLMs and chains
-    openai_llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.3,
-        openai_api_key=os.environ.get("OPENAI_API_KEY"),
-    )
-
-    anthropic_llm = ChatAnthropic(
-        model="claude-3-5-haiku-20241022",
-        temperature=1.0,
-        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    )
+    openai_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+    anthropic_llm = ChatAnthropic(model="claude-haiku-4-5", temperature=1.0)
 
     # Chain for factual questions
     fact_template = """Answer this factual question concisely:
@@ -308,8 +274,7 @@ async def example_langchain_multi_chain():
 {input}
 
 Answer:"""
-    fact_prompt = PromptTemplate(template=fact_template, input_variables=["input"])
-    fact_chain = LLMChain(llm=openai_llm, prompt=fact_prompt)
+    fact_chain = PromptTemplate.from_template(fact_template) | openai_llm
 
     # Chain for creative tasks
     creative_template = """Write a creative response to this prompt:
@@ -317,15 +282,14 @@ Answer:"""
 {input}
 
 Creative response:"""
-    creative_prompt = PromptTemplate(template=creative_template, input_variables=["input"])
-    creative_chain = LLMChain(llm=anthropic_llm, prompt=creative_prompt)
+    creative_chain = PromptTemplate.from_template(creative_template) | anthropic_llm
 
     # Create strategies
     fact_strategy = LangChainStrategy(chain=fact_chain)
     creative_strategy = LangChainStrategy(chain=creative_chain)
 
     # Configure processor
-    config = ProcessorConfig(max_workers=4, attempt_timeout=30.0)
+    config = ProcessorConfig(concurrency=4, attempt_timeout=30.0)
 
     # Process mixed task types
     async with ParallelBatchProcessor[None, str, None](config=config) as processor:

@@ -41,11 +41,14 @@ typecheck:  ## Run mypy type checker
 typecheck-ty:  ## Run ty type checker
 	uv run ty check src/
 
+# Same file set as the prek markdownlint hook: every tracked .md except docs/archive/.
+MARKDOWN_FILES = $$(git ls-files '*.md' ':!:docs/archive/*')
+
 markdown-lint:  ## Check markdown files
-	npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md"
+	npx markdownlint-cli2 $(MARKDOWN_FILES)
 
 markdown-lint-fix:  ## Fix markdown issues
-	npx markdownlint-cli2 "README.md" "docs/*.md" "CLAUDE.md" --fix
+	npx markdownlint-cli2 $(MARKDOWN_FILES) --fix
 
 check-all:  ## Run all checks (lint + typecheck + test)
 	@echo "==> Running linter..."

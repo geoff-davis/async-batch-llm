@@ -34,7 +34,7 @@ Get an API key from: https://aistudio.google.com/apikey
 ## References
 
 - Grounding with Google Search: https://ai.google.dev/gemini-api/docs/google-search
-- Typed auxiliary output docs: docs/API.md
+- Typed auxiliary output docs: docs/api/core.md
 - Gemini integration guide: docs/GEMINI_INTEGRATION.md
 """
 
