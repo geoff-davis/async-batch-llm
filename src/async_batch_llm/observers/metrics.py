@@ -4,6 +4,7 @@ import asyncio
 import json
 from typing import Any
 
+from ..strategies.errors import ABORT_RESULT_CATEGORIES
 from .base import BaseObserver, ProcessingEvent
 
 
@@ -137,7 +138,7 @@ class MetricsObserver(BaseObserver):
             elif event == ProcessingEvent.ITEM_FAILED:
                 self.metrics["items_processed"] += 1
                 self.metrics["items_failed"] += 1
-                if data.get("error_category") in {"batch_aborted", "batch_deadline_exceeded"}:
+                if data.get("error_category") in ABORT_RESULT_CATEGORIES:
                     self.metrics["items_aborted"] += 1
                 if "error_type" in data:
                     error_type = data["error_type"]

@@ -77,6 +77,7 @@ from .base import (
     WorkItemResult,
     WorkItemTiming,
 )
+from .budget import AttemptUsage
 from .callable_strategy import CallableStrategy, CallOutcome
 
 # Classifiers
@@ -152,6 +153,7 @@ from .sqlite_artifacts import SqliteArtifactStore, SqliteDurability
 from .strategies import (
     BatchAbortedError,
     BatchAdmissionClosedError,
+    BatchBudgetExceeded,
     BatchDeadlineExceeded,
     DefaultErrorClassifier,
     EmptyResponseError,
@@ -250,6 +252,7 @@ __all__ = [
     # Configuration
     "ProcessorConfig",
     "AbortMode",
+    "AttemptUsage",
     "GuardrailConfig",
     "RateLimitConfig",
     "RetryConfig",
@@ -298,6 +301,7 @@ __all__ = [
     "FrameworkTimeoutError",
     "ItemDeadlineExceeded",
     "MiddlewareContractError",
+    "BatchBudgetExceeded",
     "BatchDeadlineExceeded",
     "BatchAbortedError",
     "BatchAdmissionClosedError",

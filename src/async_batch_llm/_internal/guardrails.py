@@ -15,6 +15,7 @@ from ..core import AbortMode
 from ..strategies.errors import (
     BatchAbortedError,
     BatchAdmissionClosedError,
+    BatchBudgetExceeded,
     BatchDeadlineExceeded,
     ItemDeadlineExceeded,
 )
@@ -32,7 +33,7 @@ class BatchAdmissionStopped(BatchAdmissionClosedError):
 
 @dataclass(frozen=True)
 class AbortCause:
-    kind: Literal["batch_timeout", "fail_fast"]
+    kind: Literal["batch_timeout", "fail_fast", "budget_exceeded"]
     reason: str
     error_category: str | None = None
     triggering_item_id: str | None = None
@@ -55,11 +56,21 @@ class AbortController:
     async def trip(self, cause: AbortCause) -> bool:
         """Record the first cause and wake waiters; return whether this call won."""
         async with self._lock:
-            if self.cause is not None:
-                return False
-            self.cause = cause
-            self.event.set()
-            return True
+            return self.trip_now(cause)
+
+    def trip_now(self, cause: AbortCause) -> bool:
+        """Synchronously record the first cause; return whether this call won.
+
+        Needs no lock: without an await, no other coroutine on the loop can
+        interleave, and ``begin_provider_call`` reads ``cause`` under its lock
+        without awaiting in between either. The budget guardrail uses this so its
+        threshold decision and the stop are one indivisible step.
+        """
+        if self.cause is not None:
+            return False
+        self.cause = cause
+        self.event.set()
+        return True
 
     async def begin_provider_call(self, item_id: str | None) -> None:
         """Atomically register a provider attempt before a possible abort."""
@@ -78,6 +89,8 @@ class AbortController:
             raise RuntimeError("AbortController has no cause")
         if cause.kind == "batch_timeout":
             return BatchDeadlineExceeded(cause.reason, item_id=item_id)
+        if cause.kind == "budget_exceeded":
+            return BatchBudgetExceeded(cause.reason, item_id=item_id)
         return BatchAbortedError(cause.reason, item_id=item_id)
 
     def raise_if_aborted(self, item_id: str | None) -> None:
@@ -86,11 +99,12 @@ class AbortController:
 
     def result_for(self, work_item: LLMWorkItem[Any, Any, Any]) -> WorkItemResult[Any, Any]:
         exception = self.exception_for(work_item.item_id)
-        category = (
-            "batch_deadline_exceeded"
-            if isinstance(exception, BatchDeadlineExceeded)
-            else "batch_aborted"
-        )
+        if isinstance(exception, BatchDeadlineExceeded):
+            category = "batch_deadline_exceeded"
+        elif isinstance(exception, BatchBudgetExceeded):
+            category = "batch_budget_exceeded"
+        else:
+            category = "batch_aborted"
         return WorkItemResult(
             item_id=work_item.item_id,
             success=False,

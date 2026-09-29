@@ -35,6 +35,7 @@ from ..strategies import (
 )
 from ..token_extractor import TokenExtractor
 from .admission import AdmissionRegistry
+from .budget import BudgetTracker
 from .capacity import CapacityLimiter
 from .classifier_resolver import StrategyClassifierResolver
 from .cleanup import CleanupAction, CleanupReport, SharedCloser
@@ -62,6 +63,14 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         error_classifier: ErrorClassifier | None = None,
         rate_limit_strategy: RateLimitStrategy | None = None,
     ) -> None:
+        if config.guardrails.budget_configured:
+            # Accepting a safety cap and silently ignoring it would be worse
+            # than refusing it: budgets are enforced only by processor runs.
+            raise ValueError(
+                "max_total_tokens, max_total_cost and cost_function are supported only "
+                "by batch processor runs (process_all, streaming, process_prompts, "
+                "process_stream), not call(), call_result() or LLMCallPool"
+            )
         self.config = config
         self._classifier_resolver = StrategyClassifierResolver(error_classifier)
         # Compatibility/debug alias. Item execution resolves per strategy.
@@ -118,6 +127,7 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         # Queue-less call/gateway surfaces have item deadlines but no shared
         # batch abort controller.
         self._abort_controller: AbortController | None = None
+        self._budget_tracker: BudgetTracker | None = None
 
         self.executor: ItemExecutor[TInput, TOutput, TContext] = ItemExecutor(
             self, preserve_tracebacks=True

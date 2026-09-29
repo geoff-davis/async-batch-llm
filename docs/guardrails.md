@@ -1,4 +1,4 @@
-# Deadlines and Fail-Fast Guardrails
+# Deadlines, Budgets and Fail-Fast Guardrails
 
 Guardrails are opt-in. Their defaults preserve normal completion-order,
 retry, streaming, token-accounting, and cancellation behavior.
@@ -109,6 +109,92 @@ your provider classifier supplies reliable status information include:
 Do not use `client_error` as a blanket default: malformed input or validation
 can be item-specific. The provider-neutral classifier does not invent auth or
 permission categories when reliable status data is unavailable.
+
+## Token and cost budgets
+
+`max_total_tokens` and `max_total_cost` cap what one processor run spends. Both
+are opt-in soft caps:
+
+```python
+from async_batch_llm import AttemptUsage, GuardrailConfig, ProcessorConfig
+
+def price(usage: AttemptUsage) -> float:
+    # Your prices, in your currency. ABL ships no price table.
+    return (
+        usage.usage.get("input_tokens", 0) * 0.15
+        + usage.usage.get("output_tokens", 0) * 0.60
+    ) / 1_000_000
+
+config = ProcessorConfig(
+    max_workers=20,
+    guardrails=GuardrailConfig(
+        max_total_tokens=5_000_000,
+        max_total_cost=25.0,
+        cost_function=price,
+    ),
+)
+```
+
+**What counts.** Every physical provider attempt whose usage the provider
+reported, success or failure, including retries and rate-limited tries. Usage is
+counted as each attempt finishes, from the same observation that tokens-per-minute
+admission reconciles. These are not counted:
+
+- replayed results;
+- dry-run calls;
+- attempts that never started a provider call;
+- attempts whose usage the provider didn't report (they appear in
+  `budget_unknown_usage_attempts`);
+- usage a strategy adds only later, from `on_error`.
+
+So the budget can be lower than a result's `token_usage`.
+
+**Reaching a cap.** When the total reaches a cap (equality counts), the run
+stops like a batch deadline, with `termination.kind == "budget_exceeded"`:
+
+- no new provider call or retry starts;
+- `abort_mode` decides whether calls already running drain or are cancelled;
+- accepted items that didn't finish receive `BatchBudgetExceeded` with
+  `error_category="batch_budget_exceeded"`.
+
+The attempt that reached the cap keeps its outcome if it succeeded. If it failed,
+its result becomes `batch_budget_exceeded`, with the provider error kept as the
+exception's `__context__`.
+
+**Overshoot.** Final usage can exceed the cap by the usage of the attempt that
+reached it plus other attempts that had already started, which is at most
+`max_workers` attempts in total. There is no numeric bound unless each attempt's
+usage is bounded, for example with `max_tokens`. With `max_workers=1` and a cap of
+10 tokens, a single call that reports 100 overshoots by 90. Providers may still
+bill calls that `AbortMode.CANCEL_ACTIVE` cancels.
+
+**Cost function.** `max_total_cost` requires `cost_function`, which is called once
+per attempt with known usage. It receives an `AttemptUsage`: the item ID, attempt
+and try numbers, the strategy, a read-only copy of the token usage, and whether the
+call succeeded. Pass the `strategy` to price model escalation per attempt.
+
+- It must be synchronous and fast: it runs on the event loop, and a blocking call
+  can't be interrupted.
+- It must return a finite, non-negative number.
+- If it raises or returns anything else (including an awaitable or a bool), the
+  run stops with `budget_exceeded`, tokens are still counted, and
+  `budget_cost_complete` becomes `False`. Its exception message is not logged.
+- A `cost_function` without `max_total_cost` only tracks cost.
+
+**Reporting.** `await processor.get_stats()` adds `budget_tokens_used`,
+`budget_cost_used`, `budget_cost_complete`, and `budget_unknown_usage_attempts`
+when a budget or cost function is configured. The termination reason names the
+cap and the amount used.
+
+**Scope.** Budgets apply to processor runs (`process_all()`, streaming,
+`process_prompts()`, `process_stream()`). `call()`, `call_result()`, and
+`LLMCallPool` reject them with `ValueError` rather than ignoring a safety cap.
+Every run starts with a fresh budget, including a resumed run.
+
+**Artifacts.** `batch_budget_exceeded` results are audit records like other
+batch-abort results: written best-effort and never replayed. A `BatchResult`
+serialized with `termination.kind == "budget_exceeded"` can't be read by v0.26
+or earlier.
 
 ## End-to-end checkpointed run
 

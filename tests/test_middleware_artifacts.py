@@ -265,7 +265,13 @@ async def test_completed_lookup_wins_guardrail_and_preserves_stored_success(stor
 
 
 @pytest.mark.parametrize(
-    "category", ["batch_aborted", "batch_deadline_exceeded", "framework_total_item_timeout"]
+    "category",
+    [
+        "batch_aborted",
+        "batch_deadline_exceeded",
+        "batch_budget_exceeded",
+        "framework_total_item_timeout",
+    ],
 )
 @pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.asyncio
@@ -468,7 +474,7 @@ async def test_item_timeout_checkpoint_failure_still_propagates(
 
 @pytest.mark.parametrize("phase", ["prepare", "append"])
 @pytest.mark.parametrize("error_type", [ArtifactError, ArtifactIOError, ArtifactFormatError])
-@pytest.mark.parametrize("abort_kind", ["fail_fast", "batch_timeout"])
+@pytest.mark.parametrize("abort_kind", ["fail_fast", "batch_timeout", "budget_exceeded"])
 @pytest.mark.asyncio
 async def test_audit_artifact_failure_preserves_controlled_stop(
     store_factory, phase, error_type, abort_kind, caplog
@@ -502,7 +508,11 @@ async def test_audit_artifact_failure_preserves_controlled_stop(
         batch = await processor.process_all()
         assert processor._queue._unfinished_tasks == 0
     assert [result.success for result in batch.results] == [True, True, False, False, False]
-    category = "batch_aborted" if abort_kind == "fail_fast" else "batch_deadline_exceeded"
+    category = {
+        "fail_fast": "batch_aborted",
+        "batch_timeout": "batch_deadline_exceeded",
+        "budget_exceeded": "batch_budget_exceeded",
+    }[abort_kind]
     assert all(result.error_category == category for result in batch.results[2:])
     assert batch.termination.kind == abort_kind
     assert len(strategy.calls) == 2

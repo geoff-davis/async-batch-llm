@@ -61,6 +61,7 @@ from .admission import (
     ScopeAdmissionState,
 )
 from .backoff import capped_backoff
+from .budget import BudgetTracker
 from .capacity import CapacityLimiter
 from .classifier_resolver import StrategyClassifierResolver
 from .error_logging import (
@@ -78,6 +79,7 @@ from .execution_state import (
     runtime_state,
 )
 from .guardrails import (
+    AbortCause,
     AbortController,
     _OperationTimerExpired,
     await_with_guardrails,
@@ -236,6 +238,7 @@ class ExecutorHostProtocol(Protocol[TInput, TOutput, TContext]):
     _strategy_lifecycle: StrategyLifecycle[TOutput]
     _capacity_limiter: CapacityLimiter
     _abort_controller: AbortController | None
+    _budget_tracker: BudgetTracker | None
 
     def _extract_token_usage(self, exception: Exception) -> dict[str, int]: ...
 
@@ -352,6 +355,10 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
     @property
     def _abort_controller(self) -> AbortController | None:
         return self._host._abort_controller
+
+    @property
+    def _budget_tracker(self) -> BudgetTracker | None:
+        return self._host._budget_tracker
 
     # ── Thin delegators (so moved bodies stay verbatim) ──────────
     async def _emit_event(self, event: ProcessingEvent, data: dict | None = None) -> None:
@@ -560,6 +567,38 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             known=False,
             reported_tokens=None,
         )
+
+    def _record_budget_usage(
+        self,
+        *,
+        work_item: LLMWorkItem[TInput, TOutput, TContext],
+        strategy: LLMCallStrategy[TOutput],
+        attempt_number: int,
+        try_number: int,
+        observation: TokenUsageObservation | None,
+        success: bool,
+    ) -> AbortCause | None:
+        """Account one started provider attempt; stop the run synchronously if it trips.
+
+        Returns the cause only when this attempt won the stop, so the caller can
+        announce it after reconciliation. Never awaits.
+        """
+        tracker = self._budget_tracker
+        if tracker is None:
+            return None
+        known = observation is not None and observation.known
+        cause = tracker.record(
+            item_id=work_item.item_id,
+            attempt=attempt_number,
+            try_number=try_number,
+            strategy=strategy,
+            usage=observation.usage if known and observation is not None else None,
+            reported_tokens=observation.reported_tokens if observation is not None else None,
+            success=success,
+        )
+        if cause is None or not tracker.stop_now(cause):
+            return None
+        return cause
 
     async def _record_quota_admitted(
         self,
@@ -1515,6 +1554,10 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                             # _unpack_strategy_result accepts both legacy 2-tuples
                             # and current 3-tuples (output, tokens, metadata).
                             usage_observation: TokenUsageObservation | None = None
+                            provider_succeeded = False
+                            # Captured before any await: retries replace the
+                            # current attempt on the shared runtime state.
+                            budget_try_number = current_try_number(retry_state) or attempt_number
                             try:
                                 try:
                                     remaining = remaining_seconds(
@@ -1588,6 +1631,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                     token_usage
                                 )
                                 token_usage = usage_observation.usage
+                                provider_succeeded = True
                                 if (
                                     usage_observation.known
                                     and usage_observation.reported_tokens is not None
@@ -1608,41 +1652,72 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                     )
                                 raise
                             finally:
+                                # Order matters (issue #183): the budget records this
+                                # attempt and stops the run synchronously, before any
+                                # await; quota reconciliation and timing then run even
+                                # if pricing raised; the abort is announced last.
+                                budget_cause: AbortCause | None = None
                                 try:
-                                    # The provider body supplies one observation on success
-                                    # or failure. Reconcile before releasing capacity; the
-                                    # admission owner handles partial/pre-start fallback.
-                                    if (
-                                        usage_observation is not None
-                                        and reservation.provider_started
-                                        and not reservation.finalized
-                                    ):
-                                        if admission_state.quota_gate.tpm_enabled:
-                                            finalization = (
-                                                reservation.reconcile(
-                                                    usage_observation.reported_tokens
-                                                )
-                                                if usage_observation.known
-                                                and usage_observation.reported_tokens is not None
-                                                else reservation.finalize_unknown()
-                                            )
-                                        else:
-                                            finalization = reservation.finalize_request_only()
-                                        if finalization is not None:
-                                            await self._record_quota_finalization(
-                                                reservation=reservation,
-                                                finalization=finalization,
-                                                state=admission_state,
-                                                work_item=work_item,
-                                                worker_id=worker_id,
-                                                attempt_number=attempt_number,
-                                                retry_state=retry_state,
-                                            )
-                                finally:
-                                    if item_runtime is not None and reservation.provider_started:
-                                        item_runtime.current_attempt.execution_seconds = max(
-                                            0.0, time.perf_counter() - execution_started
+                                    if reservation.provider_started:
+                                        budget_cause = self._record_budget_usage(
+                                            work_item=work_item,
+                                            strategy=strategy,
+                                            attempt_number=attempt_number,
+                                            try_number=budget_try_number,
+                                            observation=usage_observation,
+                                            success=provider_succeeded,
                                         )
+                                finally:
+                                    try:
+                                        try:
+                                            # The provider body supplies one observation
+                                            # on success or failure. Reconcile before
+                                            # releasing capacity; the admission owner
+                                            # handles partial/pre-start fallback.
+                                            if (
+                                                usage_observation is not None
+                                                and reservation.provider_started
+                                                and not reservation.finalized
+                                            ):
+                                                if admission_state.quota_gate.tpm_enabled:
+                                                    finalization = (
+                                                        reservation.reconcile(
+                                                            usage_observation.reported_tokens
+                                                        )
+                                                        if usage_observation.known
+                                                        and usage_observation.reported_tokens
+                                                        is not None
+                                                        else reservation.finalize_unknown()
+                                                    )
+                                                else:
+                                                    finalization = (
+                                                        reservation.finalize_request_only()
+                                                    )
+                                                if finalization is not None:
+                                                    await self._record_quota_finalization(
+                                                        reservation=reservation,
+                                                        finalization=finalization,
+                                                        state=admission_state,
+                                                        work_item=work_item,
+                                                        worker_id=worker_id,
+                                                        attempt_number=attempt_number,
+                                                        retry_state=retry_state,
+                                                    )
+                                        finally:
+                                            if (
+                                                item_runtime is not None
+                                                and reservation.provider_started
+                                            ):
+                                                item_runtime.current_attempt.execution_seconds = (
+                                                    max(
+                                                        0.0,
+                                                        time.perf_counter() - execution_started,
+                                                    )
+                                                )
+                                    finally:
+                                        tracker = self._budget_tracker
+                                        if budget_cause is not None and tracker is not None:
+                                            await tracker.announce(budget_cause)
                     except _AdmissionPaused:
                         # Capacity has been released and the unstarted quota refunded.
                         # Rejoin FIFO at the tail; this is still the same physical try.

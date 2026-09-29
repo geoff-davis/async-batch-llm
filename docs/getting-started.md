@@ -225,7 +225,7 @@ the legacy direct model cleanup behavior.
 
 - [Choosing Your Limits](choosing-your-limits.md)
 - [Production Checklist](production-checklist.md)
-- [Deadlines and Fail-Fast Guardrails](guardrails.md)
+- [Deadlines, Budgets and Fail-Fast Guardrails](guardrails.md)
 - [Bounded Work and Backpressure](bounded-work.md)
 - [Results, Artifacts, and Resume](results-and-artifacts.md)
 - [Troubleshooting and FAQ](troubleshooting.md)

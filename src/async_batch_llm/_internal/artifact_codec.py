@@ -25,14 +25,12 @@ from ..serialization import (
     work_item_result_from_dict,
     work_item_result_to_dict,
 )
+from ..strategies.errors import ABORT_RESULT_CATEGORIES
 
 ReplayKey: TypeAlias = tuple[str, str, str, str | None, str]
 CostCalculator: TypeAlias = Callable[[WorkItemResult[Any, Any]], float | None]
 ContextFingerprinter: TypeAlias = Callable[[Any], str]
-BEST_EFFORT_AUDIT_CATEGORIES = (
-    "batch_aborted",
-    "batch_deadline_exceeded",
-)
+BEST_EFFORT_AUDIT_CATEGORIES = ABORT_RESULT_CATEGORIES
 GUARDRAIL_AUDIT_CATEGORIES = (
     *BEST_EFFORT_AUDIT_CATEGORIES,
     "framework_total_item_timeout",
