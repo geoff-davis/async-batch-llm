@@ -135,23 +135,90 @@ jobs:
     - name: Check package metadata and wheel contents
       run: make package-check
 
-  openai-compat:
-    # The locked SDK exercises the current httpx2 transport in the main test
-    # matrix. Keep focused coverage for the exact supported floor (the first
-    # release that parses Responses reasoning summaries) and for current
-    # releases in both httpx-backed SDK major lines allowed by openai>=1.66.2.
+  sdk-compat:
+    # Provider SDKs at their declared floors and at the latest release of every
+    # supported major line, so a release newer than uv.lock can't go untested.
+    # Floors run on Python 3.12 (openai 1.66.x doesn't support 3.14). Each leg
+    # also installs the other two SDKs unpinned, because the classifier suite
+    # imports all three. A new SDK major line is supported once a leg here covers
+    # it (see docs/stability.md).
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         include:
-        - label: "floor"
+        - label: "openai floor"
           requirement: "openai==1.66.2"
-        - label: "1.x"
+          companions: "google-genai pydantic-ai-slim"
+          tests: >-
+            tests/test_openai_compatible.py tests/test_openai_responses.py
+            tests/test_concurrency_knob.py tests/test_openai_strategies.py
+            tests/test_openrouter_strategies.py tests/test_deepseek_responses.py
+            tests/test_error_classifiers.py tests/test_error_classifier_autoselect.py
+        - label: "openai 1.x"
           requirement: "openai>=1.66.2,<2"
-        - label: "2.x"
+          companions: "google-genai pydantic-ai-slim"
+          tests: >-
+            tests/test_openai_compatible.py tests/test_openai_responses.py
+            tests/test_concurrency_knob.py tests/test_openai_strategies.py
+            tests/test_openrouter_strategies.py tests/test_deepseek_responses.py
+            tests/test_error_classifiers.py tests/test_error_classifier_autoselect.py
+        - label: "openai 2.x"
           requirement: "openai>=2,<3"
+          companions: "google-genai pydantic-ai-slim"
+          tests: >-
+            tests/test_openai_compatible.py tests/test_openai_responses.py
+            tests/test_concurrency_knob.py tests/test_openai_strategies.py
+            tests/test_openrouter_strategies.py tests/test_deepseek_responses.py
+            tests/test_error_classifiers.py tests/test_error_classifier_autoselect.py
+        - label: "openai 3.x"
+          requirement: "openai>=3,<4"
+          companions: "google-genai pydantic-ai-slim"
+          tests: >-
+            tests/test_openai_compatible.py tests/test_openai_responses.py
+            tests/test_concurrency_knob.py tests/test_openai_strategies.py
+            tests/test_openrouter_strategies.py tests/test_deepseek_responses.py
+            tests/test_error_classifiers.py tests/test_error_classifier_autoselect.py
+        - label: "google-genai floor"
+          requirement: "google-genai==1.49.0"
+          companions: "openai pydantic-ai-slim"
+          tests: >-
+            tests/test_gemini_strategies.py tests/test_gemini_api_versions.py
+            tests/test_cache_tag_matching.py tests/test_cache_expiration_multiworker.py
+            tests/test_cache_auto_renew.py tests/test_error_classifiers.py
+        - label: "google-genai 1.x"
+          requirement: "google-genai>=1.49.0,<2"
+          companions: "openai pydantic-ai-slim"
+          tests: >-
+            tests/test_gemini_strategies.py tests/test_gemini_api_versions.py
+            tests/test_cache_tag_matching.py tests/test_cache_expiration_multiworker.py
+            tests/test_cache_auto_renew.py tests/test_error_classifiers.py
+        - label: "google-genai 2.x"
+          requirement: "google-genai>=2,<3"
+          companions: "openai pydantic-ai-slim"
+          tests: >-
+            tests/test_gemini_strategies.py tests/test_gemini_api_versions.py
+            tests/test_cache_tag_matching.py tests/test_cache_expiration_multiworker.py
+            tests/test_cache_auto_renew.py tests/test_error_classifiers.py
+        - label: "pydantic-ai floor"
+          requirement: "pydantic-ai==1.32.0"
+          companions: "google-genai"
+          tests: >-
+            tests/test_pydantic_ai_strategy.py tests/test_error_classifiers.py
+            tests/test_error_classifier_autoselect.py
+        - label: "pydantic-ai 1.x"
+          requirement: "pydantic-ai>=1.32.0,<2"
+          companions: "google-genai"
+          tests: >-
+            tests/test_pydantic_ai_strategy.py tests/test_error_classifiers.py
+            tests/test_error_classifier_autoselect.py
+        - label: "pydantic-ai 2.x"
+          requirement: "pydantic-ai>=2,<3"
+          companions: "google-genai"
+          tests: >-
+            tests/test_pydantic_ai_strategy.py tests/test_error_classifiers.py
+            tests/test_error_classifier_autoselect.py
 
     steps:
     - uses: actions/checkout@v7.0.1
@@ -164,16 +231,29 @@ jobs:
     - name: Set up Python
       run: uv python install 3.12
 
-    - name: Test OpenAI SDK ${{ matrix.label }} transport compatibility
+    - name: Test ${{ matrix.label }}
+      env:
+        REQUIREMENT: ${{ matrix.requirement }}
+        COMPANIONS: ${{ matrix.companions }}
+        TESTS: ${{ matrix.tests }}
       run: |
-        uv run --isolated --no-project \
-          --with-editable . \
-          --with "${{ matrix.requirement }}" \
-          --with pytest \
-          --with pytest-asyncio \
-          --with pytest-timeout \
-          pytest tests/test_openai_compatible.py tests/test_openai_responses.py \
-            tests/test_concurrency_knob.py -q
+        with_args=(--with "$REQUIREMENT")
+        for package in $COMPANIONS; do with_args+=(--with "$package"); done
+        run=(uv run --isolated --no-project --python 3.12 --with-editable .
+             "${with_args[@]}" --with pytest --with pytest-asyncio --with pytest-timeout)
+        # Record the resolved versions so a failure can be reproduced exactly.
+        "${run[@]}" python - <<'PY'
+        import platform
+        from importlib.metadata import PackageNotFoundError, version
+        print("python", platform.python_version())
+        for name in ("openai", "httpx", "google-genai", "pydantic-ai", "pydantic-ai-slim", "pydantic"):
+            try:
+                print(name, version(name))
+            except PackageNotFoundError:
+                print(name, "not installed")
+        PY
+        # shellcheck disable=SC2086
+        "${run[@]}" pytest -q $TESTS
 
   scale-smoke:
     # Reduced deterministic scale-soak profile (benchmarks/scale_soak): exact
