@@ -41,6 +41,15 @@ See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
   classifier. Bare `"quota"` no longer signals a rate limit; `"quota exceeded"` does.
   Message heuristics still apply to other untyped exceptions. `MockAgent`'s simulated
   rate limit now carries `code = 429`.
+- Configuration failures no longer replay from artifacts ([#178]).
+  `token_estimator_required`, `token_estimation_error`, `token_estimate_exceeds_limit`
+  and `quota_scope_error` results are still checkpointed (except `quota_scope_error`,
+  which fails before an artifact key exists), but with `replay_eligible=False`, so a
+  resumed run with fixed configuration re-executes those items even under
+  `ResumePolicy.REUSE_ALL`. Records written by v0.26 are excluded the same way on
+  both JSONL and SQLite, and an older compatible success is reused if one exists.
+  Checkpoint errors for these results still propagate. The artifact schema is
+  unchanged.
 
 ### Added
 
@@ -63,6 +72,7 @@ See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
   current RSS is unavailable (no `/proc`).
 
 [#177]: https://github.com/geoff-davis/async-batch-llm/issues/177
+[#178]: https://github.com/geoff-davis/async-batch-llm/issues/178
 [#183]: https://github.com/geoff-davis/async-batch-llm/issues/183
 
 ## [0.26.0] - 2026-09-27
