@@ -80,6 +80,9 @@ from .base import (
 from .budget import AttemptUsage
 from .callable_strategy import CallableStrategy, CallOutcome
 
+# Documented error and timeout category vocabulary
+from .categories import ErrorCategory, TimeoutCategory
+
 # Classifiers
 from .classifiers import (
     GeminiErrorClassifier,
@@ -305,6 +308,8 @@ __all__ = [
     "BatchBudgetExceeded",
     "BatchDeadlineExceeded",
     "AsyncBatchLLMError",
+    "ErrorCategory",
+    "TimeoutCategory",
     "BatchAbortedError",
     "BatchAdmissionClosedError",
     "ProviderResponseError",

@@ -64,6 +64,14 @@
 
 ::: async_batch_llm.ToolCall
 
+## ErrorCategory
+
+::: async_batch_llm.ErrorCategory
+
+## TimeoutCategory
+
+::: async_batch_llm.TimeoutCategory
+
 ## AsyncBatchLLMError
 
 ::: async_batch_llm.AsyncBatchLLMError
