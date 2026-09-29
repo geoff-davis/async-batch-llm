@@ -4,7 +4,7 @@ Guardrails are opt-in. Their defaults preserve normal completion-order,
 retry, streaming, token-accounting, and cancellation behavior.
 
 ```python
-from async_batch_llm import AbortMode, GuardrailConfig, ProcessorConfig
+from async_batch_llm import AbortMode, ErrorCategory, GuardrailConfig, ProcessorConfig
 
 config = ProcessorConfig(
     max_workers=20,
@@ -13,8 +13,8 @@ config = ProcessorConfig(
         total_timeout_per_item=180,
         batch_timeout=3600,
         abort_on_error_categories=frozenset({
-            "authentication",
-            "insufficient_balance",
+            ErrorCategory.AUTHENTICATION,
+            ErrorCategory.INSUFFICIENT_BALANCE,
         }),
         abort_mode=AbortMode.DRAIN_ACTIVE,
     ),
@@ -93,7 +93,9 @@ producer, queue, and strategy cleanup and is not mislabeled as a deadline.
 
 ## Configurable fail-fast
 
-`abort_on_error_categories` is empty by default. A configured category trips
+`abort_on_error_categories` is empty by default. Use `ErrorCategory` members for the
+built-in categories (see [the full list](api/core.md#errorcategory)); plain strings,
+including categories returned by a custom classifier, work too. A configured category trips
 the shared abort controller only after an item reaches terminal failure; an
 intermediate retryable attempt does not abort a batch that could still recover.
 The first concurrent trigger wins and records its category and item ID.

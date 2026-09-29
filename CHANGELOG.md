@@ -70,6 +70,13 @@ See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
   on macOS does not guarantee durability against an OS crash or power loss. The
   scale-soak benchmark's token scenario skips its memory check with a caveat where
   current RSS is unavailable (no `/proc`).
+- `ErrorCategory` and `TimeoutCategory`: the documented vocabulary of
+  `error_category` and `timeout_category` values, as string enums. Members compare,
+  hash and format as their plain values, so they work in
+  `abort_on_error_categories` and anywhere a category string is expected; results
+  keep plain strings.
+- A draft [API stability page](docs/stability.md) classifying every public name as
+  stable, provisional or deprecated ahead of 1.0.
 - `AsyncBatchLLMError`, a common base for every exception type the library exports.
   Each keeps its existing built-in base (`TimeoutError`, `RuntimeError`,
   `ValueError`), so current `except` clauses still match.
