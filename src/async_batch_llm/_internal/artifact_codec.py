@@ -35,10 +35,21 @@ GUARDRAIL_AUDIT_CATEGORIES = (
     *BEST_EFFORT_AUDIT_CATEGORIES,
     "framework_total_item_timeout",
 )
+# Framework configuration failures that happen before any provider call. Fixing
+# the configuration and resuming should re-execute the item rather than replay
+# the failure. Checkpoint errors for these results still propagate: they are not
+# audit-only categories.
+CONFIGURATION_FAILURE_CATEGORIES = (
+    "token_estimator_required",
+    "token_estimation_error",
+    "token_estimate_exceeds_limit",
+    "quota_scope_error",
+)
 NON_REPLAYABLE_CATEGORIES = (
     "middleware_filtered",
     "artifact_serialization_error",
     *GUARDRAIL_AUDIT_CATEGORIES,
+    *CONFIGURATION_FAILURE_CATEGORIES,
 )
 
 

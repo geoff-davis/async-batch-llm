@@ -144,6 +144,13 @@ an older compatible success to be reused. A filter record explicitly appended vi
 the store API has `replay_eligible=False`, including under `REUSE_ALL`. Both JSONL
 and SQLite also reject legacy filter records bearing the exact historical
 `Skipped by middleware` error, even when those records were marked replayable.
+Configuration failures (`token_estimator_required`, `token_estimation_error`,
+`token_estimate_exceeds_limit` and `quota_scope_error`) are likewise checkpointed with
+`replay_eligible=False`, and legacy records carrying those categories are excluded, so
+fixing the configuration and resuming re-executes the item even under `REUSE_ALL`.
+Unlike abort and deadline audit records, their checkpoint errors propagate.
+`quota_scope_error` fails before an artifact key is prepared, so it is not
+checkpointed at all.
 Both stores fall back to an older compatible result when a newer record is excluded.
 Both retain the existing version-1 schema. Newly executed
 results are still checkpointed before publication or post-processing callbacks.
