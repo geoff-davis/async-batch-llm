@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
 
+v0.27 is the last release before 1.0 and the last to support Python 3.10; 1.0
+requires Python 3.11 or newer.
+
 ### Changed
 
 - **BREAKING**: `OpenAIModel` uses the Responses API by default, with `store=False`.
@@ -16,20 +19,29 @@ See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
     `logprobs`, tools, tool choice, message lists) are translated.
   - Fields with no equivalent raise `ValueError` before the request.
   - `finish_reason` keeps the Chat vocabulary. The raw status is in
-    `metadata["response_status"]`, and `metadata["reasoning_tokens"]` reports reasoning
-    tokens.
+    `metadata["response_status"]`. Other new metadata keys are `api_surface`,
+    `provider_request_id` and `refusal`. `metadata["logprobs"]` is a list of per-token
+    entries rather than the Chat logprobs object, and `LLMResponse.raw` is a Responses
+    object.
+  - `metadata["reasoning_tokens"]` reports reasoning tokens on both API surfaces.
   - A completed function-call-only reply now succeeds with empty text and
     `tool_calls`.
   - `api_surface="chat_completions"` restores the previous behavior. Its automatic
     artifact identity is unchanged, so v0.26 checkpoints replay; with the Responses
     default, they re-run.
-  - The `[openai]` extra requires `openai>=1.66.2`.
+  - The `[openai]` extra requires `openai>=1.66.2`. `OpenAIModel(...)` raises
+    `ValueError` at construction when its client has no callable
+    `responses.create`, unless `api_surface="chat_completions"` is passed; hand-written
+    fake clients in tests may need that method.
   - `OpenAICompatibleModel`, `OpenRouterModel` and `DeepSeekModel` are unchanged.
 - **BREAKING**: Built-in models, strategies, `llm()` and the `LLMModel` protocol
   now default to `temperature=None`, which omits the parameter so each provider's
   default applies. Previously they sent `temperature=0.0`, which some models or
   reasoning modes reject and which Google advises against for Gemini 3. Pass
-  `temperature=0.0` to keep the old behavior.
+  `temperature=0.0` to keep the old behavior. `ModelStrategy` always passes
+  `temperature=` to `model.generate()`, so a custom `LLMModel` now receives `None`
+  and must treat it as "omit". Artifact identity doesn't include temperature, so a
+  resumed v0.26 checkpoint still replays results produced at `0.0`.
 - **BREAKING**: Error classification trusts types and structured status before
   message text ([#177]). `ValueError`, `TypeError`, `KeyError` and the other
   built-in programming errors are `logic_error` even when their message mentions
@@ -42,12 +54,13 @@ See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
   Message heuristics still apply to other untyped exceptions. `MockAgent`'s simulated
   rate limit now carries `code = 429`.
 - Configuration failures no longer replay from artifacts ([#178]).
-  `token_estimator_required`, `token_estimation_error`, `token_estimate_exceeds_limit`
-  and `quota_scope_error` results are still checkpointed (except `quota_scope_error`,
-  which fails before an artifact key exists), but with `replay_eligible=False`, so a
-  resumed run with fixed configuration re-executes those items even under
-  `ResumePolicy.REUSE_ALL`. Records written by v0.26 are excluded the same way on
-  both JSONL and SQLite, and an older compatible success is reused if one exists.
+  `token_estimator_required`, `token_estimation_error` and
+  `token_estimate_exceeds_limit` results are still checkpointed, but with
+  `replay_eligible=False`, so a resumed run with fixed configuration re-executes those
+  items even under `ResumePolicy.REUSE_ALL`. (`quota_scope_error` is in the same
+  group, but it fails before an artifact key exists, so it is never checkpointed.)
+  Records with these categories written by v0.26 are excluded the same way on both
+  JSONL and SQLite, and an older compatible success is reused if one exists.
   Checkpoint errors for these results still propagate. The artifact schema is
   unchanged.
 - **BREAKING**: SDK minimums rise to tested floors ([#179], [#180]).
@@ -69,8 +82,11 @@ See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
   `BatchBudgetExceeded` / `batch_budget_exceeded`. Caps are soft: calls already
   running can overshoot (see the guardrails guide for the bound). `cost_function`
   receives the new `AttemptUsage`; a failing cost function stops the run. `call()`,
-  `call_result()` and `LLMCallPool` reject budget settings. A `BatchResult`
-  serialized with the new termination kind can't be read by v0.26 or earlier.
+  `call_result()` and `LLMCallPool` reject budget settings. With a budget set,
+  `get_stats()` adds `budget_tokens_used`, `budget_cost_used`,
+  `budget_cost_complete` and `budget_unknown_usage_attempts`, and `MetricsObserver`
+  counts `batch_budget_exceeded` items as aborted. A `BatchResult` serialized with the
+  new termination kind can't be read by v0.26 or earlier.
 - macOS is a supported platform: CI runs the test suite on `macos-latest`
   (Python 3.13). Windows remains untested. The artifact docs now note that `fsync`
   on macOS does not guarantee durability against an OS crash or power loss. The
@@ -109,13 +125,20 @@ These emit a warning in v0.27 and will be removed in 1.0.
   cached tokens present the warning stays a `UserWarning`, since the answer can be
   wrong; otherwise it's a `DeprecationWarning`.
 - `LLMGateway`. Use `LLMCallPool`, the same class. Importing or accessing the old name
-  warns, including through `from async_batch_llm import *`, which keeps the name until
-  1.0. A plain `import async_batch_llm` stays silent. Cleanup task names now use
-  `LLMCallPool`.
+  warns. Cleanup task names now use `LLMCallPool`.
 - `BatchProcessor`, `ProcessingStats` and `grounding_metadata_extractor` as public
   names. Importing them from `async_batch_llm` warns; they leave the public API in
   1.0. Use `ParallelBatchProcessor`, the dict from `get_stats()`, and the built-in
   Gemini models' default `metadata['grounding']` respectively.
+- All four deprecated names stay in `__all__` until 1.0, so
+  `from async_batch_llm import *` warns once for each of them, even if none is used,
+  and raises under `-W error::DeprecationWarning`. Use explicit imports. A plain
+  `import async_batch_llm` doesn't trigger these warnings.
+- Earlier deprecations are also removed in 1.0, and their warnings now say so: the
+  legacy `ParallelBatchProcessor(max_workers=..., timeout_per_item=...,
+  rate_limit_cooldown=...)` parameters, `ProcessorConfig.timeout_per_item`,
+  `WorkItemResult.gemini_safety_ratings`, calling `BatchResult.cache_hit_rate()`, and
+  integer prompts.
 
 ### Fixed
 
@@ -124,6 +147,17 @@ These emit a warning in v0.27 and will be removed in 1.0.
   `admission_wait_seconds` include the elapsed wait instead of reporting 0, and
   a deadline reached during that wait sets `timing.timeout_category` to the new
   `"admission_timeout"`. The error category is unchanged.
+- `GuardrailConfig` validates `total_timeout_per_item` and `batch_timeout` like every
+  other numeric config field: a boolean (previously `True` was accepted as one second)
+  or a non-number (previously a `TypeError` from `math.isfinite`) now raises
+  `ValueError`.
+- Gemini metadata holds plain enum names. With real google-genai responses,
+  `metadata["finish_reason"]` was `"FinishReason.STOP"` and `metadata["safety_ratings"]`
+  was keyed like `{"HarmCategory.HARM_CATEGORY_HATE_SPEECH": "HarmProbability.LOW"}`,
+  so the documented `ratings.get("HARM_CATEGORY_HATE_SPEECH") == "HIGH"` check never
+  matched. They are now `"STOP"` and `{"HARM_CATEGORY_HATE_SPEECH": "LOW"}`.
+  `gemini_safety_ratings` changes the same way. Replayed artifacts keep the values they
+  were written with.
 
 [#177]: https://github.com/geoff-davis/async-batch-llm/issues/177
 [#178]: https://github.com/geoff-davis/async-batch-llm/issues/178
@@ -2499,3 +2533,14 @@ See **[Migration Guide](docs/archive/MIGRATION_V0_1.md)** for complete upgrade i
 - Basic parallel processing
 - PydanticAI integration
 - Work item and result models
+
+[#74]: https://github.com/geoff-davis/async-batch-llm/issues/74
+[#75]: https://github.com/geoff-davis/async-batch-llm/issues/75
+[#76]: https://github.com/geoff-davis/async-batch-llm/issues/76
+[#77]: https://github.com/geoff-davis/async-batch-llm/issues/77
+[#78]: https://github.com/geoff-davis/async-batch-llm/issues/78
+[#79]: https://github.com/geoff-davis/async-batch-llm/issues/79
+[#80]: https://github.com/geoff-davis/async-batch-llm/issues/80
+[#82]: https://github.com/geoff-davis/async-batch-llm/issues/82
+[#122]: https://github.com/geoff-davis/async-batch-llm/issues/122
+[#125]: https://github.com/geoff-davis/async-batch-llm/issues/125

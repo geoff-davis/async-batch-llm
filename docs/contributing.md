@@ -2,6 +2,11 @@
 
 Thank you for considering contributing to async-batch-llm!
 
+To report a security vulnerability, don't open a public issue; follow the
+[security policy](https://github.com/geoff-davis/async-batch-llm/blob/main/SECURITY.md).
+Maintainer material, including the release process, lives in
+[CONTRIBUTING.md](https://github.com/geoff-davis/async-batch-llm/blob/main/CONTRIBUTING.md).
+
 ## Development Setup
 
 ### 1. Clone and Install
@@ -46,14 +51,14 @@ uv run pytest --cov=async_batch_llm --cov-report=html
 Always run quality checks before committing:
 
 ```bash
-# Format code
-uv run ruff format src/ tests/ examples/
+# Format code (make format)
+uv run ruff format src/ tests/
 
-# Lint and auto-fix issues
-uv run ruff check src/ tests/ examples/ --fix
+# Lint and auto-fix issues (make lint-fix)
+uv run ruff check src/ tests/ --fix
 
-# Verify linting passes
-uv run ruff check src/ tests/ examples/
+# Verify linting passes (make lint)
+uv run ruff check src/ tests/
 
 # Type check
 uv run mypy src/async_batch_llm/ --ignore-missing-imports
@@ -61,6 +66,9 @@ uv run mypy src/async_batch_llm/ --ignore-missing-imports
 # Or run all checks at once
 make ci
 ```
+
+`examples/` is excluded from ruff on purpose: example scripts check environment
+variables before importing optional dependencies, which ruff reports as E402.
 
 ### Documentation
 
@@ -81,14 +89,15 @@ Then visit <http://localhost:8000>
 
 ### Markdown Linting
 
+Requires Node 20+; run `npm ci` once to install the pinned `markdownlint-cli2`.
+Both targets lint every tracked `.md` file except `docs/archive/`, the same set as
+the prek hook:
+
 ```bash
 # Lint markdown files
-npx markdownlint-cli2 "README.md" "docs/**/*.md" "CLAUDE.md"
+make markdown-lint
 
 # Auto-fix markdown issues
-npx markdownlint-cli2 "README.md" "docs/**/*.md" "CLAUDE.md" --fix
-
-# Or use make target
 make markdown-lint-fix
 ```
 
@@ -123,9 +132,21 @@ async-batch-llm/
 ├── src/async_batch_llm/          # Main package
 │   ├── base.py             # Core data models
 │   ├── parallel.py         # Main processor
+│   ├── streaming.py        # process_prompts / process_stream
+│   ├── single.py           # call / call_result
+│   ├── gateway.py          # LLMCallPool
+│   ├── factory.py          # llm("provider:model")
 │   ├── llm_strategies.py   # LLMCallStrategy + built-in strategies
+│   ├── callable_strategy.py # CallableStrategy for existing async clients
 │   ├── models.py           # Provider model classes
+│   ├── artifacts.py        # JsonlArtifactStore, ArtifactIdentity, ResumePolicy
+│   ├── sqlite_artifacts.py # SqliteArtifactStore
+│   ├── serialization.py    # Result JSON/JSONL serialization
+│   ├── classifiers/        # Provider error classifiers
+│   ├── core/               # Config and protocols
 │   ├── observers/          # Observer implementations
+│   ├── middleware/         # Middleware protocol
+│   ├── _internal/          # Private orchestration collaborators
 │   └── testing/            # Testing utilities
 ├── tests/                  # Test suite
 ├── examples/               # Example scripts

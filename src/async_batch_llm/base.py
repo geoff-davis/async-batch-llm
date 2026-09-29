@@ -372,7 +372,7 @@ class WorkItemResult(ProviderOutputViews, Generic[TOutput, TContext]):
             replaces the older ``gemini_safety_ratings`` field — see below.)
         gemini_safety_ratings: **Deprecated.** Use ``metadata['safety_ratings']``
             instead. Still populated when the underlying model surfaces them,
-            for backward compat. To be removed in a future release.
+            for backward compat. Removed in 1.0.
         exception: The originating exception for a failed result, when one was
             raised (all retries exhausted, or a permanent non-retryable error).
             ``None`` for successes and for non-error outcomes such as a
@@ -468,7 +468,7 @@ def _get_gemini_safety_ratings(self: "WorkItemResult") -> dict[str, str] | None:
     if sys._getframe(1).f_globals.get("__name__") != "dataclasses":
         warnings.warn(
             "WorkItemResult.gemini_safety_ratings is deprecated and will be removed "
-            "in a future release; read result.metadata['safety_ratings'] instead.",
+            "in 1.0; read result.metadata['safety_ratings'] instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -519,7 +519,8 @@ class CachedTokenRates:
     """Gemini context cache: cached tokens cost 10% of normal."""
 
     OPENAI: float = 0.50
-    """OpenAI prompt caching: cached tokens cost 50% of normal (chat completions)."""
+    """OpenAI prompt caching: cached tokens cost 50% of normal for gpt-4o-class
+    models. Other model families may differ; check OpenAI's pricing page."""
 
     ANTHROPIC_READ: float = 0.10
     """Anthropic prompt cache reads: 10% of normal (cache writes are
@@ -536,14 +537,14 @@ class _CallableRate(float):
 
     Behaves as a plain float in every numeric/format context; calling it
     (the v0.18 method spelling) still works but warns. Remove together
-    with the deprecation in the next major release.
+    with the deprecation in 1.0.
     """
 
     def __call__(self) -> float:
         warnings.warn(
             "BatchResult.cache_hit_rate is now a property; drop the "
             "parentheses (batch.cache_hit_rate). The callable form will be "
-            "removed in the next major release.",
+            "removed in 1.0.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -1083,9 +1084,12 @@ def _unpack_strategy_result(
 
 # Type alias for post-processor function
 PostProcessorFunc = Callable[[WorkItemResult[TOutput, TContext]], Awaitable[None] | None]
+"""Type of ``post_processor``: called with each ``WorkItemResult``; sync or async."""
 
 # Type alias for progress callback function (completed, total, current_item_id)
 ProgressCallbackFunc = Callable[[int, int, str], Awaitable[None] | None]
+"""Type of ``progress_callback``: called as ``(completed, total, current_item_id)``;
+sync or async."""
 
 
 @dataclass
@@ -1259,7 +1263,7 @@ class BatchInterruptedError(RuntimeError, AsyncBatchLLMError):
 class StreamFinalizationError(RuntimeError, AsyncBatchLLMError):
     """The result stream could not finish normally.
 
-    Raised by :meth:`BatchProcessor.results` when finalization was cancelled
+    Raised by :meth:`ParallelBatchProcessor.results` when finalization was cancelled
     (for example by ``shutdown()`` before ``finish()`` completed) or when a
     process-control exception interrupted it. Deliberately distinct from
     :class:`asyncio.CancelledError`: the consumer itself was not cancelled.

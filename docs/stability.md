@@ -11,7 +11,8 @@ After 1.0, a minor or patch release will not break code that uses the following,
 except where a name or field is marked provisional below:
 
 - names exported from `async_batch_llm` (`__all__`) and their documented signatures,
-  fields and defaults;
+  fields and defaults, wherever the name is defined (for example
+  `CleanupInterruptedError`, which lives in a private module);
 - the error and timeout category values in `ErrorCategory` and `TimeoutCategory`;
 - `ProcessingEvent` names and their documented payload keys;
 - the artifact store format (`artifact_schema_version` 1) and the serialized result
@@ -24,6 +25,9 @@ parameters, new category values, new payload keys) can arrive in minor releases.
 ## What it doesn't cover
 
 - Anything in `async_batch_llm._internal`, and underscore-prefixed names anywhere.
+- Submodule import paths such as `async_batch_llm.llm_strategies`,
+  `async_batch_llm.observers` or `async_batch_llm.classifiers`. The names work there
+  today, but import them from `async_batch_llm`; only the top-level path is covered.
 - Log messages, warning text and exception message text. Match on types and
   categories, not strings.
 - Exact timing, retry scheduling jitter and performance characteristics.
@@ -38,6 +42,13 @@ release before it is removed; after 1.0, removals happen only in a major release
 `DeprecationWarning` is hidden outside `__main__` by default, so run your tests with
 `-W error::DeprecationWarning` to catch uses early. Each release's migration guide
 lists its deprecations.
+
+Deprecated names stay in `__all__` until they are removed, so
+`from async_batch_llm import *` warns once for each of them, even if your code uses
+none, and raises under `-W error::DeprecationWarning`. Import the names you use
+explicitly instead. On Python 3.14 an installed `google-genai` also emits its own
+`DeprecationWarning` when `async_batch_llm` is imported; add
+`-W "ignore::DeprecationWarning:google.genai.types"` after the error filter.
 
 ## Support policy
 
@@ -93,8 +104,9 @@ change in a minor release. **Deprecated** names warn now and leave the public AP
 | `grounding_metadata_extractor` | Deprecated (built-in Gemini models already emit grounding) |
 
 Provider metadata keys and the typed provider-output views (`.grounding`,
-`.reasoning`, `.tool_calls`, `.logprobs`) are provisional until real-provider runs
-confirm their shapes; `logprobs` is likely to stay provisional after 1.0.
+`.reasoning`, `.tool_calls`, `.logprobs`) are provisional. They may be promoted to
+stable at 1.0.0rc1 once real-provider runs confirm their shapes; `logprobs` is likely
+to stay provisional after 1.0. The `metadata` dict itself is stable.
 
 ### Middleware, observers and artifacts
 
@@ -120,10 +132,40 @@ Every exception type below subclasses `AsyncBatchLLMError`.
 | `ArtifactError`, `ArtifactIdentityError`, `ArtifactFormatError`, `ArtifactIOError`, `ArtifactSerializationError` | Stable |
 | `ResultSerializationError` | Stable |
 
+`BatchBudgetExceeded`, `ErrorCategory.BATCH_BUDGET_EXCEEDED` and
+`termination.kind == "budget_exceeded"` are stable outcome vocabulary: code that
+catches or matches them keeps working. The budget configuration that produces them
+is provisional (below).
+
+### Testing helpers
+
+`async_batch_llm.testing` exports `MockAgent`, `MockResult`, `FakeStrategy`,
+`mock_strategy` and `FakeRateLimitError`. They are Provisional: import them from
+`async_batch_llm.testing` (they aren't in the top-level `__all__`), and expect
+possible changes in a minor release, announced in the changelog.
+
+### Deprecated members
+
+These parameters and behaviors of stable names already warn, and all of them are
+removed in 1.0.
+
+| Deprecated | Replacement |
+| --- | --- |
+| `ParallelBatchProcessor(max_workers=..., timeout_per_item=..., rate_limit_cooldown=...)` | `ParallelBatchProcessor(config=ProcessorConfig(...))` |
+| `ProcessorConfig(timeout_per_item=...)` and `ProcessorConfig.timeout_per_item` | `attempt_timeout` |
+| `WorkItemResult.gemini_safety_ratings` | `result.metadata["safety_ratings"]` |
+| `BatchResult.cache_hit_rate()` (called) | `BatchResult.cache_hit_rate` (property) |
+| Integer prompts in `process_prompts` / `process_stream` | String prompts |
+| 2-tuple return from `LLMCallStrategy.execute()` | `(output, tokens, metadata)` |
+| `effective_input_tokens()` / `estimated_cost()` with no cached-token rate | Pass a `CachedTokenRates` constant as `cached_token_rate` |
+
+The legacy parameters come first in `ParallelBatchProcessor`'s signature, so pass
+`config=`, `post_processor=` and the other arguments by keyword.
+
 ## Provisional through 1.0
 
 - **Budget API.** `AttemptUsage` and the `GuardrailConfig` fields `max_total_tokens`,
   `max_total_cost` and `cost_function` are new in 0.27 and stay provisional in 1.0,
   so their shape can still change in a minor release once they have seen real use.
-- **Provider-output views.** See above; `logprobs` is the most likely to stay
-  provisional.
+- **Provider-output views.** Provisional now; they may be promoted to stable at
+  1.0.0rc1 (see above). `logprobs` is the most likely to stay provisional.

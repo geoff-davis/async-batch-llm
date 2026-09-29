@@ -55,6 +55,12 @@ markdown_extensions:
   - admonition
   - pymdownx.details
 
+not_in_nav: |
+  API.md
+  release-notes-v0.20.md
+  terminal-demo.md
+  archive/*
+
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
@@ -103,5 +109,6 @@ nav:
     - Artifacts and Serialization: api/artifacts.md
     - Single Call & Shared Call Pool: api/single-gateway.md
     - Strategies: api/strategies.md
+    - Errors and Classification: api/errors.md
     - Observers: api/observers.md
   - Contributing: contributing.md

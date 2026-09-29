@@ -80,6 +80,8 @@ CallableStrategy(
     dry_run=None,
     max_concurrency=None,
     concurrency_scope=None,
+    quota_scope=None,
+    token_estimator=None,
     request_concurrency=None,
 )
 ```
@@ -107,6 +109,12 @@ CallableStrategy(
 - `max_concurrency`: positive client/transport capacity advertised to ABL.
 - `concurrency_scope`: identity shared by strategies that use the same client
   pool. The strategy instance is the default scope.
+- `quota_scope`: identity whose RPM/TPM limits and coordinated cooldown the
+  calls consume. Defaults to `concurrency_scope`; set it when transport capacity
+  and provider/account quota have different owners.
+- `token_estimator`: local estimator (for example `CharacterTokenEstimator`)
+  used for TPM admission when the processor has no estimator of its own. See
+  [Tokens per minute](choosing-your-limits.md#6-tokens-per-minute-max_tokens_per_minute).
 - `request_concurrency`: optional synchronous or async `(concurrency) -> bool`
   hook for clients that can safely resize their connection pool.
 
@@ -139,7 +147,10 @@ try:
 except ValueError as exc:
     raise TokenTrackingError(
         "billed response failed validation",
-        token_usage=response.usage,
+        token_usage={
+            "input_tokens": response.input_tokens,
+            "output_tokens": response.output_tokens,
+        },
     ) from exc
 ```
 
@@ -173,8 +184,9 @@ reports them.
 ## Artifact Identity and Replay
 
 Arbitrary callables cannot safely reveal their provider, model, route, parser,
-or application version. With `JsonlArtifactStore`, provide identity either on
-the strategy or explicitly on the store. Omitting both fails before `invoke`
+or application version. With either artifact store (`JsonlArtifactStore` or
+`SqliteArtifactStore`), provide identity either on the strategy or explicitly on
+the store. Omitting both fails before `invoke`
 runs. A lambda, closure, object ID, memory address, or `repr()` is never used as
 a replay identity.
 

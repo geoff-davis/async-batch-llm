@@ -1,7 +1,7 @@
 # OpenAI-Compatible High-Throughput Guide
 
-Use this configuration pattern for OpenAI, DeepSeek, OpenRouter, and other
-OpenAI-compatible chat-completions endpoints when throughput is high enough that
+Use this configuration pattern for OpenAI (Responses or Chat Completions), DeepSeek,
+OpenRouter, and other OpenAI-compatible endpoints when throughput is high enough that
 connection pools, startup bursts, and timeout tails matter.
 
 ## Model-Owned Client
@@ -26,7 +26,7 @@ model = DeepSeekModel.from_api_key(
     thinking=False,
     max_connections=64,
     timeout=60.0,
-    max_retries=0,  # let ABL own retry visibility/accounting
+    max_retries=0,  # already the from_api_key default; shown for clarity
 )
 strategy = DeepSeekStrategy(model)
 config = ProcessorConfig(
@@ -67,7 +67,7 @@ model = DeepSeekModel.from_api_key(
     response_schema=Verdict,
     thinking=False,
     max_connections=64,
-    max_retries=0,
+    max_retries=0,  # the from_api_key default
 )
 strategy = DeepSeekStrategy(model, generation_config={"max_tokens": 256})
 ```
@@ -131,12 +131,13 @@ await client.close()
 | OpenAI SDK timeout | One SDK request |
 | `attempt_timeout` | One `strategy.execute()` attempt, after ABL admission |
 | Retry backoff and coordinated cooldown | Outside `attempt_timeout` |
-| Gateway `submit_timeout` | Full caller wall time, including all waits/retries |
+| `LLMCallPool` `submit_timeout` | Full caller wall time, including all waits/retries |
 
-Avoid multiplying hidden SDK retries by ABL retries. Setting SDK
-`max_retries=0` gives ABL complete attempt timing, classification, and failed-token
-accounting. If SDK retries remain enabled, treat one `strategy.execute()` as the
-outer attempt and size `attempt_timeout` for all SDK work inside it.
+Avoid multiplying hidden SDK retries by ABL retries. `from_api_key()` already
+sets SDK `max_retries=0`; do the same for a client you build yourself. That gives
+ABL complete attempt timing, classification, and failed-token accounting. If SDK
+retries remain enabled, treat one `strategy.execute()` as the outer attempt and
+size `attempt_timeout` for all SDK work inside it.
 
 ## Startup Ramp vs Cooldown
 

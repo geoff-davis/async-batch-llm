@@ -31,7 +31,7 @@ class AnthropicStrategy(LLMCallStrategy[str]):
     def __init__(
         self,
         client: AsyncAnthropic,
-        model: str = "claude-3-5-sonnet-20241022",
+        model: str = "claude-sonnet-4-6",
         max_tokens: int = 1024,
         temperature: float = 1.0,
         system_prompt: str | None = None,
@@ -41,7 +41,7 @@ class AnthropicStrategy(LLMCallStrategy[str]):
 
         Args:
             client: Initialized AsyncAnthropic client
-            model: Model name (e.g., "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022")
+            model: Model name (e.g., "claude-sonnet-4-6", "claude-haiku-4-5")
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0.0-1.0)
             system_prompt: Optional system prompt
@@ -101,7 +101,7 @@ async def example_anthropic_text():
     # Create the strategy
     strategy = AnthropicStrategy(
         client=client,
-        model="claude-3-5-haiku-20241022",  # Fast, cost-effective model
+        model="claude-haiku-4-5",  # Fast, cost-effective model
         max_tokens=500,
         temperature=1.0,
     )
@@ -151,7 +151,7 @@ async def example_anthropic_system_prompt():
     # Create the strategy with a system prompt
     strategy = AnthropicStrategy(
         client=client,
-        model="claude-3-5-sonnet-20241022",
+        model="claude-sonnet-4-6",
         max_tokens=1000,
         temperature=1.0,
         system_prompt="You are a helpful assistant that provides concise, factual answers. Keep your responses under 3 sentences.",
@@ -201,14 +201,14 @@ async def example_anthropic_mixed_models():
     # Create strategies for different use cases
     fast_strategy = AnthropicStrategy(
         client=client,
-        model="claude-3-5-haiku-20241022",  # Fast for simple tasks
+        model="claude-haiku-4-5",  # Fast for simple tasks
         max_tokens=200,
         temperature=0.5,
     )
 
     reasoning_strategy = AnthropicStrategy(
         client=client,
-        model="claude-3-5-sonnet-20241022",  # Better for complex reasoning
+        model="claude-sonnet-4-6",  # Better for complex reasoning
         max_tokens=1000,
         temperature=1.0,
     )
@@ -277,7 +277,7 @@ async def example_anthropic_progressive_temperature():
         def __init__(
             self,
             client: AsyncAnthropic,
-            model: str = "claude-3-5-haiku-20241022",
+            model: str = "claude-haiku-4-5",
             base_temps: list[float] | None = None,
         ):
             self.client = client

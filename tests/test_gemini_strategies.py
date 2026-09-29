@@ -947,6 +947,29 @@ class TestExtractMetadata:
         assert metadata is not None
         assert metadata["finish_reason"] == "STOP"
 
+    def test_real_sdk_enums_become_plain_names(self):
+        """google-genai enums are stored by value, not as ``FinishReason.STOP``."""
+        types = pytest.importorskip("google.genai.types")
+        response = types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    finish_reason=types.FinishReason.SAFETY,
+                    safety_ratings=[
+                        types.SafetyRating(
+                            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                            probability=types.HarmProbability.HIGH,
+                        )
+                    ],
+                )
+            ]
+        )
+
+        metadata = _extract_metadata(response)
+
+        assert metadata is not None
+        assert metadata["finish_reason"] == "SAFETY"
+        assert metadata["safety_ratings"] == {"HARM_CATEGORY_HATE_SPEECH": "HIGH"}
+
     def test_exception_handling(self):
         """Test metadata extraction handles exceptions gracefully."""
         mock_response = MagicMock()

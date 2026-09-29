@@ -27,8 +27,9 @@ batch = await process_prompts(
 ```
 
 `concurrency=N` (v0.20) coherently sizes the worker pool, provider-capacity
-admission, and — for built-in models created via `llm()` or `from_api_key()`
-without an explicit `max_connections` — the httpx connection pool. If you set
+admission, and — for built-in OpenAI-compatible models (OpenAI, OpenRouter,
+DeepSeek, `openai-compatible`) created via `llm()` or `from_api_key()` without
+an explicit `max_connections` — the httpx connection pool. If you set
 nothing else, the rest of this page is the explanation of what you just got
 and when to override it.
 
@@ -44,6 +45,7 @@ and when to override it.
 7. startup ramp     should full concurrency arrive gradually?
 8. cooldown         what happens when the provider says 429?
 9. timeouts         how long may an attempt, item, and batch take?
+10. spend caps      how many tokens or how much cost may the run use?
 ```
 
 ### 1. Concurrency — `concurrency=N`
@@ -64,16 +66,20 @@ Explicit values for any individual knob still win when you set them.
 
 ### 2. Connection pool — `max_connections`
 
-The openai SDK's default httpx pool holds **~100 connections**. Workers above
-that number don't fail — they silently queue inside httpx where no timeout is
-running, which caps throughput invisibly. **This is the classic DeepSeek
-footgun**: DeepSeek happily accepts hundreds of concurrent requests, so
-`max_workers=150` against a default pool gives you exactly 100-wide
-throughput and 50 workers waiting in the transport.
+The openai SDK's default httpx pool allows **1000 connections but keeps only
+100 alive** between requests. Above 100 concurrent requests, the extra
+connections are opened and torn down for each request, so you pay a fresh
+TCP/TLS handshake per call. Above 1000, extra workers wait inside httpx for a
+connection; that wait counts against `attempt_timeout` but isn't reported as a
+capacity wait, so it caps throughput without showing up in admission timing.
+High-concurrency
+providers such as DeepSeek accept hundreds of concurrent requests, so they are
+where an unsized pool shows up first.
 
-- With `concurrency=N` and a factory-built model (`llm("...")` or
-  `from_api_key()` without `max_connections`), the pool is resized to `N`
-  before the first request — nothing to do.
+- With `concurrency=N` and a factory-built OpenAI-compatible model
+  (`llm("...")` or `from_api_key()` without `max_connections`), the pool is
+  resized to `N` connections, all kept alive, before the first request —
+  nothing to do. Gemini models have no pool resize.
 - If you build your own `AsyncOpenAI`/httpx client, size its
   `httpx.Limits(max_connections=..., max_keepalive_connections=...)` to at
   least your concurrency yourself; the framework cannot introspect or resize
@@ -178,6 +184,17 @@ the configured abort mode. Size the batch deadline below the job scheduler's
 hard kill and pair it with fail-fast categories such as authentication and
 insufficient balance. Details: [guardrails](guardrails.md).
 
+### 10. Spend caps — `max_total_tokens` / `max_total_cost`
+
+`GuardrailConfig.max_total_tokens` and `max_total_cost` (with a
+`cost_function`) are opt-in soft caps on provider usage for one processor run.
+Reaching a cap stops new provider calls; calls already running can overshoot
+it, by at most the usage of up to `max_workers` in-flight attempts. Pair a cap
+with a per-call `max_tokens` so the overshoot has a numeric bound. The
+budget API is provisional and may change in a minor release (see
+[API stability](stability.md#provisional-through-10)). Details:
+[token and cost budgets](guardrails.md#token-and-cost-budgets).
+
 ## Worked example: 10k items against a rate-limited provider
 
 Target: 10,000 classification prompts against an OpenAI-tier endpoint
@@ -198,6 +215,7 @@ Target: 10,000 classification prompts against an OpenAI-tier endpoint
 ```python
 from async_batch_llm import (
     CharacterTokenEstimator,
+    ErrorCategory,
     GuardrailConfig,
     JsonlArtifactStore,
     ProcessorConfig,
@@ -218,7 +236,9 @@ config = ProcessorConfig(
     guardrails=GuardrailConfig(
         total_timeout_per_item=180.0,
         batch_timeout=6600.0,
-        abort_on_error_categories=frozenset({"authentication", "insufficient_balance"}),
+        abort_on_error_categories=frozenset(
+            {ErrorCategory.AUTHENTICATION, ErrorCategory.INSUFFICIENT_BALANCE}
+        ),
     ),
 )
 
@@ -245,7 +265,8 @@ That's a memory decision, not a throughput one — see
 
 ## Numeric configuration
 
-Retry, rate-limit, startup-ramp and processor numeric fields require finite
+Retry, rate-limit, startup-ramp, guardrail and processor numeric fields require finite
+
 numbers. Counts and concurrency limits require Python integers, excluding booleans
 and floats (including integral floats). Delays and timeouts reject NaN, infinity
 and booleans. Use the documented `None` options to disable optional limits.

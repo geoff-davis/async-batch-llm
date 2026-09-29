@@ -13,8 +13,21 @@ pip install 'async-batch-llm[openai,progress]'
 export OPENAI_API_KEY='...'
 ```
 
-Available provider extras are `openai`, `gemini`, `openrouter`, `deepseek`, and
-`pydantic-ai`. The credential-free
+The core package depends only on `pydantic` and `typing-extensions`. Each extra
+adds one provider SDK at the minimum version CI tests:
+
+| Extra | Enables | Installs |
+| --- | --- | --- |
+| `openai` | `OpenAIModel`, `OpenAICompatibleModel`, `llm("openai:…")`, `llm("openai-compatible:…")` | `openai>=1.66.2` |
+| `openrouter` | `OpenRouterModel`, `llm("openrouter:…")` | `openai>=1.66.2` |
+| `deepseek` | `DeepSeekModel`, `llm("deepseek:…")` | `openai>=1.66.2` |
+| `gemini` | `GeminiModel`, `GeminiCachedModel`, `llm("gemini:…")` | `google-genai>=1.49.0` |
+| `pydantic-ai` | `PydanticAIStrategy` | `pydantic-ai>=1.32.0` |
+| `progress` | tqdm bars for `progress=True` | `tqdm>=4.66` |
+| `all` | All of the above | All of the above |
+
+`CallableStrategy`, `FakeStrategy`, and your own `LLMCallStrategy` subclasses need
+no extra. The credential-free
 [embedded application example](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_callable_application.py)
 and [Colab notebook](https://colab.research.google.com/github/geoff-davis/async-batch-llm/blob/main/notebooks/async_batch_llm_quickstart.ipynb)
 need only the core package plus the optional progress extra.
@@ -41,7 +54,8 @@ asyncio.run(main())
 
 The factory also supports `gemini:`, `openrouter:`, and `deepseek:` model
 specifications, and `openai-compatible:` for any other OpenAI-compatible server
-(pass `base_url=`). It reads each provider's normal environment variable.
+(pass `base_url=`); `openai-compatible:` uses the `openai` extra. It reads each
+provider's normal environment variable.
 
 ## 3. Read successes and failures
 

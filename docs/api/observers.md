@@ -12,6 +12,10 @@
 
 ::: async_batch_llm.observers.MetricsObserver
 
+## ProcessingEvent
+
+::: async_batch_llm.ProcessingEvent
+
 ## Event contracts
 
 Interface for observers that monitor processing events.
@@ -38,7 +42,8 @@ class ProcessorObserver(ABC):
   admission_wait_p50/p95/p99_seconds,
   execution_p50/p95/p99_seconds, structured_output_recoveries,
   structured_output_retries_avoided, structured_output_recovery_reasons,
-  duration}`
+  input_queue_high_water_mark, result_queue_high_water_mark, duration}`
+- `BATCH_ABORTED`: `{kind, reason, error_category, triggering_item_id, abort_mode}`
 - `WORKER_STARTED` / `WORKER_STOPPED`: `{worker_id}`
 - `ITEM_STARTED`: `{item_id, worker_id}`
 - `ITEM_ADMITTED`: `{item_id, worker_id, attempt, wait_seconds, capacity,
@@ -55,9 +60,14 @@ class ProcessorObserver(ABC):
   structured_output_retries_avoided}`
 - `ITEM_FAILED`: `{item_id, submission_index, error_type, error_category}`
 - `ITEM_REPLAYED`: `{item_id, submission_index, success, error_type, error_category}`
-- `RATE_LIMIT_HIT`: `{item_id, worker_id}`
-- `COOLDOWN_STARTED`: `{worker_id, duration, consecutive}`
+- `ITEM_DEADLINE_EXCEEDED`: `{item_id}`
+- `RATE_LIMIT_HIT`: `{item_id, worker_id, quota_scope_id, strategy_type}`
+- `COOLDOWN_STARTED`: `{worker_id, duration, consecutive, quota_scope_id?, strategy_type?}`
 - `COOLDOWN_ENDED`: `{duration, error?}`
+
+A key marked `?` may be absent. The keys listed here are the documented payload that
+[API stability](../stability.md) covers; an event may carry more keys, which are
+diagnostic and can change in a minor release.
 
 `add_work()` raises public `BatchAdmissionClosedError` (a `RuntimeError`) when
 finish, shutdown, or batch abort has stopped admission. Rejected items receive

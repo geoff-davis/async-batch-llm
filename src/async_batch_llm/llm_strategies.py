@@ -374,9 +374,11 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
                 returning ``response.text`` — only valid when TOutput is ``str``.
                 When TOutput is any other type, pass a response_parser (enforced
                 by the @overload signatures).
-            temperature: Default sampling temperature. Pass ``None`` to omit the
-                parameter and use the provider default (e.g. for OpenAI
-                reasoning models that reject an explicit temperature).
+            temperature: Default sampling temperature. Defaults to ``None``,
+                which omits the parameter so the provider default applies
+                (v0.27; earlier releases defaulted to ``0.0``). Always passed
+                to ``model.generate()``, so a custom ``LLMModel`` must treat
+                ``None`` as "omit".
             generation_config: Provider-specific config forwarded to
                 ``model.generate(config=...)`` on every call — e.g. Gemini's
                 ``response_schema`` / ``response_mime_type`` / ``tools``, or an
@@ -496,9 +498,9 @@ class ModelStrategy(LLMCallStrategy[TOutput]):
         Returns:
             3-tuple ``(parsed_output, token_usage, metadata)`` where ``metadata``
             is forwarded from ``LLMResponse.metadata`` (provider, finish_reason,
-            model, safety_ratings, etc.). Added the metadata slot in v0.10.0; the
-            framework still accepts the legacy 2-tuple shape from custom
-            strategies via a compat shim.
+            model, safety_ratings, etc.). Added the metadata slot in v0.10.0.
+            The framework still accepts the legacy 2-tuple shape from custom
+            strategies, but that is deprecated since v0.27 and removed in 1.0.
         """
         # Only pass `config` when set, so a custom LLMModel whose generate()
         # doesn't accept the kwarg keeps working — the default path is identical

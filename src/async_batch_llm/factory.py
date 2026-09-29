@@ -145,6 +145,7 @@ def llm(
         >>> strategy = llm(
         ...     "openai-compatible:meta-llama/Llama-3.1-8B-Instruct",
         ...     base_url="http://localhost:8000/v1",
+        ...     api_key="EMPTY",  # local servers often ignore the key
         ... )
 
     Args:
@@ -176,7 +177,8 @@ def llm(
 
     Raises:
         ValueError: The spec has no ``provider:`` prefix, the prefix is
-            unknown, or no API key can be resolved.
+            unknown, no API key can be resolved, or an ``openai-compatible:``
+            spec has no ``base_url=``.
         ImportError: The provider's optional dependency is not installed;
             the message names the exact install extra.
 

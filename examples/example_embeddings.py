@@ -281,7 +281,8 @@ async def run_openai_embeddings() -> None:
     print("OpenAI embeddings (text-embedding-3-small)")
     print("=" * 60)
 
-    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    # max_retries=0: the framework owns retries, so the SDK shouldn't retry too.
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY, max_retries=0)
     try:
         strategy = OpenAIEmbeddingStrategy(client)
         embeddings = await embed_corpus(strategy, OpenAIErrorClassifier(), CORPUS)

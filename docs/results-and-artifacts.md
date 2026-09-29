@@ -2,7 +2,8 @@
 
 Production runs often need two different outputs: a convenient batch summary and
 an append-only checkpoint that survives interruption. `BatchResult` serialization
-serves the first use case; `JsonlArtifactStore` serves the second.
+serves the first use case; an artifact store (`JsonlArtifactStore` or
+`SqliteArtifactStore`) serves the second.
 
 ## Completion order and input order
 
@@ -15,13 +16,14 @@ Use `preserve_order=True` when collecting a batch in input order:
 ```python
 result = await process_prompts(
     strategy,
-    [("duplicate", "slow prompt"), ("duplicate", "fast prompt")],
+    [("slow", "slow prompt"), ("fast", "fast prompt")],
     preserve_order=True,
 )
 ```
 
 The processor assigns an internal `submission_index` when each item is accepted.
-It does not derive order from `item_id`, so duplicate IDs are safe. To reorder an
+It does not derive order from `item_id`, so duplicate IDs are safe (they're accepted,
+with a one-time `UserWarning`). To reorder an
 existing batch without mutating it, call `ordered = result.in_input_order()`.
 This raises `ValueError` if any result predates submission indexes; it never
 guesses.
@@ -91,6 +93,8 @@ of prompts, outputs, context, and metadata.
 
 Unsupported values, malformed input, and future schema versions raise
 `ResultSerializationError`; values are never silently replaced with `repr()`.
+A reader on the same schema version can also reject a value that a newer release
+added; see [Compatibility across releases](#compatibility-across-releases).
 
 ## Middleware and replay
 
@@ -124,10 +128,11 @@ bump in `ArtifactIdentity`. Middleware functions are not automatically hashed.
 
 Filtered items produce a current-run `middleware_filtered` result. Preprocessing
 filtering and invalid middleware requests do not open the store or append records.
-Aborts and total-item/batch deadlines are checkpointed for audit when an artifact
+Aborts, [budget stops](guardrails.md#token-and-cost-budgets), and total-item/batch
+deadlines are checkpointed for audit when an artifact
 key can be prepared, with `replay_eligible=False`. Interrupted artifact preparation
 is not restarted solely for audit, and unrepresentable inputs cannot be checkpointed.
-Artifact errors during batch-abort or batch-deadline audit preparation or append
+Artifact errors during batch-abort, batch-budget, or batch-deadline audit preparation or append
 are logged, preserving the controlled stop and its results even when that audit
 record cannot be persisted. A per-item deadline is an ordinary failed result in
 an otherwise running batch: its checkpoint errors still propagate, although its
@@ -177,12 +182,30 @@ result = await process_prompts(
 )
 ```
 
+The run closes the store when it finishes: `process_prompts()`, `process_stream()`
+and processor context exit all close the store passed in, and a closed store raises
+`ArtifactIOError` if used for another run. Construct a new store instance, on the
+same path, for each run. Path-based inspection (`read_results`) still works
+afterward.
+
 When no `ArtifactIdentity` is given, `provider` and `model` are inferred from
 ordinary model-backed strategies at run start (built-in models map to their
 provider names; custom models use their class name) and the remaining identity
 fields default to `"unversioned"`. Prompt — and, by default, context — still
 participate in the per-item compatibility fingerprint, so a changed prompt or
 a changed model never silently replays a stale result.
+
+Automatic identity covers the provider and the model. `OpenAIModel` adds its API
+surface when it is the Responses API, and `DeepSeekStrategy` adds its API surface and
+strict response schema. Sampling and request parameters
+(temperature, reasoning effort, `extra_body`, and other request kwargs) are not part
+of identity or the item fingerprint, so changing them does not invalidate replay.
+For example, v0.27 changed the default temperature from `0.0` to `None` (the
+provider default); a v0.26 checkpoint resumed with `REUSE_SUCCESSES` replays
+successes produced at `temperature=0.0` without warning, except for `OpenAIModel`
+on the new Responses default, whose identity changed. When a request parameter
+must invalidate replay, pass an explicit `ArtifactIdentity` that records it (for
+example `extra={"temperature": 0.0}`) or bump `prompt_version`.
 
 Automatic identity is homogeneous within one live store instance/run. The first
 prepared item pins its inferred identity; every later item is inferred and must
@@ -287,6 +310,23 @@ output, and metadata mappings. Their original values still feed the one-way
 context/identity fingerprint, so a credential change invalidates replay without
 writing the credential itself to the artifact.
 
+### Compatibility across releases
+
+The test suite keeps artifacts and serialized results written by published releases
+readable. `tests/test_legacy_fixtures.py` checks that files written by v0.18, v0.21,
+v0.24.1 and v0.26 (JSONL and, from v0.21, SQLite artifacts, plus `BatchResult` JSON
+and JSONL) still load, replay, and accept new records.
+
+Two caveats apply:
+
+- Replay exclusions apply retroactively. A newer release that stops replaying a
+  category (for example the configuration failures above) also ignores older records
+  carrying it, and re-executes those items.
+- Forward compatibility is not guaranteed. An older release on the same schema
+  version can reject a value that a newer release added. For example, a `BatchResult`
+  serialized with `termination.kind == "budget_exceeded"` (v0.27) can't be read by
+  v0.26, although `RESULT_SCHEMA_VERSION` is still 1.
+
 ### Resume policies
 
 - `ResumePolicy.NONE` never reuses old results but still checkpoints new ones.
@@ -317,7 +357,8 @@ reports them.
 Setting `include_output=False` makes a success record audit-only and therefore
 ineligible for replay. An ordinary provider failure remains reusable under `REUSE_ALL` because it
 does not need a successful output. Guardrail audit, filtered, and artifact
-serialization failures are never replayed.
+serialization failures are never replayed, and neither are configuration failures
+(see [Middleware and replay](#middleware-and-replay)).
 
 A JSONL iterator started before the same store's first writable preparation can
 overlap tail truncation and subsequent appends. In that narrow case, it may see
@@ -343,7 +384,7 @@ Serialization failures do not invoke middleware `on_error` or retry the provider
 within the same run. `abort_on_error_categories={"artifact_serialization_error"}`
 can stop a run after that item's failure checkpoint. Existing guardrail audit
 results keep their original category if their payload needs the same minimal
-projection. Only batch-abort and batch-deadline audit writes remain best-effort;
+projection. Only batch-abort, batch-budget, and batch-deadline audit writes remain best-effort;
 a failed total-item-deadline checkpoint remains fatal. I/O errors, invalid artifact
 format, unprepared store keys, custom-store failures, and failure to serialize or
 write even the minimal checkpoint still propagate under those same rules.

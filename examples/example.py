@@ -10,6 +10,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
+from pydantic_ai.models.google import GoogleModel
 
 from async_batch_llm.base import LLMWorkItem, WorkItemResult
 from async_batch_llm.classifiers import GeminiErrorClassifier
@@ -97,7 +98,8 @@ async def example_simple():
 
     # Create agent and wrap in strategy
     agent = Agent(
-        "gemini-2.0-flash",
+        # A model object works on pydantic-ai 1.x and 2.x; 2.x rejects bare names.
+        GoogleModel("gemini-2.5-flash"),
         output_type=BookSummary,
         system_prompt="You are a book summarization expert.",
     )
@@ -162,7 +164,8 @@ async def example_with_context_and_postprocessor():
 
     # Create agent and wrap in strategy
     agent = Agent(
-        "gemini-2.0-flash",
+        # A model object works on pydantic-ai 1.x and 2.x; 2.x rejects bare names.
+        GoogleModel("gemini-2.5-flash"),
         output_type=BookSummary,
         system_prompt="You are a book summarization expert.",
     )
@@ -255,7 +258,8 @@ async def example_error_handling():
 
     # Create agent and wrap in strategy
     agent = Agent(
-        "gemini-2.0-flash",
+        # A model object works on pydantic-ai 1.x and 2.x; 2.x rejects bare names.
+        GoogleModel("gemini-2.5-flash"),
         output_type=BookSummary,
         system_prompt="You are a book summarization expert.",
     )

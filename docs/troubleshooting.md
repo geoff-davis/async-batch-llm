@@ -1,6 +1,7 @@
 # Troubleshooting and FAQ
 
-Start with the terminal `WorkItemResult`, its `error_category`, and
+Start with the terminal `WorkItemResult`, its `error_category` (look up any value in
+the [`ErrorCategory` reference](api/core.md#errorcategory)), and
 `result.timing`. Enable normal Python logging for `async_batch_llm` before
 raising concurrency or retry budgets; more work often amplifies the original
 problem.
@@ -42,12 +43,16 @@ or a gateway and ABL are both retrying the same transport failure.
 
 **How to confirm.** Check provider quota dashboards and response headers. Look
 for coordinated-cooldown logs, repeated logical attempt numbers, suggested
-waits, and `RateLimitConfig.max_rate_limit_retries` exhaustion. Inspect gateway
+waits, and `RetryConfig.max_rate_limit_retries` exhaustion (the item fails with
+`error_category="rate_limit_retries_exceeded"`). Inspect gateway
 logs for hidden retries beneath each ABL attempt. If cooldowns follow
 application exceptions rather than provider responses, check how they are
-classified: an untyped exception whose message contains `429` or
-`rate limit` is treated as a rate limit. Raise a built-in error type or pass
-an explicit `error_classifier`.
+classified: an untyped exception without a status code whose message contains
+`429`, `resource_exhausted`, `quota exceeded` or `rate limit` is treated as a
+rate limit. A built-in programming error (`ValueError`, `TypeError`, …) is
+`logic_error` and isn't retried, whatever its message. To signal a real rate
+limit from your own code, raise an exception with `status_code = 429`; otherwise
+pass an explicit `error_classifier`.
 
 **Fix.** Reduce concurrency or set a conservative
 `max_requests_per_minute`; request higher provider quota when appropriate.
@@ -70,8 +75,9 @@ real RPM/TPM budget or estimator; adding connections cannot overcome quota.
 
 ## Token estimate exceeds the configured per-minute limit
 
-**Cause.** One estimated input-plus-output total is larger than the bucket, so
-it can never become admissible by waiting.
+**Cause.** One estimated input-plus-output total is larger than
+`max_tokens_per_minute`, so it can never become admissible by waiting.
+`quota_burst_seconds` doesn't affect this check.
 
 **Fix.** Correct an inflated estimator, reduce the expected output allowance,
 raise the limit to the actual account budget, or route the call to a genuinely
@@ -154,7 +160,9 @@ Provider-capacity admission, HTTP-client waiting, coordinated cooldowns, retry
 backoff, and later attempts are outside that single-attempt budget.
 
 **How to confirm.** Compare each `result.timing.attempts` entry with total item
-time and admission/cooldown/backoff fields. Distinguish the SDK/httpx timeout
+time and admission/cooldown/backoff fields, and check `timing.timeout_category`
+(for example `admission_timeout` when a deadline hit during the provider-capacity
+wait). Distinguish the SDK/httpx timeout
 from ABL's attempt timeout. On Python 3.10 ABL uses its compatibility timeout
 path, but the semantics are the same.
 
@@ -304,13 +312,21 @@ bump merely to bypass cache.
 
 **Likely cause.** Its fingerprint or identity changed; the previous result was
 a failure under `REUSE_SUCCESSES`; output persistence was disabled; the JSONL
-record is malformed/unsupported; or the callable/model identity changed.
+record is malformed/unsupported; the callable/model identity changed; or the
+previous result's category is never replayed under any policy. Those are
+configuration failures (`token_estimator_required`, `token_estimation_error`,
+`token_estimate_exceeds_limit`, `quota_scope_error`), `middleware_filtered`,
+`artifact_serialization_error`, and guardrail audit records (`batch_aborted`,
+`batch_deadline_exceeded`, `batch_budget_exceeded`,
+`framework_total_item_timeout`); see
+[Middleware and replay](results-and-artifacts.md#middleware-and-replay).
 
 **How to confirm.** Check the resume policy, `replayed_from_artifact`, artifact
 warnings, stored record type/output, and current identity. Compare prompt and
 context byte-for-byte after their canonical serialization.
 
-**Fix.** Use `REUSE_ALL` only when replaying prior terminal failures is desired.
+**Fix.** Use `REUSE_ALL` only when replaying prior terminal failures is desired;
+it replays them except for the non-replayable categories above.
 Persist outputs required for replay and repair/replace malformed artifacts.
 Do not weaken identity compatibility to force reuse.
 
@@ -419,19 +435,26 @@ recovery, deadlines, and artifacts.
 
 ## Deprecation warnings after upgrading
 
-**Symptom.** Code warns about `timeout_per_item` or calling
-`cache_hit_rate()`.
+**Symptom.** Code raises a `DeprecationWarning` or `UserWarning` after upgrading.
 
-**Likely cause.** v0.20 uses `attempt_timeout` to make per-attempt semantics
-explicit, and exposes `cache_hit_rate` as a property. Compatibility shims remain
-so v0.18 applications can migrate incrementally.
+**Likely cause.** A compatibility shim is still in use:
 
-**How to confirm.** Run tests with deprecations visible and locate
-`ProcessorConfig(timeout_per_item=...)`, `.timeout_per_item`, or
-`.cache_hit_rate()`.
+- v0.20: `timeout_per_item` (now `attempt_timeout`) and calling
+  `cache_hit_rate()` (now a property).
+- v0.27: `LLMGateway`, `execute()` returning a 2-tuple,
+  `effective_input_tokens()`/`estimated_cost()` without `cached_token_rate`,
+  `BatchProcessor`, `ProcessingStats`, and `grounding_metadata_extractor`.
 
-**Fix.** Replace them with `ProcessorConfig(attempt_timeout=...)` and
-`.cache_hit_rate`. The old forms remain supported without behavior changes in
-v0.20 and are planned for removal in the next major release.
+**How to confirm.** Run tests with `-W error::DeprecationWarning`, or read
+pytest's warnings summary, and locate the deprecated names. On Python 3.14 with
+google-genai installed, add `-W "ignore::DeprecationWarning:google.genai.types"` after
+the error filter; google-genai emits its own warning at import.
 
-**Related guide.** [Migrating from v0.18.x to v0.20.0](MIGRATION_V0_20.md).
+**Fix.** Use the replacements in the
+[v0.27 deprecations table](migration/v0.27.md#deprecations); for the v0.20 names,
+use `ProcessorConfig(attempt_timeout=...)` and `.cache_hit_rate`. The v0.27 names
+are removed in 1.0; the v0.20 forms are slated for removal in the next major
+release.
+
+**Related guide.** [Migrating to v0.27](migration/v0.27.md) and
+[Migrating from v0.18.x to v0.20.0](MIGRATION_V0_20.md).

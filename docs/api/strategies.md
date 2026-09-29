@@ -16,81 +16,9 @@ callback and retry-state semantics.
 
 ::: async_batch_llm.LLMCallStrategy
 
-## ModelStrategy
+The hooks below are the ones a custom strategy overrides.
 
-Shared base for the provider-named strategies below; delegates to an
-`LLMModel`. Use directly for a custom model you don't want a dedicated
-subclass for.
-
-::: async_batch_llm.ModelStrategy
-
-## PydanticAIStrategy
-
-::: async_batch_llm.PydanticAIStrategy
-
-## Structured JSON Parsing
-
-::: async_batch_llm.pydantic_json_parser
-
-::: async_batch_llm.strip_code_fences
-
-## GeminiStrategy
-
-::: async_batch_llm.GeminiStrategy
-
-## OpenAIStrategy
-
-::: async_batch_llm.OpenAIStrategy
-
-## OpenRouterStrategy
-
-::: async_batch_llm.OpenRouterStrategy
-
-## DeepSeekStrategy
-
-::: async_batch_llm.DeepSeekStrategy
-
-## Models
-
-### GeminiModel
-
-::: async_batch_llm.GeminiModel
-
-### GeminiCachedModel
-
-::: async_batch_llm.GeminiCachedModel
-
-### OpenAICompatibleModel
-
-::: async_batch_llm.OpenAICompatibleModel
-
-### OpenAIModel
-
-::: async_batch_llm.OpenAIModel
-
-### OpenRouterModel
-
-::: async_batch_llm.OpenRouterModel
-
-### DeepSeekModel
-
-::: async_batch_llm.DeepSeekModel
-
-## Protocols
-
-### LLMModel
-
-::: async_batch_llm.LLMModel
-
-### ManagedLLMModel
-
-::: async_batch_llm.ManagedLLMModel
-
-### LLMResponse
-
-::: async_batch_llm.LLMResponse
-
-#### `estimate_tokens(prompt, attempt, state)`
+### `estimate_tokens(prompt, attempt, state)`
 
 Optional per-strategy TPM estimator. It runs after middleware and coordinated
 cooldown but before the atomic quota reservation and provider-capacity wait.
@@ -108,13 +36,13 @@ configuration raises this error directly (including `call_result` and pool
 construction); a middleware-selected strategy failure becomes a per-item
 `quota_scope_error` result. No provider request or quota debit follows it.
 
-#### `async def prepare() -> None`
+### `async def prepare() -> None`
 
 Initialize resources before making LLM calls (e.g., create caches, initialize clients).
 
 **Default:** No-op
 
-#### `async def execute(prompt, attempt, timeout, state=None)`
+### `async def execute(prompt, attempt, timeout, state=None)`
 
 ```python
 async def execute(
@@ -146,7 +74,7 @@ Returning the 2-tuple `(output, token_usage)` is deprecated since v0.27 and emit
 
 **Raises:** Any exception to trigger retry (if retryable) or failure
 
-#### `async def dry_run(prompt: str) -> tuple[TOutput, TokenUsage]`
+### `async def dry_run(prompt: str) -> tuple[TOutput, TokenUsage]`
 
 Return mock output for dry-run mode (testing without API calls).
 
@@ -178,7 +106,7 @@ class MyStrategy(LLMCallStrategy[Output]):
         return mock_output, mock_tokens
 ```
 
-#### `async def on_error(exception: Exception, attempt: int, state: RetryState | None = None) -> None`
+### `async def on_error(exception: Exception, attempt: int, state: RetryState | None = None) -> None`
 
 Handle errors that occur during execute().
 
@@ -269,7 +197,7 @@ Called by the framework when `execute()` raises an exception, before deciding wh
 [ex-escalation]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_smart_model_escalation.py
 [ex-smart-retry]: https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_gemini_smart_retry.py
 
-#### `async def cleanup() -> None`
+### `async def cleanup() -> None`
 
 Clean up resources after all attempts complete (e.g., delete caches, close clients).
 
@@ -296,9 +224,23 @@ class MyCustomStrategy(LLMCallStrategy[str]):
         return response.text, tokens, None
 ```
 
----
+## ModelStrategy
 
-### Structured JSON Parsing
+Shared base for the provider-named strategies below; delegates to an
+`LLMModel`. Use directly for a custom model you don't want a dedicated
+subclass for.
+
+::: async_batch_llm.ModelStrategy
+
+## PydanticAIStrategy
+
+::: async_batch_llm.PydanticAIStrategy
+
+## Structured JSON Parsing
+
+::: async_batch_llm.pydantic_json_parser
+
+::: async_batch_llm.strip_code_fences
 
 `pydantic_json_parser(Model)` strips a normal outer Markdown fence and performs
 strict Pydantic JSON/schema validation. Recovery is disabled by default.
@@ -323,6 +265,72 @@ A recovered `WorkItemResult` exposes typed recovery properties backed by
 metadata. Processor stats and `MetricsObserver` include
 `structured_output_recoveries`, `structured_output_retries_avoided`, and counts
 by `structured_output_recovery_reasons`.
+
+## GeminiStrategy
+
+::: async_batch_llm.GeminiStrategy
+
+## OpenAIStrategy
+
+::: async_batch_llm.OpenAIStrategy
+
+## OpenRouterStrategy
+
+::: async_batch_llm.OpenRouterStrategy
+
+## DeepSeekStrategy
+
+::: async_batch_llm.DeepSeekStrategy
+
+## Models
+
+### GeminiModel
+
+::: async_batch_llm.GeminiModel
+
+### GeminiCachedModel
+
+::: async_batch_llm.GeminiCachedModel
+
+### OpenAICompatibleModel
+
+::: async_batch_llm.OpenAICompatibleModel
+
+### OpenAIModel
+
+::: async_batch_llm.OpenAIModel
+
+### OpenRouterModel
+
+::: async_batch_llm.OpenRouterModel
+
+### DeepSeekModel
+
+::: async_batch_llm.DeepSeekModel
+
+## Protocols
+
+### LLMModel
+
+::: async_batch_llm.LLMModel
+
+### ManagedLLMModel
+
+::: async_batch_llm.ManagedLLMModel
+
+### LLMResponse
+
+::: async_batch_llm.LLMResponse
+
+### MetadataExtractor
+
+A callable that takes the raw provider response and returns extra keys for
+`LLMResponse.metadata`, or `None`. Pass a list of them as a built-in model's
+`metadata_extractors` argument; their keys are merged over the built-in metadata.
+
+::: async_batch_llm.MetadataExtractor
+
+## Provider notes
 
 ### DeepSeek strict JSON Schema output
 

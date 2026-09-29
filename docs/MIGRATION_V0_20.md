@@ -109,6 +109,10 @@ usage reaches the terminal result.
 `LLMCallPool` is the preferred name for the in-process shared executor.
 `LLMGateway` remains an exact, warning-free alias:
 
+> **Since v0.27:** `LLMGateway` is deprecated. Importing it emits a
+> `DeprecationWarning`, and it will be removed in 1.0. Use `LLMCallPool`. See the
+> [v0.27 migration guide](migration/v0.27.md#deprecations).
+
 ```python
 from async_batch_llm import LLMCallPool, LLMGateway
 

@@ -38,16 +38,20 @@ class SmartModelEscalation(LLMCallStrategy[dict]):
 
 ## Smart Retry with Validation Feedback
 
-Tell the LLM exactly what failed on retry:
+Tell the LLM exactly what failed on retry. Wrapping the validation error in
+`TokenTrackingError` keeps the tokens the failed call billed in the item's totals:
 
 ```python
+from async_batch_llm import TokenTrackingError
+
 class SmartRetryStrategy(LLMCallStrategy[PersonData]):
     def __init__(self, client):
         self.client = client
 
     async def on_error(self, exception: Exception, attempt: int, state: RetryState | None = None):
-        if state is not None and isinstance(exception, ValidationError):
-            state.set("last_validation_error", exception)
+        cause = exception.__cause__ if isinstance(exception, TokenTrackingError) else exception
+        if state is not None and isinstance(cause, ValidationError):
+            state.set("last_validation_error", cause)
 
     async def execute(self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None):
         if attempt == 1:
@@ -56,14 +60,19 @@ class SmartRetryStrategy(LLMCallStrategy[PersonData]):
             # Create retry prompt with field-level feedback
             final_prompt = self._create_retry_prompt(prompt, state)
 
+        response = await self.client.generate(final_prompt)
+        tokens = {
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
         try:
-            response = await self.client.generate(final_prompt)
             output = PersonData.model_validate_json(response.text)
-            return output, tokens, None
         except ValidationError as e:
             if state is not None:
                 state.set("last_response", response.text)
-            raise
+            raise TokenTrackingError(str(e), token_usage=tokens) from e
+        return output, tokens, None
 
     def _create_retry_prompt(self, original_prompt: str, state: RetryState | None) -> str:
         # Parse state.get("last_validation_error") to identify which fields failed.
@@ -95,7 +104,7 @@ async def process_with_caching():
     )
     strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
 
-    config = ProcessorConfig(max_workers=5)
+    config = ProcessorConfig(concurrency=5)
 
     async with ParallelBatchProcessor(config=config) as processor:
         # All 100 queries share the same cached context
@@ -157,38 +166,55 @@ async def main():
 
 ## Custom Observers
 
-Track custom metrics:
+Track custom metrics as the run progresses. Events are for live signals; for token
+and cost totals, read the finished `BatchResult`, whose per-item `token_usage`
+includes failed attempts (an `ITEM_COMPLETED` event reports only the final
+attempt's tokens):
 
 ```python
+from async_batch_llm import CachedTokenRates
 from async_batch_llm.observers import BaseObserver, ProcessingEvent
-from async_batch_llm import LLMWorkItem, WorkItemResult
 from typing import Any
 
-class CostTracker(BaseObserver):
+class ProgressCounter(BaseObserver):
     def __init__(self):
-        self.total_cost = 0.0
-        self.total_tokens = 0
+        self.completed = 0
+        self.failed = 0
+        self.rate_limits = 0
 
     async def on_event(self, event: ProcessingEvent, data: dict[str, Any]) -> None:
         if event == ProcessingEvent.ITEM_COMPLETED:
-            # The ITEM_COMPLETED payload carries the item's total tokens as an int
-            total = data.get("tokens", 0)
-            self.total_tokens += total
-            self.total_cost += total * 0.00001  # Example rate
+            self.completed += 1
+        elif event == ProcessingEvent.ITEM_FAILED:
+            self.failed += 1
+        elif event == ProcessingEvent.RATE_LIMIT_HIT:
+            self.rate_limits += 1
 
 async def main():
-    cost_tracker = CostTracker()
+    counter = ProgressCounter()
 
     async with ParallelBatchProcessor(
         config=config,
-        observers=[cost_tracker]
+        observers=[counter]
     ) as processor:
         # Add work items...
         result = await processor.process_all()
 
-        print(f"Total tokens: {cost_tracker.total_tokens}")
-        print(f"Estimated cost: ${cost_tracker.total_cost:.4f}")
+    print(f"Completed {counter.completed}, failed {counter.failed}, "
+          f"rate limits {counter.rate_limits}")
+    # Totals cover every attempt, including failed ones
+    print(f"Tokens: {result.total_input_tokens} in / {result.total_output_tokens} out")
+    cost = result.estimated_cost(
+        input_per_mtok=0.15,  # example prices
+        output_per_mtok=0.60,
+        cached_token_rate=CachedTokenRates.OPENAI,
+    )
+    print(f"Estimated cost: ${cost:.4f}")
 ```
+
+To stop a run at a spend cap, use
+`GuardrailConfig(max_total_cost=..., cost_function=...)`; see
+[Token and cost budgets](../guardrails.md#token-and-cost-budgets).
 
 ## Adapting Worker Count Between Batches
 
@@ -199,7 +225,7 @@ and building the *next* processor with a different config:
 ```python
 async def adaptive_processing(items, max_workers=10):
     config = ProcessorConfig(
-        max_workers=max_workers,  # Start optimistic
+        concurrency=max_workers,  # Start optimistic
         attempt_timeout=30.0
     )
 
@@ -257,14 +283,24 @@ class ProgressiveTempStrategy(LLMCallStrategy[str]):
 Save partial results across attempts and retry only the fields that failed —
 often cheaper than re-extracting everything.
 
+The strategy raises its own exception type to trigger the retry. The default
+classifier treats built-in errors such as `ValueError`, `TypeError`, and `KeyError` as
+non-retryable logic errors, so raising one of those would fail the item on its first attempt.
+
 ```python
 from async_batch_llm import RetryState
 from async_batch_llm.llm_strategies import LLMCallStrategy
+
+class MissingFieldsError(Exception):
+    """Retryable: deliberately not a ValueError subclass."""
 
 class PartialRecoveryStrategy(LLMCallStrategy[dict]):
     """Parse partial results and retry only failed fields."""
 
     FIELDS = ["name", "email", "phone", "address"]
+
+    def __init__(self, client):
+        self.client = client
 
     async def execute(
         self, prompt: str, attempt: int, timeout: float, state: RetryState | None = None
@@ -290,7 +326,7 @@ class PartialRecoveryStrategy(LLMCallStrategy[dict]):
         if missing:
             state.set("partial_results", dict(result))
             state.set("failed_fields", missing)
-            raise ValueError(f"Missing fields: {missing}")
+            raise MissingFieldsError(f"Missing fields: {missing}")
 
         return result, extract_tokens(response), None
 ```

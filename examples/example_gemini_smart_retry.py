@@ -23,7 +23,7 @@ export GOOGLE_API_KEY=your_api_key_here
 
 import asyncio
 import os
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 from google import genai
 from google.genai.types import GenerateContentConfig
@@ -40,6 +40,35 @@ from async_batch_llm.core import RetryConfig
 from async_batch_llm.llm_strategies import LLMCallStrategy
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+
+
+def gemini_tokens(response) -> TokenUsage:
+    """Token usage the way the built-in GeminiModel counts it.
+
+    Thinking tokens are billed as output (gemini-2.5-flash thinks by default),
+    and tool-use prompt tokens count as input.
+    """
+    usage = response.usage_metadata
+    if usage is None:
+        return {}
+    return {
+        "input_tokens": (usage.prompt_token_count or 0) + (usage.tool_use_prompt_token_count or 0),
+        "output_tokens": (usage.candidates_token_count or 0) + (usage.thoughts_token_count or 0),
+        "total_tokens": usage.total_token_count or 0,
+        "cached_input_tokens": usage.cached_content_token_count or 0,
+    }
+
+
+def raise_with_usage(exc: ValidationError, tokens: TokenUsage) -> NoReturn:
+    """Re-raise a validation failure with the billed tokens attached.
+
+    The response was billed even though it failed validation. Stamping
+    ``_failed_token_usage`` keeps those tokens in the item's totals while the
+    exception stays a ``ValidationError``, so ``on_error`` and the error
+    classifier still see a validation failure.
+    """
+    exc._failed_token_usage = tokens
+    raise exc
 
 
 class PersonData(BaseModel):
@@ -88,15 +117,11 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[PersonData]):
             config=config,
         )
 
-        # This will raise ValidationError if response doesn't match schema
-        output = PersonData.model_validate_json(response.text)
-
-        usage = response.usage_metadata
-        tokens: TokenUsage = {
-            "input_tokens": usage.prompt_token_count or 0,
-            "output_tokens": usage.candidates_token_count or 0,
-            "total_tokens": usage.total_token_count or 0,
-        }
+        tokens = gemini_tokens(response)
+        try:
+            output = PersonData.model_validate_json(response.text)
+        except ValidationError as e:
+            raise_with_usage(e, tokens)
 
         return output, tokens, None
 
@@ -114,7 +139,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
     This is more efficient than blind retries because:
     1. LLM knows exactly what went wrong
     2. LLM can focus on fixing specific fields
-    3. Reduces token usage (shorter focused prompts)
+    3. Can reduce token usage over whole-item retries (results vary)
     4. Higher success rate on retries
 
     Uses on_error callback to track failures cleanly.
@@ -164,15 +189,10 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
             config=config,
         )
 
-        # Try to parse - this may raise ValidationError
+        # Count tokens before parsing: a failed parse was still billed.
+        tokens = gemini_tokens(response)
         try:
             output = PersonData.model_validate_json(response.text)
-            usage = response.usage_metadata
-            tokens: TokenUsage = {
-                "input_tokens": usage.prompt_token_count or 0,
-                "output_tokens": usage.candidates_token_count or 0,
-                "total_tokens": usage.total_token_count or 0,
-            }
             return output, tokens, None
 
         except ValidationError as e:
@@ -181,7 +201,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
             if state is not None:
                 state.set("last_response", response.text)
                 state.set("last_validation_errors", e.errors(include_url=False))
-            raise  # Re-raise so framework can retry
+            raise_with_usage(e, tokens)  # Re-raise so framework can retry
 
     def _create_retry_prompt(self, original_prompt: str, state: RetryState | None) -> str:
         """
@@ -407,9 +427,9 @@ async def example_comparison():
     print(f"  Success rate: {smart_result.succeeded}/{smart_result.total_items}")
     print(f"  Total tokens: {smart_result.total_input_tokens + smart_result.total_output_tokens}\n")
 
-    print("Analysis:")
-    print("  Smart Retry typically uses fewer tokens by being more focused on failed fields.")
-    print("  Progressive Temp is simpler but may waste tokens on full re-extraction.")
+    print("Analysis (token totals include billed attempts that failed validation):")
+    print("  Smart Retry tells the model which fields failed, which can mean fewer retries.")
+    print("  Progressive Temp is simpler but re-extracts everything on each retry.")
 
 
 async def main():

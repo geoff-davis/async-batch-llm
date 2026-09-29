@@ -12,7 +12,8 @@ queued items or asyncio tasks. Bound both layers deliberately.
 | Model `max_concurrency` / `max_provider_concurrency` | Attempts inside `strategy.execute()` | Workers wait before the execution timeout |
 | `ProcessorConfig.max_queue_size` in streaming mode | Work items waiting for a worker | Producer awaits queue space (backpressure) |
 | `ProcessorConfig.max_result_queue_size` | Completed results waiting for the stream consumer | Provider workers await result capacity |
-| `LLMCallPool.max_pending` | Shared calls running or waiting | New calls are rejected immediately |
+| `LLMCallPool.max_pending` | Calls waiting beyond `max_workers` | New calls are rejected immediately |
+
 | `LLMCallPool.submit_timeout` | One caller's total shared-call wall time | The call returns a timeout failure |
 
 `max_queue_size` is the batch equivalent of a bounded pending-work buffer. It
@@ -162,7 +163,8 @@ async with ParallelBatchProcessor(config=config) as processor:
 `add_work()` is the backpressure point. Always call `finish()` after the
 producer reaches end-of-input so `results()` can terminate. The processor wakes
 blocked submissions when `finish()`, shutdown, or a batch abort stops admission;
-rejected work raises public `BatchAdmissionClosedError` (a `RuntimeError`) and
+rejected work raises public `BatchAdmissionClosedError` (a `RuntimeError` and
+`AsyncBatchLLMError`) and
 has no submission index. A concurrently committed enqueue wins and remains owned
 by the processor. Always join application-owned producers, as above.
 
@@ -179,7 +181,8 @@ for repeated or concurrent consumers: it returns normally only after every
 worker, post-processor, and progress callback finished and the artifact store
 closed, or it raises. A worker crash or a finalization failure re-raises the
 original exception; a finalizer cancelled by `shutdown()` before `finish()`
-completed raises `StreamFinalizationError` (an ordinary `Exception`, with the
+completed raises `StreamFinalizationError` (a `RuntimeError` and
+`AsyncBatchLLMError`, not a cancellation, with the
 cancellation as `__cause__`), never a clean end of stream. Results published
 before the decision are always delivered first.
 

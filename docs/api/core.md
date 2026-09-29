@@ -3,6 +3,8 @@
 ## ParallelBatchProcessor
 
 ::: async_batch_llm.ParallelBatchProcessor
+    options:
+      show_bases: false
 
 ## LLMWorkItem
 
@@ -94,6 +96,8 @@ keep working.
 `add_work()` raises `BatchAdmissionClosedError` after finish, shutdown, or abort.
 Rejected submissions receive no submission index. Use a new processor for further work.
 
+## Cleanup and shutdown
+
 ### `async def cleanup() -> None` / `async def shutdown() -> None`
 
 Release every owned resource in dependency order. `cleanup()`, `shutdown()`,
@@ -121,7 +125,7 @@ Behavior (see `docs/cleanup-lifecycle-contract.md` for the full contract):
   Concurrent calls share one in-flight attempt. Because a retry re-invokes a
   strategy's whole `cleanup()`, user `cleanup()` implementations must be
   idempotent and safe after a partially completed earlier attempt.
-- **No deadline.** Cleanup waits for the artifact store and the gateway drain
+- **No deadline.** Cleanup waits for the artifact store and the call-pool drain
   to finish. The two-second worker and progress thresholds only log a warning
   and keep waiting; any step still running after 30 seconds logs one warning.
   A dependent resource is never closed while the resource it depends on is
@@ -140,6 +144,8 @@ Behavior (see `docs/cleanup-lifecycle-contract.md` for the full contract):
   type and take precedence over a deferred cancellation.
 - Once a close has started, preparing a new strategy raises `RuntimeError`.
 
+## Provider metadata
+
 ### Response metadata (`WorkItemResult.metadata`)
 
 Provider metadata (Gemini safety ratings and finish reason, OpenRouter
@@ -156,7 +162,7 @@ properties on `LLMResponse` or `WorkItemResult`.
 > opt-in were removed in v0.6.0. Read metadata off `result.metadata` instead.
 > For Gemini safety ratings specifically, `result.metadata["safety_ratings"]`
 > carries them (the deprecated `result.gemini_safety_ratings` field is still
-> backfilled for compatibility).
+> backfilled for compatibility, and is removed in 1.0).
 
 **Usage:**
 
@@ -172,11 +178,12 @@ if ratings and ratings.get("HARM_CATEGORY_HATE_SPEECH") == "HIGH":
 
 ### Typed auxiliary output (grounding, reasoning, tool calls, logprobs)
 
-> **Experimental until 1.0.** The shapes were adjusted in v0.27 for OpenAI's
-> Responses API. They're declared stable in 1.0.0rc1 if real-provider runs fill
-> them in correctly; `logprobs` is likely to stay provisional. The `metadata`
+> **Provisional.** The shapes were adjusted in v0.27 for OpenAI's Responses API.
+> The views and the reserved keys' shapes may be promoted to stable at 1.0.0rc1 if
+> real-provider runs fill them in correctly; until then they can change in a minor
+> release, and `logprobs` is likely to stay provisional after 1.0. The `metadata`
 > dict channel itself is stable. If you persist these shapes, read them back
-> defensively.
+> defensively. See [API stability](../stability.md#provisional-through-10).
 
 Provider-specific structured output travels through `metadata` under four
 **reserved keys** with documented plain-dict shapes (JSON-serializable, so
@@ -217,8 +224,8 @@ change degrades to `None` views rather than errors.
 
 - `tool_calls` is **visibility only** — the framework never executes tools.
   Feed them to your own dispatch loop (or use an agent framework via
-  `PydanticAIStrategy`). Covered for OpenAI-compatible providers only this
-  phase (Gemini function-call parts are not extracted yet).
+  `PydanticAIStrategy`). Extracted for OpenAI-compatible models only; Gemini
+  function-call parts are not extracted.
 - On Chat Completions, a response whose `content` is `null` (for example a
   pure tool-call turn) raises `EmptyResponseError` before any result exists,
   so `tool_calls` surfaces only when the model returned text alongside the
@@ -232,3 +239,31 @@ change degrades to `None` views rather than errors.
 ## TokenUsage
 
 ::: async_batch_llm.TokenUsage
+
+## CachedTokenRates
+
+::: async_batch_llm.CachedTokenRates
+
+## Type aliases
+
+`SimpleBatchProcessor[T]`, `SimpleWorkItem[T]` and `SimpleResult[T]` shorten the
+generic types for string prompts with no context. `PostProcessorFunc` and
+`ProgressCallbackFunc` are the callable types accepted by `post_processor` and
+`progress_callback`.
+
+::: async_batch_llm.SimpleBatchProcessor
+
+::: async_batch_llm.SimpleWorkItem
+
+::: async_batch_llm.SimpleResult
+
+::: async_batch_llm.PostProcessorFunc
+
+::: async_batch_llm.ProgressCallbackFunc
+
+## Deprecated names
+
+`BatchProcessor`, `ProcessingStats`, `LLMGateway` and `grounding_metadata_extractor`
+still import from `async_batch_llm` but warn and leave the public API in 1.0. They
+aren't documented here; see the [v0.27 migration guide](../migration/v0.27.md#deprecations)
+for replacements.

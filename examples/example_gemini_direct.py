@@ -97,7 +97,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
             timeout: Timeout in seconds (enforced by framework)
 
         Returns:
-            (parsed_output, token_usage_dict)
+            (parsed_output, token_usage_dict, metadata) -- metadata is None here
         """
         # Progressive temperature: 0.0 -> 0.25 -> 0.5
         # Lower temps (0.0) are more deterministic, higher temps (0.5) more creative
@@ -120,12 +120,15 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
         # Parse the response
         output = SummaryOutput.model_validate_json(response.text)
 
-        # Extract token usage
+        # Extract token usage the way the built-in GeminiModel counts it:
+        # thinking tokens are billed as output (gemini-2.5-flash thinks by default).
         usage_metadata = response.usage_metadata
         token_usage = {
             "input_tokens": usage_metadata.prompt_token_count or 0,
-            "output_tokens": usage_metadata.candidates_token_count or 0,
+            "output_tokens": (usage_metadata.candidates_token_count or 0)
+            + (usage_metadata.thoughts_token_count or 0),
             "total_tokens": usage_metadata.total_token_count or 0,
+            "cached_input_tokens": usage_metadata.cached_content_token_count or 0,
         }
 
         return output, token_usage, None

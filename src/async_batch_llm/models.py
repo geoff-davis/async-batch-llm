@@ -10,6 +10,7 @@ Added in v0.6.0.
 import asyncio
 import base64
 import copy
+import enum
 import hashlib
 import io
 import json
@@ -169,6 +170,13 @@ def _decode_tags_from_display_name(display_name: str | None) -> dict[str, str] |
     return decoded
 
 
+def _enum_name(value: Any) -> str:
+    """Return an SDK enum's wire value (``"STOP"``), not ``str()``'s ``"FinishReason.STOP"``."""
+    if isinstance(value, enum.Enum):
+        return str(value.value)
+    return str(value)
+
+
 def _extract_metadata(response: Any) -> dict[str, Any] | None:
     """Extract safety ratings and finish reason from a Gemini response."""
     metadata: dict[str, Any] = {}
@@ -181,16 +189,20 @@ def _extract_metadata(response: Any) -> dict[str, Any] | None:
             if hasattr(candidate, "safety_ratings") and candidate.safety_ratings:
                 ratings: dict[str, str] = {}
                 for rating in candidate.safety_ratings:
-                    category = str(rating.category) if hasattr(rating, "category") else "UNKNOWN"
+                    category = (
+                        _enum_name(rating.category) if hasattr(rating, "category") else "UNKNOWN"
+                    )
                     probability = (
-                        str(rating.probability) if hasattr(rating, "probability") else "UNKNOWN"
+                        _enum_name(rating.probability)
+                        if hasattr(rating, "probability")
+                        else "UNKNOWN"
                     )
                     ratings[category] = probability
                 metadata["safety_ratings"] = ratings
 
             # Finish reason
             if hasattr(candidate, "finish_reason") and candidate.finish_reason:
-                metadata["finish_reason"] = str(candidate.finish_reason)
+                metadata["finish_reason"] = _enum_name(candidate.finish_reason)
 
         thoughts = getattr(getattr(response, "usage_metadata", None), "thoughts_token_count", 0)
         if isinstance(thoughts, int) and thoughts > 0:
@@ -1151,8 +1163,7 @@ class OpenAICompatibleModel:
                 ``cache_control`` markers).
             temperature: Sampling temperature. Pass ``None`` to omit the
                 parameter so the provider uses its own default — required for
-                OpenAI reasoning models (o1/o3/etc.) that reject an explicit
-                ``temperature``.
+                reasoning models that reject an explicit ``temperature``.
             system_instruction: Per-call override for the system message.
             config: Per-call extra kwargs forwarded to the SDK call (merged
                 over the instance's ``extra_body``). Use this to pass
@@ -1367,9 +1378,10 @@ class OpenAICompatibleModel:
         set (v0.20.0, issue #97), before the first request. When this model
         owns its client (built via :meth:`from_api_key`) and no explicit
         ``max_connections`` was given, the ``AsyncOpenAI`` client is rebuilt
-        with an httpx pool sized to ``concurrency`` (the SDK's default pool of
-        ~100 connections would otherwise silently cap throughput) and
-        ``max_concurrency`` starts advertising the new size.
+        with an httpx pool sized to ``concurrency`` (the SDK's default pool
+        allows 1000 connections but keeps only 100 alive between requests, and
+        ABL cannot report an unknown capacity) and ``max_concurrency`` starts
+        advertising the new size.
 
         Returns True when the pool was resized. Returns False — leaving the
         model untouched — for caller-supplied clients and for models built
@@ -1489,13 +1501,15 @@ class OpenAICompatibleModel:
                 JSON in markdown fences even in JSON mode (issue #26).
             max_connections: Size of the underlying httpx connection pool
                 (both ``max_connections`` and ``max_keepalive_connections``).
-                **Set this to at least ``ProcessorConfig.max_workers``** — the
-                openai SDK otherwise uses httpx's default pool (~100), so
-                raising ``max_workers`` above that gives no extra throughput;
-                the excess workers just block waiting for a connection (see
-                issue #25). High-concurrency providers like DeepSeek (which
-                allow thousands of concurrent connections) hit this ceiling
-                first. Mutually exclusive with passing your own
+                **Set this to at least ``ProcessorConfig.max_workers``.**
+                Without it, the openai SDK's own default applies (1000
+                connections, 100 kept alive; the same in openai 1.66.2 and
+                3.x): above 100 concurrent requests, connections beyond
+                the keep-alive limit are closed after each response and
+                reopened, and above 1000 the excess workers block waiting for
+                a connection (see issue #25). ABL also can't see the default
+                pool's capacity, so it can't warn or gate on it. Mutually
+                exclusive with passing your own
                 ``http_client``; raises ``ValueError`` if you pass both.
                 The value is also exposed as ``model.max_concurrency`` and
                 forwarded by ``ModelStrategy`` for processor/gateway validation.
@@ -1889,7 +1903,7 @@ class OpenAIModel(_ResponsesSurface, OpenAICompatibleModel):
             if not callable(create_response):
                 raise ValueError(
                     "OpenAIModel uses the Responses API by default, which needs a client with "
-                    "callable responses.create (openai>=1.66). Upgrade the SDK, or pass "
+                    "callable responses.create (openai>=1.66.2). Upgrade the SDK, or pass "
                     'api_surface="chat_completions".'
                 ) from None
         self.api_surface = api_surface

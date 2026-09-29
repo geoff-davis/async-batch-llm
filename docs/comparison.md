@@ -82,7 +82,9 @@ ABL can sit above LiteLLM or another gateway through `CallableStrategy`. ABL
 then manages one application run: bounded production and result consumption,
 application-level validation recovery, deadlines, terminal outcomes,
 checkpoint/replay, and application-visible accounting. It cannot see retries
-or provider attempts hidden inside the gateway.
+or provider attempts hidden inside the gateway. ABL's `GuardrailConfig` token and
+cost budgets cap a single run; organization-wide spend policy still belongs in a
+gateway.
 
 Avoid allowing both layers to run the same transport retry policy at full
 strength; nested retry loops make latency, load, and accounting difficult to

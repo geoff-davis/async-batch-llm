@@ -42,7 +42,14 @@ from async_batch_llm import ArtifactIdentity, CallOutcome, CallableStrategy
 
 async def invoke(prompt, *, attempt, timeout, state):
     response = await client.generate(prompt, timeout=timeout)
-    return CallOutcome(response.text, token_usage=response.usage)
+    return CallOutcome(
+        response.text,
+        # token_usage must be a str -> int mapping, not an SDK usage object
+        token_usage={
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
+        },
+    )
 
 strategy = CallableStrategy(
     invoke,
@@ -69,12 +76,21 @@ bounded result handoff, transactional writes, and checkpoint replay.
 - [Troubleshooting and FAQ](troubleshooting.md) — operational symptoms and
   fixes
 - [API Reference](api/core.md) — public classes and functions
+- [API Stability (draft)](stability.md) — what 1.0 keeps stable
+- [v0.27 migration guide](migration/v0.27.md) — changed defaults and deprecations
 
 ## Project status
 
 The project is beta software. APIs are typed and covered by deterministic
 tests, but release notes and migration guides should be reviewed before an
 upgrade. Contributions and focused production feedback are welcome.
+
+v0.27 is the last release before 1.0, and the last to support Python 3.10; 1.0
+requires Python 3.11 or newer. v0.27 deprecates several names that 1.0 removes, so
+run your tests with `-W error::DeprecationWarning` before upgrading ([Testing](testing.md#4-preparing-for-10)
+covers a google-genai warning to filter on Python 3.14). See
+[API stability](stability.md) for what 1.0 keeps stable, and the
+[v0.27 migration guide](migration/v0.27.md) for the deprecations.
 
 ## License
 

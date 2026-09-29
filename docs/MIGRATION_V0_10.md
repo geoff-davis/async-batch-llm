@@ -6,6 +6,11 @@ and OpenRouter providers) and v0.10.0 (response metadata reaching
 existing code keeps working unchanged. The one real breaking surface is
 narrow and called out below.
 
+> **Since v0.27:** a strategy returning the 2-tuple `(output, tokens)` emits a
+> `DeprecationWarning`, and 1.0 removes that form; return `(output, tokens, None)`.
+> The default temperature is now `None` (provider default), not `0.0`. See the
+> [v0.27 migration guide](migration/v0.27.md).
+
 ## Summary of changes
 
 | Change                                                     | Breaking? | Required action                                                    |

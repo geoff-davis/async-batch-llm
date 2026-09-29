@@ -24,6 +24,13 @@ better suited to a provider's native batch API.
 Upgrading from v0.26? Read the [v0.27 migration guide](https://geoff-davis.github.io/async-batch-llm/migration/v0.27/):
 `OpenAIModel` now uses the Responses API, built-in models no longer send a
 default temperature, and application errors are no longer mistaken for rate limits.
+Several names are deprecated ahead of 1.0, the next release; run your tests with
+`-W error::DeprecationWarning` to find them (on Python 3.14 with google-genai installed,
+also pass `-W "ignore::DeprecationWarning:google.genai.types"`). The
+[API stability page](https://geoff-davis.github.io/async-batch-llm/stability/) lists what 1.0 keeps stable.
+
+> **Python 3.10:** v0.27 is the last release that supports Python 3.10. 1.0 requires
+> Python 3.11 or newer.
 
 ## What it adds over plain `asyncio`
 
@@ -80,9 +87,21 @@ or [open the no-key notebook in Colab](https://colab.research.google.com/github/
 
 ![Credential-free v0.20 terminal demo](https://raw.githubusercontent.com/geoff-davis/async-batch-llm/main/docs/assets/v0.20-quickstart.gif)
 
-Other provider extras are `gemini`, `openrouter`, `deepseek`, and
-`pydantic-ai`; `progress` installs tqdm. The core package has no provider SDK
-dependency. Supported on Python 3.10–3.14, tested on Linux and macOS.
+The core package depends only on `pydantic>=2.0` and `typing-extensions`, with
+no provider SDK. Install extras for the providers you use:
+
+| Extra | Enables | Installs |
+| --- | --- | --- |
+| `openai` | `OpenAIModel`, `OpenAICompatibleModel`, `llm("openai:…")`, `llm("openai-compatible:…")` | `openai>=1.66.2` |
+| `openrouter` | `OpenRouterModel`, `llm("openrouter:…")` | `openai>=1.66.2` |
+| `deepseek` | `DeepSeekModel`, `llm("deepseek:…")` | `openai>=1.66.2` |
+| `gemini` | `GeminiModel`, `GeminiCachedModel`, `llm("gemini:…")` | `google-genai>=1.49.0` |
+| `pydantic-ai` | `PydanticAIStrategy` | `pydantic-ai>=1.32.0` |
+| `progress` | tqdm bars for `progress=True` | `tqdm>=4.66` |
+| `all` | All of the above | All of the above |
+
+`CallableStrategy`, `FakeStrategy`, and custom `LLMCallStrategy` subclasses need
+no extra. Supported on Python 3.10–3.14, tested on Linux and macOS.
 
 ### Use your existing async client
 
@@ -178,7 +197,9 @@ Batch, streaming, single-call, and shared-call execution share the same retry,
 timing, provider-admission, and token-accounting pipeline. See the
 [single-call and shared-call guide](https://geoff-davis.github.io/async-batch-llm/api/single-gateway/)
 and [core API](https://geoff-davis.github.io/async-batch-llm/api/core/) for the
-lower-level surfaces.
+lower-level surfaces. Exceptions the library defines subclass
+`AsyncBatchLLMError` and keep their built-in bases (for example,
+`ItemDeadlineExceeded` is still a `TimeoutError`); provider SDK errors are not wrapped.
 
 ## Token-aware admission
 
@@ -238,6 +259,7 @@ from pathlib import Path
 from async_batch_llm import (
     AbortMode,
     ArtifactIdentity,
+    ErrorCategory,
     GuardrailConfig,
     JsonlArtifactStore,
     ProcessorConfig,
@@ -245,17 +267,14 @@ from async_batch_llm import (
     process_prompts,
 )
 
-store = JsonlArtifactStore(
-    "runs/invoice-extraction.jsonl",
-    identity=ArtifactIdentity(
-        provider="openai",
-        model="gpt-4o-mini",
-        prompt_version="invoice-v4",
-        parser_version="invoice-schema-v2",
-        application_version="billing-pipeline-v7",
-    ),
-    fsync=True,
+identity = ArtifactIdentity(
+    provider="openai",
+    model="gpt-4o-mini",
+    prompt_version="invoice-v4",
+    parser_version="invoice-schema-v2",
+    application_version="billing-pipeline-v7",
 )
+store = JsonlArtifactStore("runs/invoice-extraction.jsonl", identity=identity, fsync=True)
 config = ProcessorConfig(
     concurrency=20,
     attempt_timeout=30,  # one provider attempt
@@ -263,7 +282,7 @@ config = ProcessorConfig(
         total_timeout_per_item=180,  # admission, waits, calls, and retries
         batch_timeout=3600,
         abort_on_error_categories=frozenset(
-            {"authentication", "insufficient_balance"}
+            {ErrorCategory.AUTHENTICATION, ErrorCategory.INSUFFICIENT_BALANCE}
         ),
         max_total_tokens=20_000_000,  # stop the run at a spend cap
         abort_mode=AbortMode.DRAIN_ACTIVE,
@@ -300,7 +319,9 @@ Important operational details:
 - Replay compatibility includes item ID, prompt, participating context, and the
   complete artifact identity—not merely `item_id`.
 - `REUSE_SUCCESSES` reruns prior failures. `REUSE_ALL` also replays compatible
-  terminal failures.
+  terminal provider failures. Deadline, abort, and budget stops, and
+  configuration failures (token-estimation or quota-scope errors), always
+  re-execute.
 - Raw prompts and contexts are excluded by default. Outputs and metadata are
   included by default and may contain sensitive application data.
 - Historical replay tokens remain on each result for audit, while live
@@ -311,8 +332,11 @@ Important operational details:
   ```python
   from async_batch_llm import SqliteArtifactStore
 
-  store = SqliteArtifactStore("runs/invoice-extraction.sqlite")
+  store = SqliteArtifactStore("runs/invoice-extraction.sqlite", identity=identity)
   ```
+
+  Pass the same `identity` as before, or replay keys fall back to the inferred
+  identity and lose the version pins.
 
   JSONL remains the portable, human-inspectable option.
 
@@ -353,7 +377,7 @@ connection pools, admission, timeouts, deadlines, ramp, and cooldown — with a
 worked 10k-item sizing example.
 
 - `attempt_timeout` limits one provider execution attempt (renamed from
-  `timeout_per_item` in v0.20; the old name is a deprecated alias).
+  `timeout_per_item` in v0.20; the old name is a deprecated alias, removed in 1.0).
 - `GuardrailConfig.total_timeout_per_item` limits the complete logical item,
   including coordinated cooldown, startup ramp, proactive rate limiting,
   provider-capacity admission, calls, retry cooldowns, and backoff.
@@ -414,7 +438,7 @@ batch = await process_prompts(
     FakeStrategy(lambda prompt: prompt.upper(), token_usage={"input_tokens": 2, "output_tokens": 1}),
     ["hello", "world"],
 )
-assert batch.outputs == ["HELLO", "WORLD"]
+assert list(batch.in_input_order().outputs()) == ["HELLO", "WORLD"]
 ```
 
 Use `FakeStrategy` and `MockAgent` to exercise latency, rate
@@ -447,6 +471,8 @@ benchmark walkthroughs.
 - [Deadlines, Budgets and Fail-Fast Guardrails](https://geoff-davis.github.io/async-batch-llm/guardrails/)
 - [Bounded Work and Backpressure](https://geoff-davis.github.io/async-batch-llm/bounded-work/)
 - [API Reference](https://geoff-davis.github.io/async-batch-llm/api/core/)
+- [API Stability (draft for 1.0)](https://geoff-davis.github.io/async-batch-llm/stability/)
+- [Migration guides](https://geoff-davis.github.io/async-batch-llm/migration/v0.27/)
 
 ## Contributing
 

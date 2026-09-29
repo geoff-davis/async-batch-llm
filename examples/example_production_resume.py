@@ -8,6 +8,7 @@ without another provider call.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 from async_batch_llm import (
@@ -24,6 +25,9 @@ from async_batch_llm import (
 
 
 async def main() -> None:
+    if "OPENAI_API_KEY" not in os.environ:
+        print("Set OPENAI_API_KEY before running this example.")
+        return
     model_name = "gpt-4o-mini"
     strategy = OpenAIStrategy(OpenAIModel.from_api_key(model_name))
     prompts = [

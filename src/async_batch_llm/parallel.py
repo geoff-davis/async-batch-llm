@@ -181,21 +181,21 @@ class ParallelBatchProcessor(
         # Emit deprecation warnings for legacy parameters
         if max_workers is not None:
             warnings.warn(
-                "The 'max_workers' parameter is deprecated. "
+                "The 'max_workers' parameter is deprecated and will be removed in 1.0. "
                 "Use ProcessorConfig(max_workers=...) instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
         if timeout_per_item is not None:
             warnings.warn(
-                "The 'timeout_per_item' parameter is deprecated. "
+                "The 'timeout_per_item' parameter is deprecated and will be removed in 1.0. "
                 "Use ProcessorConfig(attempt_timeout=...) instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
         if rate_limit_cooldown is not None:
             warnings.warn(
-                "The 'rate_limit_cooldown' parameter is deprecated. "
+                "The 'rate_limit_cooldown' parameter is deprecated and will be removed in 1.0. "
                 "Use ProcessorConfig(rate_limit=RateLimitConfig(cooldown_seconds=...)) instead.",
                 DeprecationWarning,
                 stacklevel=2,
