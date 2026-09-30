@@ -43,6 +43,26 @@ changes and document breaking behavior in `CHANGELOG.md` when relevant. Pull req
 outline behavioral changes, list new commands or flags, and include screenshots for UI- or docs-heavy updates where
 clarity helps reviewers. Confirm `make ci` succeeds locally before requesting review to reduce turnarounds.
 
+## Direct Herdr Reviews
+
+For this repository, Claude implements and Codex reviews. The user authorizes direct
+review requests and replies through Herdr; no manual relay is needed.
+
+- Verify `HERDR_ENV=1` and use `herdr agent list` to check agent identity and repository
+  before sending. The current live names are `abl-implementer` (Claude) and
+  `abl-reviewer` (Codex). Names belong to live occupants; rediscover them after restarts.
+- Claude requests review with `herdr agent prompt abl-reviewer "<review request>"`.
+  Include the base, immutable commit or patch/hash, evidence location, scope, settled
+  decisions, and known limitations. Keep the review target unchanged during review.
+- Codex replies with `herdr agent prompt abl-implementer "<review verdict and findings>"`.
+  Review read-only in an isolated snapshot; leave implementation edits to Claude.
+  Follow the evidence protocol below and identify the exact target in every verdict.
+- Send without `--wait` so neither agent blocks waiting for the other's turn. Do not
+  send acknowledgment loops or duplicate prompts. If delivery is uncertain, inspect
+  the target before retrying; never answer an approval dialog on the user's behalf.
+- Review approval does not itself authorize a commit, push, merge, tag, or publication;
+  follow the user's authorization for those actions.
+
 ## Review Fixes & Handoffs
 
 For bug fixes and shared-policy changes, provide evidence that lets another session verify the change without

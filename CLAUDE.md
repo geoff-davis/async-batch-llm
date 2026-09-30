@@ -12,18 +12,23 @@ here.
 **strategy pattern** — provider-agnostic at the framework level, with
 first-class support for several providers built in.
 
-**Current version:** v0.26.0 (see `CHANGELOG.md`; `pyproject.toml` is bumped
+**Current version:** v0.27.0, the last release before 1.0 and the last to
+support Python 3.10 (see `CHANGELOG.md`; `pyproject.toml` is bumped
 by the release-prep flow, so it may briefly lag `main` between releases).
 
 **Key features:**
 
 - Parallel asyncio processing with configurable concurrency
 - Built-in rate limiting and exponential backoff retry logic
-- Thread-safe concurrent operations (`asyncio.Lock`-based, no nesting)
-- Provider-agnostic core: bring your own strategy/model/classifier
-- Built-in Gemini, OpenAI, and OpenRouter support
+- Scoped, token-aware RPM/TPM admission and coordinated cooldowns
+- Resumable JSONL/SQLite checkpoints, item and batch deadlines, token/cost
+  budgets, and category-based fail-fast
+- Concurrency-safe shared state across tasks on one event loop (`asyncio.Lock`-based)
+- Provider-agnostic core: bring your own strategy/model/classifier, or wrap an
+  existing async client with `CallableStrategy`
+- Built-in Gemini, OpenAI, OpenRouter, DeepSeek, and PydanticAI support
 - Middleware and observer patterns for extensibility
-- `MockAgent` for testing without API calls
+- `FakeStrategy` and `MockAgent` for testing without API calls
 
 ---
 
@@ -107,7 +112,13 @@ passing, post-processors, middleware, observers, error handling).
 | OpenAI     | `OpenAIModel`                       | `OpenAIStrategy`     | `OpenAIErrorClassifier`     | `[openai]`        |
 | OpenRouter | `OpenRouterModel`                   | `OpenRouterStrategy` | `OpenRouterErrorClassifier` | `[openrouter]`    |
 | DeepSeek   | `DeepSeekModel`                     | `DeepSeekStrategy`   | `OpenAIErrorClassifier`     | `[deepseek]`      |
-| PydanticAI | (any model wrapped)                 | `PydanticAIStrategy` | —                           | `[pydantic-ai]`   |
+| PydanticAI | (any model wrapped)                 | `PydanticAIStrategy` | `PydanticAIErrorClassifier` | `[pydantic-ai]`   |
+
+`OpenAIModel` uses the Responses API by default (v0.27, `store=False`);
+`api_surface="chat_completions"` opts out. `DeepSeekModel` defaults to Chat
+Completions and accepts `api_surface="responses"` (needed for strict
+`response_schema`); OpenRouter and plain `OpenAICompatibleModel` use Chat
+Completions.
 
 `OpenAICompatibleModel` is the base for OpenAI/OpenRouter/DeepSeek — and all
 three model strategies are thin subclasses of `ModelStrategy` (shared
@@ -122,11 +133,26 @@ For provider deep dives:
 - `docs/OPENAI_INTEGRATION.md`
 - `docs/OPENROUTER_INTEGRATION.md`
 
-### Thread safety
+### Concurrency and locks
 
-`ParallelBatchProcessor` uses three independent `asyncio.Lock` instances
-(`_rate_limit_lock`, `_stats_lock`, `_results_lock`). No nesting → no
-deadlocks. Sub-1% overhead in benchmarks.
+The locks are `asyncio.Lock`s: they serialize tasks on one event loop and give
+no OS-thread safety. Most guard one piece of state and are released before
+another lock is taken. Ownership:
+
+- `_stats_lock`, `_results_lock`, `_submission_lock` — defined on the
+  `BatchProcessor` base (`base.py`), used by `ParallelBatchProcessor`.
+- `_rate_limit_lock` — a `ParallelBatchProcessor` property returning
+  `RateLimitCoordinator._lock`.
+- Collaborators own their own locks: `StrategyLifecycle`, `_internal/guardrails.py`,
+  `_internal/executor_host.py` (stats for `single.py`/`gateway.py`), the JSONL
+  store, and `MetricsObserver`. Models have their own (client lifecycle, and
+  `GeminiCachedModel`'s cache lock).
+
+Known nesting: `StrategyLifecycle` holds its lock while running
+`strategy.prepare()`, so a lock a model takes inside `prepare()` (for example
+`GeminiCachedModel`'s cache lock) is acquired under it. Keep that order
+(lifecycle, then model), and don't call back into the lifecycle from model
+code. When adding a lock, check whether it can be taken while another is held.
 
 ---
 
@@ -189,9 +215,9 @@ Tokens consumed by failed attempts are still tracked:
 `CachedTokenRates` constants (`GEMINI=0.10`, `OPENAI=0.50`,
 `ANTHROPIC_READ=0.10`, `DEEPSEEK=0.02`) encode the fraction of normal
 input price each provider charges for cached tokens. Pass to
-`BatchResult.effective_input_tokens(rate)` for accurate billable counts.
-Default is `GEMINI` for backward compat — non-Gemini callers must opt
-in. The math conservatively rounds the billable estimate UP via `int()`
+`BatchResult.effective_input_tokens(rate)` / `estimated_cost(..., cached_token_rate=)`
+for accurate billable counts. Omitting the rate falls back to `GEMINI` and is
+deprecated since v0.27 (required in 1.0). The math conservatively rounds the billable estimate UP via `int()`
 truncation of the discount.
 
 ---
@@ -201,7 +227,11 @@ truncation of the discount.
 ### PydanticAI strategy
 
 ```python
-agent = Agent("gemini-2.5-flash", output_type=Output)
+from pydantic_ai.models.google import GoogleModel
+
+# A bare "gemini-2.5-flash" string fails on pydantic-ai 2.x; GoogleModel works on
+# both 1.x (>=1.32) and 2.x. Construction needs GOOGLE_API_KEY.
+agent = Agent(GoogleModel("gemini-2.5-flash"), output_type=Output)
 strategy = PydanticAIStrategy(agent=agent)
 work_item = LLMWorkItem(item_id="1", strategy=strategy, prompt="...")
 ```
@@ -378,12 +408,27 @@ the project's release-prep flow.
 
 ### CI workflows
 
-- `test.yml` — pytest + ruff + mypy on Python 3.10–3.14; pip-audit +
-  npm-audit on every push/PR.
+- `test.yml` — on every push/PR:
+  - `test` (Python 3.10–3.14; the four 3.10–3.13 legs are the required checks) and
+    `test-macos`;
+  - `quality` (ruff lint and format, mypy, ty, `make package-check`; markdownlint
+    runs only in the prek hook and `make ci`, not in CI);
+  - `sdk-compat`, a ten-leg matrix running each SDK's floor and the latest release
+    of every supported major (openai, google-genai, pydantic-ai);
+  - `scale-smoke`, `docs-build`, and `security` (pip-audit on the locked runtime
+    deps, npm audit).
 - `docs.yml` — MkDocs build & GitHub Pages deploy on push to `main`.
-- `publish.yml` — release publishing.
+- `publish.yml` — tag-triggered: version check, `make package-check`, PyPI upload.
+  It does not create the GitHub release; `/release-tag` does, after PyPI confirms.
+
+GitHub Actions are pinned to exact tags. Workflow-file changes need a push
+credential with the `workflow` scope (SSH works; the gh HTTPS token may not).
 
 ### Review protocol
+
+Claude implements and Codex reviews. Follow [Direct Herdr Reviews](AGENTS.md#direct-herdr-reviews)
+for authorized agent-to-agent requests and replies; send review requests directly to
+`abl-reviewer` and receive verdicts as `abl-implementer`.
 
 This repo is often worked by two sessions: one implements, one reviews.
 The v0.24.0 lifecycle work, originally planned as v0.23.1, took ten review
@@ -433,13 +478,14 @@ parallel passes. Keep `.claude/review-context.md` pruned at each release.
 
 ## Testing strategy
 
-~546 unit tests (565 collected, `integration` deselected by default) plus
-~480 parametrized doc-snippet checks (`tests/test_doc_examples.py` —
+~3,200 tests (`slow`, `integration`, and `benchmark` deselected by default),
+including ~480 parametrized doc-snippet checks (`tests/test_doc_examples.py` —
 parses every fenced python block in the docs, resolves
 `async_batch_llm` imports, and diffs framework-hook overrides in doc
 classes against the live base-class signatures; opt a block out with
-`<!-- doc-snippet: skip -->` above the fence). The default run takes
-~15 seconds (no real sleeps — see
+`<!-- doc-snippet: skip -->` above the fence). The doc checks parse and
+signature-check snippets but don't run them. The default run takes about two
+minutes, and `make ci` about two and a half (keep retries fast — see
 `tests/conftest.py` for the shared `fast_retry`/`fast_rate_limit`
 fixtures; use them in any test that triggers a retry, or you'll pay
 1s+ per retry against the library defaults). `pytest-timeout` caps
@@ -464,6 +510,14 @@ Key test files:
   `test_token_tracking_on_failure.py` — token accounting.
 - `test_cache_expiration_multiworker.py`, `test_cache_tag_matching.py`
   — Gemini cache lifecycle.
+- `test_legacy_fixtures.py` — artifacts written by v0.18, v0.21, v0.24.1, and
+  v0.26 still read and replay (fixtures in `tests/fixtures/`; add one per
+  release via `scripts/write_legacy_fixtures.py`, see `/release-prep`).
+- `test_deprecations.py`, `test_stability_page.py`, `test_categories.py` —
+  deprecation warnings, every `__all__` name classified on `docs/stability.md`,
+  and every produced error/timeout category in `ErrorCategory`/`TimeoutCategory`.
+- `test_release_docs.py` — README/onboarding invariants and the pinned release
+  version (updated by each release PR).
 
 `MockAgent` (`testing/mocks.py`) simulates rate limits, errors, and
 latency without API calls — much faster than real integration tests.
@@ -476,14 +530,23 @@ latency without API calls — much faster than real integration tests.
 
 ```text
 src/async_batch_llm/
-├── __init__.py           # Public API exports
+├── __init__.py           # Public API exports (+ deprecated-name __getattr__)
 ├── base.py               # LLMWorkItem, WorkItemResult, BatchResult,
 │                         # LLMResponse, RetryState, CachedTokenRates
 ├── py.typed              # PEP 561 marker (ships in wheel + sdist)
 ├── parallel.py           # ParallelBatchProcessor (orchestration)
 ├── streaming.py          # process_prompts / process_stream (streaming API)
 ├── single.py             # call / call_result (one-shot convenience API)
-├── gateway.py            # LLMGateway (queue-less shared-cooldown service)
+├── gateway.py            # LLMCallPool (queue-less shared-cooldown service;
+│                         # LLMGateway is a deprecated alias)
+├── factory.py            # llm("provider:model")
+├── callable_strategy.py  # CallableStrategy / CallOutcome
+├── categories.py         # ErrorCategory, TimeoutCategory
+├── artifacts.py          # JsonlArtifactStore, ArtifactIdentity, ResumePolicy
+├── sqlite_artifacts.py   # SqliteArtifactStore
+├── serialization.py      # strict versioned result JSON
+├── budget.py             # AttemptUsage (token/cost budgets)
+├── token_estimation.py   # TokenEstimate, CharacterTokenEstimator
 ├── parsing.py            # JSON/code-fence response-parser helpers
 ├── llm_strategies.py     # LLMCallStrategy + built-in strategies
 ├── models.py             # GeminiModel, GeminiCachedModel,
@@ -496,14 +559,15 @@ src/async_batch_llm/
 │   ├── config.py         # ProcessorConfig, RateLimitConfig, RetryConfig
 │   └── protocols.py      # LLMModel, ManagedLLMModel
 ├── strategies/
-│   ├── errors.py         # ErrorClassifier, ErrorInfo, TokenTrackingError,
+│   ├── errors.py         # AsyncBatchLLMError, ErrorClassifier, ErrorInfo, TokenTrackingError,
 │   │                     # FrameworkTimeoutError, EmptyResponseError,
 │   │                     # ProviderResponseError
 │   └── rate_limit.py     # ExponentialBackoffStrategy, FixedDelayStrategy
 ├── classifiers/
 │   ├── gemini.py         # GeminiErrorClassifier
 │   ├── openai.py         # OpenAIErrorClassifier
-│   └── openrouter.py     # OpenRouterErrorClassifier (extends OpenAI)
+│   ├── openrouter.py     # OpenRouterErrorClassifier (extends OpenAI)
+│   └── pydantic_ai.py    # PydanticAIErrorClassifier (extends OpenAI)
 ├── observers/
 │   ├── base.py           # ProcessorObserver protocol
 │   └── metrics.py        # MetricsObserver
@@ -511,16 +575,25 @@ src/async_batch_llm/
 │   └── base.py           # Middleware protocol
 ├── _internal/            # Shared orchestration collaborators
 │   ├── admission.py      # quota scopes and FIFO admission
+│   ├── artifact_codec.py # artifact records and replay predicates
+│   ├── backoff.py
+│   ├── budget.py         # token/cost budget accounting
+│   ├── capacity.py       # provider-capacity admission
+│   ├── classifier_resolver.py
 │   ├── cleanup.py        # ordered teardown and detached cancellation waits
 │   ├── execution_state.py # private per-item accounting
 │   ├── event_dispatcher.py
 │   ├── executor_host.py  # pool-less host for single.py / gateway.py
+│   ├── guardrails.py     # item/batch deadlines and fail-fast
+│   ├── input_validation.py
 │   ├── item_executor.py  # per-item retry/classification engine
 │   ├── logical_item.py   # effective request shared by preprocessing/replay/retries
 │   ├── rate_limit_coordinator.py
+│   ├── responses_translation.py # Chat-style request -> OpenAI Responses
 │   ├── strategy_lifecycle.py
 │   └── error_logging.py
 └── testing/
+    ├── fake.py           # FakeStrategy, mock_strategy
     ├── mocks.py          # MockAgent
     └── strategies.py     # test-strategy helpers
 ```
@@ -534,7 +607,15 @@ src/async_batch_llm/
 - `docs/OPENROUTER_INTEGRATION.md` — OpenRouter deep dive, including the
   per-upstream caching matrix and the Anthropic `cache_control` opt-in
   pattern.
-- `docs/api/entrypoints.md` — API reference.
+- `docs/api/` — API reference (entrypoints, core, errors, artifacts,
+  single-gateway, strategies, observers).
+- `docs/stability.md` — the 1.0 compatibility promise: stable, provisional, and
+  deprecated names. `tests/test_stability_page.py` requires every `__all__` name.
+- `docs/migration/v0.27.md` — current migration guide (older ones alongside).
+- `docs/choosing-your-limits.md`, `docs/production-checklist.md`,
+  `docs/guardrails.md`, `docs/results-and-artifacts.md`, `docs/large-runs.md` —
+  operational guides.
+- `SECURITY.md` — vulnerability reporting.
 - `docs/MIGRATION_V0_10.md` — historical migration guide
   (v0.8.x → v0.10.0; covers OpenAI/OpenRouter additions and the metadata
   3-tuple contract change).
@@ -550,6 +631,11 @@ src/async_batch_llm/
 `examples/` directory — every pattern has a runnable script:
 
 - `example.py` — full-featured walkthrough.
+- `example_callable_application.py` — credential-free: existing async client,
+  bounded streaming, and replay.
+- `example_production_resume.py` — checkpoints, deadlines, and fail-fast.
+- `example_single_call.py`, `example_gateway.py` — `call()` and `LLMCallPool`.
+- `example_gemini_grounding.py` — Gemini search grounding and typed views.
 - `example_gemini_direct.py` — built-in Gemini.
 - `example_gemini_smart_retry.py` — smart retry with field-specific
   feedback.
@@ -626,7 +712,8 @@ assert result.total_items == result.succeeded + result.failed
    coordination. See Future Enhancements #1.
 2. **No true batch API.** Parallel individual calls, not batched API
    requests. See #2.
-3. **In-memory queue.** Lost on crash. See #4.
+3. **In-memory queue.** Queued work is lost on crash; results already
+   checkpointed to a JSONL/SQLite artifact store replay on resume. See #4.
 4. **Provider classifiers are partial.** Gemini, OpenAI, OpenRouter are
    covered; DeepSeek reuses `OpenAIErrorClassifier` (it's OpenAI-compatible);
    Anthropic native and HuggingFace pending. See #3.
@@ -643,19 +730,21 @@ assert result.total_items == result.succeeded + result.failed
 5. **Prometheus metrics** — built-in metrics export (we have
    `MetricsObserver`; this is about a Prometheus-format exporter on top).
 6. **Dynamic worker scaling** — adjust workers based on load.
-7. **Drop the strategy 2-tuple compat shim.** v0.10.0 added a 3-tuple
-   `execute()` return shape `(output, tokens, metadata)` with a shim that
-   still accepts legacy 2-tuple. Schedule the shim removal for a future
-   minor or major release; once removed, also drop the
-   `gemini_safety_ratings` field on `WorkItemResult` (its content lives in
-   `metadata['safety_ratings']` now).
+7. **1.0 removals.** Everything v0.27 deprecates is removed in 1.0: the 2-tuple
+   `execute()` shim, omitted `cached_token_rate`, `LLMGateway`,
+   `BatchProcessor`/`ProcessingStats`/`grounding_metadata_extractor` as public
+   names, `gemini_safety_ratings`, `timeout_per_item`, the legacy positional
+   processor parameters, callable `cache_hit_rate()`, and integer prompts. 1.0
+   also drops Python 3.10 (`requires-python`, mypy `python_version`, CI matrix).
+   See `docs/stability.md` and `docs/internal/release-1.0-plan.md`.
 
 ---
 
 ## Where session-spanning context lives
 
-- **Plan-mode artifacts** — `~/.claude/plans/*.md`. Persist across
-  sessions; read these to pick up an in-progress design.
+- **`docs/internal/`** (gitignored, local to the main checkout) — plans such as
+  `release-1.0-plan.md`, design docs, handoffs, and Codex review notes
+  (`*-codex-review.md`). Read these to pick up an in-progress design.
 - **GitHub issues** — `gh issue list -R geoff-davis/async-batch-llm`.
   Cross-referenced from "Future Enhancements" above.
 - **`CHANGELOG.md`** — release-shipped changes.
@@ -667,6 +756,16 @@ assert result.total_items == result.succeeded + result.failed
 ## Version history
 
 Most recent first. See `CHANGELOG.md` for full per-release detail.
+
+- **v0.27.0** — last release before 1.0 and last for Python 3.10. `OpenAIModel`
+  uses the Responses API by default; built-in models no longer send a default
+  temperature; classification trusts exception types and status codes first
+  (#177); SDK floors raised and tested by a ten-leg CI matrix (#179/#180). Adds
+  token/cost budgets, `ErrorCategory`/`TimeoutCategory`, the `AsyncBatchLLMError`
+  base, `llm("openai-compatible:…")`, macOS CI, and the `docs/stability.md` draft.
+  Configuration failures no longer replay (#178); failed admissions keep their
+  wait timing (#181); Gemini metadata uses plain enum names. Deprecates the names
+  1.0 removes (see Future enhancements #7). Read `docs/migration/v0.27.md`.
 
 - **v0.26.0** — shared strategy/model leases, artifact serialization isolation,
   provider and quota corrections, explicit processor lifecycle/events, and bounded
