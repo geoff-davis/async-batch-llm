@@ -64,6 +64,8 @@ generation, version bumping, and creating the release PR.
 ### 4. Bump version
 
 - Update `version` in `pyproject.toml` to the new version.
+- Update `test_release_version_and_tag_workflow_agree` in `tests/test_release_docs.py`: it pins the version and the
+  first release heading (`## [<version>] - <YYYY-MM-DD>`).
 - Run `uv lock` — the lockfile records the project's own version, so it must
   be regenerated with the bump (otherwise `uv lock --check` / `--frozen`
   consumers, e.g. the CI security job's `uv export --frozen`, fail).
@@ -84,7 +86,7 @@ generation, version bumping, and creating the release PR.
 ### 7. Create release branch and PR
 
 - Create branch `release/v<version>` from `origin/main`.
-- Stage `CHANGELOG.md`, `pyproject.toml`, `uv.lock`, `CLAUDE.md`, and `docs/roadmap.md`.
+- Stage `CHANGELOG.md`, `pyproject.toml`, `uv.lock`, `tests/test_release_docs.py`, `CLAUDE.md`, and `docs/roadmap.md`.
 - Commit with message: `Prepare release v<version>`
 - Push the branch.
 - Create a PR with title `Prepare release v<version>` and body summarizing the changelog entries.

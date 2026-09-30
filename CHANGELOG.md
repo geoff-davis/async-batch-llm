@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-09-29
+
 See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.
 
 v0.27 is the last release before 1.0 and the last to support Python 3.10; 1.0
@@ -158,6 +160,14 @@ These emit a warning in v0.27 and will be removed in 1.0.
   matched. They are now `"STOP"` and `{"HARM_CATEGORY_HATE_SPEECH": "LOW"}`.
   `gemini_safety_ratings` changes the same way. Replayed artifacts keep the values they
   were written with.
+
+### Security
+
+- Update development-only dependencies; neither ships in the package.
+  `markdown-it` (via `markdownlint-cli2`) is now 14.3.2, fixing
+  [GHSA-253c-mchw-3w2r](https://github.com/advisories/GHSA-253c-mchw-3w2r). `PyJWT` in
+  `uv.lock` (via pydantic-ai's MCP client) is now 2.15.1, fixing
+  [GHSA-w6j9-cwv2-h6wq](https://github.com/advisories/GHSA-w6j9-cwv2-h6wq).
 
 [#177]: https://github.com/geoff-davis/async-batch-llm/issues/177
 [#178]: https://github.com/geoff-davis/async-batch-llm/issues/178
