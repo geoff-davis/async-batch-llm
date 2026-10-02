@@ -341,6 +341,19 @@ git checkout main && git merge --ff-only origin/main
 git checkout -b my-feature            # branch from the updated main
 ```
 
+Then check for anything waiting on Geoff, and report it **before** starting the
+session's task (an outside feature request once sat unanswered for 25 days):
+
+```bash
+python3 scripts/needs_response.py     # open issues/PRs whose latest human activity isn't a maintainer's
+gh api repos/geoff-davis/async-batch-llm/dependabot/alerts \
+  --jq '.[] | select(.state=="open") | [.number, .security_advisory.severity, .dependency.package.name, .security_advisory.summary] | @tsv'
+```
+
+The `Needs response` workflow (`.github/workflows/needs-response.yml`) runs the same
+script weekly and keeps a `needs-response-digest` issue open, mentioning Geoff, while
+anything is unanswered.
+
 The `check-branch-fresh` pre-push hook (`scripts/check_branch_fresh.sh`)
 covers what the routine can't: main moving mid-session, between when you
 branched and when you push. It fetches `origin/main` (failing open when
@@ -510,8 +523,8 @@ Key test files:
   `test_token_tracking_on_failure.py` — token accounting.
 - `test_cache_expiration_multiworker.py`, `test_cache_tag_matching.py`
   — Gemini cache lifecycle.
-- `test_legacy_fixtures.py` — artifacts written by v0.18, v0.21, v0.24.1, and
-  v0.26 still read and replay (fixtures in `tests/fixtures/`; add one per
+- `test_legacy_fixtures.py` — artifacts written by v0.18, v0.21, v0.24.1, v0.26,
+  v0.27, and v0.28 still read and replay (fixtures in `tests/fixtures/`; add one per
   release via `scripts/write_legacy_fixtures.py`, see `/release-prep`).
 - `test_deprecations.py`, `test_stability_page.py`, `test_categories.py` —
   deprecation warnings, every `__all__` name classified on `docs/stability.md`,
