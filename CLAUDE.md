@@ -43,8 +43,8 @@ auto-selected from the strategy:
 ```python
 from async_batch_llm import llm, process_prompts, process_stream
 
-strategy = llm("openai:gpt-4o-mini")  # factory (v0.20); explicit form:
-# strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
+strategy = llm("openai:gpt-6-luna")  # factory (v0.20); explicit form:
+# strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-6-luna"))
 
 result = await process_prompts(strategy, ["Summarize A", "Summarize B"])  # -> BatchResult
 async for r in process_stream(strategy, prompts):  # yields WorkItemResult in completion order
@@ -62,7 +62,7 @@ from async_batch_llm import (
     ProcessorConfig,
 )
 
-model = OpenAIModel.from_api_key("gpt-4o-mini")  # reads OPENAI_API_KEY
+model = OpenAIModel.from_api_key("gpt-6-luna")  # reads OPENAI_API_KEY
 strategy = OpenAIStrategy(model)
 config = ProcessorConfig(max_workers=5, attempt_timeout=60.0)
 
@@ -229,9 +229,9 @@ truncation of the discount.
 ```python
 from pydantic_ai.models.google import GoogleModel
 
-# A bare "gemini-2.5-flash" string fails on pydantic-ai 2.x; GoogleModel works on
+# A bare "gemini-3.5-flash" string fails on pydantic-ai 2.x; GoogleModel works on
 # both 1.x (>=1.32) and 2.x. Construction needs GOOGLE_API_KEY.
-agent = Agent(GoogleModel("gemini-2.5-flash"), output_type=Output)
+agent = Agent(GoogleModel("gemini-3.5-flash"), output_type=Output)
 strategy = PydanticAIStrategy(agent=agent)
 work_item = LLMWorkItem(item_id="1", strategy=strategy, prompt="...")
 ```
@@ -240,7 +240,7 @@ work_item = LLMWorkItem(item_id="1", strategy=strategy, prompt="...")
 
 ```python
 # OPENAI_API_KEY auto-resolved by SDK
-model = OpenAIModel.from_api_key("gpt-4o-mini")
+model = OpenAIModel.from_api_key("gpt-6-luna")
 strategy = OpenAIStrategy(model)
 
 # OpenRouter — we read OPENROUTER_API_KEY ourselves (the SDK doesn't know

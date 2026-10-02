@@ -106,7 +106,7 @@ from .core import (
 # Protocols
 from .core.protocols import LLMModel, ManagedLLMModel
 
-# String-based strategy factory: llm("openai:gpt-4o-mini")
+# String-based strategy factory: llm("openai:gpt-6-luna")
 from .factory import llm
 
 # Message for the deprecated LLMGateway alias (old module path, removed in 1.0)

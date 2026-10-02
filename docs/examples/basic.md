@@ -14,7 +14,7 @@ from async_batch_llm import llm, process_prompts
 
 async def main():
     prompts = ["What is Python?", "What is async/await?", "What is asyncio?"]
-    batch = await process_prompts(llm("openai:gpt-4o-mini"), prompts, concurrency=5)
+    batch = await process_prompts(llm("openai:gpt-6-luna"), prompts, concurrency=5)
 
     for result in batch.results:  # completion order
         if result.success:
@@ -42,7 +42,7 @@ class FileContext:
 async def process_with_context():
     files = [("file1.py", "content1"), ("file2.py", "content2")]
     batch = await process_prompts(
-        llm("openai:gpt-4o-mini"),
+        llm("openai:gpt-6-luna"),
         [
             (path, f"Summarize: {content}", FileContext(path, content))
             for path, content in files
@@ -75,7 +75,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 
 async def main():
-    agent = Agent(GoogleModel("gemini-2.5-flash"), output_type=str)
+    agent = Agent(GoogleModel("gemini-3.5-flash"), output_type=str)
     strategy = PydanticAIStrategy(agent=agent)
 
     config = ProcessorConfig(concurrency=5)
@@ -120,7 +120,7 @@ class CodeReview(BaseModel):
     rating: int
 
 async def review_code():
-    agent = Agent(GoogleModel("gemini-2.5-flash"), output_type=CodeReview)
+    agent = Agent(GoogleModel("gemini-3.5-flash"), output_type=CodeReview)
     strategy = PydanticAIStrategy(agent=agent)
 
     config = ProcessorConfig(concurrency=3)
@@ -159,7 +159,7 @@ async def save_result(result):
         print(f"Saved {result.item_id}")
 
 async def process_with_post_processor():
-    agent = Agent(GoogleModel("gemini-2.5-flash"), output_type=str)
+    agent = Agent(GoogleModel("gemini-3.5-flash"), output_type=str)
     strategy = PydanticAIStrategy(agent=agent)
 
     config = ProcessorConfig(concurrency=5)
@@ -182,7 +182,7 @@ from async_batch_llm.observers import MetricsObserver
 async def process_with_metrics():
     metrics = MetricsObserver()
 
-    agent = Agent(GoogleModel("gemini-2.5-flash"), output_type=str)
+    agent = Agent(GoogleModel("gemini-3.5-flash"), output_type=str)
     strategy = PydanticAIStrategy(agent=agent)
 
     config = ProcessorConfig(concurrency=5)

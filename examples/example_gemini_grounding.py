@@ -76,7 +76,7 @@ async def main():
 
     # Request the google_search tool on every call. Grounding metadata is
     # extracted into metadata['grounding'] automatically — nothing else to wire.
-    model = GeminiModel("gemini-2.5-flash", client)
+    model = GeminiModel("gemini-3.5-flash", client)
     strategy = GeminiStrategy(
         model,
         generation_config={"tools": [types.Tool(google_search=types.GoogleSearch())]},

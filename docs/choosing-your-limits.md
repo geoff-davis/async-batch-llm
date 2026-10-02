@@ -281,7 +281,7 @@ config = ProcessorConfig(
 )
 
 batch = await process_prompts(
-    llm("openai:gpt-4o-mini"),
+    llm("openai:gpt-6-luna"),
     prompts,
     config=config,
     progress=True,

@@ -60,7 +60,7 @@ async def example_cross_provider_batch() -> None:
         title="async-batch-llm example",
     )
     openai_model = OpenRouterModel.from_api_key(
-        "openai/gpt-4o-mini",
+        "openai/gpt-6-luna",
         api_key=api_key,
         title="async-batch-llm example",
     )

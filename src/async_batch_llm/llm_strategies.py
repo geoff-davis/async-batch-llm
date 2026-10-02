@@ -537,11 +537,11 @@ class GeminiStrategy(ModelStrategy[TOutput]):
     v0.6.0: Accepts LLMModel instead of raw client + model string.
 
     Example:
-        >>> model = GeminiModel("gemini-2.5-flash", client)
+        >>> model = GeminiModel("gemini-3.5-flash", client)
         >>> strategy = GeminiStrategy(model, response_parser=lambda r: r.text)
         >>>
         >>> # With caching:
-        >>> cached_model = GeminiCachedModel("gemini-2.5-flash", client, cached_content=[...])
+        >>> cached_model = GeminiCachedModel("gemini-3.5-flash", client, cached_content=[...])
         >>> strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
     """
 
@@ -562,7 +562,7 @@ class OpenAIStrategy(ModelStrategy[TOutput]):
     Added in v0.9.0.
 
     Example:
-        >>> model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-...")
+        >>> model = OpenAIModel.from_api_key("gpt-6-luna", api_key="sk-...")
         >>> strategy = OpenAIStrategy(model)
         >>>
         >>> # Structured output via response_parser:
@@ -616,7 +616,7 @@ class DeepSeekStrategy(ModelStrategy[TOutput]):
     Added in v0.10.0.
 
     Example:
-        >>> model = DeepSeekModel.from_api_key("deepseek-chat", api_key="sk-...")
+        >>> model = DeepSeekModel.from_api_key("deepseek-v4-flash", api_key="sk-...")
         >>> strategy = DeepSeekStrategy(model)
     """
 

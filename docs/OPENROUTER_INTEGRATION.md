@@ -69,12 +69,12 @@ asyncio.run(main())
 
 OpenRouter model ids are prefixed with the upstream provider:
 
-- `anthropic/claude-sonnet-4-5`, `anthropic/claude-haiku-4-5`
-- `openai/gpt-4o`, `openai/gpt-4o-mini`, `openai/o1`
-- `google/gemini-2.5-flash`, `google/gemini-2.5-pro`
-- `deepseek/deepseek-chat-v3.1`, `deepseek/deepseek-reasoner`
-- `meta-llama/llama-3.3-70b-instruct`
-- `mistralai/mistral-large-latest`
+- `anthropic/claude-sonnet-5.5`, `anthropic/claude-haiku-4-5`
+- `openai/gpt-6-luna`, `openai/gpt-6-sol`, `openai/gpt-6-luna-pro`
+- `google/gemini-3.5-flash-lite`, `google/gemini-3.5-flash`
+- `deepseek/deepseek-v4-flash`, `deepseek/deepseek-v4-pro`
+- `meta-llama/llama-4-maverick`
+- `mistralai/mistral-large`
 
 See [openrouter.ai/models](https://openrouter.ai/models) for the full
 catalog.
@@ -86,7 +86,7 @@ OpenRouter lets you constrain which upstream host serves a request via the
 
 ```python
 model = OpenRouterModel.from_api_key(
-    "deepseek/deepseek-chat-v3.1",
+    "deepseek/deepseek-v4-flash",
     api_key="sk-or-...",
     extra_body={
         "provider": {
@@ -290,7 +290,7 @@ anthropic = OpenRouterModel.from_api_key(
     "anthropic/claude-haiku-4-5", api_key=KEY,
 )
 openai = OpenRouterModel.from_api_key(
-    "openai/gpt-4o-mini", api_key=KEY,
+    "openai/gpt-6-luna", api_key=KEY,
 )
 
 async with ParallelBatchProcessor(...) as processor:

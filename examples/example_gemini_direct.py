@@ -112,7 +112,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
 
         # Make the API call
         response = await self.client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash",
             contents=prompt,
             config=config,
         )
@@ -121,7 +121,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
         output = SummaryOutput.model_validate_json(response.text)
 
         # Extract token usage the way the built-in GeminiModel counts it:
-        # thinking tokens are billed as output (gemini-2.5-flash thinks by default).
+        # thinking tokens are billed as output (gemini-3.5-flash thinks by default).
         usage_metadata = response.usage_metadata
         token_usage = {
             "input_tokens": usage_metadata.prompt_token_count or 0,
@@ -177,7 +177,7 @@ async def main():
     # to thread Gemini's per-call config — here, server-enforced JSON via
     # `response_schema` / `response_mime_type` — so no prompt-side JSON coaxing or
     # custom strategy is needed.
-    model = GeminiModel("gemini-2.5-flash", client)
+    model = GeminiModel("gemini-3.5-flash", client)
     strategy = GeminiStrategy(
         model,
         response_parser=parse_response,
