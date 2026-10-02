@@ -24,8 +24,8 @@ API may be cheaper.
 [Examples](https://github.com/geoff-davis/async-batch-llm/tree/main/examples) ·
 [Changelog](https://github.com/geoff-davis/async-batch-llm/blob/main/CHANGELOG.md)
 
-> **v0.27 is the last release before 1.0.** Upgrading? Read the
-> [v0.27 migration guide](https://geoff-davis.github.io/async-batch-llm/migration/v0.27/)
+> **v0.28 is the last release before 1.0.** Upgrading? Read the
+> [v0.28 migration guide](https://geoff-davis.github.io/async-batch-llm/migration/v0.28/)
 > and see [Upgrading](#upgrading) below.
 
 ## Quick start
@@ -413,9 +413,14 @@ grounding, and the benchmark.
 
 ## Upgrading
 
+From v0.27, read the
+[v0.28 migration guide](https://geoff-davis.github.io/async-batch-llm/migration/v0.28/):
+v0.28 only adds deprecation warnings, for positional arguments to the configuration
+classes and the no-op `enable_detailed_logging`.
+
 From v0.26, read the
-[v0.27 migration guide](https://geoff-davis.github.io/async-batch-llm/migration/v0.27/).
-In short: `OpenAIModel` now uses the Responses API, built-in models no longer
+[v0.27 migration guide](https://geoff-davis.github.io/async-batch-llm/migration/v0.27/)
+first. In short: `OpenAIModel` now uses the Responses API, built-in models no longer
 send a default temperature, application errors are no longer mistaken for rate
 limits, and several names are deprecated ahead of 1.0. Run your tests with
 `-W error::DeprecationWarning` to find them (on Python 3.14 with google-genai
@@ -423,9 +428,9 @@ installed, also pass `-W "ignore::DeprecationWarning:google.genai.types"`). The
 [API stability page](https://geoff-davis.github.io/async-batch-llm/stability/)
 lists what 1.0 keeps stable.
 
-v0.27 is the last release that supports Python 3.10; 1.0 requires Python 3.11
+v0.28 is the last release that supports Python 3.10; 1.0 requires Python 3.11
 or newer. Guides for earlier versions are in the
-[migration section](https://geoff-davis.github.io/async-batch-llm/migration/v0.27/)
+[migration section](https://geoff-davis.github.io/async-batch-llm/migration/v0.28/)
 of the documentation.
 
 ## Contributing

@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-02
+
+The last release before 1.0, and the last to support Python 3.10. It only adds
+deprecation warnings ahead of 1.0, plus a module and docs-page rename; nothing that
+works in v0.27 stops working. See the [v0.28 migration guide](docs/migration/v0.28.md).
+
 ### Deprecated
 
-These warn now and are removed in 1.0; see the
-[v0.28 migration guide](docs/migration/v0.28.md).
+These warn now and are removed in 1.0 ([#209]).
 
 - Positional arguments to the five configuration classes: `ProcessorConfig`,
   `RetryConfig`, `RateLimitConfig`, `StartupRampConfig` and `GuardrailConfig`. Pass
@@ -23,10 +28,9 @@ These warn now and are removed in 1.0; see the
 
 - `LLMCallPool` moved from `async_batch_llm.gateway` to `async_batch_llm.call_pool`.
   The old module path still works through 1.x (and still provides the deprecated
-  `LLMGateway` alias until 1.0); import `LLMCallPool` from `async_batch_llm`.
+  `LLMGateway` alias until 1.0); import `LLMCallPool` from `async_batch_llm` ([#209]).
 - The "Single Call & Shared Call Pool" API page moved from `api/single-gateway/` to
-  `api/single-call-pool/`; the old URL redirects.
-
+  `api/single-call-pool/`; the old URL redirects ([#209]).
 - `FakeStrategy` validates `latency` and `failure_rate` like numeric config fields: a
   boolean or non-number now raises `ValueError` ("must be a finite number") instead
   of being accepted (`True`) or raising `TypeError` ([#199]).
@@ -54,10 +58,20 @@ These warn now and are removed in 1.0; see the
 ### Fixed
 
 - The `ProcessorConfig(timeout_per_item=...)` deprecation warning now points at the
-  caller's line, not at the library's keyword-checking wrapper.
+  caller's line, not at the library's keyword-checking wrapper ([#209]).
+
+### Security
+
+- `uv.lock` moves urllib3 from 2.7.0 to 2.8.0 for three advisories: unbounded
+  chunk-size line buffering, ignored HTTPS-proxy TLS configuration, and an infinite
+  loop in chunked deflate streaming. urllib3 reaches this package only through
+  google-genai's `requests` dependency (`[gemini]`, `[pydantic-ai]`), and the lock
+  covers development and CI only; check the urllib3 version in your own
+  environment.
 
 [#156]: https://github.com/geoff-davis/async-batch-llm/issues/156
 [#199]: https://github.com/geoff-davis/async-batch-llm/issues/199
+[#209]: https://github.com/geoff-davis/async-batch-llm/pull/209
 
 ## [0.27.0] - 2026-09-29
 
@@ -2607,7 +2621,8 @@ See **[Migration Guide](docs/archive/MIGRATION_V0_1.md)** for complete upgrade i
 [#122]: https://github.com/geoff-davis/async-batch-llm/issues/122
 [#125]: https://github.com/geoff-davis/async-batch-llm/issues/125
 
-[Unreleased]: https://github.com/geoff-davis/async-batch-llm/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/geoff-davis/async-batch-llm/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.24.1...v0.25.0
