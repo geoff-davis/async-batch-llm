@@ -17,7 +17,7 @@
 | src/async\_batch\_llm/\_internal/event\_dispatcher.py        |       90 |        4 |       30 |        1 |     95.83% |82-83, 122-\>124, 147, 163 |
 | src/async\_batch\_llm/\_internal/execution\_state.py         |       59 |        1 |        6 |        1 |     96.92% |       125 |
 | src/async\_batch\_llm/\_internal/executor\_host.py           |       64 |        0 |        4 |        0 |    100.00% |           |
-| src/async\_batch\_llm/\_internal/guardrails.py               |      145 |        4 |       50 |        6 |     94.87% |79, 89, 121, 160-\>exit, 178, 192-\>194 |
+| src/async\_batch\_llm/\_internal/guardrails.py               |      145 |        3 |       50 |        5 |     95.90% |89, 121, 160-\>exit, 178, 192-\>194 |
 | src/async\_batch\_llm/\_internal/input\_validation.py        |       43 |        1 |       12 |        1 |     96.36% |        34 |
 | src/async\_batch\_llm/\_internal/item\_executor.py           |      768 |       23 |      234 |       33 |     94.41% |202, 244-\>exit, 246-\>exit, 250-\>exit, 259-\>exit, 267-\>exit, 301-\>exit, 318, 334, 410, 470, 530-\>exit, 539-\>541, 542-\>544, 558-561, 650, 676-\>684, 723-\>727, 741-\>exit, 785, 787, 941, 1016, 1091-1098, 1138, 1356-1357, 1360-\>1365, 1378, 1467-\>exit, 1529, 1545-\>1549, 1566-\>1570, 1620-\>1624, 1629-\>1633, 1668-\>1673, 1716-\>1727, 1813-\>1820, 1869, 1871-\>1873 |
 | src/async\_batch\_llm/\_internal/logical\_item.py            |       17 |        0 |        0 |        0 |    100.00% |           |
@@ -59,7 +59,7 @@
 | src/async\_batch\_llm/streaming.py                           |      217 |        2 |       80 |        5 |     97.64% |81-\>exit, 109, 218-\>220, 274-\>277, 370, 376-\>exit |
 | src/async\_batch\_llm/token\_estimation.py                   |       35 |        0 |        4 |        0 |    100.00% |           |
 | src/async\_batch\_llm/token\_extractor.py                    |      128 |        4 |       50 |        5 |     94.94% |85-\>95, 98-\>104, 100-\>104, 143-144, 151, 198-\>200, 214 |
-| **TOTAL**                                                    | **9171** |  **559** | **3024** |  **356** | **92.04%** |           |
+| **TOTAL**                                                    | **9171** |  **558** | **3024** |  **355** | **92.05%** |           |
 
 
 ## Setup coverage badge
