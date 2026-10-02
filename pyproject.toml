@@ -96,7 +96,7 @@ docs = [
     "mkdocs-material>=9.5.0",
     # Old page URLs (api/single-gateway/). 1.2.3 adds a properdocs dependency only
     # to print a "switch to ProperDocs" banner; 1.2.2 redirects the same way.
-    "mkdocs-redirects>=1.2.0,<1.2.3",
+    "mkdocs-redirects>=1.2.0,<1.2.4",
     "mkdocstrings[python]>=0.24.0",
     "pymdown-extensions>=10.0",
     "matplotlib>=3.8",  # generate_benchmark_charts.py (docs/benchmarks.md figures)
