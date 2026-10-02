@@ -16,7 +16,7 @@ No worker pool, queue, or result stream is created.
         print(result.output, result.token_usage)
 
 For many calls that share context (e.g. a ``GeminiCachedModel``), prefer
-:class:`~async_batch_llm.gateway.LLMCallPool` or ``process_prompts`` so the
+:class:`~async_batch_llm.call_pool.LLMCallPool` or ``process_prompts`` so the
 prepared strategy and coordinator are reused across calls.
 """
 

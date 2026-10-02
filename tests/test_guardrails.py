@@ -30,7 +30,7 @@ from async_batch_llm import (
 )
 from async_batch_llm._internal.guardrails import AbortCause
 from async_batch_llm.base import LLMWorkItem, RetryState, TokenUsage, WorkItemResult
-from async_batch_llm.gateway import LLMCallPool
+from async_batch_llm.call_pool import LLMCallPool
 from async_batch_llm.middleware import BaseMiddleware
 from async_batch_llm.observers import BaseObserver, ProcessingEvent
 

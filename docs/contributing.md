@@ -134,7 +134,7 @@ async-batch-llm/
 │   ├── parallel.py         # Main processor
 │   ├── streaming.py        # process_prompts / process_stream
 │   ├── single.py           # call / call_result
-│   ├── gateway.py          # LLMCallPool
+│   ├── call_pool.py        # LLMCallPool
 │   ├── factory.py          # llm("provider:model")
 │   ├── llm_strategies.py   # LLMCallStrategy + built-in strategies
 │   ├── callable_strategy.py # CallableStrategy for existing async clients

@@ -5,7 +5,7 @@ Every exception type the library exports subclasses
 (`TimeoutError`, `RuntimeError` or `ValueError`), so existing `except` clauses
 still match. `BatchBudgetExceeded` is documented with the budget settings on the
 [core page](core.md#batchbudgetexceeded), `LLMCallError` with
-[single calls](single-gateway.md#llmcallerror), and the artifact errors on the
+[single calls](single-call-pool.md#llmcallerror), and the artifact errors on the
 [artifacts page](artifacts.md#artifact-errors).
 
 For which category each built-in classifier assigns, see

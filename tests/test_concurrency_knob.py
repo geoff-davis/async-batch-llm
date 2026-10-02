@@ -55,7 +55,9 @@ class TestConfigDerivation:
         assert clone.max_provider_concurrency == 12
 
     def test_positional_first_arg_is_still_max_workers(self):
-        config = ProcessorConfig(7)
+        # Positional arguments are deprecated in 0.28 (keyword-only in 1.0).
+        with pytest.warns(DeprecationWarning, match="positional arguments"):
+            config = ProcessorConfig(7)
         assert config.max_workers == 7
 
 

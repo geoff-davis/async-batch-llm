@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 import sys
 import warnings
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from .._internal.input_validation import suggest_keyword_errors
+from .._internal.input_validation import deprecate_positional_arguments, suggest_keyword_errors
 
 if TYPE_CHECKING:
     from ..budget import AttemptUsage
@@ -330,7 +332,8 @@ class ProcessorConfig:
     progress_interval: int = 10  # Log every N items
     progress_callback_timeout: float | None = 5.0  # Timeout for progress callback (seconds)
 
-    # Observability
+    # Deprecated since 0.28 and removed in 1.0: never read by the library.
+    # Passing True warns (the value is kept).
     enable_detailed_logging: bool = False
 
     # Queue management.
@@ -420,11 +423,20 @@ class ProcessorConfig:
                 "attempt_timeout=... (same per-attempt semantics). "
                 "timeout_per_item will be removed in 1.0.",
                 DeprecationWarning,
-                stacklevel=3,
+                # caller -> keyword-checking wrapper -> __init__ -> __post_init__
+                stacklevel=4,
             )
             self.attempt_timeout = alias_value
         if self.attempt_timeout is None:
             self.attempt_timeout = 120.0
+        if self.enable_detailed_logging and not _COPYING_USER_CONFIG.get():
+            warnings.warn(
+                "ProcessorConfig(enable_detailed_logging=True) has no effect and is "
+                "deprecated; it will be removed in 1.0. Set the level of the "
+                "'async_batch_llm' logger instead.",
+                DeprecationWarning,
+                stacklevel=4,
+            )
         # Normalize the alias slot so dataclasses.replace() re-passes None and
         # the resolved value travels via attempt_timeout alone.
         self.__dict__["timeout_per_item"] = None
@@ -578,6 +590,21 @@ class ProcessorConfig:
         # gate will pace workers as configured (issue #147).
 
 
+# Set while the library copies a user's config, so the copy doesn't repeat a
+# deprecation warning the user already got when building it. A ContextVar, not
+# a warnings filter: filters are process-global and not task-safe.
+_COPYING_USER_CONFIG: ContextVar[bool] = ContextVar("_COPYING_USER_CONFIG", default=False)
+
+
+def replace_user_config(config: ProcessorConfig, **changes: Any) -> ProcessorConfig:
+    """``dataclasses.replace`` for a caller's config, without repeat warnings."""
+    token = _COPYING_USER_CONFIG.set(True)
+    try:
+        return dataclasses.replace(config, **changes)
+    finally:
+        _COPYING_USER_CONFIG.reset(token)
+
+
 def _get_timeout_per_item(self: ProcessorConfig) -> float | None:
     # dataclasses.replace() reads every init field via getattr; give it the
     # normalized raw slot (None after __post_init__) so replacing a config
@@ -621,4 +648,28 @@ ProcessorConfig.timeout_per_item = property(  # type: ignore[assignment,method-a
 )
 
 
-ProcessorConfig.__init__ = suggest_keyword_errors(ProcessorConfig.__init__)  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+def _positional_deprecation(cls: type, first_field: str) -> str:
+    name = cls.__name__
+    return (
+        f"Passing positional arguments to {name}() is deprecated; from 1.0 its fields "
+        f"are keyword-only. Pass each field by name, for example {name}({first_field}=...)."
+    )
+
+
+# Keyword-only from 1.0 (design decision D3): warn on positional arguments now.
+ProcessorConfig.__init__ = suggest_keyword_errors(  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+    ProcessorConfig.__init__,
+    positional_deprecation=_positional_deprecation(ProcessorConfig, "max_workers"),
+)
+RetryConfig.__init__ = deprecate_positional_arguments(  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+    RetryConfig.__init__, _positional_deprecation(RetryConfig, "max_attempts")
+)
+RateLimitConfig.__init__ = deprecate_positional_arguments(  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+    RateLimitConfig.__init__, _positional_deprecation(RateLimitConfig, "cooldown_seconds")
+)
+StartupRampConfig.__init__ = deprecate_positional_arguments(  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+    StartupRampConfig.__init__, _positional_deprecation(StartupRampConfig, "initial_concurrency")
+)
+GuardrailConfig.__init__ = deprecate_positional_arguments(  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+    GuardrailConfig.__init__, _positional_deprecation(GuardrailConfig, "total_timeout_per_item")
+)
