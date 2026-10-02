@@ -124,8 +124,8 @@ def infer_artifact_identity(strategy: Any) -> ArtifactIdentity:
         if explicit_hook is None:
             raise ArtifactIdentityError(
                 f"{type(strategy).__name__} cannot safely infer artifact identity. "
-                "Pass identity=ArtifactIdentity(...) to CallableStrategy or "
-                "JsonlArtifactStore."
+                "Pass identity=ArtifactIdentity(...) to CallableStrategy, "
+                "JsonlArtifactStore, or SqliteArtifactStore."
             )
         if not isinstance(explicit_hook, ArtifactIdentity):
             raise ArtifactIdentityError(

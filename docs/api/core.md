@@ -26,6 +26,14 @@
 
 ::: async_batch_llm.ProcessorConfig
 
+## RetryConfig
+
+::: async_batch_llm.core.RetryConfig
+
+## RateLimitConfig
+
+::: async_batch_llm.core.RateLimitConfig
+
 ## GuardrailConfig
 
 ::: async_batch_llm.GuardrailConfig

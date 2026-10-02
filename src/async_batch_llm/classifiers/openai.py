@@ -38,8 +38,8 @@ INSUFFICIENT_BALANCE_PATTERNS = ("402", "insufficient balance", "insufficient_qu
 # Operator-facing hint attached to 402 errors so an exhausted balance doesn't
 # read like a generic API/code bug. Auth has already passed at this point.
 _INSUFFICIENT_BALANCE_HINT = (
-    "402 Payment Required — your account balance/credits are exhausted "
-    "(e.g. top up your prepaid DeepSeek balance at "
+    "402 Payment Required — the provider account's balance or credits are "
+    "exhausted. Top up with the provider (for DeepSeek, "
     "https://platform.deepseek.com/). Not retryable."
 )
 

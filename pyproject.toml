@@ -212,6 +212,9 @@ filterwarnings = [
     # Many test strategies still return the deprecated 2-tuple from execute();
     # tests/test_deprecations.py asserts the warning itself.
     "ignore:.*returned a 2-tuple \\(output, tokens\\):DeprecationWarning",
+    # google-genai's own import-time warning on Python 3.14 (not ours); the
+    # migration guide documents the same filter for users.
+    "ignore::DeprecationWarning:google.genai.types",
 ]
 
 [tool.coverage.run]

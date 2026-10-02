@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import random
 from collections.abc import Callable, Mapping, Sequence
 from typing import Generic, TypeVar, cast
@@ -11,6 +10,7 @@ from typing import Generic, TypeVar, cast
 from ..artifacts import ArtifactIdentity
 from ..base import RetryState
 from ..callable_strategy import CallableStrategy, CallOutcome
+from ..core.config import _validate_number
 from ..strategies import DefaultErrorClassifier, ErrorInfo
 
 T = TypeVar("T")
@@ -55,9 +55,11 @@ class FakeStrategy(CallableStrategy[T], Generic[T]):
         token_usage: Mapping[str, int] | None = None,
         identity: ArtifactIdentity | None = None,
     ) -> None:
-        if not math.isfinite(latency) or latency < 0:
+        _validate_number(latency, name="latency")
+        if latency < 0:
             raise ValueError("latency must be finite and non-negative")
-        if not math.isfinite(failure_rate) or not 0 <= failure_rate <= 1:
+        _validate_number(failure_rate, name="failure_rate")
+        if not 0 <= failure_rate <= 1:
             raise ValueError("failure_rate must be between 0 and 1")
         if failure_rate and seed is None:
             raise ValueError("seed is required when failure_rate is nonzero")

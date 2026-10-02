@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `FakeStrategy` validates `latency` and `failure_rate` like numeric config fields: a
+  boolean or non-number now raises `ValueError` ("must be a finite number") instead
+  of being accepted (`True`) or raising `TypeError` ([#199]).
+- The 402 insufficient-balance hint from `OpenAIErrorClassifier` no longer reads as
+  DeepSeek-only; it names DeepSeek's top-up page as one example ([#199]).
+- The artifact-identity error names `SqliteArtifactStore` alongside
+  `CallableStrategy` and `JsonlArtifactStore` ([#199]).
+
 ### Documentation
 
 - New [Logging](docs/logging.md) page: the `async_batch_llm` logger hierarchy, what
@@ -18,8 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bounded Work gains "Prompt sources and encodings": the library takes strings and
   never decodes files, with a lazy non-UTF-8 example and what a decode error does
   mid-run ([#156]). Also fixes a split table on that page.
+- `RetryConfig` and `RateLimitConfig` moved to the core API page next to
+  `ProcessorConfig`; CHANGELOG versions link to their GitHub comparisons; the
+  benchmark example pins `temperature=0.0` for contestants so reruns match the
+  published runs ([#199]).
 
 [#156]: https://github.com/geoff-davis/async-batch-llm/issues/156
+[#199]: https://github.com/geoff-davis/async-batch-llm/issues/199
 
 ## [0.27.0] - 2026-09-29
 
@@ -2568,3 +2583,38 @@ See **[Migration Guide](docs/archive/MIGRATION_V0_1.md)** for complete upgrade i
 [#82]: https://github.com/geoff-davis/async-batch-llm/issues/82
 [#122]: https://github.com/geoff-davis/async-batch-llm/issues/122
 [#125]: https://github.com/geoff-davis/async-batch-llm/issues/125
+
+[Unreleased]: https://github.com/geoff-davis/async-batch-llm/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.26.0...v0.27.0
+[0.26.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.25.0...v0.26.0
+[0.25.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.24.1...v0.25.0
+[0.24.1]: https://github.com/geoff-davis/async-batch-llm/compare/v0.24.0...v0.24.1
+[0.24.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.23.0...v0.24.0
+[0.23.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.22.0...v0.23.0
+[0.22.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.21.0...v0.22.0
+[0.21.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.20.0...v0.21.0
+[0.20.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.18.0...v0.20.0
+[0.18.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.8.0...v0.10.0
+[0.8.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.7.2...v0.8.0
+[0.7.2]: https://github.com/geoff-davis/async-batch-llm/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/geoff-davis/async-batch-llm/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.3.6...v0.4.0
+[0.3.6]: https://github.com/geoff-davis/async-batch-llm/compare/v0.3.5...v0.3.6
+[0.3.5]: https://github.com/geoff-davis/async-batch-llm/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/geoff-davis/async-batch-llm/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/geoff-davis/async-batch-llm/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/geoff-davis/async-batch-llm/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/geoff-davis/async-batch-llm/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/geoff-davis/async-batch-llm/releases/tag/v0.2.0

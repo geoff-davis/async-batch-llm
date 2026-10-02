@@ -74,6 +74,16 @@ async def test_repeated_bug_has_one_diagnostic_and_count_summary(caplog, surface
     )
 
 
+@pytest.mark.parametrize("field", ["latency", "failure_rate"])
+@pytest.mark.parametrize("value", [True, False, "1", None, [1], float("nan")])
+def test_fake_strategy_rejects_non_numbers(field, value):
+    from async_batch_llm.testing import FakeStrategy
+
+    # Same convention as numeric config fields: bool and non-numbers are rejected.
+    with pytest.raises(ValueError, match=f"{field} must be a finite number"):
+        FakeStrategy("ok", **{field: value}, seed=0)
+
+
 @pytest.mark.asyncio
 async def test_fake_strategy_schedule_and_usage():
     from async_batch_llm import ProcessorConfig

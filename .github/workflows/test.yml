@@ -136,6 +136,7 @@ jobs:
       run: make package-check
 
   sdk-compat:
+    name: sdk-compat (${{ matrix.label }})
     # Provider SDKs at their declared floors and at the latest release of every
     # supported major line, so a release newer than uv.lock can't go untested.
     # Floors run on Python 3.12 (openai 1.66.x doesn't support 3.14). Each leg

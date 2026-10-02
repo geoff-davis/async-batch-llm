@@ -147,6 +147,11 @@ GEMINI_MODEL = "gemini-3.5-flash-lite"
 GLM_MODEL = "z-ai/glm-5.3-flash"
 GLM_PROVIDER = "z-ai"
 JUDGE_MODEL = "gpt-5-nano"
+# The published runs used temperature 0.0, the library default before v0.27.
+# v0.27 models send no temperature unless asked, so pin it to keep reruns
+# comparable. The judge is left at the provider default (reasoning models such
+# as gpt-5-nano may reject an explicit temperature).
+CONTESTANT_TEMPERATURE = 0.0
 
 # Gemini and OpenRouter reasoning are set per-call. Each contestant's fast pass
 # minimizes reasoning and its escalation maximizes it.
@@ -452,7 +457,9 @@ class ModelCall:
             pass
 
     async def generate(self, prompt: str) -> Any:
-        return await self.model.generate(prompt, **self.kwargs)
+        return await self.model.generate(
+            prompt, **{"temperature": CONTESTANT_TEMPERATURE, **self.kwargs}
+        )
 
 
 class EscalatingStrategy(LLMCallStrategy[GSM8KAnswer]):

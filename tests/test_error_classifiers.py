@@ -744,6 +744,8 @@ class TestOpenAIErrorClassifier:
         assert info.error_category == "insufficient_balance"
         assert info.hint is not None
         assert "balance" in info.hint.lower()
+        # The hint applies to every OpenAI-compatible provider, not only DeepSeek.
+        assert info.hint.startswith("402 Payment Required — the provider account's balance")
 
     def test_402_string_fallback_not_retryable(self):
         from async_batch_llm.classifiers import OpenAIErrorClassifier
