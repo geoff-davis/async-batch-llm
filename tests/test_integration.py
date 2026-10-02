@@ -46,7 +46,7 @@ needs_deepseek = pytest.mark.skipif(not DEEPSEEK_API_KEY, reason="needs DEEPSEEK
 
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 OPENAI_MODEL = "gpt-6-luna"
-OPENAI_REASONING_MODEL = "gpt-6-luna-pro"
+OPENAI_REASONING_MODEL = "gpt-6-luna"  # reasons by default (medium effort)
 OPENROUTER_MODEL = "openai/gpt-6-luna"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 
