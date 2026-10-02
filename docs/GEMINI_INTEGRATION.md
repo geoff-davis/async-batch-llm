@@ -47,7 +47,7 @@ from google import genai
 
 client = genai.Client()
 response = client.models.generate_content(
-    model="gemini-2.5-flash",
+    model="gemini-3.5-flash",
     contents="Say hello!"
 )
 print(response.text)
@@ -59,7 +59,7 @@ async-batch-llm provides one built-in Gemini strategy (`GeminiStrategy`) plus
 two models — `GeminiModel` (direct) and `GeminiCachedModel` (context caching).
 You pick caching by choosing the model; the strategy is the same either way.
 
-For the simple case, `llm("gemini:gemini-2.5-flash")` builds the client, model,
+For the simple case, `llm("gemini:gemini-3.5-flash")` builds the client, model,
 and strategy in one call. It reads `GOOGLE_API_KEY`, then `GEMINI_API_KEY`.
 
 ### 1. GeminiModel (Simple API Calls)
@@ -95,7 +95,7 @@ def parse_response(response) -> SummaryOutput:
 # `response_schema` / `response_mime_type` — on every call, no custom strategy
 # needed. (For a config that must change per retry attempt, subclass
 # `ModelStrategy.execute()` and read `self.generation_config`.)
-model = GeminiModel("gemini-2.5-flash", client)
+model = GeminiModel("gemini-3.5-flash", client)
 strategy = GeminiStrategy(
     model,
     response_parser=parse_response,
@@ -158,7 +158,7 @@ cached_content = [
 # share this context — constructing a new instance per item defeats caching
 # entirely and can cost ~10x more.
 cached_model = GeminiCachedModel(
-    "gemini-2.5-flash",
+    "gemini-3.5-flash",
     client,
     cached_content=cached_content,
     cache_ttl_seconds=3600,             # Cache for 1 hour
@@ -224,7 +224,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
         )
 
         response = await self.client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash",
             contents=prompt,
             config=config,
         )
@@ -247,9 +247,10 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[SummaryOutput]):
 strategy = ProgressiveTempGeminiStrategy(client=client, temps=[0.0, 0.5, 1.0])
 ```
 
-**Why progressive temperature?** This pattern suits Gemini 2.5 models. For Gemini 3
-models Google recommends keeping the default temperature, which is what built-in
-models do when you don't pass one.
+**Why progressive temperature?** This pattern suited Gemini 2.5 models, which new API
+users can no longer select. For Gemini 3 models Google recommends keeping the default
+temperature, which is what built-in models do when you don't pass one; there, prefer
+retrying with the validation error in the prompt.
 
 - Attempt 1 (temp=0.0): Deterministic, most likely to succeed
 - Attempt 2 (temp=0.5): More creative if first attempt had validation errors
@@ -260,14 +261,13 @@ models do when you don't pass one.
 Pass any Gemini model ID. IDs used in this repo's examples and benchmarks:
 
 ```python
-# Gemini 3.x Flash-Lite: cheapest and fastest
+# Cheapest to most capable
 model = "gemini-3.5-flash-lite"
-model = "gemini-3.1-flash-lite"
+model = "gemini-3.5-flash"
+model = "gemini-3.1-pro-preview"
 
-# Gemini 2.5, cheapest to most capable
-model = "gemini-2.5-flash-lite"
-model = "gemini-2.5-flash"
-model = "gemini-2.5-pro"
+# Used by the recorded benchmark
+model = "gemini-3.1-flash-lite"
 ```
 
 Model availability changes often; check Google's
@@ -331,7 +331,7 @@ reference](api/core.md#typed-auxiliary-output-grounding-reasoning-tool-calls-log
 from async_batch_llm import GeminiModel, GeminiStrategy
 from google.genai import types
 
-model = GeminiModel("gemini-2.5-flash", client)
+model = GeminiModel("gemini-3.5-flash", client)
 strategy = GeminiStrategy(
     model,
     generation_config={"tools": [types.Tool(google_search=types.GoogleSearch())]},
@@ -369,7 +369,7 @@ def reasoning_extractor(response):
     text = "".join(p.text for p in parts if p.thought and p.text)
     return {"reasoning": text} if text else None
 
-model = GeminiModel("gemini-2.5-flash", client, metadata_extractors=[reasoning_extractor])
+model = GeminiModel("gemini-3.5-flash", client, metadata_extractors=[reasoning_extractor])
 strategy = GeminiStrategy(
     model,
     # Gemini returns thought parts only when you ask for them.
@@ -467,7 +467,7 @@ class GeminiVisionStrategy(LLMCallStrategy[str]):
         ]
 
         response = await self.client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash",
             contents=contents,
         )
 
@@ -527,8 +527,9 @@ uv run python examples/example_gemini_direct.py
 ```python
 from async_batch_llm import PydanticAIStrategy
 from pydantic_ai import Agent
+from pydantic_ai.models.google import GoogleModel
 
-agent = Agent('gemini-2.5-flash', output_type=SummaryOutput)
+agent = Agent(GoogleModel("gemini-3.5-flash"), output_type=SummaryOutput)
 strategy = PydanticAIStrategy(agent=agent)
 
 work_item = LLMWorkItem(
@@ -546,7 +547,7 @@ work_item = LLMWorkItem(
 ```python
 from async_batch_llm import GeminiModel, GeminiStrategy
 
-model = GeminiModel("gemini-2.5-flash", client)
+model = GeminiModel("gemini-3.5-flash", client)
 strategy = GeminiStrategy(model, response_parser=parse_response, temperature=0.7)
 
 work_item = LLMWorkItem(
@@ -562,8 +563,8 @@ work_item = LLMWorkItem(
 ## Best Practices
 
 1. **Use structured output**: Set `response_schema` for reliable parsing
-2. **Consider progressive temperature** on Gemini 2.5: start low (0.0) and
-   increase on retries. On Gemini 3, leave temperature at the default.
+2. **Leave temperature at the default** on Gemini 3 models, and retry with the
+   validation error in the prompt rather than raising the temperature.
 3. **Set reasonable timeouts**: 30s for simple, 120s for complex queries
 4. **Handle errors gracefully**: Use `GeminiErrorClassifier` for Gemini errors
 5. **Monitor token usage**: Track costs using `item.token_usage`
@@ -612,7 +613,7 @@ pydantic.ValidationError: response doesn't match schema
 **Fix**:
 
 1. Check your Pydantic model matches expected output
-2. On Gemini 2.5, try a progressive temperature strategy (increases temp on retries)
+2. Retry with the validation error in the prompt (see `examples/example_gemini_smart_retry.py`)
 3. Add examples in your prompt
 
 ### Timeout Errors
@@ -648,9 +649,9 @@ class SmartGeminiStrategy(LLMCallStrategy[PersonData]):
     """Smart model escalation for Gemini API."""
 
     MODELS = [
-        "gemini-2.5-flash-lite",  # Cheapest, fastest
-        "gemini-2.5-flash",       # Production-ready
-        "gemini-2.5-pro",         # Most capable
+        "gemini-3.5-flash-lite",  # Cheapest, fastest
+        "gemini-3.5-flash",       # Production-ready
+        "gemini-3.1-pro-preview",         # Most capable
     ]
 
     def __init__(self, client: genai.Client):
@@ -708,11 +709,11 @@ class SmartGeminiStrategy(LLMCallStrategy[PersonData]):
 
 **Cost Savings:**
 
-- Validation error → Escalate to gemini-2.5-pro (quality issue)
-- Network error → Retry with gemini-2.5-flash-lite (transient issue)
-- Rate limit error → Retry with gemini-2.5-flash-lite (API quota)
+- Validation error → Escalate to gemini-3.1-pro-preview (quality issue)
+- Network error → Retry with gemini-3.5-flash-lite (transient issue)
+- Rate limit error → Retry with gemini-3.5-flash-lite (API quota)
 - Safety block → Retry with same model, adjusted safety settings
-- Result: **60-80% cost reduction** vs. always using gemini-2.5-pro
+- Result: **60-80% cost reduction** vs. always using gemini-3.1-pro-preview
 
 ### Smart Retry Prompts for Gemini
 
@@ -749,7 +750,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
         )
 
         response = await self.client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash",
             contents=final_prompt,
             config=config,
         )

@@ -31,6 +31,7 @@ RELEASES = {
     "v0_24_1": "0.24.1",
     "v0_26": "0.26.0",
     "v0_27": "0.27.0",
+    "v0_28": "0.28.0",
 }
 STORES = [
     (release, name, store)
@@ -55,7 +56,7 @@ class NewStrategy(LLMCallStrategy[str]):
 def test_every_release_has_its_fixtures():
     # SQLite stores exist from v0.21; v0.18 wrote JSONL only.
     counts = {release: [r for r, _, _ in STORES].count(release) for release in RELEASES}
-    assert counts == {"v0_18": 1, "v0_21": 2, "v0_24_1": 2, "v0_26": 2, "v0_27": 2}
+    assert counts == {"v0_18": 1, "v0_21": 2, "v0_24_1": 2, "v0_26": 2, "v0_27": 2, "v0_28": 2}
     for release, version in RELEASES.items():
         assert (FIXTURES / release / "VERSION").read_text().strip() == version
 

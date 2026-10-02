@@ -31,7 +31,7 @@ class AnthropicStrategy(LLMCallStrategy[str]):
     def __init__(
         self,
         client: AsyncAnthropic,
-        model: str = "claude-sonnet-4-6",
+        model: str = "claude-sonnet-5-5",
         max_tokens: int = 1024,
         temperature: float = 1.0,
         system_prompt: str | None = None,
@@ -41,7 +41,7 @@ class AnthropicStrategy(LLMCallStrategy[str]):
 
         Args:
             client: Initialized AsyncAnthropic client
-            model: Model name (e.g., "claude-sonnet-4-6", "claude-haiku-4-5")
+            model: Model name (e.g., "claude-sonnet-5-5", "claude-haiku-4-5")
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0.0-1.0)
             system_prompt: Optional system prompt
@@ -151,7 +151,7 @@ async def example_anthropic_system_prompt():
     # Create the strategy with a system prompt
     strategy = AnthropicStrategy(
         client=client,
-        model="claude-sonnet-4-6",
+        model="claude-sonnet-5-5",
         max_tokens=1000,
         temperature=1.0,
         system_prompt="You are a helpful assistant that provides concise, factual answers. Keep your responses under 3 sentences.",
@@ -208,7 +208,7 @@ async def example_anthropic_mixed_models():
 
     reasoning_strategy = AnthropicStrategy(
         client=client,
-        model="claude-sonnet-4-6",  # Better for complex reasoning
+        model="claude-sonnet-5-5",  # Better for complex reasoning
         max_tokens=1000,
         temperature=1.0,
     )

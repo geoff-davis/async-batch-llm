@@ -63,7 +63,7 @@ def test_primary_onboarding_uses_high_level_api() -> None:
     docs_home = (ROOT / "docs" / "index.md").read_text(encoding="utf-8")
     getting_started = (ROOT / "docs" / "getting-started.md").read_text(encoding="utf-8")
     for content in (readme, docs_home, getting_started):
-        assert 'llm("openai:gpt-4o-mini")' in content
+        assert 'llm("openai:gpt-6-luna")' in content
         assert "process_prompts" in content
         assert "concurrency=" in content
         assert "summary()" in content

@@ -3,7 +3,7 @@
 Learn how to create custom strategies for any LLM provider.
 
 Two shortcuts come first. OpenAI, Gemini, OpenRouter, and DeepSeek have built-in
-strategies (`llm("openai:gpt-4o-mini")`, or `OpenAIStrategy(OpenAIModel(...))`), so you
+strategies (`llm("openai:gpt-6-luna")`, or `OpenAIStrategy(OpenAIModel(...))`), so you
 don't need a custom one for them. To wrap an async client you already have, a single
 function passed to [`CallableStrategy`](../callable-integration.md) is usually enough.
 Subclass `LLMCallStrategy`, as below, when you need lifecycle hooks (`prepare()`,
@@ -119,7 +119,7 @@ for the full pattern.
 from anthropic import AsyncAnthropic
 
 class AnthropicStrategy(LLMCallStrategy[str]):
-    def __init__(self, client: AsyncAnthropic, model: str = "claude-sonnet-4-6"):
+    def __init__(self, client: AsyncAnthropic, model: str = "claude-sonnet-5-5"):
         self.client = client
         self.model = model
 
@@ -147,7 +147,7 @@ from async_batch_llm import ParallelBatchProcessor, LLMWorkItem, ProcessorConfig
 
 async def main():
     # Use your custom strategy
-    strategy = RawChatStrategy(client=openai_client, model="gpt-4o-mini")
+    strategy = RawChatStrategy(client=openai_client, model="gpt-6-luna")
 
     config = ProcessorConfig(concurrency=5)
 

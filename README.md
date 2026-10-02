@@ -43,7 +43,7 @@ from async_batch_llm import llm, process_prompts
 
 async def main():
     batch = await process_prompts(
-        llm("openai:gpt-4o-mini"), ["Summarize A", "Summarize B"],
+        llm("openai:gpt-6-luna"), ["Summarize A", "Summarize B"],
         concurrency=10, progress=True,
     )
     print(batch.summary())
@@ -141,7 +141,7 @@ Keyword arguments forward to the model constructor, for example
   an `LLMCallStrategy` subclass.
 
 For custom clients or cached models, use the explicit two-object form,
-`OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))`. See the
+`OpenAIStrategy(OpenAIModel.from_api_key("gpt-6-luna"))`. See the
 [provider guides](https://geoff-davis.github.io/async-batch-llm/),
 [custom strategy guide](https://geoff-davis.github.io/async-batch-llm/examples/custom-strategies/),
 and [OpenAI-compatible high-throughput guide](https://geoff-davis.github.io/async-batch-llm/openai-high-throughput/).
@@ -240,7 +240,7 @@ from async_batch_llm import (
 
 identity = ArtifactIdentity(
     provider="openai",
-    model="gpt-4o-mini",
+    model="gpt-6-luna",
     prompt_version="invoice-v4",
     parser_version="invoice-schema-v2",
     application_version="billing-pipeline-v7",

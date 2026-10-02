@@ -20,7 +20,7 @@ from async_batch_llm import llm, process_prompts
 
 async def main():
     batch = await process_prompts(
-        llm("openai:gpt-4o-mini"), ["Summarize A", "Summarize B"],
+        llm("openai:gpt-6-luna"), ["Summarize A", "Summarize B"],
         concurrency=10, progress=True,
     )
     print(batch.summary())
