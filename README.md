@@ -404,6 +404,7 @@ grounding, and the benchmark.
 - [Choosing Your Limits](https://geoff-davis.github.io/async-batch-llm/choosing-your-limits/)
 - [Production Checklist](https://geoff-davis.github.io/async-batch-llm/production-checklist/)
 - [Troubleshooting and FAQ](https://geoff-davis.github.io/async-batch-llm/troubleshooting/)
+- [Logging](https://geoff-davis.github.io/async-batch-llm/logging/)
 - [Results, Artifacts, and Resume](https://geoff-davis.github.io/async-batch-llm/results-and-artifacts/)
 - [Deadlines, Budgets and Fail-Fast Guardrails](https://geoff-davis.github.io/async-batch-llm/guardrails/)
 - [Bounded Work and Backpressure](https://geoff-davis.github.io/async-batch-llm/bounded-work/)

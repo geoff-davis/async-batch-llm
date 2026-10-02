@@ -13,7 +13,6 @@ queued items or asyncio tasks. Bound both layers deliberately.
 | `ProcessorConfig.max_queue_size` in streaming mode | Work items waiting for a worker | Producer awaits queue space (backpressure) |
 | `ProcessorConfig.max_result_queue_size` | Completed results waiting for the stream consumer | Provider workers await result capacity |
 | `LLMCallPool.max_pending` | Calls waiting beyond `max_workers` | New calls are rejected immediately |
-
 | `LLMCallPool.submit_timeout` | One caller's total shared-call wall time | The call returns a timeout failure |
 
 `max_queue_size` is the batch equivalent of a bounded pending-work buffer. It
@@ -82,6 +81,38 @@ therefore durable before the corresponding result can be observed, and slow
 artifact I/O does not occupy an output slot. Worker-crash and end-of-stream
 signals use a separate control path and remain deliverable when result capacity
 is exhausted.
+
+## Prompt sources and encodings
+
+`process_prompts()` and `process_stream()` take prompts as strings, from any sync
+or async iterable. The library never opens or decodes input files, so reading a
+file, including choosing its encoding, is your code's job. Decode at the source,
+and keep the source lazy so a large file is never loaded into memory at once:
+
+```python
+from async_batch_llm import ProcessorConfig, process_stream
+
+
+def prompts_from_file(path):
+    # Use the file's real encoding, e.g. "gb18030" for many Chinese corpora.
+    with open(path, encoding="gb18030") as f:
+        for line_number, line in enumerate(f, start=1):
+            if text := line.strip():
+                yield f"line-{line_number}", text
+
+
+config = ProcessorConfig(concurrency=32, max_queue_size=128)
+async for result in process_stream(strategy, prompts_from_file("prompts.txt"), config=config):
+    await save(result)
+```
+
+If the file isn't valid in that encoding, the generator raises
+`UnicodeDecodeError`. Python decodes in chunks, so the error can come a few
+thousand characters before the bad bytes. Prompts yielded before the error are
+still processed and their results arrive; then the error propagates out of the
+`async for`. Pass `errors="replace"` to
+`open()` to substitute bad bytes instead, or detect the encoding up front (for
+example with `charset-normalizer`) when files come from mixed sources.
 
 ## APIs That Collect Work or Results
 
