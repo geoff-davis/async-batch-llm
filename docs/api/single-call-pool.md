@@ -19,7 +19,7 @@ For large bulk jobs, keep using `ParallelBatchProcessor` /
 ```python
 from async_batch_llm import LLMCallPool, OpenAIModel, OpenAIStrategy, ProcessorConfig, call, call_result
 
-strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
+strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-6-luna"))
 
 # One prompt through the full pipeline — no queue, workers, or result stream.
 summary = await call(strategy, "Summarize: ...")        # output, or raises

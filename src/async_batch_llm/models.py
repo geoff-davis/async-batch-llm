@@ -376,7 +376,7 @@ class GeminiModel:
 
     Example:
         >>> client = genai.Client(api_key="...")
-        >>> model = GeminiModel("gemini-2.5-flash", client)
+        >>> model = GeminiModel("gemini-3.5-flash", client)
         >>> response = await model.generate("Hello!")
         >>> print(response.text, response.input_tokens)
 
@@ -549,7 +549,7 @@ class GeminiCachedModel:
 
     Example:
         >>> model = GeminiCachedModel(
-        ...     "gemini-2.5-flash", client,
+        ...     "gemini-3.5-flash", client,
         ...     cached_content=[system_instruction, context_docs],
         ... )
         >>> await model.prepare()  # finds or creates cache
@@ -574,7 +574,7 @@ class GeminiCachedModel:
     ):
         """
         Args:
-            model: Model name (e.g., "gemini-2.5-flash").
+            model: Model name (e.g., "gemini-3.5-flash").
             client: Initialized genai.Client.
             cached_content: Content to cache (system instructions, documents).
             cache_ttl_seconds: Cache TTL in seconds (default: 3600 = 1 hour).
@@ -1095,7 +1095,7 @@ class OpenAICompatibleModel:
     ):
         """
         Args:
-            model: Provider model id (e.g. "gpt-4o-mini" or
+            model: Provider model id (e.g. "gpt-6-luna" or
                 "anthropic/claude-haiku-4-5").
             client: Initialized AsyncOpenAI (point ``base_url`` at the desired
                 endpoint). The model does NOT take ownership of the client —
@@ -1867,7 +1867,7 @@ class OpenAIModel(_ResponsesSurface, OpenAICompatibleModel):
     text it raises :class:`EmptyResponseError`, as does a refusal.
 
     Example:
-        >>> model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-...")
+        >>> model = OpenAIModel.from_api_key("gpt-6-luna", api_key="sk-...")
         >>> response = await model.generate("Hello!")
         >>> print(response.text, response.cached_input_tokens)
 
@@ -2402,7 +2402,7 @@ class DeepSeekModel(_ResponsesSurface, OpenAICompatibleModel):
 
     Points at ``https://api.deepseek.com`` and reads
     ``DEEPSEEK_API_KEY`` in :meth:`from_api_key`. Model ids are bare DeepSeek
-    names, e.g. ``"deepseek-chat"`` or ``"deepseek-reasoner"``.
+    names, e.g. ``"deepseek-v4-flash"`` or ``"deepseek-v4-pro"``.
 
     DeepSeek's automatic context cache reports hits at the **top level** of the
     ``usage`` object (``prompt_cache_hit_tokens`` / ``prompt_cache_miss_tokens``)

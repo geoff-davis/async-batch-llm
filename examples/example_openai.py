@@ -57,7 +57,7 @@ async def example_simple_text() -> None:
     print("\n=== Example 1: Simple text generation ===\n")
 
     model = OpenAIModel.from_api_key(
-        "gpt-4o-mini",
+        "gpt-6-luna",
         api_key=os.environ["OPENAI_API_KEY"],
     )
     strategy = OpenAIStrategy(model)
@@ -98,7 +98,7 @@ async def example_structured_output() -> None:
     print("\n=== Example 2: Structured output ===\n")
 
     model = OpenAIModel.from_api_key(
-        "gpt-4o-mini",
+        "gpt-6-luna",
         api_key=os.environ["OPENAI_API_KEY"],
         system_instruction=(
             "You classify user-supplied text as positive, negative, or "

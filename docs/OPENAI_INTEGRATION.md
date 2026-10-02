@@ -28,7 +28,7 @@ from async_batch_llm import (
 )
 
 async def main() -> None:
-    model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-...")
+    model = OpenAIModel.from_api_key("gpt-6-luna", api_key="sk-...")
     strategy = OpenAIStrategy(model)
     config = ProcessorConfig(max_workers=5, attempt_timeout=30.0)
 
@@ -63,8 +63,8 @@ avoid retries inside a framework attempt. See the
 
 ## Choosing a model
 
-`OpenAIModel` accepts any OpenAI model id: `gpt-4o`, `gpt-4o-mini`, `o3`,
-`o4-mini`, and so on.
+`OpenAIModel` accepts any OpenAI model id: `gpt-6-luna`, `gpt-6.1-sol`,
+`gpt-6-astra`, and so on.
 
 ## Responses API (the default since v0.27)
 
@@ -75,7 +75,7 @@ Set `store` in `generation_config` or `extra_body` to change that. For the
 previous Chat Completions behavior, pass `api_surface="chat_completions"`:
 
 ```python
-model = OpenAIModel.from_api_key("gpt-4o-mini", api_surface="chat_completions")
+model = OpenAIModel.from_api_key("gpt-6-luna", api_surface="chat_completions")
 ```
 
 Switching surfaces changes automatic artifact identity: Responses results aren't
@@ -145,12 +145,15 @@ time. The same goes for `OPENAI_BASE_URL` and a client that exposes
 
 > **Temperature is omitted by default.** Built-in models send no `temperature`
 > unless you pass one, so each model uses its provider default. Some models or
-> reasoning modes reject an explicit value, so leave it unset for them. For more repeatable output
-> on models that accept it, pass one explicitly:
+> reasoning modes reject an explicit value, so leave it unset for them. GPT-6 models
+> reason by default and accept a temperature only with reasoning effort `none`. For
+> more repeatable output, turn reasoning off and pass one explicitly:
 >
 > ```python
-> model = OpenAIModel.from_api_key("gpt-4o-mini")
-> strategy = OpenAIStrategy(model, temperature=0.0)
+> model = OpenAIModel.from_api_key("gpt-6-luna")
+> strategy = OpenAIStrategy(
+>     model, temperature=0.0, generation_config={"reasoning_effort": "none"}
+> )
 > ```
 
 ## Structured output
@@ -175,7 +178,7 @@ class Sentiment(BaseModel):
     confidence: float
 
 model = OpenAIModel.from_api_key(
-    "gpt-4o-mini",
+    "gpt-6-luna",
     api_key="sk-...",
     json_mode=True,  # adds response_format={"type": "json_object"}
     system_instruction='Respond with JSON: {"sentiment": ..., "confidence": ...}',
@@ -222,7 +225,7 @@ class Sentiment(BaseModel):
     sentiment: str
     confidence: float
 
-model = OpenAIModel.from_api_key("gpt-4o-mini", api_key="sk-...")
+model = OpenAIModel.from_api_key("gpt-6-luna", api_key="sk-...")
 strategy = OpenAIStrategy(
     model,
     pydantic_json_parser(Sentiment),
@@ -341,7 +344,7 @@ processor = ParallelBatchProcessor(
 
 ```python
 OpenAIModel.from_api_key(
-    model="gpt-4o-mini",
+    model="gpt-6-luna",
     api_key="sk-...",
     base_url=None,                # override SDK default if needed
     system_instruction="...",     # default system message
@@ -380,7 +383,7 @@ Pass `max_connections` to size the pool to your worker count:
 
 ```python
 # Match the pool to max_workers (a little headroom doesn't hurt).
-model = OpenAIModel.from_api_key("gpt-4o-mini", max_connections=150)
+model = OpenAIModel.from_api_key("gpt-6-luna", max_connections=150)
 config = ProcessorConfig(max_workers=150, attempt_timeout=60.0)
 ```
 
@@ -404,7 +407,7 @@ http_client = httpx.AsyncClient(
     timeout=httpx.Timeout(60),
 )
 client = AsyncOpenAI(api_key="sk-...", http_client=http_client)
-model = OpenAIModel("gpt-4o-mini", client)  # caller owns and closes client
+model = OpenAIModel("gpt-6-luna", client)  # caller owns and closes client
 config = ProcessorConfig(
     max_workers=100,
     max_provider_concurrency=64,

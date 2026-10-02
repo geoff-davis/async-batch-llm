@@ -21,7 +21,7 @@ cap that rejects instantly instead of growing an unbounded waiter list) and
 
     @asynccontextmanager
     async def lifespan(app):
-        strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
+        strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-6-luna"))
         async with LLMCallPool(strategy, config=ProcessorConfig(max_workers=5)) as pool:
             app.state.llm = pool
             yield

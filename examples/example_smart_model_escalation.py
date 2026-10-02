@@ -81,15 +81,15 @@ class SmartModelEscalationStrategy(LLMCallStrategy[PersonData]):
     - Rate limits: API quota → Wait and retry same model
 
     Model progression (only for validation errors):
-    1. gemini-2.5-flash-lite (attempt 1: cheapest)
-    2. gemini-2.5-flash (attempt 2 if validation failed)
-    3. gemini-2.5-pro (attempt 3 if validation failed again)
+    1. gemini-3.5-flash-lite (attempt 1: cheapest)
+    2. gemini-3.5-flash (attempt 2 if validation failed)
+    3. gemini-3.1-pro-preview (attempt 3 if validation failed again)
     """
 
     MODELS = [
-        "gemini-2.5-flash-lite",  # Cheapest, fastest
-        "gemini-2.5-flash",  # Production-ready
-        "gemini-2.5-pro",  # Most capable
+        "gemini-3.5-flash-lite",  # Cheapest, fastest
+        "gemini-3.5-flash",  # Production-ready
+        "gemini-3.1-pro-preview",  # Most capable
     ]
 
     def __init__(self, client: genai.Client, verbose: bool = True):
@@ -214,9 +214,9 @@ class BlindEscalationStrategy(LLMCallStrategy[PersonData]):
     """
 
     MODELS = [
-        "gemini-2.5-flash-lite",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.1-pro-preview",
     ]
 
     def __init__(self, client: genai.Client, verbose: bool = True):

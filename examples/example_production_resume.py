@@ -28,7 +28,7 @@ async def main() -> None:
     if "OPENAI_API_KEY" not in os.environ:
         print("Set OPENAI_API_KEY before running this example.")
         return
-    model_name = "gpt-4o-mini"
+    model_name = "gpt-6-luna"
     strategy = OpenAIStrategy(OpenAIModel.from_api_key(model_name))
     prompts = [
         ("invoice-001", "Extract the vendor and total from: Example invoice A"),

@@ -8,7 +8,7 @@ No worker pool, queue, or result stream is created.
     from async_batch_llm import OpenAIModel, OpenAIStrategy
     from async_batch_llm.single import call
 
-    strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
+    strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-6-luna"))
     summary = await call(strategy, "Summarize: ...")          # output, or raises
 
     result = await call_result(strategy, "Summarize: ...")     # full WorkItemResult

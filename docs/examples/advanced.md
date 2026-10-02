@@ -10,9 +10,9 @@ from async_batch_llm import LLMCallStrategy, RetryState
 
 class SmartModelEscalation(LLMCallStrategy[dict]):
     MODELS = [
-        "gemini-2.5-flash-lite",  # Cheapest
-        "gemini-2.5-flash",       # Medium
-        "gemini-2.5-pro",         # Most capable
+        "gemini-3.5-flash-lite",  # Cheapest
+        "gemini-3.5-flash",       # Medium
+        "gemini-3.1-pro-preview",         # Most capable
     ]
 
     def __init__(self, client):
@@ -99,7 +99,7 @@ async def process_with_caching():
 
     # Model manages cache lifecycle (prepare/cleanup)
     cached_model = GeminiCachedModel(
-        "gemini-2.5-flash", client,
+        "gemini-3.5-flash", client,
         cached_content=[Content(parts=[{"text": rag_context}], role="user")],
     )
     strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)
