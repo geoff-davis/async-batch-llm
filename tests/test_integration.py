@@ -1,362 +1,265 @@
-"""Integration tests with real API calls.
+"""Real-provider integration tests (deselected by default; they make paid API calls).
 
-These tests require valid API keys and make actual API calls.
-Run with: pytest -m integration
+Each provider's tests skip unless its key is set. Calls are tiny (a few tokens,
+cheap models), so a full run costs cents. Run them with the keys in the
+environment, for example from a ``.env`` file:
 
-Skip with: pytest -m "not integration"
+    set -a; source .env; set +a
+    uv run pytest -m integration tests/test_integration.py -v
+
+Keys: ``GOOGLE_API_KEY`` (Gemini, PydanticAI), ``OPENAI_API_KEY``,
+``OPENROUTER_API_KEY``, ``DEEPSEEK_API_KEY``. The tests go through the public
+entry points (``llm()``, ``process_prompts``) and check what unit tests mock:
+token accounting, provider metadata, structured output, and how each provider's
+authentication failure is classified.
 """
 
+from __future__ import annotations
+
 import os
+from typing import Any
 
 import pytest
+from pydantic import BaseModel, Field
 
-# Check if integration tests should run
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+from async_batch_llm import (
+    BatchResult,
+    ErrorCategory,
+    LLMCallStrategy,
+    ProcessorConfig,
+    RetryConfig,
+    llm,
+    process_prompts,
+)
+
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(180)]
+
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+
+needs_google = pytest.mark.skipif(not GOOGLE_API_KEY, reason="needs GOOGLE_API_KEY")
+needs_openai = pytest.mark.skipif(not OPENAI_API_KEY, reason="needs OPENAI_API_KEY")
+needs_openrouter = pytest.mark.skipif(not OPENROUTER_API_KEY, reason="needs OPENROUTER_API_KEY")
+needs_deepseek = pytest.mark.skipif(not DEEPSEEK_API_KEY, reason="needs DEEPSEEK_API_KEY")
+
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+OPENAI_MODEL = "gpt-6-luna"
+OPENAI_REASONING_MODEL = "gpt-6-luna-pro"
+OPENROUTER_MODEL = "openai/gpt-6-luna"
+DEEPSEEK_MODEL = "deepseek-v4-flash"
+
+PROMPTS = [f"Reply with the number {n} and nothing else." for n in (1, 2, 3)]
+# Failures that should fail fast, without retries, when the key is wrong.
+AUTH_FAILURES = {
+    ErrorCategory.AUTHENTICATION,
+    ErrorCategory.PERMISSION_DENIED,
+    ErrorCategory.CLIENT_ERROR,
+}
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(
-    not GOOGLE_API_KEY,
-    reason="Requires GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable",
-)
-@pytest.mark.asyncio
-async def test_gemini_strategy_real_api():
-    """Integration test with real Gemini API - basic generation."""
-    from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-    from async_batch_llm.llm_strategies import GeminiStrategy
-    from async_batch_llm.models import GeminiModel
+class Pick(BaseModel):
+    value: int = Field(ge=1, le=10)
 
-    try:
-        import google.genai as genai
-    except ImportError:
-        pytest.skip("google-genai not installed")
 
-    # Create client with API key
-    client = genai.Client(api_key=GOOGLE_API_KEY)
-
-    # Create model and strategy
-    model = GeminiModel("gemini-2.0-flash-exp", client)
-
-    # Simple response parser - receives LLMResponse
-    def parse_response(response):
-        return response.text
-
-    strategy = GeminiStrategy(
-        model=model,
-        response_parser=parse_response,
+def _config(**kwargs: Any) -> ProcessorConfig:
+    return ProcessorConfig(
+        max_workers=3, attempt_timeout=60.0, retry=RetryConfig(max_attempts=2), **kwargs
     )
 
-    # Create processor
-    config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
 
-    async with ParallelBatchProcessor[str, str, None](config=config) as processor:
-        # Add a few simple test items
-        for i in range(3):
-            await processor.add_work(
-                LLMWorkItem(
-                    item_id=f"test_{i}",
-                    strategy=strategy,
-                    prompt=f"Say 'Test {i}' and nothing else.",
-                )
-            )
-
-        result = await processor.process_all()
-
-    # Verify results
-    assert result.total_items == 3
-    assert result.succeeded == 3, (
-        f"Expected 3 successes, got {result.succeeded}. Errors: {[r.error for r in result.results if r.error]}"
-    )
-    assert result.failed == 0
-
-    # Verify token usage tracked
-    for item_result in result.results:
-        assert item_result.token_usage["total_tokens"] > 0, "Token usage should be tracked"
-
-    print(f"Gemini integration test passed: {result.succeeded}/{result.total_items} items")
+async def _run(strategy: LLMCallStrategy[Any], prompts: list[str] = PROMPTS) -> BatchResult:
+    return await process_prompts(strategy, prompts, config=_config(), preserve_order=True)
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(
-    not GOOGLE_API_KEY,
-    reason="Requires GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable",
-)
-@pytest.mark.asyncio
-async def test_gemini_cached_model_real_api():
-    """Integration test with real Gemini API - context caching."""
-    from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-    from async_batch_llm.llm_strategies import GeminiStrategy
-    from async_batch_llm.models import GeminiCachedModel
+def _assert_all_succeeded(result: BatchResult) -> None:
+    errors = [(r.item_id, r.error_category, r.error) for r in result.results if not r.success]
+    assert result.failed == 0, errors
+    assert result.succeeded == result.total_items > 0
+    for r in result.results:
+        assert r.token_usage["input_tokens"] > 0, r.token_usage
+        assert r.token_usage["output_tokens"] > 0, r.token_usage
+        assert r.token_usage["total_tokens"] > 0, r.token_usage
 
-    try:
-        import google.genai as genai
-        from google.genai.types import Content
-    except ImportError:
-        pytest.skip("google-genai not installed")
 
-    # Create client
+def _assert_numbers_echoed(result: BatchResult) -> None:
+    outputs = [str(r.output).strip() for r in result.results]
+    for n, output in zip((1, 2, 3), outputs, strict=True):
+        assert str(n) in output, outputs
+
+
+async def _assert_auth_failure(strategy: LLMCallStrategy[Any]) -> None:
+    result = await _run(strategy, ["Reply with ok."])
+    [item] = result.results
+    assert not item.success
+    assert item.error_category in AUTH_FAILURES, (item.error_category, item.error)
+    # A rejected key is not worth retrying.
+    assert len(item.timing.attempts) == 1, item.timing.attempts
+
+
+# Gemini
+
+
+@needs_google
+async def test_gemini_factory_batch():
+    result = await _run(llm(f"gemini:{GEMINI_MODEL}"))
+    _assert_all_succeeded(result)
+    _assert_numbers_echoed(result)
+    metadata = result.results[0].metadata or {}
+    # Plain enum names, not SDK enum objects (v0.27).
+    assert metadata.get("finish_reason") == "STOP", metadata
+
+
+@needs_google
+async def test_gemini_cached_model_reports_cached_tokens():
+    from google import genai
+    from google.genai.types import Content, Part
+
+    from async_batch_llm import GeminiCachedModel, GeminiStrategy
+
+    # Explicit caching needs a minimum prompt size; ~3,000 tokens clears it.
+    facts = "\n".join(f"Fact {i}: the code word for item {i} is word{i}." for i in range(250))
     client = genai.Client(api_key=GOOGLE_API_KEY)
-
-    # Create cached content (system instruction)
-    cached_content = [
-        Content(
-            role="user",
-            parts=[
-                {
-                    "text": "You are a helpful assistant that responds concisely. "
-                    "When asked to count, respond with just the number."
-                }
-            ],
-        )
-    ]
-
-    def parse_response(response):
-        return response.text.strip()
-
-    # Create cached model and strategy
-    cached_model = GeminiCachedModel(
-        model="gemini-2.0-flash-exp",
+    model = GeminiCachedModel(
+        model=GEMINI_MODEL,
         client=client,
-        cached_content=cached_content,
-        cache_ttl_seconds=300,  # 5 minutes
+        cached_content=[Content(role="user", parts=[Part(text=facts)])],
+        cache_ttl_seconds=300,
+        cache_renewal_buffer_seconds=60,
     )
-
-    strategy = GeminiStrategy(
-        model=cached_model,
-        response_parser=parse_response,
-    )
-
-    config = ProcessorConfig(max_workers=2, attempt_timeout=30.0)
-
-    async with ParallelBatchProcessor[str, str, None](config=config) as processor:
-        # Add items that will benefit from caching
-        for i in range(5):
-            await processor.add_work(
-                LLMWorkItem(
-                    item_id=f"count_{i}",
-                    strategy=strategy,  # Reuse same strategy (shared cache)
-                    prompt=f"Count to {i + 1}",
-                )
-            )
-
-        result = await processor.process_all()
-
-    # Verify results
-    assert result.total_items == 5
-    assert result.succeeded == 5, f"Expected 5 successes, got {result.succeeded}"
-    assert result.failed == 0
-
-    # Verify cached tokens were used
-    cached_tokens_used = sum(
-        item_result.token_usage.get("cached_input_tokens", 0) for item_result in result.results
-    )
-    assert cached_tokens_used > 0, "Should have used cached tokens"
-
-    # Cleanup cache
-    await cached_model.delete_cache()
-
-    print(
-        f"Gemini cached integration test passed: {result.succeeded}/{result.total_items} items, "
-        f"{cached_tokens_used} cached tokens used"
-    )
-
-
-@pytest.mark.integration
-@pytest.mark.skipif(
-    not GOOGLE_API_KEY,
-    reason="Requires GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable",
-)
-@pytest.mark.asyncio
-async def test_gemini_response_metadata_real_api():
-    """Integration test for LLMResponse with safety ratings (v0.6.0)."""
-    from async_batch_llm import LLMWorkItem, ParallelBatchProcessor, ProcessorConfig
-    from async_batch_llm.llm_strategies import GeminiStrategy
-    from async_batch_llm.models import GeminiModel
-
     try:
-        import google.genai as genai
-    except ImportError:
-        pytest.skip("google-genai not installed")
-
-    client = genai.Client(api_key=GOOGLE_API_KEY)
-
-    # Create model and strategy
-    model = GeminiModel("gemini-2.0-flash-exp", client)
-
-    # Parser that preserves metadata from LLMResponse
-    metadata_store = {}
-
-    def parse_response(response):
-        metadata_store["safety_ratings"] = (
-            response.metadata.get("safety_ratings") if response.metadata else None
+        result = await _run(
+            GeminiStrategy(model=model),
+            [f"What is the code word for item {i}? Reply with the word only." for i in (3, 7)],
         )
-        metadata_store["finish_reason"] = (
-            response.metadata.get("finish_reason") if response.metadata else None
-        )
-        metadata_store["raw"] = response.raw
-        return response.text
+        _assert_all_succeeded(result)
+        assert [str(r.output).strip() for r in result.results] == ["word3", "word7"]
+        cached = [r.token_usage.get("cached_input_tokens", 0) for r in result.results]
+        assert all(tokens > 0 for tokens in cached), cached
+        assert result.total_cached_tokens == sum(cached)
+    finally:
+        # The test owns this client, not the model: close both transports.
+        try:
+            await model.delete_cache()
+        finally:
+            try:
+                await client.aio.aclose()
+            finally:
+                client.close()
 
-    strategy = GeminiStrategy(
-        model=model,
-        response_parser=parse_response,
+
+@needs_google
+async def test_gemini_bad_key_fails_fast():
+    await _assert_auth_failure(llm(f"gemini:{GEMINI_MODEL}", api_key="invalid-key"))
+
+
+@needs_google
+async def test_pydantic_ai_structured_output():
+    from pydantic_ai import Agent
+    from pydantic_ai.models.google import GoogleModel
+
+    from async_batch_llm import PydanticAIStrategy
+
+    agent = Agent(GoogleModel(GEMINI_MODEL), output_type=Pick)
+    result = await _run(
+        PydanticAIStrategy(agent=agent), ["Pick the number seven.", "Pick the number two."]
     )
-
-    config = ProcessorConfig(max_workers=1, attempt_timeout=30.0)
-
-    async with ParallelBatchProcessor[str, str, None](config=config) as processor:
-        await processor.add_work(
-            LLMWorkItem(
-                item_id="safety_test",
-                strategy=strategy,
-                prompt="Tell me a short story about a robot.",
-            )
-        )
-
-        result = await processor.process_all()
-
-    # Verify results
-    assert result.succeeded == 1
-
-    # Check that metadata was accessible in the parser
-    assert metadata_store.get("safety_ratings") is not None, "Safety ratings should be present"
-    assert len(metadata_store["safety_ratings"]) > 0, "Should have at least one safety rating"
-    assert metadata_store.get("finish_reason") is not None, "Finish reason should be present"
-    assert metadata_store.get("raw") is not None, "Raw response should be present"
-
-    # Output should be plain string (not wrapped)
-    item_result = result.results[0]
-    assert isinstance(item_result.output, str), "Parsed output should be a string"
-    assert len(item_result.output) > 0, "Should have generated text"
-
-    print("Gemini metadata test passed")
-    print(f"   Safety ratings: {metadata_store['safety_ratings']}")
-    print(f"   Finish reason: {metadata_store['finish_reason']}")
+    _assert_all_succeeded(result)
+    assert [r.output for r in result.results] == [Pick(value=7), Pick(value=2)]
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(
-    not GOOGLE_API_KEY,
-    reason="Requires GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable",
-)
-@pytest.mark.asyncio
-async def test_retry_on_real_validation_error():
-    """Integration test that triggers real validation error and retries."""
-    from pydantic import BaseModel, Field
+# OpenAI
 
-    from async_batch_llm import (
-        LLMWorkItem,
-        ParallelBatchProcessor,
-        ProcessorConfig,
-        PydanticAIStrategy,
-        RetryConfig,
+
+@needs_openai
+async def test_openai_responses_default():
+    result = await _run(llm(f"openai:{OPENAI_MODEL}"))
+    _assert_all_succeeded(result)
+    _assert_numbers_echoed(result)
+    metadata = result.results[0].metadata or {}
+    assert metadata.get("api_surface") == "responses", metadata
+    assert metadata.get("provider_request_id"), metadata
+
+
+@needs_openai
+async def test_openai_chat_completions_opt_out():
+    from async_batch_llm import OpenAIModel, OpenAIStrategy
+
+    model = OpenAIModel.from_api_key(OPENAI_MODEL, api_surface="chat_completions")
+    result = await _run(OpenAIStrategy(model))
+    _assert_all_succeeded(result)
+    _assert_numbers_echoed(result)
+    assert (result.results[0].metadata or {}).get("api_surface") != "responses"
+
+
+@needs_openai
+async def test_openai_reasoning_model_reports_reasoning_tokens():
+    result = await _run(llm(f"openai:{OPENAI_REASONING_MODEL}"), ["What is 17 + 25?"])
+    _assert_all_succeeded(result)
+    assert "42" in str(result.results[0].output)
+    reasoning = (result.results[0].metadata or {}).get("reasoning_tokens")
+    assert isinstance(reasoning, int) and reasoning >= 0, reasoning
+
+
+@needs_openai
+async def test_openai_bad_key_fails_fast():
+    await _assert_auth_failure(llm(f"openai:{OPENAI_MODEL}", api_key="sk-invalid"))
+
+
+# OpenRouter
+
+
+@needs_openrouter
+async def test_openrouter_factory_batch():
+    result = await _run(llm(f"openrouter:{OPENROUTER_MODEL}"))
+    _assert_all_succeeded(result)
+    _assert_numbers_echoed(result)
+    metadata = result.results[0].metadata or {}
+    assert metadata.get("provider"), metadata  # the upstream OpenRouter routed to
+
+
+@needs_openrouter
+async def test_openrouter_bad_key_fails_fast():
+    await _assert_auth_failure(llm(f"openrouter:{OPENROUTER_MODEL}", api_key="sk-or-invalid"))
+
+
+# DeepSeek and generic OpenAI-compatible
+
+
+@needs_deepseek
+async def test_deepseek_chat_batch():
+    result = await _run(llm(f"deepseek:{DEEPSEEK_MODEL}", thinking=False))
+    _assert_all_succeeded(result)
+    _assert_numbers_echoed(result)
+
+
+@needs_deepseek
+async def test_deepseek_responses_structured_output():
+    from async_batch_llm import DeepSeekModel, DeepSeekStrategy
+
+    model = DeepSeekModel.from_api_key(
+        DEEPSEEK_MODEL, api_surface="responses", response_schema=Pick, thinking=False
     )
+    strategy = DeepSeekStrategy(model, response_parser=lambda r: Pick.model_validate_json(r.text))
+    result = await _run(strategy, ["Pick the number seven.", "Pick the number two."])
+    _assert_all_succeeded(result)
+    assert [r.output for r in result.results] == [Pick(value=7), Pick(value=2)]
+    assert (result.results[0].metadata or {}).get("api_surface") == "responses"
 
-    try:
-        from pydantic_ai import Agent
-    except ImportError:
-        pytest.skip("pydantic-ai not installed")
 
-    class StrictNumber(BaseModel):
-        """Model that expects a specific number format."""
-
-        value: int = Field(..., ge=1, le=10, description="A number between 1 and 10")
-
-    # Create agent with Gemini
-    agent = Agent(
-        "gemini-2.0-flash-exp",
-        result_type=StrictNumber,
-        system_prompt="You must respond with a number between 1 and 10.",
+@needs_deepseek
+async def test_openai_compatible_factory_against_deepseek():
+    strategy = llm(
+        f"openai-compatible:{DEEPSEEK_MODEL}",
+        base_url="https://api.deepseek.com",
+        api_key=DEEPSEEK_API_KEY,
     )
-
-    strategy = PydanticAIStrategy(agent=agent)
-
-    config = ProcessorConfig(
-        max_workers=1,
-        attempt_timeout=30.0,
-        retry=RetryConfig(max_attempts=3),
-    )
-
-    async with ParallelBatchProcessor[str, StrictNumber, None](config=config) as processor:
-        # This prompt might cause validation issues on first try
-        await processor.add_work(
-            LLMWorkItem(
-                item_id="validation_test",
-                strategy=strategy,
-                prompt="Pick a number between 1 and 10 and return it.",
-            )
-        )
-
-        result = await processor.process_all()
-
-    # Should eventually succeed (possibly after retries)
-    assert result.total_items == 1
-    # May succeed on first try or after retries
-    if result.succeeded == 1:
-        print("Validation test passed on attempt")
-    else:
-        print(f"Validation test failed after all retries: {result.results[0].error}")
+    result = await _run(strategy)
+    _assert_all_succeeded(result)
+    _assert_numbers_echoed(result)
 
 
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_integration_suite_summary():
-    """Print summary of which integration tests can run."""
-    available_tests = []
-    missing_keys = []
-
-    if GOOGLE_API_KEY:
-        available_tests.append("Google Gemini API tests (GOOGLE_API_KEY detected)")
-    else:
-        missing_keys.append("GOOGLE_API_KEY (or legacy GEMINI_API_KEY) not set")
-
-    if OPENAI_API_KEY:
-        available_tests.append("OpenAI API tests (not yet implemented)")
-    else:
-        missing_keys.append("OPENAI_API_KEY not set")
-
-    if ANTHROPIC_API_KEY:
-        available_tests.append("Anthropic API tests (not yet implemented)")
-    else:
-        missing_keys.append("ANTHROPIC_API_KEY not set")
-
-    print("\n" + "=" * 60)
-    print("Integration Test Suite Configuration")
-    print("=" * 60)
-
-    if available_tests:
-        print("\nAvailable tests:")
-        for test in available_tests:
-            print(f"  {test}")
-
-    if missing_keys:
-        print("\nMissing API keys (tests will be skipped):")
-        for key in missing_keys:
-            print(f"  {key}")
-
-    print("\nTo run integration tests:")
-    print("  pytest -m integration -v")
-    print("\nTo skip integration tests:")
-    print("  pytest -m 'not integration'")
-    print("=" * 60 + "\n")
-
-    # This test always passes - it's just informational
-    assert True
-
-
-# Placeholder tests for future implementation
-@pytest.mark.integration
-@pytest.mark.skipif(not OPENAI_API_KEY, reason="Requires OPENAI_API_KEY environment variable")
-@pytest.mark.asyncio
-async def test_openai_strategy_real_api():
-    """Integration test with real OpenAI API."""
-    pytest.skip("OpenAI integration test not yet implemented")
-
-
-@pytest.mark.integration
-@pytest.mark.skipif(not ANTHROPIC_API_KEY, reason="Requires ANTHROPIC_API_KEY environment variable")
-@pytest.mark.asyncio
-async def test_anthropic_strategy_real_api():
-    """Integration test with real Anthropic API."""
-    pytest.skip("Anthropic integration test not yet implemented")
+@needs_deepseek
+async def test_deepseek_bad_key_fails_fast():
+    await _assert_auth_failure(llm(f"deepseek:{DEEPSEEK_MODEL}", api_key="sk-invalid"))
