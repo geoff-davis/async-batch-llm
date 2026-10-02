@@ -4,7 +4,7 @@ coordination, and token accounting for a single work item.
 Extracted from :class:`ParallelBatchProcessor` so the exact same execution
 semantics can back three surfaces: the batch worker loop, the single-call
 helper (:mod:`async_batch_llm.single`), and the rate-limited gateway
-(:mod:`async_batch_llm.gateway`). The processor delegates its per-item methods
+(:mod:`async_batch_llm.call_pool`). The processor delegates its per-item methods
 here; the queue-less surfaces drive :meth:`ItemExecutor.execute` directly.
 
 The executor reads its dependencies live from a *host* (the processor passes

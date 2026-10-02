@@ -253,7 +253,7 @@ low-level streaming, and separate input/output/provider/shared-call limits.
 ## 8. Single calls and the shared call pool (request paths)
 
 For a web service's request path — where work arrives one call at a time, not as
-a batch — use [`LLMCallPool`](api/single-gateway.md) instead of standing up a
+a batch — use [`LLMCallPool`](api/single-call-pool.md) instead of standing up a
 processor per request:
 
 - **One long-lived pool per app.** Create it once at startup (e.g. a FastAPI
@@ -276,7 +276,7 @@ processor per request:
   Set `submit_timeout` to bound how long shutdown waits for that drain; with no
   timeout it waits as long as the admitted work takes.
 
-For a single ad-hoc call, [`call()` / `call_result()`](api/single-gateway.md)
+For a single ad-hoc call, [`call()` / `call_result()`](api/single-call-pool.md)
 run one prompt through the same resilience pipeline with no pool at all.
 
 ## 9. Spend limits

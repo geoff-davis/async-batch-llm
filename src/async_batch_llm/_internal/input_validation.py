@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Iterable, Mapping
 from difflib import get_close_matches
 from typing import ParamSpec, TypeVar
@@ -38,8 +39,14 @@ def validate_keywords(kwargs: Mapping[str, object], allowed: Iterable[str]) -> N
     raise TypeError(" ".join(messages))
 
 
-def suggest_keyword_errors(function: Callable[_P, _R]) -> Callable[_P, _R]:
-    """Keep a generated constructor's signature while validating its keywords."""
+def suggest_keyword_errors(
+    function: Callable[_P, _R], *, positional_deprecation: str | None = None
+) -> Callable[_P, _R]:
+    """Keep a generated constructor's signature while validating its keywords.
+
+    With ``positional_deprecation``, also warn when arguments after ``self`` are
+    passed positionally (see :func:`deprecate_positional_arguments`).
+    """
     import inspect
     from functools import wraps
 
@@ -47,7 +54,26 @@ def suggest_keyword_errors(function: Callable[_P, _R]) -> Callable[_P, _R]:
 
     @wraps(function)
     def checked(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        if positional_deprecation is not None and len(args) > 1:
+            warnings.warn(positional_deprecation, DeprecationWarning, stacklevel=2)
         validate_keywords(kwargs, names)
+        return function(*args, **kwargs)
+
+    return checked
+
+
+def deprecate_positional_arguments(function: Callable[_P, _R], message: str) -> Callable[_P, _R]:
+    """Warn when a generated ``__init__`` gets arguments after ``self`` positionally.
+
+    The wrapper adds one frame between the caller and ``__post_init__``, so a
+    warning raised there needs ``stacklevel=4`` to reach the caller.
+    """
+    from functools import wraps
+
+    @wraps(function)
+    def checked(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        if len(args) > 1:
+            warnings.warn(message, DeprecationWarning, stacklevel=2)
         return function(*args, **kwargs)
 
     return checked

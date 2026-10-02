@@ -214,7 +214,7 @@ Results arrive in completion order; pass `preserve_order=True` to
 Exceptions the library defines subclass `AsyncBatchLLMError` and keep their
 built-in bases (for example, `ItemDeadlineExceeded` is still a `TimeoutError`);
 provider SDK errors are not wrapped. See the
-[single-call and shared-call guide](https://geoff-davis.github.io/async-batch-llm/api/single-gateway/)
+[single-call and shared-call guide](https://geoff-davis.github.io/async-batch-llm/api/single-call-pool/)
 and [core API](https://geoff-davis.github.io/async-batch-llm/api/core/).
 
 ## Production runs: checkpoints, deadlines, and budgets

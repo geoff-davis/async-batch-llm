@@ -144,7 +144,7 @@ another lock is taken. Ownership:
 - `_rate_limit_lock` — a `ParallelBatchProcessor` property returning
   `RateLimitCoordinator._lock`.
 - Collaborators own their own locks: `StrategyLifecycle`, `_internal/guardrails.py`,
-  `_internal/executor_host.py` (stats for `single.py`/`gateway.py`), the JSONL
+  `_internal/executor_host.py` (stats for `single.py`/`call_pool.py`), the JSONL
   store, and `MetricsObserver`. Models have their own (client lifecycle, and
   `GeminiCachedModel`'s cache lock).
 
@@ -537,8 +537,9 @@ src/async_batch_llm/
 ├── parallel.py           # ParallelBatchProcessor (orchestration)
 ├── streaming.py          # process_prompts / process_stream (streaming API)
 ├── single.py             # call / call_result (one-shot convenience API)
-├── gateway.py            # LLMCallPool (queue-less shared-cooldown service;
-│                         # LLMGateway is a deprecated alias)
+├── call_pool.py          # LLMCallPool (queue-less shared-cooldown service)
+├── gateway.py            # old path: re-exports LLMCallPool (through 1.x) and
+│                         # the deprecated LLMGateway alias (removed in 1.0)
 ├── factory.py            # llm("provider:model")
 ├── callable_strategy.py  # CallableStrategy / CallOutcome
 ├── categories.py         # ErrorCategory, TimeoutCategory
@@ -583,7 +584,7 @@ src/async_batch_llm/
 │   ├── cleanup.py        # ordered teardown and detached cancellation waits
 │   ├── execution_state.py # private per-item accounting
 │   ├── event_dispatcher.py
-│   ├── executor_host.py  # pool-less host for single.py / gateway.py
+│   ├── executor_host.py  # pool-less host for single.py / call_pool.py
 │   ├── guardrails.py     # item/batch deadlines and fail-fast
 │   ├── input_validation.py
 │   ├── item_executor.py  # per-item retry/classification engine
@@ -608,7 +609,7 @@ src/async_batch_llm/
   per-upstream caching matrix and the Anthropic `cache_control` opt-in
   pattern.
 - `docs/api/` — API reference (entrypoints, core, errors, artifacts,
-  single-gateway, strategies, observers).
+  single-call-pool, strategies, observers).
 - `docs/stability.md` — the 1.0 compatibility promise: stable, provisional, and
   deprecated names. `tests/test_stability_page.py` requires every `__all__` name.
 - `docs/migration/v0.27.md` — current migration guide (older ones alongside).
@@ -734,7 +735,9 @@ assert result.total_items == result.succeeded + result.failed
    `execute()` shim, omitted `cached_token_rate`, `LLMGateway`,
    `BatchProcessor`/`ProcessingStats`/`grounding_metadata_extractor` as public
    names, `gemini_safety_ratings`, `timeout_per_item`, the legacy positional
-   processor parameters, callable `cache_hit_rate()`, and integer prompts. 1.0
+   processor parameters, callable `cache_hit_rate()`, and integer prompts. So is
+   what v0.28 deprecates: positional arguments to the five config classes (they
+   become keyword-only) and `ProcessorConfig.enable_detailed_logging`. 1.0
    also drops Python 3.10 (`requires-python`, mypy `python_version`, CI matrix).
    See `docs/stability.md` and `docs/internal/release-1.0-plan.md`.
 

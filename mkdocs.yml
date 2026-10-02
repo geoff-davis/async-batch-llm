@@ -34,6 +34,9 @@ theme:
 
 plugins:
   - search
+  - redirects:
+      redirect_maps:
+        api/single-gateway.md: api/single-call-pool.md
   - mkdocstrings:
       handlers:
         python:
@@ -94,6 +97,7 @@ nav:
   - Release Roadmap: roadmap.md
   - API Stability (draft): stability.md
   - Migration Guides:
+    - v0.28 Migration: migration/v0.28.md
     - v0.27 Migration: migration/v0.27.md
     - v0.26 Migration: migration/v0.26.md
     - v0.25 Migration: migration/v0.25.md
@@ -108,7 +112,7 @@ nav:
     - Entry Points and Configuration: api/entrypoints.md
     - Core: api/core.md
     - Artifacts and Serialization: api/artifacts.md
-    - Single Call & Shared Call Pool: api/single-gateway.md
+    - Single Call & Shared Call Pool: api/single-call-pool.md
     - Strategies: api/strategies.md
     - Errors and Classification: api/errors.md
     - Observers: api/observers.md

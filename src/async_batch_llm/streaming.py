@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import inspect
 import logging
 import time
@@ -47,6 +46,7 @@ from .base import (
     _ProcessorState,
 )
 from .core import ProcessorConfig
+from .core.config import replace_user_config
 from .parallel import ParallelBatchProcessor
 
 if TYPE_CHECKING:
@@ -274,7 +274,7 @@ def _apply_concurrency_shorthand(
     if config.max_workers == 5:
         # The historical default — treat as unset so derivation applies.
         overrides["max_workers"] = None
-    return dataclasses.replace(config, **overrides)
+    return replace_user_config(config, **overrides)
 
 
 async def _process_stream_impl(

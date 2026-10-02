@@ -430,7 +430,7 @@ background dispatcher or service.
 Place ABL above it when an application run also needs ABL's bounded execution,
 recovery, deadlines, and artifacts.
 
-**Related guide.** [Single Call and Shared Call Pool](api/single-gateway.md) and
+**Related guide.** [Single Call and Shared Call Pool](api/single-call-pool.md) and
 [Choosing Between ABL and Alternatives](comparison.md#litellm-and-other-ai-gateways).
 
 ## Deprecation warnings after upgrading

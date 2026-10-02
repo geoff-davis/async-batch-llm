@@ -22,6 +22,12 @@ except where a name or field is marked provisional below:
 Breaking any of these requires a major release. Additions (new names, new optional
 parameters, new category values, new payload keys) can arrive in minor releases.
 
+From 1.0, the five configuration classes (`ProcessorConfig`, `RetryConfig`,
+`RateLimitConfig`, `StartupRampConfig` and `GuardrailConfig`) take keyword arguments
+only, so new fields can go anywhere. Other stable dataclasses, such as `LLMWorkItem`,
+can still be built positionally: their field order is frozen, and new fields are
+appended with defaults. Provisional dataclasses follow their provisional status.
+
 ## What it doesn't cover
 
 - Anything in `async_batch_llm._internal`, and underscore-prefixed names anywhere.
@@ -158,6 +164,8 @@ removed in 1.0.
 | Integer prompts in `process_prompts` / `process_stream` | String prompts |
 | 2-tuple return from `LLMCallStrategy.execute()` | `(output, tokens, metadata)` |
 | `effective_input_tokens()` / `estimated_cost()` with no cached-token rate | Pass a `CachedTokenRates` constant as `cached_token_rate` |
+| Positional arguments to `ProcessorConfig`, `RetryConfig`, `RateLimitConfig`, `StartupRampConfig`, `GuardrailConfig` (since 0.28) | Keyword arguments |
+| `ProcessorConfig(enable_detailed_logging=True)` (since 0.28; it never had an effect) | Set the `async_batch_llm` logger's level ([Logging](logging.md)) |
 
 The legacy parameters come first in `ParallelBatchProcessor`'s signature, so pass
 `config=`, `post_processor=` and the other arguments by keyword.

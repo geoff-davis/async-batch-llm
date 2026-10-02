@@ -76,6 +76,10 @@ from .base import (
     WorkItemTiming,
 )
 from .budget import AttemptUsage
+
+# Queue-less convenience surfaces (single call + shared call pool), built on the
+# same per-item resilience pipeline as the batch processor.
+from .call_pool import LLMCallPool
 from .callable_strategy import CallableStrategy, CallOutcome
 
 # Documented error and timeout category vocabulary
@@ -105,9 +109,8 @@ from .core.protocols import LLMModel, ManagedLLMModel
 # String-based strategy factory: llm("openai:gpt-4o-mini")
 from .factory import llm
 
-# Queue-less convenience surfaces (single call + shared call pool), built on the
-# same per-item resilience pipeline as the batch processor.
-from .gateway import _LLM_GATEWAY_DEPRECATION, LLMCallPool
+# Message for the deprecated LLMGateway alias (old module path, removed in 1.0)
+from .gateway import _LLM_GATEWAY_DEPRECATION
 
 # LLM call strategies
 from .llm_strategies import (

@@ -53,6 +53,7 @@ from .base import (
     WorkItemResult,
 )
 from .core import ProcessorConfig
+from .core.config import replace_user_config
 from .llm_strategies import LLMCallStrategy
 from .middleware import Middleware
 from .observers import ProcessingEvent, ProcessorObserver
@@ -228,7 +229,7 @@ class ParallelBatchProcessor(
                     config.rate_limit, cooldown_seconds=rate_limit_cooldown
                 )
             if overrides:
-                config = dataclasses.replace(config, **overrides)
+                config = replace_user_config(config, **overrides)
 
         # Always an int after ProcessorConfig.__post_init__ resolution.
         resolved_max_workers = cast(int, config.max_workers)

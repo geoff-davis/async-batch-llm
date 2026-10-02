@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+
+These warn now and are removed in 1.0; see the
+[v0.28 migration guide](docs/migration/v0.28.md).
+
+- Positional arguments to the five configuration classes: `ProcessorConfig`,
+  `RetryConfig`, `RateLimitConfig`, `StartupRampConfig` and `GuardrailConfig`. Pass
+  every field by keyword; from 1.0 they are keyword-only. Other dataclasses are
+  unaffected.
+- `ProcessorConfig(enable_detailed_logging=True)`. The field never had an effect; it
+  now warns (the value is kept). Configure the `async_batch_llm` logger instead.
+
 ### Changed
+
+- `LLMCallPool` moved from `async_batch_llm.gateway` to `async_batch_llm.call_pool`.
+  The old module path still works through 1.x (and still provides the deprecated
+  `LLMGateway` alias until 1.0); import `LLMCallPool` from `async_batch_llm`.
+- The "Single Call & Shared Call Pool" API page moved from `api/single-gateway/` to
+  `api/single-call-pool/`; the old URL redirects.
 
 - `FakeStrategy` validates `latency` and `failure_rate` like numeric config fields: a
   boolean or non-number now raises `ValueError` ("must be a finite number") instead
@@ -32,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ProcessorConfig`; CHANGELOG versions link to their GitHub comparisons; the
   benchmark example pins `temperature=0.0` for contestants so reruns match the
   published runs ([#199]).
+
+### Fixed
+
+- The `ProcessorConfig(timeout_per_item=...)` deprecation warning now points at the
+  caller's line, not at the library's keyword-checking wrapper.
 
 [#156]: https://github.com/geoff-davis/async-batch-llm/issues/156
 [#199]: https://github.com/geoff-davis/async-batch-llm/issues/199

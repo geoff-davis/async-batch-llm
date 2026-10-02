@@ -15,7 +15,7 @@
 ## call and call_result
 
 One-shot calls are documented with the shared call pool on
-[Single Call & Shared Call Pool](single-gateway.md#call).
+[Single Call & Shared Call Pool](single-call-pool.md#call).
 
 ## RetryState
 
