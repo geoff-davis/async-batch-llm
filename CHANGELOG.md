@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- New [Logging](docs/logging.md) page: the `async_batch_llm` logger hierarchy, what
+  each level shows, what appears with no logging configured, and quiet and verbose
+  recipes ([#156]).
+- Choosing Your Limits gains a "Retries and backoff" step covering `RetryConfig`:
+  the backoff formula, 50–100% jitter, immediate validation retries, and how rate
+  limits and item deadlines interact with retries ([#156]).
+- Bounded Work gains "Prompt sources and encodings": the library takes strings and
+  never decodes files, with a lazy non-UTF-8 example and what a decode error does
+  mid-run ([#156]). Also fixes a split table on that page.
+
+[#156]: https://github.com/geoff-davis/async-batch-llm/issues/156
+
 ## [0.27.0] - 2026-09-29
 
 See the [v0.27 migration guide](docs/migration/v0.27.md) for breaking changes.

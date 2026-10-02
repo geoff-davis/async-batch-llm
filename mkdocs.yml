@@ -69,6 +69,7 @@ nav:
   - Token-Aware Admission: token-aware-admission.md
   - Production Checklist: production-checklist.md
   - Troubleshooting and FAQ: troubleshooting.md
+  - Logging: logging.md
   - Results, Artifacts, and Resume: results-and-artifacts.md
   - Large Runs (100k–1M): large-runs.md
   - Deadlines, Budgets and Fail-Fast Guardrails: guardrails.md

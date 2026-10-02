@@ -2,7 +2,7 @@
 
 Start with the terminal `WorkItemResult`, its `error_category` (look up any value in
 the [`ErrorCategory` reference](api/core.md#errorcategory)), and
-`result.timing`. Enable normal Python logging for `async_batch_llm` before
+`result.timing`. Enable [logging](logging.md) for `async_batch_llm` before
 raising concurrency or retry budgets; more work often amplifies the original
 problem.
 

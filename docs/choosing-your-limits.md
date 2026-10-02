@@ -44,8 +44,9 @@ and when to override it.
 6. TPM + estimator  how much estimated token load may start per minute?
 7. startup ramp     should full concurrency arrive gradually?
 8. cooldown         what happens when the provider says 429?
-9. timeouts         how long may an attempt, item, and batch take?
-10. spend caps      how many tokens or how much cost may the run use?
+9. retries          how often, and how far apart, are failed attempts retried?
+10. timeouts        how long may an attempt, item, and batch take?
+11. spend caps      how many tokens or how much cost may the run use?
 ```
 
 ### 1. Concurrency — `concurrency=N`
@@ -169,7 +170,44 @@ see repeated consecutive cooldowns, your `concurrency` (step 1) is too high;
 fix the cause, not the cooldown. Cooldown precedes estimation and reservation,
 so paused work does not consume live quota state early.
 
-### 9. Attempt, item, and batch timeouts
+### 9. Retries and backoff — `RetryConfig`
+
+`RetryConfig` governs failures that are worth retrying but aren't rate limits:
+timeouts, connection errors, 5xx responses, and invalid output. The defaults are
+`max_attempts=3`, `initial_wait=1.0`, `max_wait=60.0`, `exponential_base=2.0`,
+and `jitter=True`. Before attempt *n + 1* the item waits
+
+```text
+min(initial_wait × exponential_base^(n − 1), max_wait)
+```
+
+so 1s, 2s, 4s, and so on, capped at 60s. With `jitter=True` each wait is scaled
+to a random 50–100% of that value, which spreads simultaneous retries apart
+("equal jitter"). Validation failures (`validation_error`,
+`structured_output_validation_error`) retry immediately, with no wait.
+
+Rate limits work differently. They don't use this backoff: one rate-limited
+call starts the shared cooldown from step 8, and the item retries when it ends.
+They also don't consume `max_attempts`; they have their own budget,
+`max_rate_limit_retries` (default 20). Errors the classifier marks
+non-retryable, such as authentication failures, fail on the first attempt.
+
+Retries and backoff waits count against `GuardrailConfig.total_timeout_per_item`.
+If the next wait wouldn't fit in the time left, the item fails immediately with
+`ItemDeadlineExceeded`, whose message and cause keep the last provider error,
+instead of sleeping past its deadline (see
+[guardrails](guardrails.md#retry-delay-cannot-fit)).
+
+```python
+from async_batch_llm import ProcessorConfig, RetryConfig
+
+config = ProcessorConfig(
+    concurrency=32,
+    retry=RetryConfig(max_attempts=4, initial_wait=0.5, max_wait=20.0),
+)
+```
+
+### 10. Attempt, item, and batch timeouts
 
 `attempt_timeout` bounds one `execute()` call (default 120s), not its quota or
 provider-capacity wait. Size it for one slow response: p99 provider latency
@@ -184,7 +222,7 @@ the configured abort mode. Size the batch deadline below the job scheduler's
 hard kill and pair it with fail-fast categories such as authentication and
 insufficient balance. Details: [guardrails](guardrails.md).
 
-### 10. Spend caps — `max_total_tokens` / `max_total_cost`
+### 11. Spend caps — `max_total_tokens` / `max_total_cost`
 
 `GuardrailConfig.max_total_tokens` and `max_total_cost` (with a
 `cost_function`) are opt-in soft caps on provider usage for one processor run.
@@ -209,7 +247,7 @@ Target: 10,000 classification prompts against an OpenAI-tier endpoint
 - **Step 6:** reserve measured prompt tokens plus 300 expected output tokens.
 - **Step 7:** skip the ramp at this width.
 - **Step 8:** `cooldown_seconds=60.0` for reactive 429 recovery.
-- **Step 9:** one-call p99 ≈ 10s gives `attempt_timeout=30.0`; allow the
+- **Step 10:** one-call p99 ≈ 10s gives `attempt_timeout=30.0`; allow the
   complete retry/cooldown chain 180s and stop the batch at 1h50m.
 
 ```python
