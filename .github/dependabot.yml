@@ -21,6 +21,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # 1.2.3 adds a properdocs dependency only to print a "switch to ProperDocs"
+      # banner during builds; pyproject.toml pins <1.2.3 (#209).
+      - dependency-name: "mkdocs-redirects"
+        versions: [">=1.2.3"]
     groups:
       python:
         patterns:
