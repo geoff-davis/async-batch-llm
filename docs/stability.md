@@ -59,7 +59,7 @@ explicitly instead. On Python 3.14 an installed `google-genai` also emits its ow
 ## Support policy
 
 - **Python:** each supported version until its upstream end of life. 1.0 requires
-  Python 3.11 or newer; v0.27 is the last release for 3.10.
+  Python 3.11 or newer; v0.28 is the last release for 3.10.
 - **Provider SDKs:** CI tests each SDK at its declared minimum and at the latest
   release of every supported major line. A new major line is supported once a CI
   leg covers it; until then it may install but is untested. A minimum can rise in a
