@@ -21,14 +21,6 @@ One-shot calls are documented with the shared call pool on
 
 ::: async_batch_llm.RetryState
 
-## RetryConfig
-
-::: async_batch_llm.core.RetryConfig
-
-## RateLimitConfig
-
-::: async_batch_llm.core.RateLimitConfig
-
 ## Middleware
 
 ::: async_batch_llm.middleware.Middleware

@@ -37,14 +37,14 @@ section unchanged.
 | Worker pools | 250 for every contestant |
 | Run mode | `--skip-race`; identical prompts, retry policy, and exact-match scorer |
 | Pricing snapshot | 2026-08-27; USD per million tokens |
-| Temperature | 0.0 (the library default at the time; the benchmark passes none) |
+| Temperature | 0.0 (the library default at the time; the example now pins it for contestants) |
 
 The three batches cost **$0.847693 total**. No fallback judge calls were needed.
 
 Both published runs used `temperature=0.0`, the default before v0.27. Since v0.27 the
-built-in models send no temperature, so a rerun uses each provider's default sampling
-and the OpenAI judge uses the Responses API. That is not the same experiment; add
-`temperature=0.0` to the example's `generate()` calls to reproduce these numbers.
+built-in models send no temperature by default, so the example pins
+`temperature=0.0` for the contestants' calls to keep reruns comparable. The fallback
+judge is left at the provider default and, on v0.27+, uses the Responses API.
 
 ![Updated cost per provider, labelled with accuracy](assets/benchmark-cost-2026-08-27.png)
 
@@ -141,7 +141,7 @@ comparison, provider bake-off, and contemporary pricing snapshot.
 | Models | `deepseek-v4-flash`, `gemini-3.1-flash-lite`, `gemini-2.5-flash-lite`; judge `gpt-5-nano` |
 | Worker pools | DeepSeek 250, Gemini 3.1 250, **Gemini 2.5 Flash-Lite 5** (throttle-capped — 503s/rate-limits even at 10) |
 | Pricing snapshot | 2026-06-01 (USD/Mtok; confirm against each provider's current page) |
-| Temperature | 0.0 (the library default at the time; the benchmark passes none) |
+| Temperature | 0.0 (the library default at the time; the example now pins it for contestants) |
 | Hardware/network | single client host; results bounded by provider latency, not local CPU |
 
 **Estimated cost to reproduce:** ~**$1–2** total in API spend (full 1,319-item

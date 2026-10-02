@@ -1,6 +1,6 @@
 # Choosing Between ABL and Alternatives
 
-**Last reviewed: 2026-07-20.** Capabilities change; follow the linked primary
+**Last reviewed: 2026-10-02.** Capabilities change; follow the linked primary
 documentation before making a long-lived platform decision.
 
 async-batch-llm (ABL) is a narrow, in-process execution layer for independent
@@ -47,8 +47,8 @@ into datasets, including Hugging Face `Dataset` integration. Curator provides
 structured outputs, caching and interruption recovery, retries, token and cost
 statistics, a data viewer, broad providers through backends such as LiteLLM,
 local inference through vLLM/Ollama, and provider-native batch execution. Its
-[cache fingerprinting and recovery](https://docs.bespokelabs.ai/bespoke-curator/getting-started/automatic-recovery-and-caching)
-and [hosted dataset viewer](https://docs.bespokelabs.ai/bespoke-curator/getting-started/visualize-your-dataset-with-the-bespoke-curator-viewer)
+[cache fingerprinting and recovery](https://docs.bespokelabs.ai/curator/caching)
+and [hosted dataset viewer](https://docs.bespokelabs.ai/curator/viewer)
 are first-class data-pipeline features.
 
 Curator is often the better choice when work begins and ends as a dataset, the
@@ -96,10 +96,11 @@ network gateway or a competitor to LiteLLM.
 Provider batch APIs accept asynchronous submissions and expose results later.
 They are strong for very large, latency-tolerant jobs because the provider owns
 scheduling and may offer discounted pricing. For example, the
-[OpenAI Batch API](https://help.openai.com/en/articles/9197833-batch-api-faq)
+[OpenAI Batch API](https://developers.openai.com/api/docs/guides/batch)
 documents a 24-hour processing window and a 50% discount for supported models;
-the [Claude Message Batches API](https://platform.claude.com/docs/en/build-with-claude/message-batches)
-documents delayed processing and batch pricing.
+the [Claude Message Batches API](https://platform.claude.com/docs/en/build-with-claude/batch-processing)
+documents most batches finishing within an hour, a 24-hour expiry, and 50% batch
+pricing.
 
 ABL currently performs incremental online calls. It is a better fit when the
 application needs live completion-order results, application-specific retry

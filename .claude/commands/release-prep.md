@@ -58,6 +58,9 @@ generation, version bumping, and creating the release PR.
 - Move the whole `[Unreleased]` body (lead-in lines, category sections, and the reference-link definitions such as
   `[#177]: https://...` at its end) under a new `[<version>] - <YYYY-MM-DD>` heading directly below `[Unreleased]`.
   Leave `[Unreleased]` empty.
+- Update the compare links at the end of the file: point `[Unreleased]:` at `compare/v<version>...HEAD` and add
+  `[<version>]: https://github.com/geoff-davis/async-batch-llm/compare/v<previous>...v<version>` above the previous
+  release's line.
 - Check every link in the new section: each `[#NNN]` has a definition, and each relative link (for example the
   migration guide) points to a file that exists.
 
