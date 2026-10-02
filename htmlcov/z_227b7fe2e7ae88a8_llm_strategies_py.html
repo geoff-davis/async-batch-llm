@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_91f2bd3622d94756___init___py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-02 21:13 +0000
+            created at 2026-10-02 21:18 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -621,11 +621,11 @@
     <p class="pln"><span class="n"><a id="t537" href="#t537">537</a></span><span class="t"><span class="str">    v0.6.0: Accepts LLMModel instead of raw client + model string.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t538" href="#t538">538</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t539" href="#t539">539</a></span><span class="t"><span class="str">    Example:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t540" href="#t540">540</a></span><span class="t"><span class="str">        &gt;&gt;&gt; model = GeminiModel(&quot;gemini-2.5-flash&quot;, client)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t540" href="#t540">540</a></span><span class="t"><span class="str">        &gt;&gt;&gt; model = GeminiModel(&quot;gemini-3.5-flash&quot;, client)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t541" href="#t541">541</a></span><span class="t"><span class="str">        &gt;&gt;&gt; strategy = GeminiStrategy(model, response_parser=lambda r: r.text)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t542" href="#t542">542</a></span><span class="t"><span class="str">        &gt;&gt;&gt;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t543" href="#t543">543</a></span><span class="t"><span class="str">        &gt;&gt;&gt; # With caching:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t544" href="#t544">544</a></span><span class="t"><span class="str">        &gt;&gt;&gt; cached_model = GeminiCachedModel(&quot;gemini-2.5-flash&quot;, client, cached_content=[...])</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t544" href="#t544">544</a></span><span class="t"><span class="str">        &gt;&gt;&gt; cached_model = GeminiCachedModel(&quot;gemini-3.5-flash&quot;, client, cached_content=[...])</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t545" href="#t545">545</a></span><span class="t"><span class="str">        &gt;&gt;&gt; strategy = GeminiStrategy(cached_model, response_parser=lambda r: r.text)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t546" href="#t546">546</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t547" href="#t547">547</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
@@ -646,7 +646,7 @@
     <p class="pln"><span class="n"><a id="t562" href="#t562">562</a></span><span class="t"><span class="str">    Added in v0.9.0.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t563" href="#t563">563</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t564" href="#t564">564</a></span><span class="t"><span class="str">    Example:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t565" href="#t565">565</a></span><span class="t"><span class="str">        &gt;&gt;&gt; model = OpenAIModel.from_api_key(&quot;gpt-4o-mini&quot;, api_key=&quot;sk-...&quot;)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t565" href="#t565">565</a></span><span class="t"><span class="str">        &gt;&gt;&gt; model = OpenAIModel.from_api_key(&quot;gpt-6-luna&quot;, api_key=&quot;sk-...&quot;)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t566" href="#t566">566</a></span><span class="t"><span class="str">        &gt;&gt;&gt; strategy = OpenAIStrategy(model)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t567" href="#t567">567</a></span><span class="t"><span class="str">        &gt;&gt;&gt;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t568" href="#t568">568</a></span><span class="t"><span class="str">        &gt;&gt;&gt; # Structured output via response_parser:</span>&nbsp;</span><span class="r"></span></p>
@@ -700,7 +700,7 @@
     <p class="pln"><span class="n"><a id="t616" href="#t616">616</a></span><span class="t"><span class="str">    Added in v0.10.0.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t617" href="#t617">617</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t618" href="#t618">618</a></span><span class="t"><span class="str">    Example:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t619" href="#t619">619</a></span><span class="t"><span class="str">        &gt;&gt;&gt; model = DeepSeekModel.from_api_key(&quot;deepseek-chat&quot;, api_key=&quot;sk-...&quot;)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t619" href="#t619">619</a></span><span class="t"><span class="str">        &gt;&gt;&gt; model = DeepSeekModel.from_api_key(&quot;deepseek-v4-flash&quot;, api_key=&quot;sk-...&quot;)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t620" href="#t620">620</a></span><span class="t"><span class="str">        &gt;&gt;&gt; strategy = DeepSeekStrategy(model)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t621" href="#t621">621</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t622" href="#t622">622</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
@@ -876,7 +876,7 @@
             <a class="nav" href="z_91f2bd3622d94756___init___py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-02 21:13 +0000
+            created at 2026-10-02 21:18 +0000
         </p>
     </div>
 </footer>

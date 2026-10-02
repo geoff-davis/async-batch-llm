@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_227b7fe2e7ae88a8_gateway_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-02 21:13 +0000
+            created at 2026-10-02 21:18 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -82,7 +82,7 @@
     </div>
 </header>
 <main id="source">
-    <p class="pln"><span class="n"><a id="t1" href="#t1">1</a></span><span class="t"><span class="str">&quot;&quot;&quot;String-based strategy factory: ``llm(&quot;openai:gpt-4o-mini&quot;)``.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1" href="#t1">1</a></span><span class="t"><span class="str">&quot;&quot;&quot;String-based strategy factory: ``llm(&quot;openai:gpt-6-luna&quot;)``.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t2" href="#t2">2</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t3" href="#t3">3</a></span><span class="t"><span class="str">Collapses the model/strategy split for the common case. The explicit</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t4" href="#t4">4</a></span><span class="t"><span class="str">two-object form (``OpenAIStrategy(OpenAIModel.from_api_key(...))``) remains</span>&nbsp;</span><span class="r"></span></p>
@@ -222,8 +222,8 @@
     <p class="pln"><span class="n"><a id="t138" href="#t138">138</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t139" href="#t139">139</a></span><span class="t"><span class="str">    Example:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t140" href="#t140">140</a></span><span class="t"><span class="str">        &gt;&gt;&gt; from async_batch_llm import llm</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t141" href="#t141">141</a></span><span class="t"><span class="str">        &gt;&gt;&gt; strategy = llm(&quot;openai:gpt-4o-mini&quot;)            # reads OPENAI_API_KEY</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t142" href="#t142">142</a></span><span class="t"><span class="str">        &gt;&gt;&gt; strategy = llm(&quot;gemini:gemini-2.5-flash&quot;)       # reads GOOGLE_API_KEY</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t141" href="#t141">141</a></span><span class="t"><span class="str">        &gt;&gt;&gt; strategy = llm(&quot;openai:gpt-6-luna&quot;)            # reads OPENAI_API_KEY</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t142" href="#t142">142</a></span><span class="t"><span class="str">        &gt;&gt;&gt; strategy = llm(&quot;gemini:gemini-3.5-flash&quot;)       # reads GOOGLE_API_KEY</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t143" href="#t143">143</a></span><span class="t"><span class="str">        &gt;&gt;&gt; strategy = llm(&quot;deepseek:deepseek-v4-flash&quot;, thinking=False, max_connections=150)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t144" href="#t144">144</a></span><span class="t"><span class="str">        &gt;&gt;&gt; strategy = llm(&quot;openrouter:anthropic/claude-haiku-4-5&quot;)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t145" href="#t145">145</a></span><span class="t"><span class="str">        &gt;&gt;&gt; strategy = llm(</span>&nbsp;</span><span class="r"></span></p>
@@ -239,7 +239,7 @@
     <p class="pln"><span class="n"><a id="t155" href="#t155">155</a></span><span class="t"><span class="str">            proxies) over Chat Completions and requires ``base_url=``; its</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t156" href="#t156">156</a></span><span class="t"><span class="str">            ``api_key`` falls back to ``OPENAI_API_KEY``. Everything after the first colon</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t157" href="#t157">157</a></span><span class="t"><span class="str">            is the provider&#x27;s model id (which may itself contain colons, e.g.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t158" href="#t158">158</a></span><span class="t"><span class="str">            ``&quot;openrouter:meta-llama/llama-3.1-8b-instruct:free&quot;``).</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t158" href="#t158">158</a></span><span class="t"><span class="str">            ``&quot;openrouter:qwen/qwen3.8-27b:free&quot;``).</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t159" href="#t159">159</a></span><span class="t"><span class="str">        response_parser: Optional function parsing :class:`LLMResponse` into</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t160" href="#t160">160</a></span><span class="t"><span class="str">            the strategy&#x27;s output type; defaults to returning ``response.text``.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t161" href="#t161">161</a></span><span class="t"><span class="str">        temperature: Default sampling temperature, forwarded to the strategy.</span>&nbsp;</span><span class="r"></span></p>
@@ -274,7 +274,7 @@
     <p class="run"><span class="n"><a id="t190" href="#t190">190</a></span><span class="t">    <span class="key">if</span> <span class="key">not</span> <span class="nam">sep</span> <span class="key">or</span> <span class="key">not</span> <span class="nam">provider</span> <span class="key">or</span> <span class="key">not</span> <span class="nam">model_id</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t191" href="#t191">191</a></span><span class="t">        <span class="key">raise</span> <span class="nam">ValueError</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t192" href="#t192">192</a></span><span class="t">            <span class="fst">f&quot;</span><span class="fst">Invalid model spec </span><span class="op">{</span><span class="nam">spec</span><span class="op">!</span><span class="nam">r</span><span class="op">}</span><span class="fst">: expected &#x27;provider:model&#x27;, e.g. </span><span class="fst">&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t193" href="#t193">193</a></span><span class="t">            <span class="fst">f&quot;</span><span class="fst">&#x27;openai:gpt-4o-mini&#x27;. Valid provider prefixes: </span><span class="op">{</span><span class="nam">_valid_prefixes</span><span class="op">(</span><span class="op">)</span><span class="op">}</span><span class="fst">.</span><span class="fst">&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t193" href="#t193">193</a></span><span class="t">            <span class="fst">f&quot;</span><span class="fst">&#x27;openai:gpt-6-luna&#x27;. Valid provider prefixes: </span><span class="op">{</span><span class="nam">_valid_prefixes</span><span class="op">(</span><span class="op">)</span><span class="op">}</span><span class="fst">.</span><span class="fst">&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t194" href="#t194">194</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t195" href="#t195">195</a></span><span class="t">    <span class="key">if</span> <span class="nam">provider</span> <span class="key">not</span> <span class="key">in</span> <span class="nam">_PROVIDER_EXTRAS</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t196" href="#t196">196</a></span><span class="t">        <span class="key">raise</span> <span class="nam">ValueError</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
@@ -327,7 +327,7 @@
             <a class="nav" href="z_227b7fe2e7ae88a8_gateway_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-02 21:13 +0000
+            created at 2026-10-02 21:18 +0000
         </p>
     </div>
 </footer>
