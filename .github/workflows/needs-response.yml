@@ -1,0 +1,32 @@
+name: Needs response
+
+# Weekly backstop so outside issues and PRs don't sit unanswered: keeps one
+# "needs-response-digest" issue open (and @mentions the maintainer) while any
+# open item's latest human activity isn't from a maintainer. See
+# scripts/needs_response.py.
+
+on:
+  schedule:
+    - cron: "0 15 * * 1"  # Mondays 15:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: needs-response
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Update the needs-response digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 scripts/needs_response.py --update-digest
