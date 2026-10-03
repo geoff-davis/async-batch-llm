@@ -1,4 +1,4 @@
-"""String-based strategy factory: ``llm("openai:gpt-4o-mini")``.
+"""String-based strategy factory: ``llm("openai:gpt-6-luna")``.
 
 Collapses the model/strategy split for the common case. The explicit
 two-object form (``OpenAIStrategy(OpenAIModel.from_api_key(...))``) remains
@@ -138,8 +138,8 @@ def llm(
 
     Example:
         >>> from async_batch_llm import llm
-        >>> strategy = llm("openai:gpt-4o-mini")            # reads OPENAI_API_KEY
-        >>> strategy = llm("gemini:gemini-2.5-flash")       # reads GOOGLE_API_KEY
+        >>> strategy = llm("openai:gpt-6-luna")            # reads OPENAI_API_KEY
+        >>> strategy = llm("gemini:gemini-3.5-flash")       # reads GOOGLE_API_KEY
         >>> strategy = llm("deepseek:deepseek-v4-flash", thinking=False, max_connections=150)
         >>> strategy = llm("openrouter:anthropic/claude-haiku-4-5")
         >>> strategy = llm(
@@ -155,7 +155,7 @@ def llm(
             proxies) over Chat Completions and requires ``base_url=``; its
             ``api_key`` falls back to ``OPENAI_API_KEY``. Everything after the first colon
             is the provider's model id (which may itself contain colons, e.g.
-            ``"openrouter:meta-llama/llama-3.1-8b-instruct:free"``).
+            ``"openrouter:qwen/qwen3.8-27b:free"``).
         response_parser: Optional function parsing :class:`LLMResponse` into
             the strategy's output type; defaults to returning ``response.text``.
         temperature: Default sampling temperature, forwarded to the strategy.
@@ -190,7 +190,7 @@ def llm(
     if not sep or not provider or not model_id:
         raise ValueError(
             f"Invalid model spec {spec!r}: expected 'provider:model', e.g. "
-            f"'openai:gpt-4o-mini'. Valid provider prefixes: {_valid_prefixes()}."
+            f"'openai:gpt-6-luna'. Valid provider prefixes: {_valid_prefixes()}."
         )
     if provider not in _PROVIDER_EXTRAS:
         raise ValueError(

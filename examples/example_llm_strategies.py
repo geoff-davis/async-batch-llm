@@ -51,7 +51,7 @@ async def example_pydantic_ai_strategy():
     # Create a PydanticAI agent
     # A model object works on pydantic-ai 1.x and 2.x; 2.x rejects bare names.
     agent = Agent(
-        GoogleModel("gemini-2.5-flash"),
+        GoogleModel("gemini-3.5-flash"),
         output_type=SummaryOutput,
         system_prompt="You are a helpful assistant that summarizes text.",
     )
@@ -105,7 +105,7 @@ async def example_gemini_strategy():
         return response.text
 
     # Create the model, then wrap it in the strategy.
-    model = GeminiModel("gemini-2.5-flash", client)
+    model = GeminiModel("gemini-3.5-flash", client)
     strategy = GeminiStrategy(model, response_parser=parse_response, temperature=0.7)
 
     # Configure the processor
@@ -186,7 +186,7 @@ async def example_gemini_cached_strategy():
     # Create ONE cached model and wrap it in the ordinary GeminiStrategy.
     # Sharing the same instance across work items is what makes caching pay off.
     cached_model = GeminiCachedModel(
-        "gemini-2.5-flash",
+        "gemini-3.5-flash",
         client,
         cached_content=cached_content,
         cache_ttl_seconds=3600,  # Cache for 1 hour

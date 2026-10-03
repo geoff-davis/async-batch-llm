@@ -45,7 +45,7 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_
 def gemini_tokens(response) -> TokenUsage:
     """Token usage the way the built-in GeminiModel counts it.
 
-    Thinking tokens are billed as output (gemini-2.5-flash thinks by default),
+    Thinking tokens are billed as output (gemini-3.5-flash thinks by default),
     and tool-use prompt tokens count as input.
     """
     usage = response.usage_metadata
@@ -112,7 +112,7 @@ class ProgressiveTempGeminiStrategy(LLMCallStrategy[PersonData]):
         )
 
         response = await self.client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash",
             contents=prompt,
             config=config,
         )
@@ -184,7 +184,7 @@ class SmartRetryGeminiStrategy(LLMCallStrategy[PersonData]):
         )
 
         response = await self.client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash",
             contents=final_prompt,
             config=config,
         )

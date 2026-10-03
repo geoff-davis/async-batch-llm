@@ -43,8 +43,8 @@ auto-selected from the strategy:
 ```python
 from async_batch_llm import llm, process_prompts, process_stream
 
-strategy = llm("openai:gpt-4o-mini")  # factory (v0.20); explicit form:
-# strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-4o-mini"))
+strategy = llm("openai:gpt-6-luna")  # factory (v0.20); explicit form:
+# strategy = OpenAIStrategy(OpenAIModel.from_api_key("gpt-6-luna"))
 
 result = await process_prompts(strategy, ["Summarize A", "Summarize B"])  # -> BatchResult
 async for r in process_stream(strategy, prompts):  # yields WorkItemResult in completion order
@@ -62,7 +62,7 @@ from async_batch_llm import (
     ProcessorConfig,
 )
 
-model = OpenAIModel.from_api_key("gpt-4o-mini")  # reads OPENAI_API_KEY
+model = OpenAIModel.from_api_key("gpt-6-luna")  # reads OPENAI_API_KEY
 strategy = OpenAIStrategy(model)
 config = ProcessorConfig(max_workers=5, attempt_timeout=60.0)
 
@@ -229,9 +229,9 @@ truncation of the discount.
 ```python
 from pydantic_ai.models.google import GoogleModel
 
-# A bare "gemini-2.5-flash" string fails on pydantic-ai 2.x; GoogleModel works on
+# A bare "gemini-3.5-flash" string fails on pydantic-ai 2.x; GoogleModel works on
 # both 1.x (>=1.32) and 2.x. Construction needs GOOGLE_API_KEY.
-agent = Agent(GoogleModel("gemini-2.5-flash"), output_type=Output)
+agent = Agent(GoogleModel("gemini-3.5-flash"), output_type=Output)
 strategy = PydanticAIStrategy(agent=agent)
 work_item = LLMWorkItem(item_id="1", strategy=strategy, prompt="...")
 ```
@@ -240,7 +240,7 @@ work_item = LLMWorkItem(item_id="1", strategy=strategy, prompt="...")
 
 ```python
 # OPENAI_API_KEY auto-resolved by SDK
-model = OpenAIModel.from_api_key("gpt-4o-mini")
+model = OpenAIModel.from_api_key("gpt-6-luna")
 strategy = OpenAIStrategy(model)
 
 # OpenRouter — we read OPENROUTER_API_KEY ourselves (the SDK doesn't know
@@ -340,6 +340,19 @@ git log --oneline main..origin/main   # anything here = local main is stale
 git checkout main && git merge --ff-only origin/main
 git checkout -b my-feature            # branch from the updated main
 ```
+
+Then check for anything waiting on Geoff, and report it **before** starting the
+session's task (an outside feature request once sat unanswered for 25 days):
+
+```bash
+python3 scripts/needs_response.py     # open issues/PRs whose latest human activity isn't a maintainer's
+gh api repos/geoff-davis/async-batch-llm/dependabot/alerts \
+  --jq '.[] | select(.state=="open") | [.number, .security_advisory.severity, .dependency.package.name, .security_advisory.summary] | @tsv'
+```
+
+The `Needs response` workflow (`.github/workflows/needs-response.yml`) runs the same
+script weekly and keeps a `needs-response-digest` issue open, mentioning Geoff, while
+anything is unanswered.
 
 The `check-branch-fresh` pre-push hook (`scripts/check_branch_fresh.sh`)
 covers what the routine can't: main moving mid-session, between when you
@@ -510,8 +523,8 @@ Key test files:
   `test_token_tracking_on_failure.py` — token accounting.
 - `test_cache_expiration_multiworker.py`, `test_cache_tag_matching.py`
   — Gemini cache lifecycle.
-- `test_legacy_fixtures.py` — artifacts written by v0.18, v0.21, v0.24.1, and
-  v0.26 still read and replay (fixtures in `tests/fixtures/`; add one per
+- `test_legacy_fixtures.py` — artifacts written by v0.18, v0.21, v0.24.1, v0.26,
+  v0.27, and v0.28 still read and replay (fixtures in `tests/fixtures/`; add one per
   release via `scripts/write_legacy_fixtures.py`, see `/release-prep`).
 - `test_deprecations.py`, `test_stability_page.py`, `test_categories.py` —
   deprecation warnings, every `__all__` name classified on `docs/stability.md`,

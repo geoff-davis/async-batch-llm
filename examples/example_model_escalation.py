@@ -1,9 +1,9 @@
 """Model escalation strategy: Start cheap, escalate to smarter models on failure.
 
 This example demonstrates a cost-optimization pattern:
-1. Try with fast, cheap model first (gemini-2.5-flash-lite)
-2. If that fails, escalate to better model (gemini-2.5-flash)
-3. If that fails, escalate to most capable model (gemini-2.5-pro)
+1. Try with fast, cheap model first (gemini-3.5-flash-lite)
+2. If that fails, escalate to better model (gemini-3.5-flash)
+3. If that fails, escalate to most capable model (gemini-3.1-pro-preview)
 
 This maximizes cost efficiency while maintaining high success rates.
 
@@ -64,9 +64,9 @@ class ModelEscalationStrategy(LLMCallStrategy[Analysis]):
     Start with cheapest model, escalate to better models on failure.
 
     Model progression (cost and capability):
-    1. gemini-2.5-flash-lite (fastest, cheapest, experimental)
-    2. gemini-2.5-flash (production-ready, fast, good quality)
-    3. gemini-2.5-pro (most capable, slower, most expensive)
+    1. gemini-3.5-flash-lite (fastest, cheapest)
+    2. gemini-3.5-flash (production-ready, fast, good quality)
+    3. gemini-3.1-pro-preview (most capable, slower, most expensive)
 
     This strategy optimizes for cost while maintaining quality:
     - Easy tasks: Succeed on attempt 1 (cheapest)
@@ -76,16 +76,16 @@ class ModelEscalationStrategy(LLMCallStrategy[Analysis]):
 
     # Model tiers: [attempt 1, attempt 2, attempt 3]
     MODELS = [
-        "gemini-2.5-flash-lite",  # Attempt 1: Cheapest/fastest
-        "gemini-2.5-flash",  # Attempt 2: Production fast
-        "gemini-2.5-pro",  # Attempt 3: Most capable
+        "gemini-3.5-flash-lite",  # Attempt 1: Cheapest/fastest
+        "gemini-3.5-flash",  # Attempt 2: Production fast
+        "gemini-3.1-pro-preview",  # Attempt 3: Most capable
     ]
 
     # Approximate relative costs (for illustration)
     COSTS = {
-        "gemini-2.5-flash-lite": 1.0,  # Baseline
-        "gemini-2.5-flash": 2.0,  # ~2x more expensive
-        "gemini-2.5-pro": 10.0,  # ~10x more expensive
+        "gemini-3.5-flash-lite": 1.0,  # Baseline
+        "gemini-3.5-flash": 4.0,  # ~4x more expensive
+        "gemini-3.1-pro-preview": 5.0,  # ~5x more expensive
     }
 
     def __init__(self, client: genai.Client, verbose: bool = True):
@@ -151,9 +151,9 @@ class ModelAndTempEscalationStrategy(LLMCallStrategy[Analysis]):
     """
 
     MODELS = [
-        ("gemini-2.5-flash-lite", 0.5),  # Attempt 1: cheap, moderate temp
-        ("gemini-2.5-flash", 0.8),  # Attempt 2: better model, higher temp
-        ("gemini-2.5-pro", 1.0),  # Attempt 3: best model, max temp
+        ("gemini-3.5-flash-lite", 0.5),  # Attempt 1: cheap, moderate temp
+        ("gemini-3.5-flash", 0.8),  # Attempt 2: better model, higher temp
+        ("gemini-3.1-pro-preview", 1.0),  # Attempt 3: best model, max temp
     ]
 
     def __init__(self, client: genai.Client, verbose: bool = True):
@@ -284,7 +284,7 @@ async def example_cost_comparison():
     )
 
     # Strategy 1: Always use best model (expensive but reliable)
-    print("Strategy 1: Always use gemini-2.5-pro (best model)")
+    print("Strategy 1: Always use gemini-3.1-pro-preview (best model)")
 
     class AlwaysProStrategy(LLMCallStrategy[Analysis]):
         def __init__(self, client: genai.Client):
@@ -297,7 +297,7 @@ async def example_cost_comparison():
                 response_schema=Analysis,
             )
             response = await self.client.aio.models.generate_content(
-                model="gemini-2.5-pro",
+                model="gemini-3.1-pro-preview",
                 contents=prompt,
                 config=config,
             )

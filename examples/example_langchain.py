@@ -63,7 +63,7 @@ async def example_langchain_openai_chain():
     print("=" * 60 + "\n")
 
     # Create LangChain LLM
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)  # reads OPENAI_API_KEY
+    llm = ChatOpenAI(model="gpt-6-luna")  # reads OPENAI_API_KEY
 
     # Create prompt template
     template = """You are a helpful assistant that answers questions concisely.
@@ -218,7 +218,7 @@ async def example_langchain_rag():
     retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
 
     # Create LLM and answer chain
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
+    llm = ChatOpenAI(model="gpt-6-luna")
     answer_prompt = PromptTemplate.from_template(
         "Answer the question using only this context:\n{context}\n\nQuestion: {question}\nAnswer:"
     )
@@ -265,7 +265,7 @@ async def example_langchain_multi_chain():
     print("=" * 60 + "\n")
 
     # Create different LLMs and chains
-    openai_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+    openai_llm = ChatOpenAI(model="gpt-6-luna")
     anthropic_llm = ChatAnthropic(model="claude-haiku-4-5", temperature=1.0)
 
     # Chain for factual questions

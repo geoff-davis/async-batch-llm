@@ -111,7 +111,7 @@ client = AsyncOpenAI(
     http_client=http_client,
     max_retries=0,
 )
-model = OpenAIModel("gpt-4o-mini", client)
+model = OpenAIModel("gpt-6-luna", client)
 strategy = OpenAIStrategy(model)
 config = ProcessorConfig(
     max_workers=100,

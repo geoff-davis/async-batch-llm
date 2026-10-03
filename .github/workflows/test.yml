@@ -32,7 +32,7 @@ jobs:
     - uses: actions/checkout@v7.0.1
 
     - name: Install uv
-      uses: astral-sh/setup-uv@v7.6.0
+      uses: astral-sh/setup-uv@v10.2.0
       with:
         enable-cache: true
 
@@ -59,7 +59,7 @@ jobs:
         uv run pytest tests/ -v --tb=short
 
     - name: Coverage comment
-      uses: py-cov-action/python-coverage-comment-action@v3.41
+      uses: py-cov-action/python-coverage-comment-action@v4.5
       if: matrix.python-version == '3.12'
       with:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -73,7 +73,7 @@ jobs:
     - uses: actions/checkout@v7.0.1
 
     - name: Install uv
-      uses: astral-sh/setup-uv@v7.6.0
+      uses: astral-sh/setup-uv@v10.2.0
       with:
         enable-cache: true
 
@@ -97,7 +97,7 @@ jobs:
     - uses: actions/checkout@v7.0.1
 
     - name: Install uv
-      uses: astral-sh/setup-uv@v7.6.0
+      uses: astral-sh/setup-uv@v10.2.0
       with:
         enable-cache: true
 
@@ -225,7 +225,7 @@ jobs:
     - uses: actions/checkout@v7.0.1
 
     - name: Install uv
-      uses: astral-sh/setup-uv@v7.6.0
+      uses: astral-sh/setup-uv@v10.2.0
       with:
         enable-cache: true
 
@@ -268,7 +268,7 @@ jobs:
     - uses: actions/checkout@v7.0.1
 
     - name: Install uv
-      uses: astral-sh/setup-uv@v7.6.0
+      uses: astral-sh/setup-uv@v10.2.0
       with:
         enable-cache: true
 
@@ -298,7 +298,7 @@ jobs:
     - uses: actions/checkout@v7.0.1
 
     - name: Install uv
-      uses: astral-sh/setup-uv@v7.6.0
+      uses: astral-sh/setup-uv@v10.2.0
       with:
         enable-cache: true
 
@@ -318,7 +318,7 @@ jobs:
     - uses: actions/checkout@v7.0.1
 
     - name: Install uv
-      uses: astral-sh/setup-uv@v7.6.0
+      uses: astral-sh/setup-uv@v10.2.0
       with:
         enable-cache: true
 

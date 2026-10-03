@@ -117,7 +117,7 @@ def pydantic_json_parser(
         ...     label: str
         ...     confidence: float
         >>>
-        >>> model = DeepSeekModel.from_api_key("deepseek-chat", json_mode=True)
+        >>> model = DeepSeekModel.from_api_key("deepseek-v4-flash", json_mode=True)
         >>> parser = pydantic_json_parser(Classification, recover_trailing_markdown=True)
         >>> strategy = DeepSeekStrategy(model, parser)
 
