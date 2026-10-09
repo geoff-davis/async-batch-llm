@@ -3,8 +3,8 @@
 ## Tooling Prerequisites
 
 Python workflows run through `uv`; install it first, then sync the environment with `uv sync`. Markdown linting
-depends on Node tooling—install Node 18+ and add `markdownlint-cli2` as a dev dependency
-(`npm install --save-dev markdownlint-cli2`). Run the Make targets via `npx` so the locally pinned binary is used.
+depends on Node tooling—install Node 20+ and run `npm ci` once to install the `markdownlint-cli2` version pinned in
+`package-lock.json`. Run the Make targets via `npx` so the locally pinned binary is used.
 
 ## Project Structure & Module Organization
 
