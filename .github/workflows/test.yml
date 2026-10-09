@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
 
     steps:
     - uses: actions/checkout@v7.0.1
@@ -346,4 +346,6 @@ jobs:
       run: npm ci
 
     - name: NPM security audit
-      run: npm audit --audit-level=moderate
+      # npm audit can't accept a single advisory; the wrapper fails on everything at
+      # moderate or above except the short, documented allowlist in the script.
+      run: python3 scripts/npm_audit.py --audit-level moderate
