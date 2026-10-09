@@ -422,7 +422,7 @@ the project's release-prep flow.
 ### CI workflows
 
 - `test.yml` — on every push/PR:
-  - `test` (Python 3.10–3.14; the four 3.10–3.13 legs are the required checks) and
+  - `test` (Python 3.10–3.15; the four 3.10–3.13 legs are the required checks) and
     `test-macos`;
   - `quality` (ruff lint and format, mypy, ty, `make package-check`; markdownlint
     runs only in the prek hook and `make ci`, not in CI);
