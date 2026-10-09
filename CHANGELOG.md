@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `numpy` and a few other compiled dependencies to releases with 3.15 wheels; the
   package's own dependency ranges are unchanged.
 
+### Security
+
+- Update the development-only `smol-toml` override to 1.9.1 and add a `katex`
+  override at `>=0.18.2 <0.18.5` (later releases need Node 22 through `commander`
+  15), fixing
+  [GHSA-r4xh-jqrq-34v2](https://github.com/advisories/GHSA-r4xh-jqrq-34v2) and
+  [GHSA-238p-pmpm-9mq7](https://github.com/advisories/GHSA-238p-pmpm-9mq7). CI's npm
+  audit now runs through `scripts/npm_audit.py`, which accepts
+  [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm) (`braces`,
+  no patched release yet) and still fails on every other advisory at moderate or above.
+
 ## [0.28.0] - 2026-10-02
 
 The last release before 1.0, and the last to support Python 3.10. It only adds
