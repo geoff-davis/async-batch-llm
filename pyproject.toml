@@ -52,6 +52,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "License :: OSI Approved :: MIT License",
     "Topic :: Software Development :: Libraries",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -194,6 +195,14 @@ disable_error_code = ["override", "arg-type", "attr-defined", "assignment"]
 [[tool.mypy.overrides]]
 module = "async_batch_llm.base"
 disable_error_code = ["assignment"]  # TypedDict default_factory limitation
+
+# numpy arrives only with the docs extra (matplotlib) and is reached through
+# tiktoken/openai. numpy >= 2.5 needs Python 3.12 and its stubs use the `type`
+# statement, which mypy rejects at python_version 3.10. We never use numpy.
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true  # numpy ships .pyi stubs; skip applies to them only with this
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

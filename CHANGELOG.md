@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Python 3.15 support: CI tests it, and the package declares it. The development
+  lock moves `tiktoken`, `cffi`, `pydantic`/`pydantic-core`, `jiter`, `regex`,
+  `numpy` and a few other compiled dependencies to releases with 3.15 wheels; the
+  package's own dependency ranges are unchanged.
+
 ## [0.28.0] - 2026-10-02
 
 The last release before 1.0, and the last to support Python 3.10. It only adds
