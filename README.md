@@ -71,6 +71,51 @@ or [open the no-key notebook in Colab](https://colab.research.google.com/github/
 
 ![Credential-free terminal demo](https://raw.githubusercontent.com/geoff-davis/async-batch-llm/main/docs/assets/v0.20-quickstart.gif)
 
+## Typical jobs
+
+**Labeling a large dataset.** You need 200,000 support tickets tagged by topic and
+urgency. A quarter of the way in, the provider starts returning 429s, every
+in-flight call retries at once, and the limit gets worse. When the script
+finally dies, a restart pays for the first 50,000 calls again. With
+async-batch-llm, workers that share a quota pause together and ramp back up,
+the RPM and TPM limits you set are enforced before a call goes out, and with a
+SQLite checkpoint and `ResumePolicy.REUSE_SUCCESSES`, a rerun reuses every
+compatible success and runs the rest.
+See [large runs](https://geoff-davis.github.io/async-batch-llm/large-runs/) and
+[`example_production_resume.py`](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_production_resume.py).
+
+**Extracting structured data.** You're pulling fields out of contracts or
+invoices into a schema, and the cheap model occasionally returns JSON that
+doesn't validate. Bad output and rate limits want different fixes: the first
+might need a stronger model, the second only needs to wait. Rate limits draw on
+their own retry budget, separate from other failures, and a strategy's
+`on_error()` can escalate only the items that failed validation, so the
+expensive model sees the hard cases and nothing else.
+See [`example_smart_model_escalation.py`](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_smart_model_escalation.py).
+
+**Comparing models on your own data.** Before switching models, you run the same
+1,000 prompts through three providers and grade the answers. You want a result
+per item, not a list with exceptions mixed in, and token counts that include
+retries, so the cost comparison is honest. The
+[GSM8K benchmark](https://geoff-davis.github.io/async-batch-llm/benchmarks/) in
+this repo is built exactly this way, with an LLM judge as the fallback grader;
+the [walkthrough](https://geoff-davis.github.io/async-batch-llm/examples/benchmark-walkthrough/)
+shows the code.
+
+**A nightly job with a deadline and a budget.** An enrichment job must finish
+before the morning report and must not spend more than a set amount. A batch
+deadline and token or cost caps stop the run cleanly, keep every result that
+already finished, and record why the run stopped. With a checkpoint and a
+resume policy, the next run reuses every compatible success and runs the rest.
+See [guardrails](https://geoff-davis.github.io/async-batch-llm/guardrails/).
+
+**Adding concurrency to an app you already have.** Your service already calls an
+LLM through its own client or gateway, and you don't want a new SDK.
+`CallableStrategy` wraps your existing async function, and `LLMCallPool` gives
+concurrent requests in a long-running service one shared rate-limit cooldown
+and a concurrency limit.
+See [use your existing async client](#use-your-existing-async-client).
+
 ## Why not just `asyncio.gather`?
 
 A semaphore plus `asyncio.gather()` caps concurrency, and for a small script
