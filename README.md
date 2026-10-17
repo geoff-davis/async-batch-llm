@@ -12,10 +12,10 @@ Gemini, OpenRouter, DeepSeek, or PydanticAI support. Use it when you need result
 during the current workflow; for latency-tolerant jobs, a provider's native batch
 API may be cheaper.
 
-[![PyPI version](https://badge.fury.io/py/async-batch-llm.svg)](https://badge.fury.io/py/async-batch-llm)
+[![PyPI version](https://img.shields.io/pypi/v/async-batch-llm)](https://pypi.org/project/async-batch-llm/)
 [![PyPI Downloads](https://img.shields.io/pepy/dt/async-batch-llm)](https://pepy.tech/projects/async-batch-llm)
 [![Python 3.10-3.15](https://img.shields.io/badge/python-3.10--3.15-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://github.com/geoff-davis/async-batch-llm/workflows/Tests/badge.svg)](https://github.com/geoff-davis/async-batch-llm/actions)
+[![Tests](https://img.shields.io/github/actions/workflow/status/geoff-davis/async-batch-llm/test.yml?branch=main&label=tests)](https://github.com/geoff-davis/async-batch-llm/actions/workflows/test.yml)
 [![Coverage](https://raw.githubusercontent.com/geoff-davis/async-batch-llm/python-coverage-comment-action-data/badge.svg)](https://github.com/geoff-davis/async-batch-llm/tree/python-coverage-comment-action-data)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/geoff-davis/async-batch-llm/blob/main/notebooks/async_batch_llm_quickstart.ipynb)
