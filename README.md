@@ -13,6 +13,7 @@ during the current workflow; for latency-tolerant jobs, a provider's native batc
 API may be cheaper.
 
 [![PyPI version](https://badge.fury.io/py/async-batch-llm.svg)](https://badge.fury.io/py/async-batch-llm)
+[![PyPI Downloads](https://img.shields.io/pepy/dt/async-batch-llm)](https://pepy.tech/projects/async-batch-llm)
 [![Python 3.10-3.15](https://img.shields.io/badge/python-3.10--3.15-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://github.com/geoff-davis/async-batch-llm/workflows/Tests/badge.svg)](https://github.com/geoff-davis/async-batch-llm/actions)
 [![Coverage](https://raw.githubusercontent.com/geoff-davis/async-batch-llm/python-coverage-comment-action-data/badge.svg)](https://github.com/geoff-davis/async-batch-llm/tree/python-coverage-comment-action-data)
