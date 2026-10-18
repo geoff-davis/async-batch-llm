@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `numpy` and a few other compiled dependencies to releases with 3.15 wheels; the
   package's own dependency ranges are unchanged.
 
+### Fixed
+
+- The `docs` extra now requires `mkdocstrings` 1.0.7 or later on Python 3.11+, and
+  keeps `pymdown-extensions` below 12.2 on Python 3.10. pymdown-extensions 12.2
+  changed a constructor that older mkdocstrings releases call, which broke the docs
+  build, and mkdocstrings 1.0.7 (the first release that handles it) needs Python 3.11.
+
 ### Security
 
 - Update the development-only `smol-toml` override to 1.9.1 and add a `katex`
