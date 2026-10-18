@@ -8,7 +8,7 @@ import random
 import sys
 import time
 import warnings
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -168,7 +168,7 @@ class CapacityLimiter:
         deadline: float | None = None,
         abort_controller: AbortController | None = None,
         item_id: str | None = None,
-    ) -> AsyncIterator[Admission]:
+    ) -> AsyncGenerator[Admission, None]:
         """Acquire capacity for one execute attempt and report queueing time."""
         capacity = self.effective_capacity(strategy)
         if capacity is None:

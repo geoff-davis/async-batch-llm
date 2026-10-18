@@ -18,7 +18,7 @@ import asyncio
 import inspect
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from copy import copy
@@ -1390,7 +1390,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         attempt_number: int,
         retry_state: RetryState | None,
         deadline: float | None,
-    ) -> AsyncIterator[QuotaReservation]:
+    ) -> AsyncGenerator[QuotaReservation, None]:
         """Own quota and capacity across one live provider attempt.
 
         Entry owns neither resource. After reservation, every exit (including

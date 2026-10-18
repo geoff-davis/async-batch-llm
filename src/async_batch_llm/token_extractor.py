@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -120,7 +120,7 @@ class TokenExtractor:
     @contextmanager
     def _reuse_observation(
         self, exception: BaseException, observation: TokenUsageObservation
-    ) -> Iterator[None]:
+    ) -> Generator[None, None, None]:
         """Let a synchronous compatibility override call super without re-extraction."""
         token = _reused_observation.set((self, exception, observation))
         try:
