@@ -26,13 +26,7 @@ from typing import Any
 SEVERITIES = ("info", "low", "moderate", "high", "critical")
 
 # Advisory ID -> why it's accepted. Removing an entry is the normal way to retire it.
-ALLOWED: dict[str, str] = {
-    "GHSA-vfj7-8cjw-p6xm": (
-        "braces stack exhaustion on deeply nested patterns; no patched release exists "
-        "(braces <= 3.0.3, published 2026-09-18). Reached only through markdownlint-cli2's "
-        "file globbing, which expands patterns we write in the Makefile and prek config."
-    ),
-}
+ALLOWED: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
