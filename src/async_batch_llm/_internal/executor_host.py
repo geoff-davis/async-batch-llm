@@ -26,6 +26,7 @@ from ..base import (
     TOutput,
     WorkItemResult,
 )
+from ..cache_groups import CacheGroupTracker
 from ..core import ProcessorConfig
 from ..llm_strategies import LLMCallStrategy
 from ..strategies import (
@@ -63,7 +64,7 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         strategy: LLMCallStrategy | None = None,
         error_classifier: ErrorClassifier | None = None,
         rate_limit_strategy: RateLimitStrategy | None = None,
-        track_cache_groups: bool = False,
+        cache_tracker: CacheGroupTracker | None = None,
     ) -> None:
         if config.guardrails.budget_configured:
             # Accepting a safety cap and silently ignoring it would be worse
@@ -138,7 +139,9 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         self._budget_tracker: BudgetTracker | None = None
         # Statistics only (no floor), for the long-lived pool.
         self._cache_tracker: CacheHitTracker | None = (
-            CacheHitTracker(config.guardrails, windowed=True) if track_cache_groups else None
+            CacheHitTracker(config.guardrails, tracker=cache_tracker)
+            if cache_tracker is not None
+            else None
         )
 
         self.executor: ItemExecutor[TInput, TOutput, TContext] = ItemExecutor(

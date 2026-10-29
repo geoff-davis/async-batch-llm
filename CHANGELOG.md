@@ -36,6 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OpenAI Responses calls record `prompt_cache_diagnostics` miss reasons as
   `cache_miss_reason` ([#244]).
 
+- A public `CacheGroupTracker` ([#247]). Provisional. It is the per-group accounting
+  the processor and `LLMCallPool` use, with `record()`, `record_result()` (rebuild from
+  saved results), `stats()`, `below_floor()` (returns `CacheFloorBreach` entries, the
+  floor's check), `reset()`, and `to_dict()`/`from_dict()` to save and restore its
+  exact state. `LLMCallPool` takes `cache_tracker=` and exposes `pool.cache_tracker`.
+  Processor stats now report `window_hit_rate` for every group, with or without a
+  floor.
+
 [#244]: https://github.com/geoff-davis/async-batch-llm/issues/244
 [#247]: https://github.com/geoff-davis/async-batch-llm/issues/247
 

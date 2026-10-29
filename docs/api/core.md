@@ -46,6 +46,14 @@
 
 ::: async_batch_llm.AttemptUsage
 
+## CacheGroupTracker
+
+::: async_batch_llm.CacheGroupTracker
+
+## CacheFloorBreach
+
+::: async_batch_llm.CacheFloorBreach
+
 ## BatchBudgetExceeded
 
 ::: async_batch_llm.BatchBudgetExceeded

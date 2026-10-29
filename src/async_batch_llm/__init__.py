@@ -79,6 +79,7 @@ from .budget import AttemptUsage
 
 # Queue-less convenience surfaces (single call + shared call pool), built on the
 # same per-item resilience pipeline as the batch processor.
+from .cache_groups import CacheFloorBreach, CacheGroupTracker
 from .call_pool import LLMCallPool
 from .callable_strategy import CallableStrategy, CallOutcome
 
@@ -224,6 +225,8 @@ __all__ = [
     "AttemptTiming",
     "BatchResult",
     "BatchTermination",
+    "CacheFloorBreach",
+    "CacheGroupTracker",
     "CachedTokenRates",
     "LLMWorkItem",
     "PostProcessorFunc",

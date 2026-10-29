@@ -641,7 +641,7 @@ def test_counters_and_rates() -> None:
     assert entry["cached_input_tokens"] == 90
     assert entry["cache_write_input_tokens"] == 80
     assert entry["hit_rate"] == pytest.approx(0.45)
-    assert "window_hit_rate" not in entry  # no floor configured
+    assert entry["window_hit_rate"] is None  # reported even without a floor; window not full
 
 
 # ── Miss reasons ─────────────────────────────────────────────────────────────
@@ -1014,7 +1014,7 @@ async def test_single_call_and_pool_reject_a_floor() -> None:
 
 
 def test_window_without_a_floor_is_reported_but_never_trips() -> None:
-    tracker = CacheHitTracker(GuardrailConfig(cache_hit_window=2), windowed=True)
+    tracker = CacheHitTracker(GuardrailConfig(cache_hit_window=2))
     assert _record(tracker, "g", _usage(10)) is None
     assert _group(tracker.stats(), "g")["window_hit_rate"] is None
     assert _record(tracker, "g", _usage(10, 10)) is None

@@ -285,8 +285,9 @@ response carries a cache-miss diagnosis.
 `cache_groups`, a list sorted by input tokens, and `cache_groups_overflow` (`None`
 unless there was overflow). Each entry has `group`, `measured_calls`,
 `unmeasured_calls`, `input_tokens`, `cached_input_tokens`,
-`cache_write_input_tokens`, `hit_rate` (cumulative) and `last_miss_reason`, plus
-`window_hit_rate` when a floor is configured (`None` until the window is full).
+`cache_write_input_tokens`, `hit_rate` (cumulative), `window_hit_rate` (over the last
+`cache_hit_window` measured calls, `None` until the window is full) and
+`last_miss_reason`.
 `BatchResult` has no per-group view: results include replays and add up retries,
 which isn't what the floor measures.
 
@@ -302,6 +303,45 @@ pool's cumulative `hit_rate` moves slowly, so the window shows a recent drop.
 still running at the reset is counted when it returns. Both methods are synchronous,
 so call them from the pool's event loop. `call()` and `call_result()` keep no
 statistics.
+
+**Your own tracker.** `CacheGroupTracker` (provisional) is the accounting behind all
+of this, with the same rule for what counts and the same window check as the floor.
+`pool.cache_tracker` is the pool's live one. Use it to carry a pool's statistics
+across a restart, or to apply a floor where the processor can't:
+
+```python
+import json
+
+from async_batch_llm import CacheGroupTracker, LLMCallPool
+
+# On startup: continue the saved statistics, if any.
+tracker = CacheGroupTracker.from_dict(json.loads(saved)) if saved else None
+pool = LLMCallPool(strategy, config=config, cache_tracker=tracker)
+
+# Between calls: apply a floor yourself.
+for breach in pool.cache_tracker.below_floor(0.8):
+    logger.warning(breach.message)
+
+# At a checkpoint or on shutdown: save the exact state.
+saved = json.dumps(pool.cache_tracker.to_dict())
+```
+
+- `record(group, usage, miss_reason=None)` counts one call; `record_result(result)`
+  counts a `WorkItemResult` from its metadata and `token_usage`, skipping failures.
+- `stats()` returns `cache_groups` and `cache_groups_overflow` in the shape above.
+- `below_floor(floor)` returns a `CacheFloorBreach` for each group whose full window
+  is below `floor` (lowest first) and one with `overflow=True` if more than 64 groups
+  were seen. Each breach's `message` is the stop reason a processor run would report.
+- `to_dict()` returns JSON-serializable state, every group's window included, and
+  `CacheGroupTracker.from_dict()` restores it exactly (it raises `ValueError` on bad
+  data). A pool given a restored tracker uses the tracker's `window`, not
+  `cache_hit_window`.
+
+Without saved state, you can rebuild a tracker by feeding it saved results with
+`record_result`. It reads lower than the live tracker did when retries were billed:
+a result's `token_usage` adds up every attempt of its item, failed ones included,
+whereas live tracking counts only the attempt that returned. A processor run always
+starts with a fresh tracker; it doesn't take a saved one.
 
 ## End-to-end checkpointed run
 
