@@ -12,7 +12,7 @@ here.
 **strategy pattern** — provider-agnostic at the framework level, with
 first-class support for several providers built in.
 
-**Current version:** v0.28.0, the last release before 1.0 and the last to
+**Current version:** v0.29.0, the last release before 1.0 and the last to
 support Python 3.10 (see `CHANGELOG.md`; `pyproject.toml` is bumped
 by the release-prep flow, so it may briefly lag `main` between releases).
 
@@ -773,8 +773,11 @@ assert result.total_items == result.succeeded + result.failed
 
 Most recent first. See `CHANGELOG.md` for full per-release detail.
 
-- **v0.28.0** — deprecation-only release ahead of 1.0, and the last for Python
-  3.10. Positional arguments to the five config classes and
+- **v0.29.0** — the last release before 1.0 and the last for Python 3.10. Adds
+  `cache_write_input_tokens` and `cache_write_rate` pricing (#235), Python 3.15
+  support, and fixes PydanticAI dropping `cache_read_tokens`. Additive only.
+
+- **v0.28.0** — deprecation-only release ahead of 1.0. Positional arguments to the five config classes and
   `ProcessorConfig.enable_detailed_logging` warn (both go in 1.0); `LLMCallPool`
   moves to `call_pool.py` (`gateway.py` re-exports it); the API page becomes
   `api/single-call-pool/` with a redirect. Read `docs/migration/v0.28.md`.

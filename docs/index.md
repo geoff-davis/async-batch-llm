@@ -86,7 +86,7 @@ The project is beta software. APIs are typed and covered by deterministic
 tests, but release notes and migration guides should be reviewed before an
 upgrade. Contributions and focused production feedback are welcome.
 
-v0.28 is the last release before 1.0, and the last to support Python 3.10; 1.0
+v0.29 is the last release before 1.0, and the last to support Python 3.10; 1.0
 requires Python 3.11 or newer. v0.27 and v0.28 deprecate several names that 1.0 removes, so
 run your tests with `-W error::DeprecationWarning` before upgrading ([Testing](testing.md#4-preparing-for-10)
 covers a google-genai warning to filter on Python 3.14). See

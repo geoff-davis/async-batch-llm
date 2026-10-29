@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-29
+
+The last release before 1.0, and the last to support Python 3.10. It adds
+prompt-cache write tracking and Python 3.15 support. Nothing that works in v0.28 stops
+working.
+
 ### Added
 
 - Python 3.15 support: CI tests it, and the package declares it. The development
@@ -39,6 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps `pymdown-extensions` below 12.2 on Python 3.10. pymdown-extensions 12.2
   changed a constructor that older mkdocstrings releases call, which broke the docs
   build, and mkdocstrings 1.0.7 (the first release that handles it) needs Python 3.11.
+
+### Documentation
+
+- Docs, examples, docstrings and the README use current model names; Google no longer
+  serves `gemini-2.5-*` or `gemini-2.0-flash` to new users, so copied examples
+  failed. The OpenAI guide sets `reasoning_effort: "none"` where it passes a
+  temperature, and the Gemini guide's PydanticAI snippet uses `GoogleModel(...)`.
+- The README has a "Typical jobs" section: five common batch jobs, the problems each
+  runs into, and the features and examples that handle them.
 
 ### Security
 
@@ -2676,7 +2691,8 @@ See **[Migration Guide](docs/archive/MIGRATION_V0_1.md)** for complete upgrade i
 [#122]: https://github.com/geoff-davis/async-batch-llm/issues/122
 [#125]: https://github.com/geoff-davis/async-batch-llm/issues/125
 
-[Unreleased]: https://github.com/geoff-davis/async-batch-llm/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/geoff-davis/async-batch-llm/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.25.0...v0.26.0
