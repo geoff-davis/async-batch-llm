@@ -420,6 +420,7 @@ class GeminiModel:
         safety_settings: list[dict[str, Any]] | None = None,
         system_instruction: str | None = None,
         metadata_extractors: list[MetadataExtractor] | None = None,
+        cache_group: str | None = None,
     ):
         """
         Args:
@@ -431,6 +432,10 @@ class GeminiModel:
                 ``LLMResponse.metadata``.
                 Merged on top of the built-in ``safety_ratings``/``finish_reason``;
                 user keys win. Added in v0.15.0.
+            cache_group: Label for this model's calls in the per-group cache
+                statistics, in place of the system-instruction hash. A per-call
+                ``config={"cache_group": ...}`` overrides it and is never sent.
+                Provisional.
         """
         if genai is None:
             raise ImportError(
@@ -448,6 +453,7 @@ class GeminiModel:
         self._client = client
         self._safety_settings = safety_settings
         self._default_system_instruction = system_instruction
+        self._cache_group_label = _cache_label(cache_group, "cache_group")
         self._metadata_extractors = metadata_extractors
 
     def _lifecycle_lock(self) -> asyncio.Lock:
@@ -522,6 +528,7 @@ class GeminiModel:
 
         if config:
             call_config.update(config)
+        label = _pop_cache_label(call_config) or self._cache_group_label
 
         # Make the API call (config is built as a dict; the SDK accepts this at runtime
         # even though the type stubs say GenerateContentConfig)
@@ -559,7 +566,7 @@ class GeminiModel:
                 raw=response,
             ),
             # From the merged config: a per-call system_instruction overrides the default.
-            _cache_group(None, call_config.get("system_instruction")),
+            label or _cache_group(None, call_config.get("system_instruction")),
         )
 
 
@@ -604,6 +611,7 @@ class GeminiCachedModel:
         cache_tags: dict[str, str] | None = None,
         safety_settings: list[dict[str, Any]] | None = None,
         metadata_extractors: list[MetadataExtractor] | None = None,
+        cache_group: str | None = None,
     ):
         """
         Args:
@@ -623,6 +631,10 @@ class GeminiCachedModel:
                 ``LLMResponse.metadata``.
                 Merged on top of the built-in metadata; user keys win.
                 Added in v0.15.0.
+            cache_group: Label for this model's calls in the per-group cache
+                statistics, in place of the cached-content hash. A per-call
+                ``config={"cache_group": ...}`` overrides it and is never sent.
+                Provisional.
         """
         if genai is None:
             raise ImportError(
@@ -687,6 +699,7 @@ class GeminiCachedModel:
             )
         self._safety_settings = safety_settings
         self._metadata_extractors = metadata_extractors
+        self._cache_group_label = _cache_label(cache_group, "cache_group")
 
         self._cache: Any = None
         self._cache_created_at: float | None = None
@@ -836,6 +849,7 @@ class GeminiCachedModel:
 
         if config:
             call_config.update(config)
+        label = _pop_cache_label(call_config) or self._cache_group_label
 
         requested_cache = call_config["cached_content"]
         owned_cache_name = self._cache.name
@@ -898,7 +912,7 @@ class GeminiCachedModel:
                 metadata=self._build_metadata(response),
                 raw=response,
             ),
-            "gemini-cache:" + self._cache_tags["abl-content"][:12],
+            label or "gemini-cache:" + self._cache_tags["abl-content"][:12],
         )
 
     # ── Cache internals ─────────────────────────────────────────
@@ -1128,6 +1142,8 @@ class OpenAICompatibleModel:
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
         metadata_extractors: list[MetadataExtractor] | None = None,
+        prompt_cache_key: str | None = None,
+        cache_group: str | None = None,
     ):
         """
         Args:
@@ -1148,6 +1164,16 @@ class OpenAICompatibleModel:
                 ``logprobs``). Merged on top of the built-in
                 ``finish_reason``/``model`` metadata; user keys win.
                 Added in v0.15.0.
+            prompt_cache_key: Sent as ``prompt_cache_key`` (in ``extra_body``) on
+                every call, which routes requests that share it to the same prompt
+                cache. ``"auto"`` sends ``abl-si-`` plus a hash of the system
+                instruction actually sent on each call, and no key when there is
+                none. A ``prompt_cache_key`` in per-call ``config`` wins; one in
+                ``extra_body`` as well raises ``ValueError``. Provisional.
+            cache_group: Label for this model's calls in the per-group cache
+                statistics, ahead of the key and the system-instruction hash. A
+                per-call ``config={"cache_group": ...}`` overrides it and is never
+                sent. Provisional.
         """
         if AsyncOpenAI is None:
             raise ImportError(
@@ -1162,6 +1188,10 @@ class OpenAICompatibleModel:
         self._default_extra_headers = extra_headers
         self._default_extra_body = extra_body
         self._metadata_extractors = metadata_extractors
+        self._prompt_cache_key = _cache_label(prompt_cache_key, "prompt_cache_key")
+        if self._prompt_cache_key is not None and extra_body and "prompt_cache_key" in extra_body:
+            raise ValueError("Pass prompt_cache_key or extra_body['prompt_cache_key'], not both")
+        self._cache_group_label = _cache_label(cache_group, "cache_group")
         # Known only when this class constructs and sizes the underlying httpx
         # pool via from_api_key(max_connections=...). User-supplied clients are
         # intentionally not introspected because their transport may be wrapped.
@@ -1221,6 +1251,7 @@ class OpenAICompatibleModel:
             extra_body.update(self._default_extra_body)
         if config:
             extra_body.update(config)
+        label = self._apply_cache_options(extra_body, _system_text(messages))
 
         call_kwargs: dict[str, Any] = {
             "model": self._model,
@@ -1277,7 +1308,7 @@ class OpenAICompatibleModel:
                 raw=response,
                 cache_write_input_tokens=cache_writes,
             ),
-            _cache_group(extra_body.get("prompt_cache_key"), _system_text(messages)),
+            label or _cache_group(extra_body.get("prompt_cache_key"), _system_text(messages)),
         )
 
     # ── Overridable extraction hooks ────────────────────────────────────
@@ -1508,6 +1539,24 @@ class OpenAICompatibleModel:
 
     # ── Convenience constructor ─────────────────────────────────────────
 
+    def _apply_cache_options(self, extra_body: dict[str, Any], system_text: object) -> str | None:
+        """Resolve per-request cache options in the final ``extra_body``.
+
+        Removes a per-call ``cache_group`` (it's a label, not a request field),
+        adds the model's ``prompt_cache_key`` unless the call set one, and returns
+        the caller's label: the per-call one, else the model's.
+        """
+        label = _pop_cache_label(extra_body) or self._cache_group_label
+        if self._prompt_cache_key is not None and "prompt_cache_key" not in extra_body:
+            key = (
+                _auto_prompt_cache_key(system_text)
+                if self._prompt_cache_key == "auto"
+                else self._prompt_cache_key
+            )
+            if key is not None:
+                extra_body["prompt_cache_key"] = key
+        return label
+
     @classmethod
     def from_api_key(
         cls: type[TM],
@@ -1521,6 +1570,8 @@ class OpenAICompatibleModel:
         json_mode: bool = False,
         max_connections: int | None = None,
         metadata_extractors: list[MetadataExtractor] | None = None,
+        prompt_cache_key: str | None = None,
+        cache_group: str | None = None,
         _instance_kwargs: dict[str, Any] | None = None,
         **client_kwargs: Any,
     ) -> TM:
@@ -1641,6 +1692,17 @@ class OpenAICompatibleModel:
             extra_headers=extra_headers,
             extra_body=extra_body,
             metadata_extractors=metadata_extractors,
+            # Only when set, so subclasses written for the older constructor
+            # signature (and DeepSeekModel, which takes no prompt_cache_key) keep
+            # working with this factory.
+            **{
+                name: value
+                for name, value in (
+                    ("prompt_cache_key", prompt_cache_key),
+                    ("cache_group", cache_group),
+                )
+                if value is not None
+            },
             **(_instance_kwargs or {}),
         )
         instance.max_concurrency = max_connections
@@ -1698,6 +1760,20 @@ class _ResponsesSurface:
             system_instruction=system_instruction,
             config=config,
         )
+        extra_body = dict(call_kwargs.get("extra_body") or {})
+        # extra_body is merged into the request last, so its instructions win on the
+        # wire. A null there clears only the top-level field, not a system message
+        # in the input, so fall back to that.
+        instructions = (
+            extra_body["instructions"]
+            if "instructions" in extra_body
+            else call_kwargs.get("instructions")
+        ) or _system_text(call_kwargs.get("input"))
+        label = cast(Any, self)._apply_cache_options(extra_body, instructions)
+        if extra_body:
+            call_kwargs["extra_body"] = extra_body
+        else:
+            call_kwargs.pop("extra_body", None)
         try:
             response = await self._client.responses.create(**call_kwargs)
         except Exception as exc:
@@ -1727,19 +1803,10 @@ class _ResponsesSurface:
                 token_usage=self._tokens_dict(tokens, _openai_cache_write_tokens(response)),
             )
             raise response_error
-        extra_body = call_kwargs.get("extra_body")
-        extra_body = extra_body if isinstance(extra_body, dict) else {}
-        # extra_body is merged into the request last, so its instructions win on the
-        # wire. A null there clears only the top-level field, not a system message
-        # in the input, so fall back to that.
-        instructions = (
-            extra_body["instructions"]
-            if "instructions" in extra_body
-            else call_kwargs.get("instructions")
-        ) or _system_text(call_kwargs.get("input"))
         return _with_cache_group(
             self._responses_result(response, tokens),
-            _cache_group(extra_body.get("prompt_cache_key"), instructions),
+            label or _cache_group(extra_body.get("prompt_cache_key"), instructions),
+            _diagnostics_miss_reason(response),
         )
 
     def _responses_request(
@@ -1956,6 +2023,8 @@ class OpenAIModel(_ResponsesSurface, OpenAICompatibleModel):
         extra_body: dict[str, Any] | None = None,
         metadata_extractors: list[MetadataExtractor] | None = None,
         api_surface: str = "responses",
+        prompt_cache_key: str | None = None,
+        cache_group: str | None = None,
     ):
         """See :class:`OpenAICompatibleModel`; adds ``api_surface``
         (``"responses"``, the default, or ``"chat_completions"``)."""
@@ -1982,6 +2051,8 @@ class OpenAIModel(_ResponsesSurface, OpenAICompatibleModel):
             extra_headers=extra_headers,
             extra_body=extra_body,
             metadata_extractors=metadata_extractors,
+            prompt_cache_key=prompt_cache_key,
+            cache_group=cache_group,
         )
 
     @classmethod
@@ -1998,6 +2069,8 @@ class OpenAIModel(_ResponsesSurface, OpenAICompatibleModel):
         max_connections: int | None = None,
         metadata_extractors: list[MetadataExtractor] | None = None,
         api_surface: str = "responses",
+        prompt_cache_key: str | None = None,
+        cache_group: str | None = None,
         **client_kwargs: Any,
     ) -> "OpenAIModel":
         """Build an OpenAIModel with an owned client; adds ``api_surface``.
@@ -2015,6 +2088,8 @@ class OpenAIModel(_ResponsesSurface, OpenAICompatibleModel):
             json_mode=json_mode,
             max_connections=max_connections,
             metadata_extractors=metadata_extractors,
+            prompt_cache_key=prompt_cache_key,
+            cache_group=cache_group,
             _instance_kwargs={"api_surface": api_surface},
             **client_kwargs,
         )
@@ -2331,6 +2406,8 @@ class OpenRouterModel(OpenAICompatibleModel):
         referer: str | None = None,
         title: str | None = None,
         metadata_extractors: list[MetadataExtractor] | None = None,
+        prompt_cache_key: str | None = None,
+        cache_group: str | None = None,
         **client_kwargs: Any,
     ) -> "OpenRouterModel":
         """Build an OpenRouterModel.
@@ -2363,6 +2440,8 @@ class OpenRouterModel(OpenAICompatibleModel):
             json_mode=json_mode,
             max_connections=max_connections,
             metadata_extractors=metadata_extractors,
+            prompt_cache_key=prompt_cache_key,
+            cache_group=cache_group,
             **client_kwargs,
         )
 
@@ -2534,9 +2613,12 @@ class DeepSeekModel(_ResponsesSurface, OpenAICompatibleModel):
         schema_name: str | None = None,
         json_mode: bool = False,
         metadata_extractors: list[MetadataExtractor] | None = None,
+        cache_group: str | None = None,
     ):
         """See :class:`OpenAICompatibleModel`; adds the DeepSeek ``thinking``
-        toggle and opt-in Responses API structured output."""
+        toggle and opt-in Responses API structured output. DeepSeek's prefix
+        cache takes no key, so there is no ``prompt_cache_key``; ``cache_group``
+        labels calls for the per-group cache statistics."""
         if api_surface not in {"chat_completions", "responses"}:
             raise ValueError(
                 f"api_surface must be 'chat_completions' or 'responses' (got {api_surface!r})."
@@ -2616,6 +2698,7 @@ class DeepSeekModel(_ResponsesSurface, OpenAICompatibleModel):
             extra_headers=extra_headers,
             extra_body=effective_extra_body,
             metadata_extractors=metadata_extractors,
+            cache_group=cache_group,
         )
 
     @classmethod
@@ -2635,6 +2718,7 @@ class DeepSeekModel(_ResponsesSurface, OpenAICompatibleModel):
         response_schema: type[BaseModel] | Mapping[str, Any] | None = None,
         schema_name: str | None = None,
         metadata_extractors: list[MetadataExtractor] | None = None,
+        cache_group: str | None = None,
         **client_kwargs: Any,
     ) -> "DeepSeekModel":
         """Build a DeepSeekModel; reads ``DEEPSEEK_API_KEY`` when ``api_key`` is
@@ -2652,6 +2736,7 @@ class DeepSeekModel(_ResponsesSurface, OpenAICompatibleModel):
             json_mode=False,
             max_connections=max_connections,
             metadata_extractors=metadata_extractors,
+            cache_group=cache_group,
             _instance_kwargs={
                 "thinking": thinking,
                 "api_surface": api_surface,
@@ -2779,13 +2864,57 @@ def _cache_group(cache_key: object, system_text: object) -> str | None:
     return None
 
 
-def _with_cache_group(response: LLMResponse, group: str | None) -> LLMResponse:
-    """Add ``cache_group`` to the response metadata unless an extractor already set it."""
-    if group is not None:
+def _with_cache_group(
+    response: LLMResponse, group: str | None, miss_reason: str | None = None
+) -> LLMResponse:
+    """Add ``cache_group`` (and ``cache_miss_reason``) to the response metadata
+    unless an extractor already set them."""
+    if group is not None or miss_reason is not None:
         metadata = dict(response.metadata or {})
-        metadata.setdefault("cache_group", group)
+        if group is not None:
+            metadata.setdefault("cache_group", group)
+        if miss_reason is not None:
+            metadata.setdefault("cache_miss_reason", miss_reason)
         response.metadata = metadata
     return response
+
+
+def _cache_label(value: object, name: str) -> str | None:
+    """Validate a caller-set ``cache_group`` label: ``None`` or a non-empty string."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be a non-empty string or None (got {value!r})")
+    return value
+
+
+def _pop_cache_label(request: dict[str, Any]) -> str | None:
+    """Remove a per-call ``cache_group`` from request config so it never reaches the SDK."""
+    return _cache_label(request.pop("cache_group", None), "config['cache_group']")
+
+
+def _auto_prompt_cache_key(system_text: object) -> str | None:
+    """The key ``prompt_cache_key="auto"`` sends: a hash of the instruction actually sent."""
+    if isinstance(system_text, str) and system_text:
+        return "abl-si-" + hashlib.sha256(system_text.encode("utf-8")).hexdigest()[:16]
+    return None
+
+
+def _diagnostics_miss_reason(response: Any) -> str | None:
+    """The ``reason`` from an OpenAI Responses ``prompt_cache_diagnostics`` cache miss.
+
+    Diagnostics appear only when the request asked for them through
+    ``prompt_cache_options``. Older SDKs keep the field as a plain dict.
+    """
+    diagnostics = getattr(response, "prompt_cache_diagnostics", None)
+    if isinstance(diagnostics, Mapping):
+        kind, reason = diagnostics.get("type"), diagnostics.get("reason")
+    else:
+        kind = getattr(diagnostics, "type", None)
+        reason = getattr(diagnostics, "reason", None)
+    if kind == "cache_miss" and isinstance(reason, str) and reason:
+        return reason
+    return None
 
 
 def _has_system_message(messages: list[Any]) -> bool:

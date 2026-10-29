@@ -177,7 +177,9 @@ The legacy parameters come first in `ParallelBatchProcessor`'s signature, so pas
   so their shape can still change in a minor release once they have seen real use.
 - **Cache-group statistics.** The `GuardrailConfig` fields `min_cache_hit_rate` and
   `cache_hit_window`, the `cache_group` and `cache_miss_reason` metadata keys, the
-  `cache_groups` statistics, `LLMCallPool.cache_stats()` and `reset_cache_stats()`, and
-  `ErrorCategory.CACHE_HIT_RATE_BELOW_FLOOR` are new in 1.1 and provisional.
+  `cache_groups` statistics, `LLMCallPool.cache_stats()` and `reset_cache_stats()`,
+  `ErrorCategory.CACHE_HIT_RATE_BELOW_FLOOR`, the models' `prompt_cache_key` and
+  `cache_group` options, and the per-call `cache_group` config key are new in 1.1 and
+  provisional.
 - **Provider-output views.** Provisional now; they may be promoted to stable at
   1.0.0rc1 (see above). `logprobs` is the most likely to stay provisional.

@@ -25,8 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `LLMCallPool.cache_stats()` reports the same per-group statistics for a pool, with
     a rolling `window_hit_rate` per group, and `reset_cache_stats()` clears them. The
     pool has no floor.
+- A `prompt_cache_key` option on `OpenAIModel` and `OpenRouterModel` (and their
+  `from_api_key`) ([#244]). Provisional. It sends the key on every call; `"auto"`
+  sends a hash of the system instruction each call sends. A per-call key wins, and
+  passing it alongside `extra_body["prompt_cache_key"]` raises `ValueError`.
+- A `cache_group` label on every built-in model, overridable per call with
+  `config={"cache_group": ...}` and never sent to the provider ([#247]). Provisional.
+  It names the call's group in the cache statistics ahead of the key and the
+  system-instruction hash.
+- OpenAI Responses calls record `prompt_cache_diagnostics` miss reasons as
+  `cache_miss_reason` ([#244]).
 
 [#244]: https://github.com/geoff-davis/async-batch-llm/issues/244
+[#247]: https://github.com/geoff-davis/async-batch-llm/issues/247
 
 ## [0.29.0] - 2026-10-29
 

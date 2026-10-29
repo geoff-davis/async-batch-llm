@@ -19,6 +19,7 @@ from async_batch_llm import (
     JsonlArtifactStore,
     LLMCallPool,
     LLMCallStrategy,
+    OpenAICompatibleModel,
     OpenAIModel,
     OpenRouterModel,
     ParallelBatchProcessor,
@@ -329,6 +330,239 @@ async def test_gemini_models_stamp_a_group() -> None:
     assert groups[0] == groups[1]
     assert groups[0].startswith("gemini-cache:")
     assert "rotating-name" not in groups[0]
+
+
+def _sent_body(client: MagicMock, surface: str) -> dict[str, Any]:
+    create = client.chat.completions.create if surface == "chat" else client.responses.create
+    return dict(create.call_args.kwargs.get("extra_body") or {})
+
+
+def _auto_key(text: str) -> str:
+    return "abl-si-" + hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+SURFACES = [
+    pytest.param("chat", CHAT_MODELS[0], id="openai-chat"),
+    pytest.param("chat", CHAT_MODELS[1], id="openrouter"),
+    pytest.param("responses", RESPONSES_MODELS[0], id="openai-responses"),
+]
+
+
+def _client(surface: str) -> MagicMock:
+    return _chat_client() if surface == "chat" else _responses_client()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("surface", "factory"), SURFACES)
+async def test_prompt_cache_key_option_is_sent_and_names_the_group(
+    surface: str, factory: Any
+) -> None:
+    client = _client(surface)
+    model = factory(client, system_instruction="Static rules", prompt_cache_key="classify-v3")
+    response = await model.generate("item")
+    assert _sent_body(client, surface)["prompt_cache_key"] == "classify-v3"
+    assert response.metadata["cache_group"] == "classify-v3"
+
+    # A per-call key wins, on the wire and in the stats.
+    per_call = await model.generate("item", config={"prompt_cache_key": "other"})
+    assert _sent_body(client, surface)["prompt_cache_key"] == "other"
+    assert per_call.metadata["cache_group"] == "other"
+
+    with pytest.raises(ValueError, match="not both"):
+        factory(_client(surface), prompt_cache_key="a", extra_body={"prompt_cache_key": "b"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("surface", "factory"), SURFACES)
+async def test_auto_prompt_cache_key_follows_the_instruction_sent(
+    surface: str, factory: Any
+) -> None:
+    client = _client(surface)
+    model = factory(client, system_instruction="Static rules", prompt_cache_key="auto")
+    response = await model.generate("item")
+    assert _sent_body(client, surface)["prompt_cache_key"] == _auto_key("Static rules")
+    assert response.metadata["cache_group"] == _auto_key("Static rules")
+
+    override = {"instructions": "Other rules"} if surface == "responses" else None
+    if override is not None:
+        await model.generate("item", config=override)
+        assert _sent_body(client, surface)["prompt_cache_key"] == _auto_key("Other rules")
+    messages = [{"role": "system", "content": "From input"}, {"role": "user", "content": "x"}]
+    bare_client = _client(surface)
+    bare = factory(bare_client, prompt_cache_key="auto")
+    await bare.generate(messages)
+    assert _sent_body(bare_client, surface)["prompt_cache_key"] == _auto_key("From input")
+
+    # No system instruction: no key is sent and no group stamped.
+    unkeyed = await bare.generate("item")
+    assert "prompt_cache_key" not in _sent_body(bare_client, surface)
+    assert "cache_group" not in (unkeyed.metadata or {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("surface", "factory"), SURFACES)
+async def test_cache_group_label_precedence(surface: str, factory: Any) -> None:
+    client = _client(surface)
+    model = factory(
+        client,
+        system_instruction="Static rules",
+        prompt_cache_key="classify-v3",
+        cache_group="tier1",
+    )
+    # The model's label beats the key.
+    assert (await model.generate("item")).metadata["cache_group"] == "tier1"
+    # A per-call label beats the model's and never reaches the provider.
+    per_call = await model.generate("item", config={"cache_group": "tier1-d"})
+    assert per_call.metadata["cache_group"] == "tier1-d"
+    assert "cache_group" not in _sent_body(client, surface)
+    assert _sent_body(client, surface)["prompt_cache_key"] == "classify-v3"
+
+    # An extractor's key still wins over every label.
+    extracted = factory(
+        _client(surface),
+        cache_group="tier1",
+        metadata_extractors=[lambda r: {"cache_group": "from-extractor"}],
+    )
+    assert (await extracted.generate("item")).metadata["cache_group"] == "from-extractor"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_takes_a_label_but_no_prompt_cache_key() -> None:
+    for factory, surface in ((CHAT_MODELS[2], "chat"), (RESPONSES_MODELS[1], "responses")):
+        client = _client(surface)
+        model = factory(client, cache_group="ds")
+        assert (await model.generate("item")).metadata["cache_group"] == "ds"
+        assert "cache_group" not in _sent_body(client, surface)
+        with pytest.raises(TypeError):
+            factory(_client(surface), prompt_cache_key="k")
+    keyed = DeepSeekModel.from_api_key("deepseek-test", api_key="sk-test", cache_group="ds")
+    assert keyed._cache_group_label == "ds"
+
+
+def test_from_api_key_forwards_cache_options() -> None:
+    openai_model = OpenAIModel.from_api_key(
+        "gpt-test", api_key="sk-test", prompt_cache_key="auto", cache_group="g"
+    )
+    assert (openai_model._prompt_cache_key, openai_model._cache_group_label) == ("auto", "g")
+    router = OpenRouterModel.from_api_key(
+        "openai/gpt-test", api_key="sk-test", prompt_cache_key="k", cache_group="g"
+    )
+    assert (router._prompt_cache_key, router._cache_group_label) == ("k", "g")
+
+
+def test_inherited_factory_works_for_subclasses_with_the_old_signature() -> None:
+    class _Legacy(OpenAICompatibleModel):
+        _default_base_url = "https://example.invalid/v1"
+
+        def __init__(
+            self,
+            model: str,
+            client: Any,
+            *,
+            system_instruction: str | None = None,
+            extra_headers: dict[str, str] | None = None,
+            extra_body: dict[str, Any] | None = None,
+            metadata_extractors: Any = None,
+        ) -> None:
+            super().__init__(
+                model,
+                client,
+                system_instruction=system_instruction,
+                extra_headers=extra_headers,
+                extra_body=extra_body,
+                metadata_extractors=metadata_extractors,
+            )
+
+    legacy = _Legacy.from_api_key("m", api_key="sk-test")
+    assert legacy._cache_group_label is None and legacy._prompt_cache_key is None
+    # Asking for an option the subclass doesn't accept still fails loudly.
+    with pytest.raises(TypeError, match="cache_group"):
+        _Legacy.from_api_key("m", api_key="sk-test", cache_group="g")
+
+
+@pytest.mark.parametrize("value", ["", 3, b"x"])
+def test_invalid_cache_labels_and_keys_raise(value: Any) -> None:
+    with pytest.raises(ValueError, match="cache_group"):
+        OpenAIModel("gpt-test", client=_responses_client(), cache_group=value)
+    with pytest.raises(ValueError, match="prompt_cache_key"):
+        OpenAIModel("gpt-test", client=_responses_client(), prompt_cache_key=value)
+    with pytest.raises(ValueError, match="cache_group"):
+        GeminiModel("gemini-test", _gemini_client(), cache_group=value)
+
+
+@pytest.mark.asyncio
+async def test_invalid_per_call_label_raises() -> None:
+    model = OpenAIModel("gpt-test", client=_responses_client())
+    with pytest.raises(ValueError, match="cache_group"):
+        await model.generate("item", config={"cache_group": ""})
+
+
+@pytest.mark.asyncio
+async def test_gemini_models_take_a_label() -> None:
+    client = _gemini_client()
+    model = GeminiModel("gemini-test", client, system_instruction="Rules", cache_group="g1")
+    assert (await model.generate("item")).metadata["cache_group"] == "g1"
+    per_call = await model.generate("item", config={"cache_group": "g2"})
+    assert per_call.metadata["cache_group"] == "g2"
+    sent = client.aio.models.generate_content.call_args.kwargs["config"]
+    sent_dict = sent if isinstance(sent, dict) else sent.model_dump(exclude_none=True)
+    assert "cache_group" not in sent_dict
+
+    cached = GeminiCachedModel(
+        model="gemini-test",
+        client=_gemini_client(),
+        cached_content=["shared context"],
+        cache_ttl_seconds=3600,
+        cache_group="docs",
+    )
+    await cached.prepare()
+    assert (await cached.generate("item")).metadata["cache_group"] == "docs"
+    per_call = await cached.generate("item", config={"cache_group": "docs-2"})
+    assert per_call.metadata["cache_group"] == "docs-2"
+
+
+def _with_diagnostics(diagnostics: dict[str, Any]) -> Any:
+    response = _responses_response()
+    try:
+        return type(response).model_validate(
+            {**response.model_dump(), "prompt_cache_diagnostics": diagnostics}
+        )
+    except Exception:  # SDK without the field: attach it as a plain mapping
+        response.__dict__["prompt_cache_diagnostics"] = diagnostics
+        return response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("diagnostics", "reason"),
+    [
+        (
+            {"type": "cache_miss", "reason": "input_changed", "cache_missed_tokens": 8},
+            "input_changed",
+        ),
+        ({"type": "cache_hit"}, None),
+        ({"type": "unavailable"}, None),
+    ],
+)
+async def test_responses_miss_reason_comes_from_prompt_cache_diagnostics(
+    diagnostics: dict[str, Any], reason: str | None
+) -> None:
+    client = MagicMock()
+    client.responses.create = AsyncMock(return_value=_with_diagnostics(diagnostics))
+    response = await OpenAIModel("gpt-test", client=client, prompt_cache_key="k").generate("x")
+    assert (response.metadata or {}).get("cache_miss_reason") == reason
+
+
+def test_miss_reason_reads_mappings_too() -> None:
+    from async_batch_llm.models import _diagnostics_miss_reason
+
+    class _Resp:
+        prompt_cache_diagnostics = {"type": "cache_miss", "reason": "prompt_cache_key_changed"}
+
+    assert _diagnostics_miss_reason(_Resp()) == "prompt_cache_key_changed"
+    _Resp.prompt_cache_diagnostics = {"type": "cache_miss", "reason": ""}
+    assert _diagnostics_miss_reason(_Resp()) is None
+    assert _diagnostics_miss_reason(object()) is None
 
 
 # ── Group identity ───────────────────────────────────────────────────────────
