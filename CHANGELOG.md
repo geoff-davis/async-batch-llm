@@ -34,7 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [GHSA-vfgh-jcmw-g37q](https://github.com/advisories/GHSA-vfgh-jcmw-g37q) and
   [GHSA-gfr2-rv44-r23c](https://github.com/advisories/GHSA-gfr2-rv44-r23c).
 - Update the development lock: `certifi` 2026.10.19, `mcp` 1.30.0, `fastmcp-slim`
-  3.4.10, OpenTelemetry 1.45.1, and `prek` 0.5.6. The publish workflow uses
+  3.4.10, OpenTelemetry 1.45.1, `prek` 0.5.6, and `authlib` 1.9.1; on Python 3.11+,
+  `pillow` 13.0.0 and `dnspython` 2.9.1 (both need 3.11, so the 3.10 lock keeps the
+  older releases). These come from the `docs`, `pydantic-ai` and `dev` extras; the
+  package's own dependency ranges are unchanged, and the floors are lock-only
+  `[tool.uv] constraint-dependencies`. The publish workflow uses
   `pypa/gh-action-pypi-publish` 1.14.3.
 
 ## [0.28.0] - 2026-10-02
