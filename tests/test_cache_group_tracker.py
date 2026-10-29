@@ -234,8 +234,17 @@ def _state(**changes: Any) -> dict[str, Any]:
         (_state(group={"measured_calls": -1}), "measured_calls"),
         (_state(group={"input_tokens": True}), "input_tokens"),
         (_state(group={"last_miss_reason": "r" * 65}), "last_miss_reason"),
-        (_state(group={"recent": [[1, 0], [1, 0], [1, 0]]}), "at most 2"),
-        (_state(group={"recent": [[1, 0], [1, 0]]}), "more entries than measured_calls"),
+        (_state(group={"recent": [[1, 0], [1, 0], [1, 0]]}), "last 1 measured"),
+        (_state(group={"recent": [[10, 5], [10, 5]]}), "last 1 measured"),
+        (_state(group={"recent": []}), "last 1 measured"),
+        (_state(group={"recent": [[9, 5]]}), "doesn't match input_tokens"),
+        (_state(group={"recent": [[10, 4]]}), "doesn't match cached_input_tokens"),
+        (
+            _state(group={"measured_calls": 0, "unmeasured_calls": 1, "recent": []}),
+            "no measured calls",
+        ),
+        (_state(group={"measured_calls": 0, "unmeasured_calls": 0, "recent": []}), "at least one"),
+        (_state(group={"input_tokens": 1, "measured_calls": 2}), "less than measured_calls"),
         (_state(group={"recent": [[0, 0]]}), "recent entries"),
         (_state(group={"recent": [[1, -1]]}), "recent entries"),
         (_state(group={"recent": [(1, 0)]}), "recent entries"),
@@ -245,6 +254,73 @@ def _state(**changes: Any) -> dict[str, Any]:
 def test_from_dict_rejects_bad_state(state: Any, match: str) -> None:
     with pytest.raises(ValueError, match=match):
         CacheGroupTracker.from_dict(state)
+
+
+def _two_call_state() -> dict[str, Any]:
+    """Window 2, two uncached 100-token calls: below a 0.8 floor."""
+    tracker = CacheGroupTracker(window=2)
+    tracker.record("g", _usage(100))
+    tracker.record("g", _usage(100))
+    assert tracker.below_floor(0.8)
+    return tracker.to_dict()
+
+
+@pytest.mark.parametrize(
+    ("changes", "match"),
+    [
+        # A shortened window would silently restart the group's warm-up.
+        ({"recent": []}, "last 2 measured"),
+        ({"recent": [[100, 0]]}, "last 2 measured"),
+        ({"input_tokens": 1}, "less than measured_calls"),
+        ({"input_tokens": 150}, "doesn't match input_tokens"),
+        ({"input_tokens": 300}, "doesn't match input_tokens"),
+        ({"cached_input_tokens": 5}, "doesn't match cached_input_tokens"),
+        ({"measured_calls": 0, "unmeasured_calls": 1, "recent": []}, "doesn't match input_tokens"),
+    ],
+)
+def test_from_dict_rejects_states_record_cannot_produce(
+    changes: dict[str, Any], match: str
+) -> None:
+    state = _two_call_state()
+    state["groups"][0].update(changes)
+    with pytest.raises(ValueError, match=match):
+        CacheGroupTracker.from_dict(state)
+
+
+def test_partial_window_totals_may_exceed_the_window() -> None:
+    tracker = CacheGroupTracker(window=2)
+    for cached in (0, 50, 100):
+        tracker.record("g", _usage(100, cached))
+    state = tracker.to_dict()
+    assert CacheGroupTracker.from_dict(state).stats() == tracker.stats()
+    state["groups"][0]["input_tokens"] = 199  # less than the retained 200
+    with pytest.raises(ValueError, match="doesn't match input_tokens"):
+        CacheGroupTracker.from_dict(state)
+
+
+def _overflow_state(**overflow: Any) -> dict[str, Any]:
+    tracker = CacheGroupTracker()
+    for i in range(MAX_CACHE_GROUPS + 1):
+        tracker.record(f"g{i}", _usage(10, 1))
+    state = tracker.to_dict()
+    state["overflow"].update(overflow)
+    return state
+
+
+@pytest.mark.parametrize(
+    ("overflow", "match"),
+    [
+        ({"measured_calls": 0, "unmeasured_calls": 1}, "no measured calls"),
+        (
+            {"measured_calls": 0, "cached_input_tokens": 0, "cache_write_input_tokens": 0},
+            "at least one",
+        ),
+        ({"input_tokens": 0}, "less than measured_calls"),
+    ],
+)
+def test_from_dict_checks_overflow_consistency(overflow: dict[str, Any], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        CacheGroupTracker.from_dict(_overflow_state(**overflow))
 
 
 def test_from_dict_rejects_duplicate_groups() -> None:

@@ -130,6 +130,14 @@ class _GroupCounters:
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{where}.{name} must be a non-negative int (got {value!r})")
             setattr(self, name, value)
+        # Consistency that record() guarantees: an entry exists only once a call
+        # was counted, and each measured call reports at least one input token.
+        if self.measured_calls + self.unmeasured_calls == 0:
+            raise ValueError(f"{where} must count at least one call")
+        if self.input_tokens < self.measured_calls:
+            raise ValueError(f"{where}.input_tokens is less than measured_calls")
+        if self.measured_calls == 0 and (self.cached_input_tokens or self.cache_write_input_tokens):
+            raise ValueError(f"{where} has cached or written tokens but no measured calls")
         reason = state.get("last_miss_reason")
         if reason is not None and normalize_miss_reason(reason) != reason:
             raise ValueError(
@@ -415,12 +423,12 @@ class CacheGroupTracker:
             group = _Group()
             group.load(entry, where)
             recent = entry.get("recent")
-            if not isinstance(recent, list) or len(recent) > tracker._window:
+            retained = min(group.measured_calls, tracker._window)
+            if not isinstance(recent, list) or len(recent) != retained:
                 raise ValueError(
-                    f"{where}.recent must be a list of at most {tracker._window} pairs"
+                    f"{where}.recent must hold the last {retained} measured calls "
+                    "(min of measured_calls and window)"
                 )
-            if len(recent) > group.measured_calls:
-                raise ValueError(f"{where}.recent has more entries than measured_calls")
             for pair in recent:
                 if (
                     not isinstance(pair, list)
@@ -432,6 +440,15 @@ class CacheGroupTracker:
                         f"{where}.recent entries must be [input_tokens > 0, cached_input_tokens >= 0]"
                     )
                 group.push(pair[0], pair[1], tracker._window)
+            # The retained calls are part of the totals, and are all of them when
+            # every measured call is still in the window.
+            complete = retained == group.measured_calls
+            for name, part, total in (
+                ("input_tokens", group.recent_input, group.input_tokens),
+                ("cached_input_tokens", group.recent_cached, group.cached_input_tokens),
+            ):
+                if part > total or (complete and part != total):
+                    raise ValueError(f"{where}.recent doesn't match {name}")
             tracker._groups[label] = group
         overflow = data.get("overflow")
         if overflow is not None:
