@@ -217,6 +217,75 @@ batch-abort results: written best-effort and never replayed. A `BatchResult`
 serialized with `termination.kind == "budget_exceeded"` can't be read by v0.26
 or earlier.
 
+## Cache hit-rate floor
+
+A prompt cache that stops hitting can multiply a run's input cost without any call
+failing. Every processor run counts cache reads and writes per *cache group*, and
+`min_cache_hit_rate` stops the run when a group's recent hit rate falls below a floor.
+
+Provisional: new in 1.1; it may change in a minor release.
+
+```python
+from async_batch_llm import GuardrailConfig, ProcessorConfig
+
+config = ProcessorConfig(
+    max_workers=20,
+    guardrails=GuardrailConfig(
+        min_cache_hit_rate=0.8,  # None (the default) turns the floor off
+        cache_hit_window=50,     # measured calls per group in the sliding window
+    ),
+)
+```
+
+**Groups.** An attempt's group is the `cache_group` key in its metadata:
+
+- OpenAI-compatible models (OpenAI, OpenRouter, DeepSeek) use the request's
+  `prompt_cache_key` if one is set, else `si:` plus a 12-character hash of the
+  system instruction.
+- `GeminiModel` uses the system-instruction hash. `GeminiCachedModel` uses
+  `gemini-cache:` plus a hash of the cached content, which stays the same when the
+  cache is renewed.
+- `PydanticAIStrategy` sets no group. `CallableStrategy` and custom strategies can
+  set `metadata["cache_group"]` themselves.
+- Attempts without a group are counted together as the `None` group.
+
+A group longer than 128 characters is replaced by its SHA-256. A run tracks at most
+64 groups; attempts for further groups are counted together in
+`cache_groups_overflow`, with one warning.
+
+**What counts.** Provider attempts in this run that returned a result. Failed
+attempts, replayed results and dry-run calls aren't counted. An attempt is
+*measured* when its usage is known and reports positive input tokens; others are
+counted as `unmeasured_calls` and never move the rate.
+
+**The floor.** Each group keeps a window of its last `cache_hit_window` measured
+attempts. Once a group's window is full, a window hit rate (cached input tokens
+over input tokens) below `min_cache_hit_rate` stops the run like
+[configurable fail-fast](#configurable-fail-fast): `termination.kind ==
+"fail_fast"`, `termination.error_category == "cache_hit_rate_below_floor"`,
+`abort_mode` applies, and items that hadn't started end `batch_aborted`. The window
+is also the warm-up, and each group has its own, so a group's first cache writes
+aren't held against it. With a floor configured, a 65th group also stops the run,
+since the floor can't be enforced for groups it doesn't track. If the same attempt
+reaches a token or cost budget, the run ends `budget_exceeded` instead.
+
+**Miss reasons.** A strategy can put a provider's explanation of a miss in
+`metadata["cache_miss_reason"]` (a string, kept to 64 characters). Each group
+reports its latest one as `last_miss_reason`, and the floor's stop reason ends with
+it. No built-in model sets it yet.
+
+**Reporting.** `await processor.get_stats()` and the `BATCH_COMPLETED` event carry
+`cache_groups`, a list sorted by input tokens, and `cache_groups_overflow` (`None`
+unless there was overflow). Each entry has `group`, `measured_calls`,
+`unmeasured_calls`, `input_tokens`, `cached_input_tokens`,
+`cache_write_input_tokens`, `hit_rate` (cumulative) and `last_miss_reason`, plus
+`window_hit_rate` when a floor is configured (`None` until the window is full).
+`BatchResult` has no per-group view: results include replays and add up retries,
+which isn't what the floor measures.
+
+**Scope.** Processor runs only. `call()`, `call_result()` and `LLMCallPool` reject
+`min_cache_hit_rate` with `ValueError`. A resumed run starts with fresh counts.
+
 ## End-to-end checkpointed run
 
 ```python

@@ -548,14 +548,18 @@ class GeminiModel:
                 tokens,
             )
 
-        return LLMResponse(
-            text=text,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=total_tokens,
-            cached_input_tokens=cached_tokens,
-            metadata=self._build_metadata(response),
-            raw=response,
+        return _with_cache_group(
+            LLMResponse(
+                text=text,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                cached_input_tokens=cached_tokens,
+                metadata=self._build_metadata(response),
+                raw=response,
+            ),
+            # From the merged config: a per-call system_instruction overrides the default.
+            _cache_group(None, call_config.get("system_instruction")),
         )
 
 
@@ -884,14 +888,17 @@ class GeminiCachedModel:
                 tokens,
             )
 
-        return LLMResponse(
-            text=text,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=total_tokens,
-            cached_input_tokens=cached_tokens,
-            metadata=self._build_metadata(response),
-            raw=response,
+        return _with_cache_group(
+            LLMResponse(
+                text=text,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                cached_input_tokens=cached_tokens,
+                metadata=self._build_metadata(response),
+                raw=response,
+            ),
+            "gemini-cache:" + self._cache_tags["abl-content"][:12],
         )
 
     # ── Cache internals ─────────────────────────────────────────
@@ -1259,15 +1266,18 @@ class OpenAICompatibleModel:
                 cache_writes,
             )
 
-        return LLMResponse(
-            text=text,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            total_tokens=total_tokens,
-            cached_input_tokens=cached_tokens,
-            metadata=self._build_metadata(response),
-            raw=response,
-            cache_write_input_tokens=cache_writes,
+        return _with_cache_group(
+            LLMResponse(
+                text=text,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                cached_input_tokens=cached_tokens,
+                metadata=self._build_metadata(response),
+                raw=response,
+                cache_write_input_tokens=cache_writes,
+            ),
+            _cache_group(extra_body.get("prompt_cache_key"), _system_text(messages)),
         )
 
     # ── Overridable extraction hooks ────────────────────────────────────
@@ -1717,7 +1727,20 @@ class _ResponsesSurface:
                 token_usage=self._tokens_dict(tokens, _openai_cache_write_tokens(response)),
             )
             raise response_error
-        return self._responses_result(response, tokens)
+        extra_body = call_kwargs.get("extra_body")
+        extra_body = extra_body if isinstance(extra_body, dict) else {}
+        # extra_body is merged into the request last, so its instructions win on the
+        # wire. A null there clears only the top-level field, not a system message
+        # in the input, so fall back to that.
+        instructions = (
+            extra_body["instructions"]
+            if "instructions" in extra_body
+            else call_kwargs.get("instructions")
+        ) or _system_text(call_kwargs.get("input"))
+        return _with_cache_group(
+            self._responses_result(response, tokens),
+            _cache_group(extra_body.get("prompt_cache_key"), instructions),
+        )
 
     def _responses_request(
         self,
@@ -2730,6 +2753,39 @@ def _coerce_to_messages(prompt: str | list[Any]) -> list[Any]:
     if isinstance(prompt, str):
         return [{"role": "user", "content": prompt}]
     return list(prompt)
+
+
+def _system_text(messages: object) -> str | None:
+    """The first system message's text, if ``messages`` is a list that has one."""
+    if not isinstance(messages, list):
+        return None
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "system":
+            content = msg.get("content")
+            return content if isinstance(content, str) else None
+    return None
+
+
+def _cache_group(cache_key: object, system_text: object) -> str | None:
+    """The ``cache_group`` a built-in model stamps (issue #244).
+
+    An explicit ``prompt_cache_key`` names the group; otherwise a short hash of the
+    system instruction does, since that's the prefix the provider caches.
+    """
+    if isinstance(cache_key, str) and cache_key:
+        return cache_key
+    if isinstance(system_text, str) and system_text:
+        return "si:" + hashlib.sha256(system_text.encode("utf-8")).hexdigest()[:12]
+    return None
+
+
+def _with_cache_group(response: LLMResponse, group: str | None) -> LLMResponse:
+    """Add ``cache_group`` to the response metadata unless an extractor already set it."""
+    if group is not None:
+        metadata = dict(response.metadata or {})
+        metadata.setdefault("cache_group", group)
+        response.metadata = metadata
+    return response
 
 
 def _has_system_message(messages: list[Any]) -> bool:

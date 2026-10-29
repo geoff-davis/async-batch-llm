@@ -42,7 +42,8 @@ class ProcessorObserver(ABC):
   admission_wait_p50/p95/p99_seconds,
   execution_p50/p95/p99_seconds, structured_output_recoveries,
   structured_output_retries_avoided, structured_output_recovery_reasons,
-  input_queue_high_water_mark, result_queue_high_water_mark, duration}`
+  input_queue_high_water_mark, result_queue_high_water_mark,
+  cache_groups, cache_groups_overflow, duration}`
 - `BATCH_ABORTED`: `{kind, reason, error_category, triggering_item_id, abort_mode}`
 - `WORKER_STARTED` / `WORKER_STOPPED`: `{worker_id}`
 - `ITEM_STARTED`: `{item_id, worker_id}`

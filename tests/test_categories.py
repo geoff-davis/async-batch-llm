@@ -28,6 +28,9 @@ DYNAMIC_ERROR_CATEGORIES = {
     "middleware_filtered",
     "artifact_serialization_error",
 }
+# Produced only as BatchTermination.error_category, never on an item, and through a
+# module constant (_internal/cache_groups.py).
+TERMINATION_ONLY_CATEGORIES = {"cache_hit_rate_below_floor"}
 
 
 def _strings(node: ast.AST | None) -> set[str]:
@@ -81,12 +84,12 @@ def _source_strings() -> set[str]:
 
 
 def test_every_produced_error_category_is_documented_and_vice_versa():
-    produced = _produced("error_category") | DYNAMIC_ERROR_CATEGORIES
+    produced = _produced("error_category") | DYNAMIC_ERROR_CATEGORIES | TERMINATION_ONLY_CATEGORIES
     assert produced == {member.value for member in ErrorCategory}
 
 
 def test_dynamic_categories_still_exist_in_the_source():
-    assert DYNAMIC_ERROR_CATEGORIES <= _source_strings()
+    assert DYNAMIC_ERROR_CATEGORIES | TERMINATION_ONLY_CATEGORIES <= _source_strings()
 
 
 def test_every_produced_timeout_category_is_documented():

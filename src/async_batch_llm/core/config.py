@@ -237,6 +237,15 @@ class GuardrailConfig:
     prices one :class:`~async_batch_llm.AttemptUsage`. A ``cost_function``
     without ``max_total_cost`` only tracks cost. Budgets apply to processor
     runs; ``call()``, ``call_result()`` and ``LLMCallPool`` reject them.
+
+    ``min_cache_hit_rate`` (provisional) stops the run when a cache group's hit
+    rate falls below it. Each provider attempt that returns a result is counted
+    under the ``cache_group`` in its metadata; the rate is cached over input
+    tokens across the group's last ``cache_hit_window`` attempts that reported
+    positive input, and a group isn't checked until that window is full. A trip
+    ends the run as ``fail_fast`` with the termination category
+    ``cache_hit_rate_below_floor``; unstarted items finish ``batch_aborted``.
+    Processor runs only, like budgets.
     """
 
     total_timeout_per_item: float | None = None
@@ -246,6 +255,8 @@ class GuardrailConfig:
     max_total_tokens: int | None = None
     max_total_cost: float | None = None
     cost_function: Callable[[AttemptUsage], float] | None = None
+    min_cache_hit_rate: float | None = None
+    cache_hit_window: int = 50
 
     def __post_init__(self) -> None:
         self.abort_mode = AbortMode(self.abort_mode)
@@ -284,6 +295,21 @@ class GuardrailConfig:
             raise ValueError("cost_function must be callable or None")
         if self.max_total_cost is not None and self.cost_function is None:
             raise ValueError("max_total_cost requires cost_function")
+        if self.min_cache_hit_rate is not None:
+            _validate_number(self.min_cache_hit_rate, name="min_cache_hit_rate")
+            if not 0 <= self.min_cache_hit_rate <= 1:
+                raise ValueError(
+                    "min_cache_hit_rate must be between 0 and 1 or None "
+                    f"(got {self.min_cache_hit_rate!r})"
+                )
+        if (
+            isinstance(self.cache_hit_window, bool)
+            or not isinstance(self.cache_hit_window, int)
+            or self.cache_hit_window <= 0
+        ):
+            raise ValueError(
+                f"cache_hit_window must be a positive int (got {self.cache_hit_window!r})"
+            )
 
     @property
     def budget_configured(self) -> bool:

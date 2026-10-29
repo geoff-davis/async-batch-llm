@@ -26,7 +26,12 @@ class _StrValueEnum(str, Enum):
 
 
 class ErrorCategory(_StrValueEnum):
-    """Values of ``WorkItemResult.error_category`` produced by the library."""
+    """Values of ``WorkItemResult.error_category`` and ``BatchTermination.error_category``
+    produced by the library.
+
+    Every member except ``CACHE_HIT_RATE_BELOW_FLOOR`` can be an item's category. That
+    one only names why a run stopped; the items it stops finish ``batch_aborted``.
+    """
 
     # Provider and transport (built-in classifiers)
     RATE_LIMIT = "rate_limit"
@@ -96,6 +101,9 @@ class ErrorCategory(_StrValueEnum):
     """The run stopped (fail-fast or an explicit abort) before this item finished."""
     BATCH_BUDGET_EXCEEDED = "batch_budget_exceeded"
     """The run reached its token or cost budget before this item finished."""
+    CACHE_HIT_RATE_BELOW_FLOOR = "cache_hit_rate_below_floor"
+    """Termination only (provisional): a cache group's hit rate fell below
+    ``GuardrailConfig.min_cache_hit_rate``. Items the stop ends are ``batch_aborted``."""
 
     # Configuration failures (never replayed from artifacts)
     TOKEN_ESTIMATOR_REQUIRED = "token_estimator_required"
