@@ -40,6 +40,7 @@ from ._internal.cleanup import CleanupAction, CleanupPhase, CleanupStep, SharedC
 from ._internal.executor_host import ExecutorHost
 from ._internal.input_validation import validate_strategy
 from .base import LLMWorkItem, WorkItemResult
+from .cache_groups import CacheGroupTracker
 from .core import ProcessorConfig
 from .llm_strategies import LLMCallStrategy
 from .single import unwrap_result
@@ -72,6 +73,12 @@ class LLMCallPool(Generic[TOutput]):
       cooldown) is cancelled and returns a failed result. A firing timeout
       cancels an in-flight request that might have been about to succeed — the
       right trade for a web latency budget where the client is already gone.
+
+    ``cache_tracker`` (provisional) is the :class:`~async_batch_llm.CacheGroupTracker`
+    behind :meth:`cache_stats`. By default the pool creates one with
+    ``config.guardrails.cache_hit_window``; pass one restored with
+    ``CacheGroupTracker.from_dict`` to continue a previous pool's statistics. Its
+    own ``window`` then applies.
     """
 
     def __init__(
@@ -82,7 +89,12 @@ class LLMCallPool(Generic[TOutput]):
         error_classifier: Any = None,
         max_pending: int | None = None,
         submit_timeout: float | None = None,
+        cache_tracker: CacheGroupTracker | None = None,
     ) -> None:
+        if cache_tracker is not None and not isinstance(cache_tracker, CacheGroupTracker):
+            raise TypeError(
+                f"cache_tracker must be a CacheGroupTracker (got {type(cache_tracker).__name__})"
+            )
         if max_pending is not None and max_pending < 0:
             raise ValueError(f"max_pending must be >= 0 (got {max_pending})")
         if submit_timeout is not None and submit_timeout <= 0:
@@ -99,8 +111,16 @@ class LLMCallPool(Generic[TOutput]):
             stacklevel=3,
         )
         self._strategy = strategy
+        self._cache_tracker = (
+            cache_tracker
+            if cache_tracker is not None
+            else CacheGroupTracker(window=cfg.guardrails.cache_hit_window)
+        )
         self._host: ExecutorHost[Any, TOutput, Any] = ExecutorHost(
-            cfg, strategy=strategy, error_classifier=error_classifier, track_cache_groups=True
+            cfg,
+            strategy=strategy,
+            error_classifier=error_classifier,
+            cache_tracker=self._cache_tracker,
         )
         self._sem = asyncio.Semaphore(gateway_workers)
         self._seq = 0
@@ -203,23 +223,30 @@ class LLMCallPool(Generic[TOutput]):
 
         Returns ``{"cache_groups": [...], "cache_groups_overflow": ...}`` in the
         shape ``ParallelBatchProcessor.get_stats()`` uses. Each group also reports
-        ``window_hit_rate`` over its last ``config.guardrails.cache_hit_window``
-        measured calls (``None`` until that many), since a long-lived pool's
+        ``window_hit_rate`` over its last ``cache_tracker.window`` measured calls
+        (``None`` until that many), since a long-lived pool's
         cumulative ``hit_rate`` changes slowly. Statistics only: the pool has no
         cache hit-rate floor. Call it from the pool's event loop; it doesn't await.
         """
-        tracker = self._host._cache_tracker
-        assert tracker is not None
-        return tracker.stats()
+        return self._cache_tracker.stats()
 
     def reset_cache_stats(self) -> None:
         """Clear the per-group cache statistics, including the 64-group cap's overflow.
 
         A call still running at the reset is counted when it returns.
         """
-        tracker = self._host._cache_tracker
-        assert tracker is not None
-        tracker.reset()
+        self._cache_tracker.reset()
+
+    @property
+    def cache_tracker(self) -> CacheGroupTracker:
+        """The pool's live :class:`~async_batch_llm.CacheGroupTracker` (provisional).
+
+        Save it with ``pool.cache_tracker.to_dict()`` and pass
+        ``CacheGroupTracker.from_dict(saved)`` as ``cache_tracker=`` to a later
+        pool to carry the statistics across a restart, or call
+        ``pool.cache_tracker.below_floor(...)`` to apply a floor yourself.
+        """
+        return self._cache_tracker
 
     async def aclose(self) -> None:
         """Stop accepting work, drain in-flight requests, then run cleanup().
