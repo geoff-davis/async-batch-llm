@@ -76,6 +76,7 @@ nav:
   - Results, Artifacts, and Resume: results-and-artifacts.md
   - Large Runs (100k–1M): large-runs.md
   - Deadlines, Budgets and Fail-Fast Guardrails: guardrails.md
+  - "Prompt Caching: Getting and Keeping Hits": prompt-caching.md
   - Bounded Work and Backpressure: bounded-work.md
   - Cleanup and Shutdown Contract: cleanup-lifecycle-contract.md
   - Use Your Existing Async Client: callable-integration.md

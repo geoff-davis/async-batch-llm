@@ -311,6 +311,9 @@ other machines and caches less well. With many workers on one key, split it (for
 example `classify-v3-0` … `classify-v3-3`) and use `cache_group` to report them
 together, or compare their rates in the per-group statistics.
 
+For reading hit rates per job and stopping a run when they drop, see
+[Prompt caching](prompt-caching.md).
+
 **Cache groups.** The key also names the call's group in the per-group cache
 statistics and the hit-rate floor (see [guardrails](guardrails.md#cache-hit-rate-floor)).
 `cache_group="tier1"` on the model, or `config={"cache_group": ...}` on one call,

@@ -289,6 +289,14 @@ at most one call per worker, so pair a cap with a per-call output limit
 and may change in a minor release ([API stability](stability.md#provisional-through-10)).
 See [Token and cost budgets](guardrails.md#token-and-cost-budgets).
 
+### Prompt-cache hit rate
+
+A cache that stops hitting raises cost without failing any call. Watch the per-group
+`cache_groups` statistics, and on unattended runs set
+`GuardrailConfig(min_cache_hit_rate=...)` to stop when a group's recent hit rate drops.
+Long-lived `LLMCallPool`s report the same statistics through `pool.cache_stats()`.
+See [Prompt caching](prompt-caching.md).
+
 ## 10. Cleanup
 
 Use the processor as an `async with` context manager so workers, caches, and

@@ -118,7 +118,10 @@ this section.**
 | Gemini explicit `CachedContent` | Not exposed via OpenRouter                               | Use `GeminiCachedModel` |
 
 `cached_input_tokens` is populated when the upstream cache hits;
-`BatchResult.total_cached_tokens` aggregates across the batch. To estimate
+`BatchResult.total_cached_tokens` aggregates across the batch, and the per-group
+statistics and hit-rate floor in [Prompt caching](prompt-caching.md) break it down by
+job. `prompt_cache_key=` and `cache_group=` work on `OpenRouterModel` as on
+`OpenAIModel`. To estimate
 billable tokens, pass the matching rate from `CachedTokenRates`:
 
 ```python

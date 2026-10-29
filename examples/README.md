@@ -23,6 +23,7 @@ These run with no API key:
 | Example | Extra | API key |
 | --- | --- | --- |
 | `example_callable_application.py` | none | none |
+| `example_prompt_caching.py` | none | none |
 | `example_single_call.py` | `pydantic-ai` (uses `MockAgent`) | none |
 | `example_gateway.py` | `pydantic-ai` (uses `MockAgent`) | none |
 | `example_context_manager.py` | `pydantic-ai` (uses `MockAgent`) | none |
@@ -71,6 +72,13 @@ handoffs, writes results to an async transactional sink, retains billed tokens
 from validation failures, keeps retry feedback private per item, checkpoints
 before publication, and performs a second run with zero live calls through
 compatible replay.
+
+### `example_prompt_caching.py`
+
+Prompt-cache monitoring with a fake caching client and no API key. A processor run
+whose "classify" job loses its cache midway stops on the cache hit-rate floor; a call
+pool saves its `CacheGroupTracker` and a second pool continues from it; and a tracker
+is rebuilt from finished results. See `docs/prompt-caching.md`.
 
 ### `example_production_resume.py`
 

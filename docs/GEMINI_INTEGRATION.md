@@ -195,6 +195,12 @@ async with ParallelBatchProcessor[str, str, None](config=config) as processor:
 #   (call cached_model.delete_cache() to force removal)
 ```
 
+Calls through one `GeminiCachedModel` form one cache group in the per-group cache
+statistics (a stable hash of the cached content, unchanged when the cache renews), or
+pass `cache_group="..."` to name it. `GeminiModel` groups calls by their system
+instruction. See [Prompt caching](prompt-caching.md) for reading the hit rates and
+stopping a run when they drop.
+
 ## Advanced Features
 
 ### Progressive Temperature on Retries

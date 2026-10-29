@@ -222,6 +222,8 @@ or earlier.
 A prompt cache that stops hitting can multiply a run's input cost without any call
 failing. Every processor run counts cache reads and writes per *cache group*, and
 `min_cache_hit_rate` stops the run when a group's recent hit rate falls below a floor.
+This section is the reference; [Prompt caching](prompt-caching.md) is the how-to,
+including which providers support what and how to choose the values.
 
 Provisional: new in 1.1; it may change in a minor release.
 
