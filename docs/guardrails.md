@@ -291,8 +291,10 @@ which isn't what the floor measures.
 shape, counted since the pool was created or last reset, and every group includes
 `window_hit_rate` over its last `cache_hit_window` measured calls. A long-lived
 pool's cumulative `hit_rate` moves slowly, so the window shows a recent drop.
-`pool.reset_cache_stats()` clears everything, including the 64-group cap. `call()`
-and `call_result()` keep no statistics.
+`pool.reset_cache_stats()` clears everything, including the 64-group cap; a call
+still running at the reset is counted when it returns. Both methods are synchronous,
+so call them from the pool's event loop. `call()` and `call_result()` keep no
+statistics.
 
 ## End-to-end checkpointed run
 

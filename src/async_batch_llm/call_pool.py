@@ -206,14 +206,17 @@ class LLMCallPool(Generic[TOutput]):
         ``window_hit_rate`` over its last ``config.guardrails.cache_hit_window``
         measured calls (``None`` until that many), since a long-lived pool's
         cumulative ``hit_rate`` changes slowly. Statistics only: the pool has no
-        cache hit-rate floor.
+        cache hit-rate floor. Call it from the pool's event loop; it doesn't await.
         """
         tracker = self._host._cache_tracker
         assert tracker is not None
         return tracker.stats()
 
     def reset_cache_stats(self) -> None:
-        """Clear the per-group cache statistics, including the 64-group cap's overflow."""
+        """Clear the per-group cache statistics, including the 64-group cap's overflow.
+
+        A call still running at the reset is counted when it returns.
+        """
         tracker = self._host._cache_tracker
         assert tracker is not None
         tracker.reset()
