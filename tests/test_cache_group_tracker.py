@@ -243,6 +243,17 @@ def _state(**changes: Any) -> dict[str, Any]:
             _state(group={"measured_calls": 0, "unmeasured_calls": 1, "recent": []}),
             "no measured calls",
         ),
+        (
+            _state(
+                group={
+                    "measured_calls": 0,
+                    "unmeasured_calls": 1,
+                    "cached_input_tokens": 0,
+                    "recent": [],
+                }
+            ),
+            "no measured calls",
+        ),
         (_state(group={"measured_calls": 0, "unmeasured_calls": 0, "recent": []}), "at least one"),
         (_state(group={"input_tokens": 1, "measured_calls": 2}), "less than measured_calls"),
         (_state(group={"recent": [[0, 0]]}), "recent entries"),
@@ -275,7 +286,7 @@ def _two_call_state() -> dict[str, Any]:
         ({"input_tokens": 150}, "doesn't match input_tokens"),
         ({"input_tokens": 300}, "doesn't match input_tokens"),
         ({"cached_input_tokens": 5}, "doesn't match cached_input_tokens"),
-        ({"measured_calls": 0, "unmeasured_calls": 1, "recent": []}, "doesn't match input_tokens"),
+        ({"measured_calls": 0, "unmeasured_calls": 1, "recent": []}, "no measured calls"),
     ],
 )
 def test_from_dict_rejects_states_record_cannot_produce(
@@ -293,9 +304,14 @@ def test_partial_window_totals_may_exceed_the_window() -> None:
         tracker.record("g", _usage(100, cached))
     state = tracker.to_dict()
     assert CacheGroupTracker.from_dict(state).stats() == tracker.stats()
-    state["groups"][0]["input_tokens"] = 199  # less than the retained 200
-    with pytest.raises(ValueError, match="doesn't match input_tokens"):
-        CacheGroupTracker.from_dict(state)
+    # The call that left the window reported at least one input token.
+    for total, valid in ((199, False), (200, False), (201, True), (300, True)):
+        state["groups"][0]["input_tokens"] = total
+        if valid:
+            CacheGroupTracker.from_dict(state)
+        else:
+            with pytest.raises(ValueError, match="doesn't match input_tokens"):
+                CacheGroupTracker.from_dict(state)
 
 
 def _overflow_state(**overflow: Any) -> dict[str, Any]:
@@ -311,6 +327,15 @@ def _overflow_state(**overflow: Any) -> dict[str, Any]:
     ("overflow", "match"),
     [
         ({"measured_calls": 0, "unmeasured_calls": 1}, "no measured calls"),
+        (
+            {
+                "measured_calls": 0,
+                "unmeasured_calls": 1,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": 0,
+            },
+            "no measured calls",
+        ),
         (
             {"measured_calls": 0, "cached_input_tokens": 0, "cache_write_input_tokens": 0},
             "at least one",

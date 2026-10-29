@@ -136,8 +136,10 @@ class _GroupCounters:
             raise ValueError(f"{where} must count at least one call")
         if self.input_tokens < self.measured_calls:
             raise ValueError(f"{where}.input_tokens is less than measured_calls")
-        if self.measured_calls == 0 and (self.cached_input_tokens or self.cache_write_input_tokens):
-            raise ValueError(f"{where} has cached or written tokens but no measured calls")
+        if self.measured_calls == 0 and (
+            self.input_tokens or self.cached_input_tokens or self.cache_write_input_tokens
+        ):
+            raise ValueError(f"{where} has token totals but no measured calls")
         reason = state.get("last_miss_reason")
         if reason is not None and normalize_miss_reason(reason) != reason:
             raise ValueError(
@@ -449,6 +451,9 @@ class CacheGroupTracker:
             ):
                 if part > total or (complete and part != total):
                     raise ValueError(f"{where}.recent doesn't match {name}")
+            # Each measured call that left the window reported at least one input token.
+            if group.input_tokens - group.recent_input < group.measured_calls - retained:
+                raise ValueError(f"{where}.recent doesn't match input_tokens")
             tracker._groups[label] = group
         overflow = data.get("overflow")
         if overflow is not None:
