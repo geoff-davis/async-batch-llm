@@ -21,13 +21,16 @@ per-item part last:
   system message), and only the item in the prompt.
 - Keep the static part byte-for-byte identical across calls. A timestamp, a
   shuffled example list or an item id near the start makes every prefix unique.
-- Don't join static instructions and per-item data in one user message. That
-  writes the whole prompt to the cache on every call and never reads it back.
-  When a provider caches by prefix only (DeepSeek, for example), a static prefix at
-  the start of the user message works too, as long as nothing per-item comes first.
+- Prefer a separate system instruction to one user message that joins static
+  instructions to per-item data. How much of such a message a provider can reuse
+  depends on the provider and model: a static prefix at its start can still hit
+  (DeepSeek caches any shared prefix, and OpenAI models before GPT-5.6 cache at
+  fixed token intervals), but anything per-item early in it makes every prompt
+  unique from that point on.
 
-Providers also need a minimum prefix length (about 1,024 tokens for OpenAI) before
-they cache anything. Provider specifics:
+Providers also need a minimum prefix length before they cache anything; for OpenAI it
+is 1,024 tokens on GPT-5.6 and later and depends on request settings for earlier models
+([OpenAI's prompt caching guide][openai-caching]). Provider specifics:
 [OpenAI](OPENAI_INTEGRATION.md#getting-cache-hits),
 [OpenRouter](OPENROUTER_INTEGRATION.md#prompt-caching) (including Anthropic's opt-in
 `cache_control` markers), and [Gemini](GEMINI_INTEGRATION.md) (`GeminiCachedModel`
@@ -51,8 +54,10 @@ provider reports writes) and a group label in its metadata (`cache_group`).
 
 Two features are OpenAI-specific:
 
-- **`prompt_cache_key`** on `OpenAIModel` and `OpenRouterModel` routes calls that
-  share a key to the same cache. DeepSeek's and Gemini's caches take no key.
+- **`prompt_cache_key`** on `OpenAIModel` and `OpenRouterModel`. On OpenAI models
+  before GPT-5.6 it routes calls that share a key toward the same cache; on GPT-5.6
+  and later OpenAI routes automatically and the key only separates cache accounting.
+  DeepSeek's and Gemini's caches take no key.
 - **Miss reasons.** OpenAI's Responses API can explain a miss
   (`prompt_cache_diagnostics`); the reason becomes the call's `cache_miss_reason`.
   Other providers don't explain misses, so `last_miss_reason` stays `None` unless your
@@ -70,7 +75,8 @@ from async_batch_llm import DeepSeekModel, OpenAIModel
 # A label for every call this model makes. It is never sent to the provider.
 model = DeepSeekModel.from_api_key("deepseek-chat", cache_group="tier1-dedupe")
 
-# OpenAI: send a cache key on every call; it also names the group.
+# OpenAI: send a cache key on every call; it also names the group. (On GPT-5.6
+# and later the key separates cache accounting; earlier models also route by it.)
 model = OpenAIModel.from_api_key(
     "gpt-6-luna",
     system_instruction=LONG_STATIC_INSTRUCTIONS,
@@ -108,11 +114,13 @@ async def invoke(prompt, *, attempt, timeout, state):
     )
 ```
 
-**One hot key.** OpenAI's guide says traffic above roughly 15 requests per minute for
-one prefix and key spills to other machines and caches less well. With many workers on
-one key, split the key (for example `classify-v3-0` through `classify-v3-3`, chosen per
-item) and give the models one `cache_group` label so they report together, or leave the
-labels apart to compare the shards.
+**One hot key (OpenAI models before GPT-5.6).** On these models a cache lives on
+one machine, and [OpenAI's guide][openai-caching] suggests about 15 requests per minute in
+total for each key; busier traffic overflows to other machines and caches less well.
+With many workers on one key, split the key (for example `classify-v3-0` through
+`classify-v3-3`, chosen per item) and give the models one `cache_group` label so they
+report together, or leave the labels apart to compare the shards. GPT-5.6 and later
+route automatically, so there is no need to split keys for them.
 
 ## 4. Read the statistics
 
@@ -171,9 +179,18 @@ if result.termination.error_category == ErrorCategory.CACHE_HIT_RATE_BELOW_FLOOR
 ```
 
 Calls that hadn't started end `batch_aborted`, and `abort_mode` decides what happens
-to calls already running. With an [artifact store](results-and-artifacts.md) and
-`ResumePolicy`, fix the prompt and rerun: completed items replay, and only the
-rest are called. The resumed run starts with fresh statistics.
+to calls already running. The resumed run starts with fresh statistics.
+
+What a rerun can reuse depends on the fix. With an
+[artifact store](results-and-artifacts.md) and `ResumePolicy.REUSE_SUCCESSES`, a fix
+that changes only cache routing, such as a cache key or label, leaves completed items
+compatible, so they replay and only the rest are called. A fix that changes what the
+model is asked, however, needs care in both directions. A changed item prompt changes
+the item's fingerprint, so completed items run again. A change outside the item
+prompt, such as the system instruction or other request settings, may not be part of
+the compatibility check, so old outputs can replay unless you change the store's
+`ArtifactIdentity` or bump `prompt_version`
+(see [Results and artifacts](results-and-artifacts.md)).
 
 **Choosing the values.**
 
@@ -252,3 +269,5 @@ A tracker isn't thread-safe; use it from one event loop or thread.
   [OpenRouter prompt caching](OPENROUTER_INTEGRATION.md#prompt-caching).
 - `CachedTokenRates` and `BatchResult.estimated_cost()` for pricing cached and written
   tokens ([API reference](api/core.md)).
+
+[openai-caching]: https://developers.openai.com/api/docs/guides/prompt-caching

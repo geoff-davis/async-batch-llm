@@ -111,7 +111,7 @@ this section.**
 
 | Upstream provider               | Caching behavior                                         | Action required         |
 |---------------------------------|----------------------------------------------------------|-------------------------|
-| OpenAI                          | Automatic for prompts > ~1024 tokens                     | None                    |
+| OpenAI                          | Automatic for long prefixes (minimum varies by model)    | None                    |
 | Gemini (implicit caching)       | Automatic for repeated long prefixes                     | None                    |
 | DeepSeek                        | Automatic, on-disk context cache                         | None                    |
 | Anthropic                       | **Opt-in** via `cache_control` markers on message blocks | Build structured prompt |
