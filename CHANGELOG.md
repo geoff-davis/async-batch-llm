@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-10-29
+
+The last release before 1.0, and the last to support Python 3.10. It adds per-group
+prompt-cache statistics, an optional cache hit-rate floor, cache-key and cache-group
+options on the built-in models, and a public `CacheGroupTracker`, all provisional.
+Nothing that works in v0.29 stops working.
+
 ### Added
 
 - Per-cache-group hit rates and an optional cache hit-rate floor ([#244]). Provisional.
@@ -35,7 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   system-instruction hash.
 - OpenAI Responses calls record `prompt_cache_diagnostics` miss reasons as
   `cache_miss_reason` ([#244]).
-
 - A public `CacheGroupTracker` ([#247]). Provisional. It is the per-group accounting
   the processor and `LLMCallPool` use, with `record()`, `record_result()` (rebuild from
   saved results), `stats()`, `below_floor()` (returns `CacheFloorBreach` entries, the
@@ -2738,7 +2744,8 @@ See **[Migration Guide](docs/archive/MIGRATION_V0_1.md)** for complete upgrade i
 [#122]: https://github.com/geoff-davis/async-batch-llm/issues/122
 [#125]: https://github.com/geoff-davis/async-batch-llm/issues/125
 
-[Unreleased]: https://github.com/geoff-davis/async-batch-llm/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/geoff-davis/async-batch-llm/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.26.0...v0.27.0
