@@ -191,7 +191,7 @@ if ratings and ratings.get("HARM_CATEGORY_HATE_SPEECH") == "HIGH":
 ```
 
 Two more reserved keys feed the per-group cache statistics (provisional, new in
-1.1): `cache_group`, a string naming the prompt-cache group an attempt belongs to,
+0.30): `cache_group`, a string naming the prompt-cache group an attempt belongs to,
 and `cache_miss_reason`, a provider's explanation of a cache miss. Built-in models
 set `cache_group`; see [Cache hit-rate floor](../guardrails.md#cache-hit-rate-floor).
 

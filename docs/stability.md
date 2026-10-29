@@ -59,7 +59,7 @@ explicitly instead. On Python 3.14 an installed `google-genai` also emits its ow
 ## Support policy
 
 - **Python:** each supported version until its upstream end of life. 1.0 requires
-  Python 3.11 or newer; v0.29 is the last release for 3.10.
+  Python 3.11 or newer; v0.30 is the last release for 3.10.
 - **Provider SDKs:** CI tests each SDK at its declared minimum and at the latest
   release of every supported major line. A new major line is supported once a CI
   leg covers it; until then it may install but is untested. A minimum can rise in a
@@ -89,7 +89,7 @@ change in a minor release. **Deprecated** names warn now and leave the public AP
 | `PostProcessorFunc`, `ProgressCallbackFunc` | Stable |
 | `ErrorCategory`, `TimeoutCategory` | Stable |
 | `AttemptUsage` | Provisional (new in 0.27, with the token and cost budget) |
-| `CacheGroupTracker`, `CacheFloorBreach` | Provisional (new in 1.1, with the cache-group statistics) |
+| `CacheGroupTracker`, `CacheFloorBreach` | Provisional (new in 0.30, with the cache-group statistics) |
 | `LLMGateway` | Deprecated (use `LLMCallPool`) |
 | `BatchProcessor` | Deprecated (use `ParallelBatchProcessor`) |
 | `ProcessingStats` | Deprecated (use the dict from `get_stats()`) |
@@ -182,7 +182,7 @@ The legacy parameters come first in `ParallelBatchProcessor`'s signature, so pas
   `cache_groups` statistics, `LLMCallPool.cache_stats()`, `reset_cache_stats()`, the
   pool's `cache_tracker` argument and property,
   `ErrorCategory.CACHE_HIT_RATE_BELOW_FLOOR`, the models' `prompt_cache_key` and
-  `cache_group` options, and the per-call `cache_group` config key are new in 1.1 and
+  `cache_group` options, and the per-call `cache_group` config key are new in 0.30 and
   provisional.
 - **Provider-output views.** Provisional now; they may be promoted to stable at
   1.0.0rc1 (see above). `logprobs` is the most likely to stay provisional.
