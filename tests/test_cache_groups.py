@@ -774,3 +774,76 @@ async def test_single_call_and_pool_reject_a_floor() -> None:
         await call_result(_Cached(), "g|0/10|0", config=config)
     with pytest.raises(ValueError, match="min_cache_hit_rate"):
         LLMCallPool(_Cached(), config=config)
+
+
+# ── LLMCallPool statistics ───────────────────────────────────────────────────
+
+
+def test_window_without_a_floor_is_reported_but_never_trips() -> None:
+    tracker = CacheHitTracker(GuardrailConfig(cache_hit_window=2), windowed=True)
+    assert _record(tracker, "g", _usage(10)) is None
+    assert _group(tracker.stats(), "g")["window_hit_rate"] is None
+    assert _record(tracker, "g", _usage(10, 10)) is None
+    assert _record(tracker, "g", _usage(10)) is None
+    assert _group(tracker.stats(), "g")["window_hit_rate"] == pytest.approx(0.5)
+
+
+def test_a_floor_needs_its_stop_callbacks() -> None:
+    with pytest.raises(ValueError, match="trip_now and announce"):
+        CacheHitTracker(GuardrailConfig(min_cache_hit_rate=0.5))
+
+
+def test_reset_forgets_groups_overflow_and_trip() -> None:
+    tracker = _tracker(floor=0.5, window=1)
+    for i in range(MAX_CACHE_GROUPS + 1):
+        _record(tracker, f"g{i}", _usage(10, 10))
+    assert tracker.stats()["cache_groups_overflow"] is not None
+    tracker.reset()
+    assert tracker.stats() == {"cache_groups": [], "cache_groups_overflow": None}
+    # Tripping is armed again after a reset.
+    assert _record(tracker, "fresh", _usage(10)) is not None
+
+
+@pytest.mark.asyncio
+async def test_pool_reports_groups_with_a_rolling_window() -> None:
+    config = ProcessorConfig(
+        max_workers=4,
+        retry=_FAST_RETRY,
+        rate_limit=_NO_COOLDOWN,
+        guardrails=GuardrailConfig(cache_hit_window=3),
+    )
+    async with LLMCallPool(_Cached(), config=config) as pool:
+        assert pool.cache_stats() == {"cache_groups": [], "cache_groups_overflow": None}
+        prompts = _prompts("a", 90, 100, 4) + _prompts("b", 0, 50, 2) + _prompts("-", 0, 10, 1)
+        results = await asyncio.gather(*(pool.submit_result(p) for p in prompts))
+        assert all(r.success for r in results)
+        stats = pool.cache_stats()
+        assert [entry["group"] for entry in stats["cache_groups"]] == ["a", "b", None]
+        assert _group(stats, "a")["measured_calls"] == 4
+        assert _group(stats, "a")["window_hit_rate"] == pytest.approx(0.9)
+        # A 0% group is only reported: the pool has no floor.
+        assert _group(stats, "b")["window_hit_rate"] is None
+        await pool.submit_result("b|0/50|9")
+        assert _group(pool.cache_stats(), "b")["window_hit_rate"] == 0.0
+
+        pool.reset_cache_stats()
+        assert pool.cache_stats()["cache_groups"] == []
+        await pool.submit_result("a|100/100|9")
+        assert _group(pool.cache_stats(), "a")["measured_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_pool_counts_only_attempts_that_returned() -> None:
+    class _Flaky(LLMCallStrategy[str]):
+        async def execute(self, prompt, attempt, timeout, state=None):
+            if prompt == "fail":
+                raise ValueError("bad request")
+            usage = {"input_tokens": 10, "output_tokens": 1, "cached_input_tokens": 10}
+            return prompt, usage, {"cache_group": "g"}
+
+    async with LLMCallPool(_Flaky(), config=_config()) as pool:
+        assert not (await pool.submit_result("fail")).success
+        assert (await pool.submit_result("ok")).success
+        entry = _group(pool.cache_stats(), "g")
+        assert entry["measured_calls"] == 1
+        assert entry["unmeasured_calls"] == 0

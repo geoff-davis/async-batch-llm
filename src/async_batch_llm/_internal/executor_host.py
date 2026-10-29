@@ -63,6 +63,7 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         strategy: LLMCallStrategy | None = None,
         error_classifier: ErrorClassifier | None = None,
         rate_limit_strategy: RateLimitStrategy | None = None,
+        track_cache_groups: bool = False,
     ) -> None:
         if config.guardrails.budget_configured:
             # Accepting a safety cap and silently ignoring it would be worse
@@ -135,7 +136,10 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         # batch abort controller.
         self._abort_controller: AbortController | None = None
         self._budget_tracker: BudgetTracker | None = None
-        self._cache_tracker: CacheHitTracker | None = None
+        # Statistics only (no floor), for the long-lived pool.
+        self._cache_tracker: CacheHitTracker | None = (
+            CacheHitTracker(config.guardrails, windowed=True) if track_cache_groups else None
+        )
 
         self.executor: ItemExecutor[TInput, TOutput, TContext] = ItemExecutor(
             self, preserve_tracebacks=True

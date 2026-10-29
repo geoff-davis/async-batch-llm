@@ -75,6 +75,11 @@ pending task. Bound the outer producer or use `process_stream` with a bounded
 [bounded-work guide](../bounded-work.md#shared-call-task-counts) includes both the
 recommended batch path and a bounded shared-call task window.
 
+`pool.cache_stats()` reports prompt-cache reads and writes per cache group, with a
+rolling hit rate, and `pool.reset_cache_stats()` clears them. The pool reports these
+statistics but has no hit-rate floor. See
+[Cache hit-rate floor](../guardrails.md#cache-hit-rate-floor).
+
 `LLMCallPool` is an in-process, queue-less object. Each caller directly uses the
 shared `ItemExecutor` under a semaphore; there is no background dispatcher,
 network service, or provider-routing layer. The strategy beneath it may use a

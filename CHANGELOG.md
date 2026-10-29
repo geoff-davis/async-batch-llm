@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     below the floor. The run ends `fail_fast` with the new termination category
     `ErrorCategory.CACHE_HIT_RATE_BELOW_FLOOR`. `call()`, `call_result()` and
     `LLMCallPool` reject the floor.
+  - `LLMCallPool.cache_stats()` reports the same per-group statistics for a pool, with
+    a rolling `window_hit_rate` per group, and `reset_cache_stats()` clears them. The
+    pool has no floor.
 
 [#244]: https://github.com/geoff-davis/async-batch-llm/issues/244
 

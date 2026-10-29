@@ -245,7 +245,8 @@ class GuardrailConfig:
     positive input, and a group isn't checked until that window is full. A trip
     ends the run as ``fail_fast`` with the termination category
     ``cache_hit_rate_below_floor``; unstarted items finish ``batch_aborted``.
-    Processor runs only, like budgets.
+    Processor runs only, like budgets. ``LLMCallPool`` uses ``cache_hit_window``
+    for the rolling rate in ``cache_stats()``, without a floor.
     """
 
     total_timeout_per_item: float | None = None
