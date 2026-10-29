@@ -248,9 +248,11 @@ work from a custom strategy if you want the SDK to build the schema.
 
 ## Prompt caching
 
-OpenAI automatically caches prompt prefixes longer than ~1024 tokens. No
-client action is required. `cached_input_tokens` counts input tokens read from
-the cache and `cache_write_input_tokens` counts input tokens written to it.
+OpenAI automatically caches long prompt prefixes: at least 1,024 tokens on GPT-5.6
+and later, with a minimum that depends on request settings for earlier models (see
+OpenAI's [prompt caching guide][openai-caching]). No client action is required.
+`cached_input_tokens` counts input tokens read from the cache and
+`cache_write_input_tokens` counts input tokens written to it.
 Both are part of `input_tokens`, and `BatchResult.total_cached_tokens` and
 `BatchResult.total_cache_write_tokens` add them up across the batch.
 
@@ -285,10 +287,12 @@ tokens are present, since the Gemini rate is wrong for OpenAI, and a
 ### Getting cache hits
 
 The cache matches a prompt prefix, so put the static part first: a
-`system_instruction` (or developer message), then the per-item prompt. A
-`prompt_cache_key` keeps requests that share the prefix on the same cache. A single
-user message that joins static instructions to per-item data writes the whole prompt
-to the cache on every call and never reads it back.
+`system_instruction` (or developer message), then the per-item prompt. On models
+before GPT-5.6 a `prompt_cache_key` routes requests that share the prefix toward the
+same cache; GPT-5.6 and later route automatically, and the key only separates cache
+accounting. A single user message that joins static instructions to per-item data
+reuses at most a static start of that message (earlier models cache at fixed token
+intervals), and per-item text early in it defeats the cache.
 
 ```python
 model = OpenAIModel.from_api_key(
@@ -305,11 +309,15 @@ or a system message in the input), and no key when there is none. A key in per-c
 `config` wins. Passing the option and `extra_body={"prompt_cache_key": ...}` together
 raises `ValueError`; the `extra_body` form still works on its own.
 
-OpenAI's [prompt caching guide](https://platform.openai.com/docs/guides/prompt-caching)
-says traffic for one prefix and key above roughly 15 requests per minute spills to
-other machines and caches less well. With many workers on one key, split it (for
-example `classify-v3-0` … `classify-v3-3`) and use `cache_group` to report them
-together, or compare their rates in the per-group statistics.
+On models before GPT-5.6, OpenAI's [prompt caching guide][openai-caching] suggests about
+15 requests per minute in total for each key; busier traffic overflows to other
+machines and caches less well. With many workers on one key, split it (for example
+`classify-v3-0` … `classify-v3-3`) and use `cache_group` to report them together, or
+compare their rates in the per-group statistics. GPT-5.6 and later route
+automatically, so there is no need to split keys for them.
+
+For reading hit rates per job and stopping a run when they drop, see
+[Prompt caching](prompt-caching.md).
 
 **Cache groups.** The key also names the call's group in the per-group cache
 statistics and the hit-rate floor (see [guardrails](guardrails.md#cache-hit-rate-floor)).
@@ -521,3 +529,5 @@ a worked example of customizing token extraction.
   [`examples/example_deepseek.py`](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_deepseek.py).
 - [`examples/example_openai.py`](https://github.com/geoff-davis/async-batch-llm/blob/main/examples/example_openai.py)
   — runnable example.
+
+[openai-caching]: https://developers.openai.com/api/docs/guides/prompt-caching

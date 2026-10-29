@@ -44,6 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Processor stats now report `window_hit_rate` for every group, with or without a
   floor.
 
+### Documentation
+
+- A prompt-caching guide (`docs/prompt-caching.md`): getting cache hits, which providers
+  support what, naming cache groups, reading the per-group statistics, choosing a
+  hit-rate floor, and saving a pool's tracker. With a credential-free example,
+  `examples/example_prompt_caching.py`.
+
 [#244]: https://github.com/geoff-davis/async-batch-llm/issues/244
 [#247]: https://github.com/geoff-davis/async-batch-llm/issues/247
 

@@ -111,14 +111,17 @@ this section.**
 
 | Upstream provider               | Caching behavior                                         | Action required         |
 |---------------------------------|----------------------------------------------------------|-------------------------|
-| OpenAI                          | Automatic for prompts > ~1024 tokens                     | None                    |
+| OpenAI                          | Automatic for long prefixes (minimum varies by model)    | None                    |
 | Gemini (implicit caching)       | Automatic for repeated long prefixes                     | None                    |
 | DeepSeek                        | Automatic, on-disk context cache                         | None                    |
 | Anthropic                       | **Opt-in** via `cache_control` markers on message blocks | Build structured prompt |
 | Gemini explicit `CachedContent` | Not exposed via OpenRouter                               | Use `GeminiCachedModel` |
 
 `cached_input_tokens` is populated when the upstream cache hits;
-`BatchResult.total_cached_tokens` aggregates across the batch. To estimate
+`BatchResult.total_cached_tokens` aggregates across the batch, and the per-group
+statistics and hit-rate floor in [Prompt caching](prompt-caching.md) break it down by
+job. `prompt_cache_key=` and `cache_group=` work on `OpenRouterModel` as on
+`OpenAIModel`. To estimate
 billable tokens, pass the matching rate from `CachedTokenRates`:
 
 ```python
