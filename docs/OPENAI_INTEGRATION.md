@@ -285,19 +285,43 @@ tokens are present, since the Gemini rate is wrong for OpenAI, and a
 ### Getting cache hits
 
 The cache matches a prompt prefix, so put the static part first: a
-`system_instruction` (or developer message), then the per-item prompt. Passing a
-`prompt_cache_key` through `extra_body` keeps requests that share the prefix on
-the same cache. A single user message that joins static instructions to
-per-item data writes the whole prompt to the cache on every call and never reads
-it back.
+`system_instruction` (or developer message), then the per-item prompt. A
+`prompt_cache_key` keeps requests that share the prefix on the same cache. A single
+user message that joins static instructions to per-item data writes the whole prompt
+to the cache on every call and never reads it back.
 
 ```python
 model = OpenAIModel.from_api_key(
     "gpt-6-luna",
     system_instruction=LONG_STATIC_INSTRUCTIONS,
-    extra_body={"prompt_cache_key": "classify-v3"},
+    prompt_cache_key="classify-v3",
 )
 ```
+
+`prompt_cache_key` (provisional) sends the key on every call; `OpenRouterModel` takes
+it too. `prompt_cache_key="auto"` sends `abl-si-` plus a hash of the system
+instruction each call actually sends (including a per-call `instructions` override
+or a system message in the input), and no key when there is none. A key in per-call
+`config` wins. Passing the option and `extra_body={"prompt_cache_key": ...}` together
+raises `ValueError`; the `extra_body` form still works on its own.
+
+OpenAI's [prompt caching guide](https://platform.openai.com/docs/guides/prompt-caching)
+says traffic for one prefix and key above roughly 15 requests per minute spills to
+other machines and caches less well. With many workers on one key, split it (for
+example `classify-v3-0` … `classify-v3-3`) and use `cache_group` to report them
+together, or compare their rates in the per-group statistics.
+
+**Cache groups.** The key also names the call's group in the per-group cache
+statistics and the hit-rate floor (see [guardrails](guardrails.md#cache-hit-rate-floor)).
+`cache_group="tier1"` on the model, or `config={"cache_group": ...}` on one call,
+sets the label instead; it is never sent to the provider. Other request options such
+as `prompt_cache_retention` pass through `extra_body` or per-call `config` unchanged.
+
+**Miss reasons.** When a Responses API response carries `prompt_cache_diagnostics`
+with `type == "cache_miss"`, its `reason` (for example `input_changed`) becomes the
+call's `cache_miss_reason`. OpenAI returns diagnostics only when the request asks for
+a comparison against an earlier response (`comparison_response_id`); whether that
+works with the default `store=False` is untested here.
 
 ## Reasoning traces, tool calls, and logprobs
 

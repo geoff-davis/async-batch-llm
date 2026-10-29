@@ -239,12 +239,18 @@ config = ProcessorConfig(
 
 **Groups.** An attempt's group is the `cache_group` key in its metadata:
 
+- Every built-in model takes a `cache_group="..."` label, and a call can override
+  it with `config={"cache_group": "..."}`. The label is never sent to the provider,
+  and it wins over the defaults below.
 - OpenAI-compatible models (OpenAI, OpenRouter, DeepSeek) use the request's
-  `prompt_cache_key` if one is set, else `si:` plus a 12-character hash of the
-  system instruction.
+  `prompt_cache_key` if one is set (including one from the model's
+  `prompt_cache_key` option, see
+  [OpenAI prompt caching](OPENAI_INTEGRATION.md#getting-cache-hits)), else `si:`
+  plus a 12-character hash of the system instruction.
 - `GeminiModel` uses the system-instruction hash. `GeminiCachedModel` uses
   `gemini-cache:` plus a hash of the cached content, which stays the same when the
   cache is renewed.
+- A `cache_group` key from a `metadata_extractors` entry wins over all of these.
 - `PydanticAIStrategy` sets no group. `CallableStrategy` and custom strategies can
   set `metadata["cache_group"]` themselves.
 - Attempts without a group are counted together as the `None` group.
@@ -272,7 +278,8 @@ reaches a token or cost budget, the run ends `budget_exceeded` instead.
 **Miss reasons.** A strategy can put a provider's explanation of a miss in
 `metadata["cache_miss_reason"]` (a string, kept to 64 characters). Each group
 reports its latest one as `last_miss_reason`, and the floor's stop reason ends with
-it. No built-in model sets it yet.
+it. OpenAI's Responses API models set it from `prompt_cache_diagnostics` when the
+response carries a cache-miss diagnosis.
 
 **Reporting.** `await processor.get_stats()` and the `BATCH_COMPLETED` event carry
 `cache_groups`, a list sorted by input tokens, and `cache_groups_overflow` (`None`
