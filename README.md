@@ -4,20 +4,20 @@
 
 | Name                                                         |    Stmts |     Miss |   Branch |   BrPart |      Cover |   Missing |
 |------------------------------------------------------------- | -------: | -------: | -------: | -------: | ---------: | --------: |
-| src/async\_batch\_llm/\_\_init\_\_.py                        |       50 |        2 |        4 |        0 |     96.30% |   356-358 |
+| src/async\_batch\_llm/\_\_init\_\_.py                        |       51 |        2 |        4 |        0 |     96.36% |   359-361 |
 | src/async\_batch\_llm/\_internal/\_\_init\_\_.py             |        0 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/\_internal/admission.py                |      421 |       16 |      118 |       14 |     94.43% |106, 114, 131, 133, 135, 155, 171, 173, 267, 299-300, 389, 403, 408-409, 523-\>521, 605 |
 | src/async\_batch\_llm/\_internal/artifact\_codec.py          |      193 |       14 |       58 |        7 |     91.63% |69, 73, 77, 124, 153, 189, 300-\>299, 376, 402, 410, 455, 471-474 |
 | src/async\_batch\_llm/\_internal/backoff.py                  |       14 |        2 |        8 |        0 |     90.91% |     19-20 |
 | src/async\_batch\_llm/\_internal/budget.py                   |       74 |        0 |       24 |        0 |    100.00% |           |
-| src/async\_batch\_llm/\_internal/cache\_groups.py            |      139 |        1 |       42 |        1 |     98.90% |       221 |
+| src/async\_batch\_llm/\_internal/cache\_groups.py            |       40 |        0 |        6 |        0 |    100.00% |           |
 | src/async\_batch\_llm/\_internal/capacity.py                 |      131 |       11 |       32 |        2 |     90.80% |43-44, 84-93, 159-160, 187-193 |
 | src/async\_batch\_llm/\_internal/classifier\_resolver.py     |       38 |        0 |        4 |        0 |    100.00% |           |
 | src/async\_batch\_llm/\_internal/cleanup.py                  |      262 |        8 |       94 |        7 |     94.66% |144-\>exit, 150, 177, 297-\>299, 303-\>exit, 384, 417-\>430, 471-475 |
 | src/async\_batch\_llm/\_internal/error\_logging.py           |      107 |       16 |       40 |        8 |     82.31% |42-\>45, 93, 107-\>117, 115-116, 118, 121-132, 149-\>170, 151, 153-156, 167-168 |
 | src/async\_batch\_llm/\_internal/event\_dispatcher.py        |       90 |        4 |       30 |        1 |     95.83% |82-83, 122-\>124, 147, 163 |
 | src/async\_batch\_llm/\_internal/execution\_state.py         |       59 |        1 |        6 |        1 |     96.92% |       125 |
-| src/async\_batch\_llm/\_internal/executor\_host.py           |       68 |        0 |        6 |        0 |    100.00% |           |
+| src/async\_batch\_llm/\_internal/executor\_host.py           |       69 |        0 |        6 |        0 |    100.00% |           |
 | src/async\_batch\_llm/\_internal/guardrails.py               |      145 |        4 |       50 |        6 |     94.87% |79, 89, 121, 160-\>exit, 178, 192-\>194 |
 | src/async\_batch\_llm/\_internal/input\_validation.py        |       43 |        1 |       12 |        1 |     96.36% |        34 |
 | src/async\_batch\_llm/\_internal/item\_executor.py           |      790 |       23 |      242 |       33 |     94.57% |203, 246-\>exit, 248-\>exit, 252-\>exit, 261-\>exit, 269-\>exit, 303-\>exit, 320, 336, 416, 476, 536-\>exit, 545-\>547, 548-\>550, 564-567, 681, 707-\>715, 754-\>758, 772-\>exit, 816, 818, 972, 1047, 1122-1129, 1169, 1393-1394, 1397-\>1402, 1415, 1504-\>exit, 1566, 1582-\>1586, 1603-\>1607, 1658-\>1662, 1667-\>1671, 1707-\>1712, 1766-\>1777, 1866-\>1873, 1922, 1924-\>1926 |
@@ -28,7 +28,8 @@
 | src/async\_batch\_llm/artifacts.py                           |      539 |       70 |      176 |       33 |     84.76% |131, 143-\>145, 160, 162-164, 199-200, 261-262, 278-279, 286, 290-291, 307-308, 323, 328, 341, 345, 350, 364-365, 369-\>373, 388, 390-393, 395, 418-419, 428, 434-438, 443, 449, 459, 465, 482-483, 487, 543-544, 551, 588, 606-607, 654-655, 680, 760-761, 781, 814, 817, 855-857, 861-862, 879, 894, 911-\>923, 916-917, 945, 954-\>956, 968-969, 978-979, 1013-\>1015 |
 | src/async\_batch\_llm/base.py                                |     1002 |       42 |      278 |       21 |     94.45% |122, 350, 359, 435-\>exit, 778-\>exit, 781-\>exit, 835, 872-\>874, 925-\>930, 1263, 1265, 1642, 1684-1685, 1851, 1947-1952, 1977, 1992-1995, 2016-\>exit, 2053-2054, 2084, 2088, 2131-\>exit, 2142, 2170-2171, 2193-2201, 2217-\>2224, 2297, 2346, 2365, 2369-\>2375, 2371-2374, 2405-2406, 2421-2423 |
 | src/async\_batch\_llm/budget.py                              |       13 |        0 |        0 |        0 |    100.00% |           |
-| src/async\_batch\_llm/call\_pool.py                          |       88 |        0 |       14 |        0 |    100.00% |           |
+| src/async\_batch\_llm/cache\_groups.py                       |      221 |        3 |       88 |        3 |     98.06% |304, 419, 461 |
+| src/async\_batch\_llm/call\_pool.py                          |       91 |        0 |       16 |        0 |    100.00% |           |
 | src/async\_batch\_llm/callable\_strategy.py                  |      144 |        4 |       50 |        6 |     94.85% |57-\>exit, 70-\>exit, 89, 132, 173, 247 |
 | src/async\_batch\_llm/categories.py                          |       94 |        0 |        0 |        0 |    100.00% |           |
 | src/async\_batch\_llm/classifiers/\_\_init\_\_.py            |        5 |        0 |        0 |        0 |    100.00% |           |
@@ -60,7 +61,7 @@
 | src/async\_batch\_llm/streaming.py                           |      217 |        2 |       80 |        5 |     97.64% |81-\>exit, 109, 218-\>220, 274-\>277, 370, 376-\>exit |
 | src/async\_batch\_llm/token\_estimation.py                   |       35 |        0 |        4 |        0 |    100.00% |           |
 | src/async\_batch\_llm/token\_extractor.py                    |      136 |        3 |       56 |        5 |     95.83% |88-\>98, 101-\>107, 103-\>107, 146-147, 154, 206-\>208 |
-| **TOTAL**                                                    | **9477** |  **555** | **3142** |  **354** | **92.35%** |           |
+| **TOTAL**                                                    | **9604** |  **557** | **3196** |  **356** | **92.43%** |           |
 
 
 ## Setup coverage badge
