@@ -131,8 +131,17 @@ billable = result.effective_input_tokens(CachedTokenRates.ANTHROPIC_READ)
 billable = result.effective_input_tokens(CachedTokenRates.DEEPSEEK)
 ```
 
-Anthropic also charges a 25% premium on cache *writes*, which this helper
-does not model.
+Cache *writes* land in `cache_write_input_tokens` when OpenRouter reports them
+(`usage.prompt_tokens_details.cache_write_tokens`), and
+`BatchResult.total_cache_write_tokens` adds them up. Anthropic bills writes at
+1.25× normal input (2× with the 1-hour TTL), so pass the write rate too:
+
+```python
+billable = result.effective_input_tokens(
+    CachedTokenRates.ANTHROPIC_READ,
+    cache_write_rate=CachedTokenRates.ANTHROPIC_WRITE,
+)
+```
 
 ### Per-item provider metadata for mixed-provider batches
 

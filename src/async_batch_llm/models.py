@@ -320,23 +320,52 @@ def grounding_metadata_extractor(response: Any) -> dict[str, Any] | None:
     return {"grounding": grounding} if grounding else None
 
 
-def _raise_empty_response(message: str, tokens: tuple[int, int, int, int]) -> NoReturn:
+def _usage_dict(tokens: tuple[int, int, int, int], cache_write_tokens: int = 0) -> dict[str, int]:
+    """Token-usage dict from an (input, output, total, cached) tuple plus cache writes."""
+    input_tokens, output_tokens, total_tokens, cached_tokens = tokens
+    usage = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "cached_input_tokens": cached_tokens,
+    }
+    if cache_write_tokens:
+        usage["cache_write_input_tokens"] = cache_write_tokens
+    return usage
+
+
+def _raise_empty_response(
+    message: str, tokens: tuple[int, int, int, int], cache_write_tokens: int = 0
+) -> NoReturn:
     """Raise EmptyResponseError carrying the tokens the provider already billed.
 
     The API call succeeded (and was billed) even though it produced no usable
     text — without attaching the counts, the framework's failed-attempt
     accounting would report zero spend for the attempt.
     """
-    input_tokens, output_tokens, total_tokens, cached_tokens = tokens
-    raise EmptyResponseError(
-        message,
-        token_usage={
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": total_tokens,
-            "cached_input_tokens": cached_tokens,
-        },
-    )
+    raise EmptyResponseError(message, token_usage=_usage_dict(tokens, cache_write_tokens))
+
+
+def _openai_cache_write_tokens(response: Any) -> int:
+    """Prompt-cache write tokens from OpenAI-shaped usage, or 0.
+
+    Chat Completions reports them under ``usage.prompt_tokens_details`` and
+    Responses under ``usage.input_tokens_details``, either as a typed object
+    or (older SDKs) a plain mapping.
+    """
+    usage = getattr(response, "usage", None)
+    for name in ("prompt_tokens_details", "input_tokens_details"):
+        details = getattr(usage, name, None)
+        if details is None:
+            continue
+        value = (
+            details.get("cache_write_tokens")
+            if isinstance(details, Mapping)
+            else getattr(details, "cache_write_tokens", None)
+        )
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return 0
 
 
 def _extract_tokens(response: Any) -> tuple[int, int, int, int]:
@@ -1209,11 +1238,14 @@ class OpenAICompatibleModel:
         # the prompt (and, for finish_reason="length", the full output).
         tokens = self._extract_tokens(response)
         input_tokens, output_tokens, total_tokens, cached_tokens = tokens
+        cache_writes = self._extract_cache_write_tokens(response)
 
         # Validate content present (None typically means a tool call or a
         # finish-reason like "length"/"content_filter").
         if not response.choices:
-            _raise_empty_response(f"No choices returned from {type(self).__name__}.", tokens)
+            _raise_empty_response(
+                f"No choices returned from {type(self).__name__}.", tokens, cache_writes
+            )
         message = response.choices[0].message
         text = getattr(message, "content", None)
         if text is None:
@@ -1224,6 +1256,7 @@ class OpenAICompatibleModel:
                 "This typically indicates a tool call, content filter, "
                 "or token limit was reached.",
                 tokens,
+                cache_writes,
             )
 
         return LLMResponse(
@@ -1234,6 +1267,7 @@ class OpenAICompatibleModel:
             cached_input_tokens=cached_tokens,
             metadata=self._build_metadata(response),
             raw=response,
+            cache_write_input_tokens=cache_writes,
         )
 
     # ── Overridable extraction hooks ────────────────────────────────────
@@ -1279,6 +1313,16 @@ class OpenAICompatibleModel:
             cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
 
         return input_tokens, output_tokens, total_tokens, cached_tokens
+
+    def _extract_cache_write_tokens(self, response: Any) -> int:
+        """Extract the input tokens written to the provider's prompt cache.
+
+        Reads ``usage.prompt_tokens_details.cache_write_tokens`` (Chat
+        Completions) or ``usage.input_tokens_details.cache_write_tokens``
+        (Responses); 0 when absent. Separate from :meth:`_extract_tokens` so
+        subclasses that override that hook keep working unchanged.
+        """
+        return _openai_cache_write_tokens(response)
 
     def _extract_metadata(self, response: Any) -> dict[str, Any] | None:
         """Extract finish_reason, routed model name, and the reserved
@@ -1664,13 +1708,13 @@ class _ResponsesSurface:
                 schema_error = StructuredOutputSchemaError(
                     f"{self._responses_label} rejected response schema "
                     f"{self.response_schema_name!r}: {message}",
-                    token_usage=self._tokens_dict(tokens),
+                    token_usage=self._tokens_dict(tokens, _openai_cache_write_tokens(response)),
                 )
                 raise schema_error
             response_error = ProviderResponseError(
                 f"{self._responses_label} Responses API failed ({code or 'unknown'}): {message}",
                 provider_error=provider_error,
-                token_usage=self._tokens_dict(tokens),
+                token_usage=self._tokens_dict(tokens, _openai_cache_write_tokens(response)),
             )
             raise response_error
         return self._responses_result(response, tokens)
@@ -1724,6 +1768,7 @@ class _ResponsesSurface:
     def _responses_result(self, response: Any, tokens: tuple[int, int, int, int]) -> LLMResponse:
         """Turn a non-failed response into a result (DeepSeek's policy: any
         incomplete or textless response raises)."""
+        cache_writes = _openai_cache_write_tokens(response)
         status = getattr(response, "status", None)
         if status == "incomplete":
             details = getattr(response, "incomplete_details", None)
@@ -1731,12 +1776,15 @@ class _ResponsesSurface:
             _raise_empty_response(
                 f"Incomplete {self._responses_label} Responses output (reason={reason or 'unknown'}).",
                 tokens,
+                cache_writes,
             )
 
         text = self._responses_text(response)
         if not text:
             _raise_empty_response(
-                f"No text returned from {self._responses_label} Responses API.", tokens
+                f"No text returned from {self._responses_label} Responses API.",
+                tokens,
+                cache_writes,
             )
 
         input_tokens, output_tokens, total_tokens, cached_tokens = tokens
@@ -1748,6 +1796,7 @@ class _ResponsesSurface:
             cached_input_tokens=cached_tokens,
             metadata=self._responses_metadata(response),
             raw=response,
+            cache_write_input_tokens=cache_writes,
         )
 
     @staticmethod
@@ -1767,14 +1816,10 @@ class _ResponsesSurface:
         return text
 
     @staticmethod
-    def _tokens_dict(tokens: tuple[int, int, int, int]) -> dict[str, int]:
-        input_tokens, output_tokens, total_tokens, cached_tokens = tokens
-        return {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": total_tokens,
-            "cached_input_tokens": cached_tokens,
-        }
+    def _tokens_dict(
+        tokens: tuple[int, int, int, int], cache_write_tokens: int = 0
+    ) -> dict[str, int]:
+        return _usage_dict(tokens, cache_write_tokens)
 
     def _extract_responses_tokens(self, response: Any) -> tuple[int, int, int, int]:
         usage = getattr(response, "usage", None)
@@ -2044,17 +2089,22 @@ class OpenAIModel(_ResponsesSurface, OpenAICompatibleModel):
         text = self._responses_text(response)
         output = _openai_output(response)
         status = getattr(response, "status", None)
+        cache_writes = self._extract_cache_write_tokens(response)
         if not text:
             if output.refusals:
-                _raise_empty_response("OpenAI refused the request.", tokens)
+                _raise_empty_response("OpenAI refused the request.", tokens, cache_writes)
             if status == "incomplete":
                 details = getattr(response, "incomplete_details", None)
                 reason = getattr(details, "reason", None)
                 _raise_empty_response(
-                    f"Incomplete OpenAI Responses output (reason={reason or 'unknown'}).", tokens
+                    f"Incomplete OpenAI Responses output (reason={reason or 'unknown'}).",
+                    tokens,
+                    cache_writes,
                 )
             if not (status == "completed" and output.tool_calls):
-                _raise_empty_response("No text returned from OpenAI Responses API.", tokens)
+                _raise_empty_response(
+                    "No text returned from OpenAI Responses API.", tokens, cache_writes
+                )
         input_tokens, output_tokens, total_tokens, cached_tokens = tokens
         return LLMResponse(
             text=text,
@@ -2064,6 +2114,7 @@ class OpenAIModel(_ResponsesSurface, OpenAICompatibleModel):
             cached_input_tokens=cached_tokens,
             metadata=self._responses_metadata(response, output),
             raw=response,
+            cache_write_input_tokens=cache_writes,
         )
 
     def _responses_metadata(

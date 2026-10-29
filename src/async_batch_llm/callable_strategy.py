@@ -27,7 +27,13 @@ ErrorCallback: TypeAlias = Callable[
 RequestConcurrencyCallback: TypeAlias = Callable[[int], bool | Awaitable[bool]]
 
 _TOKEN_USAGE_KEYS = frozenset(
-    {"input_tokens", "output_tokens", "total_tokens", "cached_input_tokens"}
+    {
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cached_input_tokens",
+        "cache_write_input_tokens",
+    }
 )
 
 

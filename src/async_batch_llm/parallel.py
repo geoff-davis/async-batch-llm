@@ -958,6 +958,9 @@ class ParallelBatchProcessor(
                 self._stats.total_output_tokens += result.token_usage.get("output_tokens", 0)
                 self._stats.total_tokens += result.token_usage.get("total_tokens", 0)
                 self._stats.cached_input_tokens += result.token_usage.get("cached_input_tokens", 0)
+                self._stats.cache_write_input_tokens += result.token_usage.get(
+                    "cache_write_input_tokens", 0
+                )
             self._stats.total_admission_wait_seconds += result.admission_wait_seconds
             self._stats.max_admission_wait_seconds = max(
                 self._stats.max_admission_wait_seconds,

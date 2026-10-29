@@ -65,7 +65,7 @@ Execute an LLM call.
 
 - `output` (TOutput): The LLM response
 - `token_usage` ([TokenUsage](core.md#tokenusage)): Token usage dict with optional keys: `input_tokens`,
-  `output_tokens`, `total_tokens`, `cached_input_tokens`
+  `output_tokens`, `total_tokens`, `cached_input_tokens`, `cache_write_input_tokens`
 - `metadata` (`dict[str, Any] | None`): Provider metadata forwarded to `WorkItemResult.metadata`;
   `None` when there is none
 

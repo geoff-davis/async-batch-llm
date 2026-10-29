@@ -1288,7 +1288,13 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
         """
         existing = cast("dict[str, int]", result.token_usage)
         usage: dict[str, int] = {}
-        for key in ("input_tokens", "output_tokens", "total_tokens", "cached_input_tokens"):
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cached_input_tokens",
+            "cache_write_input_tokens",
+        ):
             combined = existing.get(key, 0) + failed_tokens.get(key, 0)
             if combined or key in existing:
                 usage[key] = combined

@@ -739,6 +739,14 @@ class PydanticAIStrategy(LLMCallStrategy[TOutput]):
             "output_tokens": _usage_field(usage, "output_tokens", "response_tokens"),
             "total_tokens": _usage_field(usage, "total_tokens"),
         }
+        # pydantic-ai counts cache reads and writes inside input_tokens, as ABL does.
+        for source, key in (
+            ("cache_read_tokens", "cached_input_tokens"),
+            ("cache_write_tokens", "cache_write_input_tokens"),
+        ):
+            value = getattr(usage, source, None) if usage else None
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                tokens[key] = value  # type: ignore[literal-required]
 
         # Access result.output (may raise validation errors)
         try:
