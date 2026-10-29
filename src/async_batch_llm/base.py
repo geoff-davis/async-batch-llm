@@ -175,13 +175,19 @@ class TokenUsage(TypedDict, total=False):
         output_tokens: Number of tokens in the output/completion
         total_tokens: Provider-reported total, or input + output when omitted.
             A valid explicit total is authoritative even when the components differ.
-        cached_input_tokens: Number of input tokens served from cache (Gemini)
+        cached_input_tokens: Number of input tokens served from cache. Part of
+            ``input_tokens``.
+        cache_write_input_tokens: Number of input tokens written to a prompt
+            cache (OpenAI ``cache_write_tokens``, Anthropic
+            ``cache_creation_input_tokens``). Part of ``input_tokens``; some
+            providers bill them above the normal input price.
     """
 
     input_tokens: int
     output_tokens: int
     total_tokens: int
     cached_input_tokens: int
+    cache_write_input_tokens: int
 
 
 @dataclass
@@ -204,6 +210,8 @@ class LLMResponse(ProviderOutputViews):
             through the typed views ``.grounding``/``.reasoning``/
             ``.tool_calls``/``.logprobs`` (see ``provider_output.py``).
         raw: The raw provider response object, for edge cases.
+        cache_write_input_tokens: Input tokens written to the prompt cache
+            (0 if none were reported).
 
     Added in v0.6.0.
     """
@@ -215,6 +223,8 @@ class LLMResponse(ProviderOutputViews):
     cached_input_tokens: int = 0
     metadata: dict[str, Any] | None = None
     raw: Any = None
+    # Last so existing positional construction keeps its meaning.
+    cache_write_input_tokens: int = 0
 
     @property
     def token_usage(self) -> TokenUsage:
@@ -226,6 +236,8 @@ class LLMResponse(ProviderOutputViews):
         }
         if self.cached_input_tokens:
             result["cached_input_tokens"] = self.cached_input_tokens
+        if self.cache_write_input_tokens:
+            result["cache_write_input_tokens"] = self.cache_write_input_tokens
         return result
 
 
@@ -504,12 +516,23 @@ class CachedTokenRates:
     Rates are accurate as of v0.9.0 (early 2026); confirm with each
     provider's pricing page before using these for invoicing.
 
+    The ``*_WRITE*`` constants are the other direction: the **multiple of the
+    normal input price** paid for tokens *written* to a cache. Pass them as
+    ``cache_write_rate`` to :meth:`BatchResult.effective_input_tokens` or
+    :meth:`BatchResult.estimated_cost`:
+
+    .. code-block:: python
+
+        result.estimated_cost(
+            1.25, 10.0,
+            cached_token_rate=CachedTokenRates.OPENAI,
+            cache_write_rate=CachedTokenRates.OPENAI_WRITE,
+        )
+
     Notes:
-        - **Anthropic prompt caching** is asymmetric: cache *reads* are at
-          ``ANTHROPIC_READ`` (10% of normal), but cache *writes* are billed
-          at a 25% premium over normal input price. This helper covers
-          read-side savings only; the write premium is a separate cost
-          best computed at billing time from your usage logs.
+        - **Cache writes** are reported in ``cache_write_input_tokens``. They
+          are part of ``input_tokens``, so without a ``cache_write_rate`` they
+          are priced as normal input.
         - **OpenRouter** routes to many upstream providers, each with its
           own rate. Pick the constant for the upstream that actually
           served your request (visible in ``LLMResponse.metadata['provider']``).
@@ -523,13 +546,21 @@ class CachedTokenRates:
     models. Other model families may differ; check OpenAI's pricing page."""
 
     ANTHROPIC_READ: float = 0.10
-    """Anthropic prompt cache reads: 10% of normal (cache writes are
-    billed at 1.25× normal — not modeled here)."""
+    """Anthropic prompt cache reads: 10% of normal."""
 
     DEEPSEEK: float = 0.02
     """DeepSeek context cache: cached tokens cost ~2% of normal (V4 Flash
     bills cache hits at $0.0028/M vs $0.14/M cache-miss input, a price drop
     that took effect April 2026; earlier the discount was ~10%)."""
+
+    OPENAI_WRITE: float = 1.25
+    """OpenAI prompt cache writes (30-minute retention): 1.25× normal input."""
+
+    ANTHROPIC_WRITE: float = 1.25
+    """Anthropic prompt cache writes with the default 5-minute TTL: 1.25× normal."""
+
+    ANTHROPIC_WRITE_1H: float = 2.0
+    """Anthropic prompt cache writes with the 1-hour TTL: 2× normal."""
 
 
 class _CallableRate(float):
@@ -579,6 +610,8 @@ class BatchResult(Generic[TOutput, TContext]):
         total_input_tokens: Sum of input tokens across all items
         total_output_tokens: Sum of output tokens across all items
         total_cached_tokens: Sum of cached input tokens across all items (v0.2.0)
+        total_cache_write_tokens: Sum of input tokens written to a prompt cache
+            across all items
     """
 
     results: list[WorkItemResult[TOutput, TContext]]
@@ -591,6 +624,7 @@ class BatchResult(Generic[TOutput, TContext]):
     total_input_tokens: int = field(init=False, default=0)
     total_output_tokens: int = field(init=False, default=0)
     total_cached_tokens: int = field(init=False, default=0)  # v0.2.0
+    total_cache_write_tokens: int = field(init=False, default=0)
     termination: BatchTermination = field(default_factory=BatchTermination)
     # Wall-clock duration of the run that produced this batch, stamped by the
     # execution surfaces (process_all / process_prompts). None for batches
@@ -607,6 +641,9 @@ class BatchResult(Generic[TOutput, TContext]):
         # v0.2.0: Aggregate cached tokens
         self.total_cached_tokens = sum(
             r.token_usage.get("cached_input_tokens", 0) for r in self.results
+        )
+        self.total_cache_write_tokens = sum(
+            r.token_usage.get("cache_write_input_tokens", 0) for r in self.results
         )
 
     @property
@@ -645,9 +682,14 @@ class BatchResult(Generic[TOutput, TContext]):
             warnings.warn(omitted, DeprecationWarning, stacklevel=3)
         return CachedTokenRates.GEMINI
 
-    def effective_input_tokens(self, cached_token_rate: float | None = None) -> int:
+    def effective_input_tokens(
+        self,
+        cached_token_rate: float | None = None,
+        *,
+        cache_write_rate: float | None = None,
+    ) -> int:
         """
-        Estimate billable input tokens after the cache discount.
+        Estimate billable input tokens after the cache discount and write premium.
 
         ``cached_token_rate`` is the fraction of the normal input-token price
         you pay for tokens served from cache. For example, Gemini charges
@@ -669,17 +711,23 @@ class BatchResult(Generic[TOutput, TContext]):
                 ``CachedTokenRates.GEMINI`` (0.10) and warns: a ``UserWarning``
                 when cached tokens are present (the Gemini rate is wrong for
                 e.g. OpenAI, ~0.50), otherwise a ``DeprecationWarning``.
+            cache_write_rate: Multiple of the normal input price paid for
+                tokens written to a prompt cache (``total_cache_write_tokens``),
+                e.g. ``CachedTokenRates.OPENAI_WRITE`` (1.25). Omitted, written
+                tokens are priced as normal input, as before.
 
         Returns:
             Effective input tokens billed. The discount is computed by
             truncating ``cached_tokens * (1 - rate)`` toward zero with
-            ``int()``, which means the returned billable estimate is
-            rounded **up** when the discount would have a fractional
-            part — a deliberately conservative choice for cost reporting
-            (your real bill is at most this number, never more).
+            ``int()``, and the write premium
+            ``cache_write_tokens * (cache_write_rate - 1)`` is rounded up with
+            ``math.ceil()``, so the returned billable estimate is rounded
+            **up** when either has a fractional part — a deliberately
+            conservative choice for cost reporting.
 
         Raises:
-            ValueError: If ``cached_token_rate`` is not in [0.0, 1.0].
+            ValueError: If ``cached_token_rate`` is not in [0.0, 1.0], or
+                ``cache_write_rate`` is negative or not finite.
         """
         if cached_token_rate is None:
             cached_token_rate = self._default_cached_token_rate("effective_input_tokens")
@@ -695,7 +743,17 @@ class BatchResult(Generic[TOutput, TContext]):
         # int() floors the discount toward zero -> conservative (over-)estimate
         # of effective billable tokens. See the Returns docstring.
         discount = int(self.total_cached_tokens * (1.0 - cached_token_rate))
-        return self.total_input_tokens - discount
+        premium = 0
+        if cache_write_rate is not None:
+            if not math.isfinite(cache_write_rate) or cache_write_rate < 0.0:
+                raise ValueError(
+                    f"cache_write_rate must be a finite number >= 0; got {cache_write_rate}. "
+                    f"This is the multiple of the normal input price paid for tokens "
+                    f"written to a prompt cache (e.g. 1.25). For named provider rates, "
+                    f"use CachedTokenRates."
+                )
+            premium = math.ceil(self.total_cache_write_tokens * (cache_write_rate - 1.0))
+        return self.total_input_tokens - discount + premium
 
     @property
     def successes(self) -> list[WorkItemResult[TOutput, TContext]]:
@@ -762,10 +820,13 @@ class BatchResult(Generic[TOutput, TContext]):
         current = [r for r in self.results if not r.replayed_from_artifact]
         replayed = [r for r in self.results if r.replayed_from_artifact]
 
-        def _tokens(results: list[WorkItemResult[TOutput, TContext]]) -> tuple[int, int, int]:
+        def _tokens(results: list[WorkItemResult[TOutput, TContext]]) -> tuple[int, str, int]:
+            cached = sum(r.token_usage.get("cached_input_tokens", 0) for r in results)
+            written = sum(r.token_usage.get("cache_write_input_tokens", 0) for r in results)
+            cache = f"cached {cached:,}" + (f", written {written:,}" if written else "")
             return (
                 sum(r.token_usage.get("input_tokens", 0) for r in results),
-                sum(r.token_usage.get("cached_input_tokens", 0) for r in results),
+                cache,
                 sum(r.token_usage.get("output_tokens", 0) for r in results),
             )
 
@@ -816,14 +877,12 @@ class BatchResult(Generic[TOutput, TContext]):
         retried_items = sum(1 for r in current if len(r.timing.attempts) > 1)
         lines.append(f"Retries:   {extra_tries} extra attempt(s) across {retried_items} item(s)")
 
-        input_tokens, cached_tokens, output_tokens = _tokens(current)
-        lines.append(
-            f"Tokens:    in {input_tokens:,} (cached {cached_tokens:,}) · out {output_tokens:,}"
-        )
+        input_tokens, cache_info, output_tokens = _tokens(current)
+        lines.append(f"Tokens:    in {input_tokens:,} ({cache_info}) · out {output_tokens:,}")
         if replayed:
-            r_in, r_cached, r_out = _tokens(replayed)
+            r_in, r_cache_info, r_out = _tokens(replayed)
             lines.append(
-                f"Replayed:  in {r_in:,} (cached {r_cached:,}) · out {r_out:,} "
+                f"Replayed:  in {r_in:,} ({r_cache_info}) · out {r_out:,} "
                 "(prior run; excluded above)"
             )
 
@@ -989,12 +1048,14 @@ class BatchResult(Generic[TOutput, TContext]):
         input_per_mtok: float,
         output_per_mtok: float,
         cached_token_rate: float | None = None,
+        *,
+        cache_write_rate: float | None = None,
     ) -> float:
         """Estimate total spend from per-million-token prices.
 
-        Applies the cache discount to input tokens via
-        :meth:`effective_input_tokens`, so cached tokens are billed at their
-        reduced rate.
+        Applies the cache discount (and, with ``cache_write_rate``, the cache
+        write premium) to input tokens via :meth:`effective_input_tokens`, so
+        cached tokens are billed at their reduced rate.
 
         Args:
             input_per_mtok: Price per 1,000,000 input tokens (in your currency).
@@ -1003,6 +1064,10 @@ class BatchResult(Generic[TOutput, TContext]):
                 cached tokens (see :class:`CachedTokenRates`). Omitting it is
                 deprecated and it will be required in 1.0; see
                 :meth:`effective_input_tokens` for the default and warnings.
+            cache_write_rate: Multiple of the normal input price paid for
+                tokens written to a prompt cache (see
+                :attr:`CachedTokenRates.OPENAI_WRITE`). Omitted, written tokens
+                are priced as normal input.
 
         Returns:
             Estimated total cost: ``effective_input / 1e6 * input_per_mtok +
@@ -1010,7 +1075,9 @@ class BatchResult(Generic[TOutput, TContext]):
         """
         if cached_token_rate is None:
             cached_token_rate = self._default_cached_token_rate("estimated_cost")
-        billable_input = self.effective_input_tokens(cached_token_rate)
+        billable_input = self.effective_input_tokens(
+            cached_token_rate, cache_write_rate=cache_write_rate
+        )
         input_cost = billable_input / 1_000_000 * input_per_mtok
         output_cost = self.total_output_tokens / 1_000_000 * output_per_mtok
         return input_cost + output_cost
@@ -1108,6 +1175,7 @@ class ProcessingStats:
     total_output_tokens: int = 0
     total_tokens: int = 0
     cached_input_tokens: int = 0  # Tokens served from provider-side caches
+    cache_write_input_tokens: int = 0  # Tokens written to provider-side caches
     total_admission_wait_seconds: float = 0.0
     max_admission_wait_seconds: float = 0.0
     total_quota_wait_seconds: float = 0.0
@@ -1148,6 +1216,7 @@ class ProcessingStats:
             "total_output_tokens": self.total_output_tokens,
             "total_tokens": self.total_tokens,
             "cached_input_tokens": self.cached_input_tokens,
+            "cache_write_input_tokens": self.cache_write_input_tokens,
             "total_admission_wait_seconds": self.total_admission_wait_seconds,
             "max_admission_wait_seconds": self.max_admission_wait_seconds,
             "total_quota_wait_seconds": self.total_quota_wait_seconds,

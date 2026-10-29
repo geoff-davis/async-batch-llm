@@ -125,11 +125,28 @@ it into a provider failure.
 ## Usage and Metadata
 
 `CallOutcome.token_usage` accepts `input_tokens`, `output_tokens`,
-`total_tokens`, and `cached_input_tokens`. Values must be non-negative integers
-(booleans are rejected). ABL copies the mapping and derives `total_tokens` from
-reported input plus output when total is omitted. An empty mapping means the
-client reported no usage; ABL does not estimate it or claim complete
-accounting.
+`total_tokens`, `cached_input_tokens`, and `cache_write_input_tokens`. Values
+must be non-negative integers (booleans are rejected). ABL copies the mapping and
+derives `total_tokens` from reported input plus output when total is omitted. An
+empty mapping means the client reported no usage; ABL does not estimate it or
+claim complete accounting.
+
+`cached_input_tokens` (read from a prompt cache) and `cache_write_input_tokens`
+(written to one) are both counted inside `input_tokens`. Anthropic's native
+usage reports them separately and leaves them out of its `input_tokens`, so add
+them back:
+
+```python
+usage = response.usage
+token_usage = {
+    "input_tokens": usage.input_tokens
+    + (usage.cache_read_input_tokens or 0)
+    + (usage.cache_creation_input_tokens or 0),
+    "output_tokens": usage.output_tokens,
+    "cached_input_tokens": usage.cache_read_input_tokens or 0,
+    "cache_write_input_tokens": usage.cache_creation_input_tokens or 0,
+}
+```
 
 Metadata may be `None` or a mapping and is copied into a plain dictionary. ABL
 does not inspect or persist raw provider response objects automatically. The
@@ -256,8 +273,8 @@ callables without an inspectable signature retain runtime validation.
 
 `CallOutcome.token_usage` accepts `input_tokens` / `output_tokens`, or OpenAI's
 `prompt_tokens` / `completion_tokens`. Do not mix those naming schemes in one
-mapping. `total_tokens` and `cached_input_tokens` work with either scheme; the
-stored result always uses canonical keys.
+mapping. `total_tokens`, `cached_input_tokens` and `cache_write_input_tokens`
+work with either scheme; the stored result always uses canonical keys.
 
 Convenience entry points require an `LLMCallStrategy` instance. Wrap an application
 callback with `CallableStrategy`, a model with `OpenAIStrategy`, or an agent with

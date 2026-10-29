@@ -13,9 +13,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lock moves `tiktoken`, `cffi`, `pydantic`/`pydantic-core`, `jiter`, `regex`,
   `numpy` and a few other compiled dependencies to releases with 3.15 wheels; the
   package's own dependency ranges are unchanged.
+- Token usage records prompt-cache writes in a new `cache_write_input_tokens` key
+  ([#235]). Like `cached_input_tokens`, it is part of `input_tokens`, and it appears
+  only when a provider reports writes.
+  - `OpenAIModel` (both API surfaces), `OpenRouterModel` and `DeepSeekModel` (Responses)
+    read `cache_write_tokens` from the usage details. `PydanticAIStrategy` reads
+    pydantic-ai's `cache_write_tokens`, and `CallOutcome.token_usage` accepts the key.
+  - `LLMResponse.cache_write_input_tokens`, `BatchResult.total_cache_write_tokens` and
+    the `cache_write_input_tokens` stats key report the counts. `summary()` shows them
+    when present.
+  - `effective_input_tokens()` and `estimated_cost()` take a keyword-only
+    `cache_write_rate`: the multiple of the normal input price paid for written
+    tokens. New constants `CachedTokenRates.OPENAI_WRITE` (1.25),
+    `ANTHROPIC_WRITE` (1.25) and `ANTHROPIC_WRITE_1H` (2.0). Without the argument,
+    written tokens are priced as plain input, as before.
+  - The OpenAI guide explains how to get cache hits: a static `system_instruction`
+    first, then the per-item prompt, with a `prompt_cache_key` in `extra_body`.
 
 ### Fixed
 
+- `PydanticAIStrategy` now reports pydantic-ai's `cache_read_tokens` as
+  `cached_input_tokens`. It previously dropped them, so `total_cached_tokens` and
+  cache-discounted cost estimates read zero for PydanticAI runs ([#235]).
 - The `docs` extra now requires `mkdocstrings` 1.0.7 or later on Python 3.11+, and
   keeps `pymdown-extensions` below 12.2 on Python 3.10. pymdown-extensions 12.2
   changed a constructor that older mkdocstrings releases call, which broke the docs
@@ -31,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   audit now runs through `scripts/npm_audit.py`, which accepts
   [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm) (`braces`,
   no patched release yet) and still fails on every other advisory at moderate or above.
+
+[#235]: https://github.com/geoff-davis/async-batch-llm/issues/235
 
 ## [0.28.0] - 2026-10-02
 

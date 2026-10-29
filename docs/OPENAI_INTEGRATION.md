@@ -249,27 +249,55 @@ work from a custom strategy if you want the SDK to build the schema.
 ## Prompt caching
 
 OpenAI automatically caches prompt prefixes longer than ~1024 tokens. No
-client action is required — `cached_input_tokens` is populated on hits, and
-`BatchResult.total_cached_tokens` aggregates across the batch.
+client action is required. `cached_input_tokens` counts input tokens read from
+the cache and `cache_write_input_tokens` counts input tokens written to it.
+Both are part of `input_tokens`, and `BatchResult.total_cached_tokens` and
+`BatchResult.total_cache_write_tokens` add them up across the batch.
 
 ```python
 from async_batch_llm import CachedTokenRates
 
 result = await processor.process_all()
 print(f"input={result.total_input_tokens} cached={result.total_cached_tokens}")
+print(f"written to cache={result.total_cache_write_tokens}")
 print(f"cache hit rate: {result.cache_hit_rate:.1f}%")
 # CachedTokenRates.OPENAI is 50% (gpt-4o-era pricing); newer models often
 # charge less for cached input. Check your model's pricing and pass that rate.
-print(f"billable tokens: {result.effective_input_tokens(CachedTokenRates.OPENAI)}")
+billable = result.effective_input_tokens(
+    CachedTokenRates.OPENAI,
+    cache_write_rate=CachedTokenRates.OPENAI_WRITE,
+)
+print(f"billable tokens: {billable}")
 ```
 
-Always pass an explicit rate. Omitting it is deprecated since v0.27 and the
-argument becomes required in 1.0. Until then an omitted rate falls back to
-`CachedTokenRates.GEMINI` (10%) and warns: a `UserWarning` when cached tokens
-are present, since the Gemini rate is wrong for OpenAI, and a
-`DeprecationWarning` otherwise. Note that Anthropic charges a 25%
-premium on cache *writes* over the normal input price; that write premium is
-not modeled by this helper.
+Cache writes cost more than plain input: 1.25× for the 30-minute retention
+(`CachedTokenRates.OPENAI_WRITE`). Without `cache_write_rate`, written tokens
+are priced as plain input, so the estimate comes out low when most calls write
+to the cache rather than read from it. `estimated_cost()` takes the same
+keyword.
+
+Always pass an explicit `cached_token_rate`. Omitting it is deprecated since
+v0.27 and the argument becomes required in 1.0. Until then an omitted rate falls
+back to `CachedTokenRates.GEMINI` (10%) and warns: a `UserWarning` when cached
+tokens are present, since the Gemini rate is wrong for OpenAI, and a
+`DeprecationWarning` otherwise.
+
+### Getting cache hits
+
+The cache matches a prompt prefix, so put the static part first: a
+`system_instruction` (or developer message), then the per-item prompt. Passing a
+`prompt_cache_key` through `extra_body` keeps requests that share the prefix on
+the same cache. A single user message that joins static instructions to
+per-item data writes the whole prompt to the cache on every call and never reads
+it back.
+
+```python
+model = OpenAIModel.from_api_key(
+    "gpt-6-luna",
+    system_instruction=LONG_STATIC_INSTRUCTIONS,
+    extra_body={"prompt_cache_key": "classify-v3"},
+)
+```
 
 ## Reasoning traces, tool calls, and logprobs
 

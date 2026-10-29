@@ -37,7 +37,10 @@ _EMPTY_USAGE: dict[str, int] = {
     "total_tokens": 0,
     "cached_input_tokens": 0,
 }
-_USAGE_KEYS = frozenset(_EMPTY_USAGE)
+# Optional: present only when the provider reported cache writes, so usage from
+# providers without prompt-cache writes keeps its existing shape.
+_CACHE_WRITE_KEY = "cache_write_input_tokens"
+_USAGE_KEYS = frozenset(_EMPTY_USAGE) | {_CACHE_WRITE_KEY}
 _MISSING = object()
 
 
@@ -158,10 +161,15 @@ class TokenExtractor:
     def accumulate(cumulative: dict[str, int], attempt_tokens: dict[str, int]) -> None:
         """Add per-attempt token counts into a running cumulative total.
 
-        Missing fields on `attempt_tokens` are treated as zero.
+        Missing fields on `attempt_tokens` are treated as zero. Cache writes are
+        added only once an attempt reports them.
         """
-        for key in ("input_tokens", "output_tokens", "total_tokens", "cached_input_tokens"):
+        for key in _EMPTY_USAGE:
             cumulative[key] = cumulative.get(key, 0) + attempt_tokens.get(key, 0)
+        if _CACHE_WRITE_KEY in attempt_tokens:
+            cumulative[_CACHE_WRITE_KEY] = cumulative.get(_CACHE_WRITE_KEY, 0) + attempt_tokens.get(
+                _CACHE_WRITE_KEY, 0
+            )
 
 
 def _first_attr(usage: Any, *names: str, skip_none: bool = False) -> Any:
@@ -210,6 +218,12 @@ def _coerce_usage(usage: Any) -> dict[str, int]:
       ``output_tokens`` (PydanticAI 0.x ``request_tokens`` / ``response_tokens``
       are still read as a fallback).
     - OpenAI / OpenRouter: ``prompt_tokens`` / ``completion_tokens``
+    - Cache writes: ``cache_write_input_tokens``, PydanticAI's
+      ``cache_write_tokens``, or OpenAI's ``prompt_tokens_details`` /
+      ``input_tokens_details.cache_write_tokens``. Anthropic's native
+      ``cache_creation_input_tokens`` is not read: Anthropic excludes it from
+      ``input_tokens``, while other SDKs reuse the name for a count that is
+      included, so a custom strategy should map it explicitly.
     """
     return cast(dict[str, int], _coerce_usage_observation(usage).usage).copy()
 
@@ -229,6 +243,16 @@ def _coerce_usage_observation(usage: Any) -> TokenUsageObservation:
         fields["cached_input_tokens"] = _first_attr(
             _first_attr(usage, "prompt_tokens_details"), "cached_tokens"
         )
+    writes = _first_attr(usage, _CACHE_WRITE_KEY, "cache_write_tokens", skip_none=True)
+    if writes is _MISSING:
+        writes = _first_attr(
+            _first_attr(usage, "prompt_tokens_details", "input_tokens_details", skip_none=True),
+            "cache_write_tokens",
+            skip_none=True,
+        )
+    # Zero or unusable write counts are left out, keeping the usual usage shape.
+    if writes is not _MISSING and _nonnegative_int(writes)[0] > 0:
+        fields[_CACHE_WRITE_KEY] = writes
     return _mapping_observation(
         {key: value for key, value in fields.items() if value is not _MISSING}, strict=False
     )
