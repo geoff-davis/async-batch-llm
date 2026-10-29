@@ -286,6 +286,14 @@ which isn't what the floor measures.
 **Scope.** Processor runs only. `call()`, `call_result()` and `LLMCallPool` reject
 `min_cache_hit_rate` with `ValueError`. A resumed run starts with fresh counts.
 
+**Call pools.** `LLMCallPool` keeps the same per-group statistics without a floor.
+`pool.cache_stats()` returns `cache_groups` and `cache_groups_overflow` in the same
+shape, counted since the pool was created or last reset, and every group includes
+`window_hit_rate` over its last `cache_hit_window` measured calls. A long-lived
+pool's cumulative `hit_rate` moves slowly, so the window shows a recent drop.
+`pool.reset_cache_stats()` clears everything, including the 64-group cap. `call()`
+and `call_result()` keep no statistics.
+
 ## End-to-end checkpointed run
 
 ```python

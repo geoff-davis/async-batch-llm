@@ -115,20 +115,31 @@ class CacheHitTracker:
 
     With ``min_cache_hit_rate`` configured it also enforces the floor: once a
     group's window of ``cache_hit_window`` measured attempts is full, a window
-    hit rate below the floor stops the run.
+    hit rate below the floor stops the run. ``windowed=True`` keeps and reports
+    the window without a floor, for a long-lived pool whose cumulative rate goes
+    stale. A tracker without a floor never stops anything, so it needs no
+    ``trip_now``/``announce``.
     """
 
     def __init__(
         self,
         guardrails: GuardrailConfig,
         *,
-        trip_now: Callable[[AbortCause], bool],
-        announce: Callable[[AbortCause], Awaitable[None]],
+        trip_now: Callable[[AbortCause], bool] | None = None,
+        announce: Callable[[AbortCause], Awaitable[None]] | None = None,
+        windowed: bool = False,
     ) -> None:
         self.floor = guardrails.min_cache_hit_rate
         self.window = guardrails.cache_hit_window
+        if self.floor is not None and (trip_now is None or announce is None):
+            raise ValueError("a cache hit-rate floor needs trip_now and announce")
         self._trip_now = trip_now
         self._announce = announce
+        self._windowed = windowed or self.floor is not None
+        self.reset()
+
+    def reset(self) -> None:
+        """Forget every group, the overflow counters and any trip."""
         # Keys are group labels; ``None`` is the ungrouped bucket. Overflow is
         # tracked separately, never as a key, so no caller string can collide.
         self._groups: dict[str | None, _Group] = {}
@@ -173,10 +184,9 @@ class CacheHitTracker:
             group.unmeasured_calls += 1
             return None
         group.add(input_tokens, cached, written)
-        if self.floor is None:
-            return None
-        group.push(input_tokens, cached, self.window)
-        if not enforce or self._tripped:
+        if self._windowed:
+            group.push(input_tokens, cached, self.window)
+        if self.floor is None or not enforce or self._tripped:
             return None
         rate = group.window_rate(self.window)
         if rate is None or rate >= self.floor:
@@ -233,10 +243,13 @@ class CacheHitTracker:
 
     def stop_now(self, cause: AbortCause) -> bool:
         """Synchronously stop the run; return whether this cause won."""
+        # Only a tracker with a floor returns causes, and it has both callbacks.
+        assert self._trip_now is not None
         return self._trip_now(cause)
 
     async def announce(self, cause: AbortCause) -> None:
         """Emit the abort event after the synchronous stop and reconciliation."""
+        assert self._announce is not None
         await self._announce(cause)
 
     def stats(self) -> dict[str, Any]:
@@ -244,7 +257,7 @@ class CacheHitTracker:
         ordered = sorted(self._groups.items(), key=lambda item: item[1].input_tokens, reverse=True)
         for label, group in ordered:
             entry = {"group": label, **group.snapshot()}
-            if self.floor is not None:
+            if self._windowed:
                 entry["window_hit_rate"] = group.window_rate(self.window)
             groups.append(entry)
         return {

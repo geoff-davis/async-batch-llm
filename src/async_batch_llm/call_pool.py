@@ -100,7 +100,7 @@ class LLMCallPool(Generic[TOutput]):
         )
         self._strategy = strategy
         self._host: ExecutorHost[Any, TOutput, Any] = ExecutorHost(
-            cfg, strategy=strategy, error_classifier=error_classifier
+            cfg, strategy=strategy, error_classifier=error_classifier, track_cache_groups=True
         )
         self._sem = asyncio.Semaphore(gateway_workers)
         self._seq = 0
@@ -197,6 +197,26 @@ class LLMCallPool(Generic[TOutput]):
         """Acquire a concurrency slot, run the item, release the slot."""
         async with self._sem:
             return await self._host.executor.execute(work_item)
+
+    def cache_stats(self) -> dict[str, Any]:
+        """Prompt-cache reads and writes per cache group since creation or the last reset.
+
+        Returns ``{"cache_groups": [...], "cache_groups_overflow": ...}`` in the
+        shape ``ParallelBatchProcessor.get_stats()`` uses. Each group also reports
+        ``window_hit_rate`` over its last ``config.guardrails.cache_hit_window``
+        measured calls (``None`` until that many), since a long-lived pool's
+        cumulative ``hit_rate`` changes slowly. Statistics only: the pool has no
+        cache hit-rate floor.
+        """
+        tracker = self._host._cache_tracker
+        assert tracker is not None
+        return tracker.stats()
+
+    def reset_cache_stats(self) -> None:
+        """Clear the per-group cache statistics, including the 64-group cap's overflow."""
+        tracker = self._host._cache_tracker
+        assert tracker is not None
+        tracker.reset()
 
     async def aclose(self) -> None:
         """Stop accepting work, drain in-flight requests, then run cleanup().
