@@ -159,6 +159,16 @@ exclude = [
     "**/*.pyc",
 ]
 
+[tool.uv]
+# Lock-only floors for patched releases of transitive development/extra dependencies;
+# they don't change the published package metadata. Pillow 13 and dnspython 2.9 need
+# Python 3.11, so the 3.10 fork keeps the older releases until 1.0 drops 3.10.
+constraint-dependencies = [
+    "authlib>=1.9.1",
+    "dnspython>=2.9.0; python_version >= '3.11'",
+    "pillow>=13.0.0; python_version >= '3.11'",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
