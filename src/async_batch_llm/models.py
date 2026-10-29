@@ -1729,12 +1729,14 @@ class _ResponsesSurface:
             raise response_error
         extra_body = call_kwargs.get("extra_body")
         extra_body = extra_body if isinstance(extra_body, dict) else {}
-        # extra_body is merged into the request last, so its instructions win on the wire.
+        # extra_body is merged into the request last, so its instructions win on the
+        # wire. A null there clears only the top-level field, not a system message
+        # in the input, so fall back to that.
         instructions = (
             extra_body["instructions"]
             if "instructions" in extra_body
-            else call_kwargs.get("instructions") or _system_text(call_kwargs.get("input"))
-        )
+            else call_kwargs.get("instructions")
+        ) or _system_text(call_kwargs.get("input"))
         return _with_cache_group(
             self._responses_result(response, tokens),
             _cache_group(extra_body.get("prompt_cache_key"), instructions),

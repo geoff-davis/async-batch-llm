@@ -267,6 +267,10 @@ async def test_responses_models_stamp_system_instruction_hash_or_key(factory: An
     assert only_config.metadata["cache_group"] == _si_group("Other rules")
     cleared = await model.generate("item", config={"instructions": None})
     assert "cache_group" not in (cleared.metadata or {})
+    # Null instructions clear the top-level field; a system message in the input stays.
+    in_input = [{"role": "system", "content": "Rules in input"}, {"role": "user", "content": "x"}]
+    kept = await model.generate(in_input, config={"instructions": None})
+    assert kept.metadata["cache_group"] == _si_group("Rules in input")
 
 
 def _gemini_response() -> MagicMock:
