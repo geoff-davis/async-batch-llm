@@ -25,7 +25,7 @@ API may be cheaper.
 [Examples](https://github.com/geoff-davis/async-batch-llm/tree/main/examples) ·
 [Changelog](https://github.com/geoff-davis/async-batch-llm/blob/main/CHANGELOG.md)
 
-> **v0.28 is the last release before 1.0.** Upgrading? Read the
+> **v0.29 is the last release before 1.0.** Upgrading from v0.27 or earlier? Read the
 > [v0.28 migration guide](https://geoff-davis.github.io/async-batch-llm/migration/v0.28/)
 > and see [Upgrading](#upgrading) below.
 
@@ -474,7 +474,7 @@ installed, also pass `-W "ignore::DeprecationWarning:google.genai.types"`). The
 [API stability page](https://geoff-davis.github.io/async-batch-llm/stability/)
 lists what 1.0 keeps stable.
 
-v0.28 is the last release that supports Python 3.10; 1.0 requires Python 3.11
+v0.29 is the last release that supports Python 3.10; 1.0 requires Python 3.11
 or newer. Guides for earlier versions are in the
 [migration section](https://geoff-davis.github.io/async-batch-llm/migration/v0.28/)
 of the documentation.
