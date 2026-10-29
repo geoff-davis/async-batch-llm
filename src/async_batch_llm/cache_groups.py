@@ -208,7 +208,7 @@ class CacheFloorBreach:
 class CacheGroupTracker:
     """Prompt-cache reads and writes per cache group, with a sliding window.
 
-    Provisional: new in 1.1. The same accounting backs a processor's
+    Provisional: new in 0.30. The same accounting backs a processor's
     ``get_stats()``, ``LLMCallPool.cache_stats()`` and the
     ``min_cache_hit_rate`` floor.
 

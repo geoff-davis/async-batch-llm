@@ -225,7 +225,7 @@ failing. Every processor run counts cache reads and writes per *cache group*, an
 This section is the reference; [Prompt caching](prompt-caching.md) is the how-to,
 including which providers support what and how to choose the values.
 
-Provisional: new in 1.1; it may change in a minor release.
+Provisional: new in 0.30; it may change in a minor release.
 
 ```python
 from async_batch_llm import GuardrailConfig, ProcessorConfig
