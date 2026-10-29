@@ -19,6 +19,7 @@ from async_batch_llm import (
     JsonlArtifactStore,
     LLMCallPool,
     LLMCallStrategy,
+    OpenAICompatibleModel,
     OpenAIModel,
     OpenRouterModel,
     ParallelBatchProcessor,
@@ -447,6 +448,36 @@ def test_from_api_key_forwards_cache_options() -> None:
         "openai/gpt-test", api_key="sk-test", prompt_cache_key="k", cache_group="g"
     )
     assert (router._prompt_cache_key, router._cache_group_label) == ("k", "g")
+
+
+def test_inherited_factory_works_for_subclasses_with_the_old_signature() -> None:
+    class _Legacy(OpenAICompatibleModel):
+        _default_base_url = "https://example.invalid/v1"
+
+        def __init__(
+            self,
+            model: str,
+            client: Any,
+            *,
+            system_instruction: str | None = None,
+            extra_headers: dict[str, str] | None = None,
+            extra_body: dict[str, Any] | None = None,
+            metadata_extractors: Any = None,
+        ) -> None:
+            super().__init__(
+                model,
+                client,
+                system_instruction=system_instruction,
+                extra_headers=extra_headers,
+                extra_body=extra_body,
+                metadata_extractors=metadata_extractors,
+            )
+
+    legacy = _Legacy.from_api_key("m", api_key="sk-test")
+    assert legacy._cache_group_label is None and legacy._prompt_cache_key is None
+    # Asking for an option the subclass doesn't accept still fails loudly.
+    with pytest.raises(TypeError, match="cache_group"):
+        _Legacy.from_api_key("m", api_key="sk-test", cache_group="g")
 
 
 @pytest.mark.parametrize("value", ["", 3, b"x"])

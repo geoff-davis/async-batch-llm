@@ -1692,9 +1692,17 @@ class OpenAICompatibleModel:
             extra_headers=extra_headers,
             extra_body=extra_body,
             metadata_extractors=metadata_extractors,
-            cache_group=cache_group,
-            # Only when set: DeepSeekModel takes no prompt_cache_key.
-            **({"prompt_cache_key": prompt_cache_key} if prompt_cache_key is not None else {}),
+            # Only when set, so subclasses written for the older constructor
+            # signature (and DeepSeekModel, which takes no prompt_cache_key) keep
+            # working with this factory.
+            **{
+                name: value
+                for name, value in (
+                    ("prompt_cache_key", prompt_cache_key),
+                    ("cache_group", cache_group),
+                )
+                if value is not None
+            },
             **(_instance_kwargs or {}),
         )
         instance.max_concurrency = max_connections
