@@ -260,6 +260,14 @@ async def test_responses_models_stamp_system_instruction_hash_or_key(factory: An
     bare = factory(_responses_client())
     assert "cache_group" not in ((await bare.generate("item")).metadata or {})
 
+    # Instructions in per-call config go out in extra_body and replace the default.
+    overridden = await model.generate("item", config={"instructions": "Other rules"})
+    assert overridden.metadata["cache_group"] == _si_group("Other rules")
+    only_config = await bare.generate("item", config={"instructions": "Other rules"})
+    assert only_config.metadata["cache_group"] == _si_group("Other rules")
+    cleared = await model.generate("item", config={"instructions": None})
+    assert "cache_group" not in (cleared.metadata or {})
+
 
 def _gemini_response() -> MagicMock:
     response = MagicMock()
@@ -292,6 +300,16 @@ async def test_gemini_models_stamp_a_group() -> None:
     assert (await model.generate("item")).metadata["cache_group"] == _si_group("Static rules")
     bare = GeminiModel("gemini-test", _gemini_client())
     assert "cache_group" not in ((await bare.generate("item")).metadata or {})
+
+    # The group follows the instruction actually sent, after per-call config merges.
+    overridden = await model.generate("item", config={"system_instruction": "Other rules"})
+    assert overridden.metadata["cache_group"] == _si_group("Other rules")
+    only_config = await bare.generate("item", config={"system_instruction": "Other rules"})
+    assert only_config.metadata["cache_group"] == _si_group("Other rules")
+    cleared = await model.generate("item", config={"system_instruction": None})
+    assert "cache_group" not in (cleared.metadata or {})
+    per_call = await model.generate("item", system_instruction="Per call")
+    assert per_call.metadata["cache_group"] == _si_group("Per call")
 
     groups = []
     for _ in range(2):
@@ -616,17 +634,26 @@ async def test_failed_attempts_are_not_part_of_the_live_rate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_each_attempt_counts_under_its_own_group() -> None:
-    class _Switch(LLMCallStrategy[str]):
+async def test_only_the_attempt_that_returned_is_attributed() -> None:
+    # The processor never retries after a strategy returns, so a retried item's
+    # earlier attempts all raised. They carry no metadata and no group is charged.
+    class _FailThenSwitch(LLMCallStrategy[str]):
         async def execute(self, prompt, attempt, timeout, state=None):
-            usage = {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11}
             if attempt == 1:
-                return prompt, usage, {"cache_group": "first"}
-            return prompt, usage, {"cache_group": "second"}
+                error = ConnectionError("billed then failed")
+                error._failed_token_usage = {  # type: ignore[attr-defined]
+                    "input_tokens": 10,
+                    "output_tokens": 0,
+                    "total_tokens": 10,
+                }
+                raise error
+            usage = {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11}
+            return prompt, usage, {"cache_group": f"attempt-{attempt}"}
 
-    result, stats = await _run(_Switch(), ["a"], _config())
-    assert result.results[0].metadata["cache_group"] == "first"
-    assert _group(stats, "first")["measured_calls"] == 1
+    result, stats = await _run(_FailThenSwitch(), ["a"], _config())
+    assert result.results[0].metadata["cache_group"] == "attempt-2"
+    assert [entry["group"] for entry in stats["cache_groups"]] == ["attempt-2"]
+    assert _group(stats, "attempt-2")["measured_calls"] == 1
 
 
 @pytest.mark.asyncio
