@@ -175,5 +175,9 @@ The legacy parameters come first in `ParallelBatchProcessor`'s signature, so pas
 - **Budget API.** `AttemptUsage` and the `GuardrailConfig` fields `max_total_tokens`,
   `max_total_cost` and `cost_function` are new in 0.27 and stay provisional in 1.0,
   so their shape can still change in a minor release once they have seen real use.
+- **Cache-group statistics.** The `GuardrailConfig` fields `min_cache_hit_rate` and
+  `cache_hit_window`, the `cache_group` and `cache_miss_reason` metadata keys, the
+  `cache_groups` statistics, and `ErrorCategory.CACHE_HIT_RATE_BELOW_FLOOR` are new
+  in 1.1 and provisional.
 - **Provider-output views.** Provisional now; they may be promoted to stable at
   1.0.0rc1 (see above). `logprobs` is the most likely to stay provisional.

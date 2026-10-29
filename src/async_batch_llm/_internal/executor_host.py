@@ -36,6 +36,7 @@ from ..strategies import (
 from ..token_extractor import TokenExtractor
 from .admission import AdmissionRegistry
 from .budget import BudgetTracker
+from .cache_groups import CacheHitTracker
 from .capacity import CapacityLimiter
 from .classifier_resolver import StrategyClassifierResolver
 from .cleanup import CleanupAction, CleanupReport, SharedCloser
@@ -70,6 +71,12 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
                 "max_total_tokens, max_total_cost and cost_function are supported only "
                 "by batch processor runs (process_all, streaming, process_prompts, "
                 "process_stream), not call(), call_result() or LLMCallPool"
+            )
+        if config.guardrails.min_cache_hit_rate is not None:
+            raise ValueError(
+                "min_cache_hit_rate is supported only by batch processor runs "
+                "(process_all, streaming, process_prompts, process_stream), not call(), "
+                "call_result() or LLMCallPool"
             )
         self.config = config
         self._classifier_resolver = StrategyClassifierResolver(error_classifier)
@@ -128,6 +135,7 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         # batch abort controller.
         self._abort_controller: AbortController | None = None
         self._budget_tracker: BudgetTracker | None = None
+        self._cache_tracker: CacheHitTracker | None = None
 
         self.executor: ItemExecutor[TInput, TOutput, TContext] = ItemExecutor(
             self, preserve_tracebacks=True

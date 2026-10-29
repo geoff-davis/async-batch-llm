@@ -14,6 +14,7 @@ from ._internal.artifact_codec import (
     serialization_failure_result,
 )
 from ._internal.budget import BudgetTracker
+from ._internal.cache_groups import CacheHitTracker
 from ._internal.capacity import (
     CapacityLimiter,
     capture_capacity_warning_source,
@@ -263,6 +264,12 @@ class ParallelBatchProcessor(
             )
             if config.guardrails.budget_configured
             else None
+        )
+        # Always created, so per-group cache stats work without a floor.
+        self._cache_tracker: CacheHitTracker | None = CacheHitTracker(
+            config.guardrails,
+            trip_now=self._trip_abort_now,
+            announce=self._announce_abort,
         )
 
         # Diagnostic: high max_workers can outrun the OS open-file limit.
@@ -518,6 +525,8 @@ class ParallelBatchProcessor(
             stats = self._stats.copy()
         if self._budget_tracker is not None:
             stats.update(self._budget_tracker.stats())
+        if self._cache_tracker is not None:
+            stats.update(self._cache_tracker.stats())
         return stats
 
     async def add_work(self, work_item: LLMWorkItem[TInput, TOutput, TContext]) -> None:
@@ -626,10 +635,12 @@ class ParallelBatchProcessor(
         duration = 0.0
         if stats_snapshot.get("start_time"):
             duration = time.time() - float(stats_snapshot["start_time"])
+        cache_stats = self._cache_tracker.stats() if self._cache_tracker is not None else {}
 
         await self._emit_event(
             ProcessingEvent.BATCH_COMPLETED,
             {
+                **cache_stats,
                 "processed": stats_snapshot["processed"],
                 "succeeded": stats_snapshot["succeeded"],
                 "failed": stats_snapshot["failed"],

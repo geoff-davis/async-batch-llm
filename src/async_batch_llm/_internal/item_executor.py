@@ -62,6 +62,7 @@ from .admission import (
 )
 from .backoff import capped_backoff
 from .budget import BudgetTracker
+from .cache_groups import CacheHitTracker
 from .capacity import CapacityLimiter
 from .classifier_resolver import StrategyClassifierResolver
 from .error_logging import (
@@ -240,6 +241,7 @@ class ExecutorHostProtocol(Protocol[TInput, TOutput, TContext]):
     _capacity_limiter: CapacityLimiter
     _abort_controller: AbortController | None
     _budget_tracker: BudgetTracker | None
+    _cache_tracker: CacheHitTracker | None
 
     def _extract_token_usage(self, exception: Exception) -> dict[str, int]: ...
 
@@ -360,6 +362,10 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
     @property
     def _budget_tracker(self) -> BudgetTracker | None:
         return self._host._budget_tracker
+
+    @property
+    def _cache_tracker(self) -> CacheHitTracker | None:
+        return self._host._cache_tracker
 
     # ── Thin delegators (so moved bodies stay verbatim) ──────────
     async def _emit_event(self, event: ProcessingEvent, data: dict | None = None) -> None:
@@ -596,6 +602,31 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
             usage=observation.usage if known and observation is not None else None,
             reported_tokens=observation.reported_tokens if observation is not None else None,
             success=success,
+        )
+        if cause is None or not tracker.stop_now(cause):
+            return None
+        return cause
+
+    def _record_cache_usage(
+        self,
+        *,
+        work_item: LLMWorkItem[TInput, TOutput, TContext],
+        metadata: Any,
+        observation: TokenUsageObservation | None,
+        enforce: bool,
+    ) -> AbortCause | None:
+        """Count one provider attempt that returned a result; stop the run if the
+        cache hit-rate floor trips. Never awaits."""
+        tracker = self._cache_tracker
+        if tracker is None:
+            return None
+        known = observation is not None and observation.known
+        cause = tracker.record(
+            item_id=work_item.item_id,
+            metadata=metadata,
+            usage=observation.usage if known and observation is not None else None,
+            known=known,
+            enforce=enforce,
         )
         if cause is None or not tracker.stop_now(cause):
             return None
@@ -1581,6 +1612,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                             # and current 3-tuples (output, tokens, metadata).
                             usage_observation: TokenUsageObservation | None = None
                             provider_succeeded = False
+                            attempt_metadata: Any = None
                             # Captured before any await: retries replace the
                             # current attempt on the shared runtime state.
                             budget_try_number = current_try_number(retry_state) or attempt_number
@@ -1657,6 +1689,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                     token_usage
                                 )
                                 token_usage = usage_observation.usage
+                                attempt_metadata = response_metadata
                                 provider_succeeded = True
                                 if (
                                     usage_observation.known
@@ -1683,6 +1716,7 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                 # await; quota reconciliation and timing then run even
                                 # if pricing raised; the abort is announced last.
                                 budget_cause: AbortCause | None = None
+                                cache_cause: AbortCause | None = None
                                 try:
                                     if reservation.provider_started:
                                         budget_cause = self._record_budget_usage(
@@ -1693,6 +1727,16 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                             observation=usage_observation,
                                             success=provider_succeeded,
                                         )
+                                        if provider_succeeded:
+                                            # After the budget, still before any await;
+                                            # a budget stop on this attempt wins, but the
+                                            # attempt is still counted.
+                                            cache_cause = self._record_cache_usage(
+                                                work_item=work_item,
+                                                metadata=attempt_metadata,
+                                                observation=usage_observation,
+                                                enforce=budget_cause is None,
+                                            )
                                 finally:
                                     try:
                                         try:
@@ -1744,6 +1788,9 @@ class ItemExecutor(Generic[TInput, TOutput, TContext]):
                                         tracker = self._budget_tracker
                                         if budget_cause is not None and tracker is not None:
                                             await tracker.announce(budget_cause)
+                                        cache_tracker = self._cache_tracker
+                                        if cache_cause is not None and cache_tracker is not None:
+                                            await cache_tracker.announce(cache_cause)
                     except _AdmissionPaused:
                         # Capacity has been released and the unstarted quota refunded.
                         # Rejoin FIFO at the tail; this is still the same physical try.

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-cache-group hit rates and an optional cache hit-rate floor ([#244]). Provisional.
+  - Built-in models stamp a `cache_group` metadata key: the `prompt_cache_key` when
+    one is set, a hash of the system instruction otherwise, or a hash of the cached
+    content for `GeminiCachedModel`. Custom strategies can set it, and a
+    `cache_miss_reason` key, themselves.
+  - `get_stats()` and the `BATCH_COMPLETED` event report `cache_groups` (measured
+    calls, token totals, hit rate and last miss reason per group, up to 64 groups)
+    and `cache_groups_overflow`.
+  - `GuardrailConfig(min_cache_hit_rate=..., cache_hit_window=50)` stops a processor
+    run when a group's hit rate over its last `cache_hit_window` measured calls falls
+    below the floor. The run ends `fail_fast` with the new termination category
+    `ErrorCategory.CACHE_HIT_RATE_BELOW_FLOOR`. `call()`, `call_result()` and
+    `LLMCallPool` reject the floor.
+
+[#244]: https://github.com/geoff-davis/async-batch-llm/issues/244
+
 ## [0.29.0] - 2026-10-29
 
 The last release before 1.0, and the last to support Python 3.10. It adds
