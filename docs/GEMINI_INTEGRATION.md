@@ -413,6 +413,17 @@ The classifier automatically:
 - Marks server errors (500) as retryable
 - Detects timeout errors
 - Handles validation errors
+- Marks expired or missing Google credentials (google-auth `RefreshError`,
+  `DefaultCredentialsError`) as non-retryable `authentication`
+
+### Expired Application Default Credentials
+
+With Vertex AI or other ADC-based auth, expired credentials fail before any request
+is sent, so nothing is billed, but every item would fail. Add
+`ErrorCategory.AUTHENTICATION` to `GuardrailConfig(abort_on_error_categories=...)`
+to stop a processor run or an `LLMCallPool` on the first one (see
+[Configurable fail-fast](guardrails.md#configurable-fail-fast)), then run
+`gcloud auth application-default login`. A stopped pool resumes with `pool.resume()`.
 
 ### Rate Limit Handling
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
@@ -19,6 +20,10 @@ RATE_LIMIT_PATTERNS = ("429", "resource_exhausted", "quota exceeded", "rate limi
 # Billing exhaustion is checked before rate limits: retrying cannot succeed.
 INSUFFICIENT_QUOTA_PATTERNS = ("insufficient_quota",)
 _INSUFFICIENT_QUOTA_HINT = "Provider quota or credits exhausted; check account billing and limits."
+_GOOGLE_CREDENTIALS_HINT = (
+    "Google credentials are missing or expired; run "
+    "`gcloud auth application-default login`, or check GOOGLE_APPLICATION_CREDENTIALS."
+)
 
 # Deterministic programming failures. Their type outranks message text: a
 # user ``ValueError("429: invalid item")`` is a bug, not a provider rate limit.
@@ -96,6 +101,32 @@ def http_status(exception: Exception) -> int | None:
 
 def _insufficient_quota_info() -> ErrorInfo:
     return ErrorInfo(False, False, False, "insufficient_balance", hint=_INSUFFICIENT_QUOTA_HINT)
+
+
+def _google_credentials_failure(exception: Exception) -> ErrorInfo | None:
+    """Classify a google-auth credential failure raised before any request is sent.
+
+    An expired or missing Application Default Credential fails client-side with
+    no HTTP status, so status dispatch never sees it. google-auth marks transient
+    token-endpoint failures ``retryable``; those are left to the generic path.
+    """
+    # An exception can only be a google-auth one once that module is loaded.
+    module = sys.modules.get("google.auth.exceptions")
+    if module is None:
+        return None
+    types = tuple(
+        cls
+        for cls in (
+            getattr(module, "RefreshError", None),
+            getattr(module, "DefaultCredentialsError", None),
+        )
+        if isinstance(cls, type)
+    )
+    if not types or not isinstance(exception, types):
+        return None
+    if _safe_attribute(exception, "retryable") is True:
+        return None
+    return ErrorInfo(False, False, False, "authentication", hint=_GOOGLE_CREDENTIALS_HINT)
 
 
 def _insufficient_quota(exception: Exception) -> bool:
@@ -535,7 +566,10 @@ class ErrorClassifier(ABC):
         )
 
     def _typed_failure(self, exception: Exception) -> ErrorInfo | None:
-        """Classify validation and programming failures by type, before message text."""
+        """Classify credential, validation and programming failures by type, before message text."""
+        info = _google_credentials_failure(exception)
+        if info is not None:
+            return info
         # Pydantic's ValidationError subclasses ValueError; the LLM may produce
         # valid output on retry, so it is checked before logic errors.
         try:

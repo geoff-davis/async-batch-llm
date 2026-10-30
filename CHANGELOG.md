@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `LLMCallPool` honours `GuardrailConfig.abort_on_error_categories` ([#256]). The
+  first request that finishes failed in one of those categories stops the pool:
+  every later submit, including those waiting for a slot, returns `batch_aborted`
+  without calling the provider, and calls already running drain or are cancelled per
+  `abort_mode`, as in a processor run. The pool stays stopped until
+  `pool.resume()` (provisional) is called, for example after re-authenticating;
+  `pool.termination` (provisional) reports the item, category and classifier hint.
+  Previously the pool ignored the setting.
+
+### Fixed
+
+- Expired or missing Google credentials fail fast ([#256]). Every built-in
+  classifier maps google-auth's `RefreshError` (including `ReauthFailError`) and
+  `DefaultCredentialsError` to non-retryable `authentication` with a
+  `gcloud auth application-default login` hint, instead of retryable `unknown`.
+  google-auth errors it marks `retryable` still retry.
+
+[#256]: https://github.com/geoff-davis/async-batch-llm/issues/256
+
 ## [0.30.0] - 2026-10-29
 
 The last release before 1.0, and the last to support Python 3.10. It adds per-group
