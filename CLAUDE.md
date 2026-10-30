@@ -12,7 +12,7 @@ here.
 **strategy pattern** — provider-agnostic at the framework level, with
 first-class support for several providers built in.
 
-**Current version:** v0.30.0, the last release before 1.0 and the last to
+**Current version:** v0.31.0, the last release before 1.0 and the last to
 support Python 3.10 (see `CHANGELOG.md`; `pyproject.toml` is bumped
 by the release-prep flow, so it may briefly lag `main` between releases).
 
@@ -773,8 +773,12 @@ assert result.total_items == result.succeeded + result.failed
 
 Most recent first. See `CHANGELOG.md` for full per-release detail.
 
-- **v0.30.0** — the last release before 1.0 and the last for Python 3.10. Adds
-  per-cache-group hit rates and an optional hit-rate floor (#244), `prompt_cache_key`
+- **v0.31.0** — the last release before 1.0 and the last for Python 3.10. `LLMCallPool`
+  honours `abort_on_error_categories`, with provisional `pool.termination` and
+  `pool.resume()`, and expired or missing Google credentials fail fast as
+  non-retryable `authentication` with a gcloud hint (#256).
+
+- **v0.30.0** — adds per-cache-group hit rates and an optional hit-rate floor (#244), `prompt_cache_key`
   and `cache_group` model options (#244/#247), the public `CacheGroupTracker` (#247),
   and a prompt-caching guide. Additive and provisional.
 

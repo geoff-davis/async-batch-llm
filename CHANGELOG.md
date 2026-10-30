@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-30
+
+The last release before 1.0, and the last to support Python 3.10. It lets an
+`LLMCallPool` stop on chosen error categories and resume, and makes expired Google
+credentials fail fast. It is additive: existing code behaves as before unless it sets
+`abort_on_error_categories` on a pool or relied on google-auth errors retrying.
+
 ### Added
 
 - `LLMCallPool` honours `GuardrailConfig.abort_on_error_categories` ([#256]). The
@@ -2765,7 +2772,8 @@ See **[Migration Guide](docs/archive/MIGRATION_V0_1.md)** for complete upgrade i
 [#122]: https://github.com/geoff-davis/async-batch-llm/issues/122
 [#125]: https://github.com/geoff-davis/async-batch-llm/issues/125
 
-[Unreleased]: https://github.com/geoff-davis/async-batch-llm/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/geoff-davis/async-batch-llm/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/geoff-davis/async-batch-llm/compare/v0.27.0...v0.28.0
