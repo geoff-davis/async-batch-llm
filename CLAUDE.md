@@ -524,7 +524,7 @@ Key test files:
 - `test_cache_expiration_multiworker.py`, `test_cache_tag_matching.py`
   — Gemini cache lifecycle.
 - `test_legacy_fixtures.py` — artifacts written by v0.18, v0.21, v0.24.1, v0.26,
-  v0.27, v0.28, and v0.29 still read and replay (fixtures in `tests/fixtures/`; add one
+  v0.27, v0.28, v0.29, and v0.30 still read and replay (fixtures in `tests/fixtures/`; add one
   per release via `scripts/write_legacy_fixtures.py`, see `/release-prep`).
 - `test_deprecations.py`, `test_stability_page.py`, `test_categories.py` —
   deprecation warnings, every `__all__` name classified on `docs/stability.md`,
