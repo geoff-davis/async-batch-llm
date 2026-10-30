@@ -113,8 +113,9 @@ async def test_retry_with_exponential_backoff():
     # Verify backoff wait between attempts (allow scheduling variance on CI)
     assert len(attempt_times) == 2
     gap1 = attempt_times[1] - attempt_times[0]
-    # First retry should wait ~0.1s (jitter disabled)
-    assert 0.05 < gap1 < 0.5, f"First retry gap: {gap1}"
+    # First retry should wait ~0.1s (jitter disabled). The upper bound is loose:
+    # macOS CI runners have measured 0.53s here.
+    assert 0.05 < gap1 < 1.0, f"First retry gap: {gap1}"
 
 
 @pytest.mark.asyncio
