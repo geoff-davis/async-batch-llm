@@ -169,13 +169,14 @@ async def test_sync_post_processor_does_not_block_event_loop():
     release = threading.Event()
 
     def post(result: WorkItemResult) -> None:
-        release.wait(timeout=0.5)
+        release.wait(timeout=2.0)
 
     async def release_from_event_loop() -> None:
         await asyncio.sleep(0.02)
         release.set()
 
-    config = ProcessorConfig(max_workers=1, post_processor_timeout=0.3)
+    # A blocked loop would leave the callback waiting for its 1.5 s timeout.
+    config = ProcessorConfig(max_workers=1, post_processor_timeout=1.5)
     strategy = _InstantStrategy()
     releaser = asyncio.create_task(release_from_event_loop())
     started = time.monotonic()
@@ -187,7 +188,7 @@ async def test_sync_post_processor_does_not_block_event_loop():
     elapsed = time.monotonic() - started
     await releaser
 
-    assert elapsed < 0.2
+    assert elapsed < 0.6
 
 
 @pytest.mark.asyncio

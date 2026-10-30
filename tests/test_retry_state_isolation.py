@@ -86,12 +86,12 @@ async def test_retry_state_clear_cannot_remove_total_item_deadline() -> None:
             strategy,
             "prompt",
             config=ProcessorConfig(
-                attempt_timeout=0.5,
+                attempt_timeout=2.0,
                 retry=RetryConfig(max_attempts=2, initial_wait=0.001, jitter=False),
-                guardrails=GuardrailConfig(total_timeout_per_item=0.05),
+                guardrails=GuardrailConfig(total_timeout_per_item=0.3),
             ),
         ),
-        timeout=0.5,
+        timeout=3.0,
     )
 
     assert strategy.calls == 2

@@ -119,11 +119,13 @@ async def test_explicit_capacity_limits_strategy_with_unknown_capacity() -> None
 async def test_admission_wait_does_not_consume_execution_timeout() -> None:
     strategy = _TrackingStrategy(
         capacity=1,
-        delays={"first": 0.15, "second": 0.10},
+        # Each call fits the 0.6 s timeout with 0.2 s to spare; both together
+        # (what a timeout that counted the admission wait would see) exceed it.
+        delays={"first": 0.4, "second": 0.4},
     )
     config = ProcessorConfig(
         max_workers=2,
-        attempt_timeout=0.20,
+        attempt_timeout=0.6,
         retry=RetryConfig(max_attempts=1),
     )
 
@@ -137,7 +139,7 @@ async def test_admission_wait_does_not_consume_execution_timeout() -> None:
 
     assert first_result.success
     assert second_result.success
-    assert second_result.admission_wait_seconds >= 0.10
+    assert second_result.admission_wait_seconds >= 0.3
 
 
 @pytest.mark.asyncio
