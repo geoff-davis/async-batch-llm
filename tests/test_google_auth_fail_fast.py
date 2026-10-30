@@ -212,3 +212,54 @@ async def test_processor_run_stops_on_expired_credentials(fast_retry):
         "batch_aborted",
         "batch_aborted",
     ]
+
+
+@pytest.mark.asyncio
+async def test_pool_resume_accepts_work_again(fast_retry):
+    strategy = _ExpiredCredentials(succeed=frozenset({"c", "d"}))
+    config = _config(fast_retry, abort_on_error_categories=AUTH)
+    async with LLMCallPool(strategy, config=config) as pool:
+        assert pool.resume() is None  # not stopped: a no-op
+        await pool.submit_result("a")
+        stopped = pool.termination
+        assert (await pool.submit_result("b")).error_category == "batch_aborted"
+
+        cleared = pool.resume()
+        assert cleared == stopped
+        assert pool.termination is None
+        assert await pool.submit("c") == "ok:c"
+        assert await pool.submit("d") == "ok:d"
+
+        # Still failing after the resume: the pool stops again.
+        await pool.submit_result("e")
+        assert pool.termination is not None
+        assert pool.termination.triggering_item_id == "req-5"
+        assert (await pool.submit_result("f")).error_category == "batch_aborted"
+
+    assert strategy.calls == ["a", "c", "d", "e"]
+
+
+@pytest.mark.asyncio
+async def test_failure_started_before_resume_does_not_stop_resumed_pool(fast_retry):
+    # "b" is running when "a" stops the pool, and fails only after the resume.
+    strategy = _ExpiredCredentials(delays={"a": 0.01, "b": 0.2}, succeed=frozenset({"c"}))
+    config = _config(fast_retry, workers=2, abort_on_error_categories=AUTH)
+    async with LLMCallPool(strategy, config=config) as pool:
+        slow = asyncio.create_task(pool.submit_result("b"))
+        await pool.submit_result("a")
+        assert pool.termination is not None
+        assert pool.resume() is not None
+        late = await slow
+        assert pool.termination is None
+        assert await pool.submit("c") == "ok:c"
+
+    assert late.error_category == "authentication"
+    assert sorted(strategy.calls) == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_pool_resume_without_abort_categories_is_a_no_op(fast_retry):
+    async with LLMCallPool(_ExpiredCredentials(), config=_config(fast_retry)) as pool:
+        await pool.submit_result("a")
+        assert pool.resume() is None
+        assert pool.termination is None

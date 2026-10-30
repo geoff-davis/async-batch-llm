@@ -111,9 +111,12 @@ provider and receive `BatchAbortedError` with
 `termination.kind == "fail_fast"`.
 
 `LLMCallPool` honours the same setting. The first request that finishes failed in
-a configured category stops the pool for good: later submits, including those
-waiting for a slot, return `batch_aborted` without calling the provider, and
-`pool.termination` reports why. Build a new pool to recover. `call()` and
+a configured category stops the pool: later submits, including those waiting for a
+slot, return `batch_aborted` without calling the provider, and `pool.termination`
+reports why. The pool stays stopped until you call `pool.resume()`, so your code
+decides: fix the cause (re-authenticate, top up credit) and resume, or leave it
+stopped and shut down. Calls that started before a resume can't stop the resumed
+pool; a new failure in a configured category stops it again. `call()` and
 `call_result()` run one request, so the setting has nothing to stop there.
 
 ```python
@@ -129,6 +132,8 @@ async with LLMCallPool(strategy, config=config) as pool:
     results = await asyncio.gather(*(pool.submit_result(p) for p in prompts))
     if pool.termination is not None:
         print(pool.termination.reason)  # names the item, category and hint
+        if credentials_refreshed():  # your own check
+            pool.resume()
 ```
 
 Choose categories that indicate a batch-wide condition. Good candidates when

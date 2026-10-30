@@ -423,7 +423,7 @@ is sent, so nothing is billed, but every item would fail. Add
 `ErrorCategory.AUTHENTICATION` to `GuardrailConfig(abort_on_error_categories=...)`
 to stop a processor run or an `LLMCallPool` on the first one (see
 [Configurable fail-fast](guardrails.md#configurable-fail-fast)), then run
-`gcloud auth application-default login`.
+`gcloud auth application-default login`. A stopped pool resumes with `pool.resume()`.
 
 ### Rate Limit Handling
 

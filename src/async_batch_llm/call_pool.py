@@ -85,9 +85,10 @@ class LLMCallPool(Generic[TOutput]):
     request that finishes failed in one of those categories, as it stops a
     processor run. From then on every submit, including those waiting for a slot,
     returns a ``batch_aborted`` result without calling the provider; calls already
-    running drain or are cancelled per ``config.guardrails.abort_mode``. The stop
-    is permanent for this pool: :attr:`termination` says why, and recovering
-    means building a new pool.
+    running drain or are cancelled per ``config.guardrails.abort_mode``. The pool
+    stays stopped, with :attr:`termination` saying why, until :meth:`resume` is
+    called (for example after re-authenticating); a caller that never resumes it
+    has aborted it.
     """
 
     def __init__(
@@ -235,19 +236,24 @@ class LLMCallPool(Generic[TOutput]):
     async def _run(self, work_item: LLMWorkItem[Any, TOutput, Any]) -> WorkItemResult[TOutput, Any]:
         """Acquire a concurrency slot, run the item, release the slot."""
         async with self._sem:
-            if self._abort is not None and self._abort.aborted:
-                return self._abort.result_for(work_item)
+            # The controller current when the call starts; resume() replaces it.
+            controller = self._abort
+            if controller is not None and controller.aborted:
+                return controller.result_for(work_item)
             result = await self._host.executor.execute(work_item)
+        # Trip the controller the call started under: after a resume() that one is
+        # already tripped, so a call started before it can't stop the resumed pool.
         if (
-            self._abort is not None
+            controller is not None
             and not result.success
             and result.error_category in self._abort_categories
         ):
-            await self._trip_abort(result)
+            await self._trip_abort(controller, result)
         return result
 
-    async def _trip_abort(self, result: WorkItemResult[TOutput, Any]) -> None:
-        assert self._abort is not None
+    async def _trip_abort(
+        self, controller: AbortController, result: WorkItemResult[TOutput, Any]
+    ) -> None:
         reason = (
             f"Fail-fast triggered by item {result.item_id!r} "
             f"with category {result.error_category!r}"
@@ -255,7 +261,7 @@ class LLMCallPool(Generic[TOutput]):
         hint = self._hint_for(result)
         if hint:
             reason = f"{reason}: {hint}"
-        if await self._abort.trip(
+        if await controller.trip(
             AbortCause(
                 kind="fail_fast",
                 reason=reason,
@@ -287,6 +293,23 @@ class LLMCallPool(Generic[TOutput]):
         if self._abort is None or not self._abort.aborted:
             return None
         return self._abort.termination()
+
+    def resume(self) -> BatchTermination | None:
+        """Accept work again after a fail-fast stop (provisional).
+
+        Returns the :attr:`termination` it clears, or ``None`` when the pool
+        wasn't stopped. Later submits call the provider again, and a later failure
+        in a configured category stops the pool again. Calls that started before
+        the resume finish as they would have, but their failures don't stop the
+        resumed pool. Call it from the pool's event loop; it doesn't await.
+        """
+        if self._abort is None or not self._abort.aborted:
+            return None
+        cleared = self._abort.termination()
+        self._abort = AbortController(self._abort.mode)
+        self._host._abort_controller = self._abort
+        logger.warning("LLMCallPool resumed after: %s", cleared.reason)
+        return cleared
 
     def cache_stats(self) -> dict[str, Any]:
         """Prompt-cache reads and writes per cache group since creation or the last reset.

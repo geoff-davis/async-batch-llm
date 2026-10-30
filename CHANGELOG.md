@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first request that finishes failed in one of those categories stops the pool:
   every later submit, including those waiting for a slot, returns `batch_aborted`
   without calling the provider, and calls already running drain or are cancelled per
-  `abort_mode`, as in a processor run. The stop is permanent for that pool; the new
+  `abort_mode`, as in a processor run. The pool stays stopped until
+  `pool.resume()` (provisional) is called, for example after re-authenticating;
   `pool.termination` (provisional) reports the item, category and classifier hint.
   Previously the pool ignored the setting.
 
