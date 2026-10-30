@@ -175,7 +175,7 @@ async def test_sync_post_processor_does_not_block_event_loop():
         await asyncio.sleep(0.02)
         release.set()
 
-    # A blocked loop would leave the callback waiting for its 1.5 s timeout.
+    # A blocked loop would leave the callback in its 2 s wait.
     config = ProcessorConfig(max_workers=1, post_processor_timeout=1.5)
     strategy = _InstantStrategy()
     releaser = asyncio.create_task(release_from_event_loop())

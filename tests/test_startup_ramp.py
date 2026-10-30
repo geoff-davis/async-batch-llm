@@ -74,16 +74,18 @@ async def test_startup_ramp_increases_allowed_concurrency_over_time() -> None:
 
 @pytest.mark.asyncio
 async def test_ramp_wait_is_outside_execution_timeout_in_gateway() -> None:
-    # Margins of 0.2 s or more each way: macOS runners have stalled ~0.5 s.
-    strategy = _RampStrategy({"first": 0.6, "second": 0.1})
+    # "second" waits ~0.6 s at the ramp, then runs 0.3 s. Each part fits the
+    # 0.6 s timeout with 0.2 s or more to spare, but together (a timeout that
+    # counted the ramp wait) they exceed it by about 0.3 s.
+    strategy = _RampStrategy({"first": 1.5, "second": 0.3})
     config = ProcessorConfig(
         max_workers=2,
-        attempt_timeout=0.3,
+        attempt_timeout=0.6,
         retry=RetryConfig(max_attempts=1),
         startup_ramp=StartupRampConfig(
             initial_concurrency=1,
             concurrency_step=1,
-            ramp_interval_seconds=0.6,
+            ramp_interval_seconds=1.2,
             max_concurrency=2,
         ),
     )
@@ -94,11 +96,11 @@ async def test_ramp_wait_is_outside_execution_timeout_in_gateway() -> None:
     first_result, second_result = await asyncio.gather(first, second)
     await gateway.aclose()
 
-    assert not first_result.success  # execution itself exceeds 0.3 s
+    assert not first_result.success  # execution itself exceeds 0.6 s
     assert second_result.success
-    # "second" waits at the ramp until "first" times out at about 0.3 s.
-    assert second_result.timing.startup_ramp_wait_seconds >= 0.2
-    assert second_result.timing.attempts[0].execution_seconds < 0.3
+    # "second" waits at the ramp until "first" times out at about 0.6 s.
+    assert second_result.timing.startup_ramp_wait_seconds >= 0.35
+    assert second_result.timing.attempts[0].execution_seconds < 0.6
 
 
 @pytest.mark.asyncio
