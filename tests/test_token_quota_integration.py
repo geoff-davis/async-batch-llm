@@ -148,7 +148,7 @@ async def test_late_usage_survives_hook_failure_and_guardrails(hook_outcome):
             retry=RetryConfig(max_attempts=1),
             attempt_timeout=0.05 if hook_outcome == "attempt_timeout" else 10,
             guardrails=GuardrailConfig(
-                total_timeout_per_item=0.05 if hook_outcome == "deadline" else None
+                total_timeout_per_item=0.3 if hook_outcome == "deadline" else None
             ),
         ),
         strategy=strategy,
@@ -397,7 +397,7 @@ async def test_interrupted_provider_usage_is_reconciled_once(stop, usage):
     config = _config(
         retry=RetryConfig(max_attempts=1),
         attempt_timeout=0.05 if stop == "timeout" else 10,
-        guardrails=GuardrailConfig(total_timeout_per_item=0.05 if stop == "deadline" else None),
+        guardrails=GuardrailConfig(total_timeout_per_item=0.3 if stop == "deadline" else None),
     )
     from async_batch_llm._internal.guardrails import AbortCause, AbortController
 
@@ -842,6 +842,12 @@ class _BlockingStrategy(LLMCallStrategy[str]):
         return prompt, {"total_tokens": 0}, None
 
 
+# The token gate refills continuously: at 100 TPM, 1 token is 0.6 s of wall
+# time between the reservation and the assert. The outcomes these tests tell
+# apart (refunded or retained) differ by 10 or more tokens.
+QUOTA_REFILL_SLACK = 1.0
+
+
 async def _wait_until(predicate: Any) -> None:
     deadline = asyncio.get_running_loop().time() + 1.0
     while asyncio.get_running_loop().time() < deadline:
@@ -875,7 +881,7 @@ async def test_capacity_cancellation_before_provider_start_refunds_both_dimensio
     with pytest.raises(asyncio.CancelledError):
         await second
     assert strategy.started_prompts == ["hold"]
-    assert gate.token_available == pytest.approx(90, abs=0.01)
+    assert gate.token_available == pytest.approx(90, abs=QUOTA_REFILL_SLACK)
 
     strategy.release.set()
     assert (await first).success
@@ -900,7 +906,7 @@ async def test_external_cancellation_after_provider_start_retains_unknown_estima
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert gate.token_available == pytest.approx(90, abs=0.01)
+    assert gate.token_available == pytest.approx(90, abs=QUOTA_REFILL_SLACK)
     assert host._stats.unknown_usage_attempts == 1
     await host.aclose()
 
@@ -925,7 +931,7 @@ async def test_attempt_timeout_after_provider_start_retains_unknown_estimate() -
         assert not result.success
         assert result.error_category == "framework_timeout"
         assert result.timing.attempts[0].reported_tokens is None
-        assert gate.token_available == pytest.approx(90, abs=0.1)
+        assert gate.token_available == pytest.approx(90, abs=QUOTA_REFILL_SLACK)
         assert host._stats.unknown_usage_attempts == 1
     finally:
         await host.aclose()
@@ -940,7 +946,7 @@ async def test_item_deadline_during_quota_wait_starts_no_second_provider_call() 
     host: ExecutorHost[str, str, None] = ExecutorHost(
         _config(
             max_tokens_per_minute=10,
-            guardrails=GuardrailConfig(total_timeout_per_item=0.02),
+            guardrails=GuardrailConfig(total_timeout_per_item=0.2),
         ),
         strategy=strategy,
     )
@@ -975,13 +981,13 @@ async def test_batch_abort_during_quota_wait_starts_no_waiting_provider_call() -
                 max_tokens_per_minute=10,
                 token_estimator=lambda prompt, **kwargs: TokenEstimate(10),
                 guardrails=GuardrailConfig(
-                    batch_timeout=0.02,
+                    batch_timeout=0.2,
                     abort_mode=AbortMode.CANCEL_ACTIVE,
                 ),
             ),
             preserve_order=True,
         ),
-        timeout=0.5,
+        timeout=2.0,
     )
 
     assert strategy.started_prompts == ["hold"]

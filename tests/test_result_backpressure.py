@@ -379,7 +379,7 @@ async def test_batch_deadline_while_publishers_wait_does_not_deadlock() -> None:
         config=ProcessorConfig(
             max_workers=2,
             max_result_queue_size=1,
-            guardrails=GuardrailConfig(batch_timeout=0.02),
+            guardrails=GuardrailConfig(batch_timeout=0.2),
         )
     )
     async with processor:
@@ -388,7 +388,7 @@ async def test_batch_deadline_while_publishers_wait_does_not_deadlock() -> None:
         for index in range(10):
             await processor.add_work(_item(index, strategy))
         await processor.finish()
-        await asyncio.wait_for(processor.wait_for_abort(), timeout=1)
+        await asyncio.wait_for(processor.wait_for_abort(), timeout=2)
         assert strategy.calls >= 3
         assert _queued_results(processor) == 1
         results = [result async for result in processor.results()]

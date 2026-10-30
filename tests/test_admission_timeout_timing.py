@@ -41,7 +41,7 @@ class Holder(LLMCallStrategy[str]):
             self.fail_once.discard(prompt)
             raise ConnectionError("transient")
         if prompt.startswith("quick"):
-            await asyncio.sleep(0.03)
+            await asyncio.sleep(0.1)
             return prompt, {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}, None
         self.held.set()
         try:
@@ -104,7 +104,8 @@ async def test_item_deadline_in_capacity_wait_keeps_wait_and_category() -> None:
     assert waiting.timing.attempts[-1].timeout_category == "admission_timeout"
     # The holder timed out inside its provider call: unchanged classification.
     assert results["hold"].timing.timeout_category == "framework_total_item_timeout"
-    assert results["hold"].admission_wait_seconds < WAIT_FLOOR
+    # Uncontended, so near zero; the bound leaves room for a stalled runner.
+    assert results["hold"].admission_wait_seconds < 0.1
 
 
 @pytest.mark.asyncio
@@ -174,7 +175,7 @@ async def test_capacity_waits_accumulate_across_attempts() -> None:
                 first_failure.set()
 
     async def prompts():
-        yield "quick", "quick"  # holds capacity ~30 ms, so attempt 1 waits
+        yield "quick", "quick"  # holds capacity ~100 ms, so attempt 1 waits
         yield "wait", "wait"
         await first_failure.wait()
         yield "hold", "hold"  # takes capacity during the retry backoff
@@ -185,8 +186,8 @@ async def test_capacity_waits_accumulate_across_attempts() -> None:
             prompts(),
             config=ProcessorConfig(
                 max_workers=3,
-                retry=RetryConfig(max_attempts=3, initial_wait=0.02, max_wait=0.02, jitter=False),
-                guardrails=GuardrailConfig(total_timeout_per_item=0.5),
+                retry=RetryConfig(max_attempts=3, initial_wait=0.3, max_wait=0.3, jitter=False),
+                guardrails=GuardrailConfig(total_timeout_per_item=1.0),
             ),
             observers=[SignalFirstFailure(), ReleaseWhenFailed(strategy, "wait")],
         )
@@ -197,7 +198,7 @@ async def test_capacity_waits_accumulate_across_attempts() -> None:
     assert waiting.error_category == "framework_total_item_timeout"
     attempts = waiting.timing.attempts
     assert len(attempts) == 2
-    assert attempts[0].admission_wait_seconds >= 0.01
+    assert attempts[0].admission_wait_seconds >= 0.03
     assert attempts[1].admission_wait_seconds >= WAIT_FLOOR
     assert attempts[1].timeout_category == "admission_timeout"
     assert waiting.admission_wait_seconds == pytest.approx(

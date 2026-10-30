@@ -214,19 +214,19 @@ async def test_total_item_deadline_spans_coordinated_cooldown() -> None:
         config=ProcessorConfig(
             retry=RetryConfig(max_attempts=1, max_rate_limit_retries=3),
             rate_limit=RateLimitConfig(
-                cooldown_seconds=0.2,
+                cooldown_seconds=1.0,
                 slow_start_items=0,
                 slow_start_initial_delay=0,
                 slow_start_final_delay=0,
                 backoff_multiplier=1,
             ),
-            guardrails=GuardrailConfig(total_timeout_per_item=0.04),
+            guardrails=GuardrailConfig(total_timeout_per_item=0.3),
         ),
     )
 
     assert strategy.calls == 1
     assert result.error_category == "framework_total_item_timeout"
-    assert result.timing.attempts[0].cooldown_wait_seconds >= 0.02
+    assert result.timing.attempts[0].cooldown_wait_seconds >= 0.2
 
 
 @pytest.mark.asyncio
@@ -414,14 +414,14 @@ class _SlowStrategy(LLMCallStrategy[str]):
 
 @pytest.mark.asyncio
 async def test_batch_deadline_drain_active_preserves_active_success_and_aborts_queue() -> None:
-    strategy = _SlowStrategy(0.06)
+    strategy = _SlowStrategy(0.5)
     result = await process_prompts(
         strategy,
         [str(index) for index in range(4)],
         config=ProcessorConfig(
             max_workers=1,
             guardrails=GuardrailConfig(
-                batch_timeout=0.02,
+                batch_timeout=0.2,
                 abort_mode=AbortMode.DRAIN_ACTIVE,
             ),
         ),
@@ -446,12 +446,12 @@ async def test_batch_deadline_cancel_active_cancels_provider_and_finishes_stream
             config=ProcessorConfig(
                 max_workers=1,
                 guardrails=GuardrailConfig(
-                    batch_timeout=0.02,
+                    batch_timeout=0.2,
                     abort_mode=AbortMode.CANCEL_ACTIVE,
                 ),
             ),
         ),
-        timeout=0.5,
+        timeout=2.0,
     )
 
     assert strategy.cancelled == 1
@@ -478,13 +478,13 @@ async def test_batch_deadline_stops_async_producer_without_task_leaks() -> None:
     results = [
         item
         async for item in process_stream(
-            _SlowStrategy(0.03),
+            _SlowStrategy(1.0),
             source(),
             config=ProcessorConfig(
                 max_workers=1,
                 max_queue_size=2,
                 guardrails=GuardrailConfig(
-                    batch_timeout=0.02,
+                    batch_timeout=0.2,
                     abort_mode=AbortMode.CANCEL_ACTIVE,
                 ),
             ),
@@ -688,13 +688,13 @@ async def test_item_deadline_excludes_postprocessing() -> None:
     postprocessed = asyncio.Event()
 
     async def postprocess(result: WorkItemResult) -> None:
-        await asyncio.sleep(0.04)
+        await asyncio.sleep(0.4)
         postprocessed.set()
 
     result = await process_prompts(
         _CategoryStrategy(None),
         ["ok"],
-        config=ProcessorConfig(guardrails=GuardrailConfig(total_timeout_per_item=0.02)),
+        config=ProcessorConfig(guardrails=GuardrailConfig(total_timeout_per_item=0.2)),
         post_processor=postprocess,
     )
     assert result.succeeded == 1

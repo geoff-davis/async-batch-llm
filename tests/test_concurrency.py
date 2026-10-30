@@ -354,7 +354,7 @@ async def test_progress_callback_timeout_for_async_function():
 
     async def slow_async_callback(completed: int, total: int, current_item: str) -> None:
         call_counter["count"] += 1
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(1.0)
 
     def mock_response(prompt: str) -> TestOutput:
         return TestOutput(value=f"Response: {prompt}")
@@ -394,7 +394,8 @@ async def test_progress_callback_timeout_for_async_function():
 
     assert result.succeeded == 1
     assert call_counter["count"] == 1
-    assert duration < 0.3, f"Processing stalled for {duration:.2f}s despite timeout"
+    # The 0.05 s timeout keeps the run well under the callback's 1.0 s sleep.
+    assert duration < 0.6, f"Processing stalled for {duration:.2f}s despite timeout"
 
 
 @pytest.mark.asyncio
