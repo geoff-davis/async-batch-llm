@@ -184,5 +184,6 @@ The legacy parameters come first in `ParallelBatchProcessor`'s signature, so pas
   `ErrorCategory.CACHE_HIT_RATE_BELOW_FLOOR`, the models' `prompt_cache_key` and
   `cache_group` options, and the per-call `cache_group` config key are new in 0.30 and
   provisional.
+- **`LLMCallPool.termination`** is new after 0.30 and provisional.
 - **Provider-output views.** Provisional now; they may be promoted to stable at
   1.0.0rc1 (see above). `logprobs` is the most likely to stay provisional.

@@ -56,6 +56,13 @@ exit) before cleaning up the shared strategy, so in-flight calls aren't cut off
 by shutdown. Set `submit_timeout` to bound how long shutdown waits for that
 drain — otherwise it waits as long as the admitted work takes.
 
+With `GuardrailConfig(abort_on_error_categories=...)`, the first request that
+finishes failed in one of those categories stops the pool permanently. Later
+submits return `batch_aborted` results (`submit()` raises `BatchAbortedError`)
+without calling the provider, and `pool.termination` (provisional) names the
+triggering item, category and classifier hint. See
+[Configurable fail-fast](../guardrails.md#configurable-fail-fast).
+
 ## Timeout and capacity semantics
 
 The pool semaphore is acquired before item execution, so semaphore wait does

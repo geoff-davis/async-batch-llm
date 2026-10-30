@@ -65,6 +65,7 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         error_classifier: ErrorClassifier | None = None,
         rate_limit_strategy: RateLimitStrategy | None = None,
         cache_tracker: CacheGroupTracker | None = None,
+        abort_controller: AbortController | None = None,
     ) -> None:
         if config.guardrails.budget_configured:
             # Accepting a safety cap and silently ignoring it would be worse
@@ -133,9 +134,9 @@ class ExecutorHost(Generic[TInput, TOutput, TContext]):
         self._stats = ProcessingStats()
         self._stats_lock = asyncio.Lock()
         self._token_extractor = TokenExtractor()
-        # Queue-less call/gateway surfaces have item deadlines but no shared
-        # batch abort controller.
-        self._abort_controller: AbortController | None = None
+        # Single calls have no shared abort controller; the pool passes one
+        # when abort_on_error_categories is set.
+        self._abort_controller: AbortController | None = abort_controller
         self._budget_tracker: BudgetTracker | None = None
         # Statistics only (no floor), for the long-lived pool.
         self._cache_tracker: CacheHitTracker | None = (

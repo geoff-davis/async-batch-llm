@@ -110,10 +110,32 @@ provider and receive `BatchAbortedError` with
 `abort_mode` described above. The returned batch reports
 `termination.kind == "fail_fast"`.
 
+`LLMCallPool` honours the same setting. The first request that finishes failed in
+a configured category stops the pool for good: later submits, including those
+waiting for a slot, return `batch_aborted` without calling the provider, and
+`pool.termination` reports why. Build a new pool to recover. `call()` and
+`call_result()` run one request, so the setting has nothing to stop there.
+
+```python
+from async_batch_llm import ErrorCategory, GuardrailConfig, LLMCallPool, ProcessorConfig
+
+config = ProcessorConfig(
+    max_workers=5,
+    guardrails=GuardrailConfig(
+        abort_on_error_categories=frozenset({ErrorCategory.AUTHENTICATION}),
+    ),
+)
+async with LLMCallPool(strategy, config=config) as pool:
+    results = await asyncio.gather(*(pool.submit_result(p) for p in prompts))
+    if pool.termination is not None:
+        print(pool.termination.reason)  # names the item, category and hint
+```
+
 Choose categories that indicate a batch-wide condition. Good candidates when
 your provider classifier supplies reliable status information include:
 
-- `ErrorCategory.AUTHENTICATION` (HTTP 401);
+- `ErrorCategory.AUTHENTICATION` (HTTP 401, or expired or missing Google
+  credentials);
 - `ErrorCategory.PERMISSION_DENIED` (HTTP 403), when permission is
   account/model-wide; and
 - `ErrorCategory.INSUFFICIENT_BALANCE`.
